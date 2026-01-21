@@ -46,6 +46,9 @@ public class ConsumerBenchmarks
         _topic = $"{TopicPrefix}{++_topicCounter}-{MessageCount}-{MessageSize}";
         _kafka.CreateTopicAsync(_topic, 1).GetAwaiter().GetResult();
 
+        // Wait for topic to be fully ready (metadata propagation)
+        Thread.Sleep(1000);
+
         // Seed the topic with messages
         var value = new string('x', MessageSize);
         for (var i = 0; i < MessageCount; i++)
@@ -58,7 +61,7 @@ public class ConsumerBenchmarks
         }
         _confluentProducer.Flush(TimeSpan.FromSeconds(30));
 
-        // Give Kafka a moment to index
+        // Give Kafka a moment to index the messages
         Thread.Sleep(500);
     }
 
@@ -112,7 +115,8 @@ public class ConsumerBenchmarks
         using var consumer = new Confluent.Kafka.ConsumerBuilder<string, string>(config).Build();
         consumer.Subscribe(_topic);
 
-        while (count < MessageCount)
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (count < MessageCount && DateTime.UtcNow < deadline)
         {
             var result = consumer.Consume(TimeSpan.FromSeconds(5));
             if (result is not null)
