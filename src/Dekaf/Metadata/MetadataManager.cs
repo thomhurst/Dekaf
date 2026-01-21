@@ -54,18 +54,44 @@ public sealed class MetadataManager : IAsyncDisposable
 
     /// <summary>
     /// Gets topic metadata, fetching if necessary.
+    /// Retries if the topic is being created (has no partitions or transient error).
     /// </summary>
     public async ValueTask<TopicInfo?> GetTopicMetadataAsync(string topicName, CancellationToken cancellationToken = default)
     {
         var topic = _metadata.GetTopic(topicName);
-        if (topic is not null && !_metadata.IsStale(_options.MetadataMaxAge))
+        if (topic is not null && topic.PartitionCount > 0 && topic.ErrorCode == ErrorCode.None && !_metadata.IsStale(_options.MetadataMaxAge))
         {
             return topic;
         }
 
-        // Refresh metadata for this topic
-        await RefreshMetadataAsync([topicName], cancellationToken).ConfigureAwait(false);
-        return _metadata.GetTopic(topicName);
+        // Retry logic for topics being created
+        const int maxRetries = 5;
+        const int retryDelayMs = 500;
+
+        for (var attempt = 0; attempt < maxRetries; attempt++)
+        {
+            // Refresh metadata for this topic
+            await RefreshMetadataAsync([topicName], cancellationToken).ConfigureAwait(false);
+            topic = _metadata.GetTopic(topicName);
+
+            if (topic is not null && topic.PartitionCount > 0 && topic.ErrorCode == ErrorCode.None)
+            {
+                return topic;
+            }
+
+            // Check for transient errors that indicate topic is being created
+            if (topic?.ErrorCode is ErrorCode.LeaderNotAvailable or ErrorCode.UnknownTopicOrPartition)
+            {
+                Console.WriteLine($"[Dekaf] Topic '{topicName}' not ready (error: {topic.ErrorCode}), retrying in {retryDelayMs}ms...");
+                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            // Non-transient error or topic found with partitions
+            break;
+        }
+
+        return topic;
     }
 
     /// <summary>
