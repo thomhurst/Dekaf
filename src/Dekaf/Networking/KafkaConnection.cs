@@ -122,6 +122,7 @@ public sealed class KafkaConnection : IKafkaConnection
         _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
 
         _logger?.LogDebug("Connected to {Host}:{Port}", _host, _port);
+        Console.WriteLine($"[Dekaf] Connected to {_host}:{_port}");
     }
 
     public async ValueTask<TResponse> SendAsync<TRequest, TResponse>(
@@ -148,6 +149,7 @@ public sealed class KafkaConnection : IKafkaConnection
         {
             _logger?.LogDebug("Sending {ApiKey} request (correlation {CorrelationId}, version {Version}) to {Host}:{Port}",
                 TRequest.ApiKey, correlationId, apiVersion, _host, _port);
+            Console.WriteLine($"[Dekaf] Sending {TRequest.ApiKey} request (correlation {correlationId}, version {apiVersion}) to {_host}:{_port}");
 
             await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
@@ -227,6 +229,7 @@ public sealed class KafkaConnection : IKafkaConnection
         _writer.Advance(4 + totalSize);
 
         var result = await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+        Console.WriteLine($"[Dekaf] Flushed {totalSize + 4} bytes to {_host}:{_port}");
 
         if (result.IsCompleted || result.IsCanceled)
         {
@@ -240,6 +243,7 @@ public sealed class KafkaConnection : IKafkaConnection
             return;
 
         _logger?.LogDebug("Receive loop started for {Host}:{Port}", _host, _port);
+        Console.WriteLine($"[Dekaf] Receive loop started for {_host}:{_port}");
 
         try
         {
@@ -249,10 +253,13 @@ public sealed class KafkaConnection : IKafkaConnection
                 var buffer = result.Buffer;
 
                 _logger?.LogTrace("Received {Length} bytes from {Host}:{Port}", buffer.Length, _host, _port);
+                if (buffer.Length > 0)
+                    Console.WriteLine($"[Dekaf] Received {buffer.Length} bytes from {_host}:{_port}");
 
                 while (TryReadResponse(ref buffer, out var correlationId, out var responseData))
                 {
                     _logger?.LogDebug("Received response for correlation ID {CorrelationId}, {Length} bytes", correlationId, responseData.Length);
+                    Console.WriteLine($"[Dekaf] Parsed response for correlation {correlationId}, {responseData.Length} bytes");
 
                     if (_pendingRequests.TryGetValue(correlationId, out var pending))
                     {

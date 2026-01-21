@@ -170,15 +170,13 @@ public sealed class MetadataManager : IAsyncDisposable
 
     private async ValueTask NegotiateApiVersionsAsync(IKafkaConnection connection, CancellationToken cancellationToken)
     {
-        var request = new ApiVersionsRequest
-        {
-            ClientSoftwareName = "Dekaf",
-            ClientSoftwareVersion = "1.0.0"
-        };
+        // Use ApiVersions v0 for bootstrapping - it's the most compatible
+        // and doesn't require flexible protocol support
+        var request = new ApiVersionsRequest();
 
         var response = await connection.SendAsync<ApiVersionsRequest, ApiVersionsResponse>(
             request,
-            3, // Use v3 for client software info
+            0, // Use v0 for maximum compatibility during bootstrap
             cancellationToken).ConfigureAwait(false);
 
         if (response.ErrorCode != ErrorCode.None)
