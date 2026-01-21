@@ -408,36 +408,69 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         _disposed = true;
 
-        // Complete the channel (no more writes)
-        _workChannel.Writer.Complete();
-
-        // Dispose accumulator FIRST to fail all pending batch futures.
-        // This unblocks any workers that are waiting on result.Future in ProduceInternalAsync.
-        await _accumulator.DisposeAsync().ConfigureAwait(false);
-
-        // Cancel background tasks
-        _senderCts.Cancel();
-
-        // Wait for workers to drain (with timeout as safety measure)
-        try
-        {
-            await Task.WhenAll(_workerTasks).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        }
-        catch
-        {
-            // Ignore shutdown errors and timeouts
-        }
+        // Graceful shutdown timeout
+        using var shutdownCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var gracefulShutdown = true;
 
         try
         {
-            await Task.WhenAll(_senderTask, _lingerTask).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            // 1. Complete the work channel (no more writes accepted)
+            _workChannel.Writer.Complete();
+
+            // 2. Wait for workers to drain - they'll process remaining items and exit
+            //    when the channel is empty and completed
+            await Task.WhenAll(_workerTasks).WaitAsync(shutdownCts.Token).ConfigureAwait(false);
+
+            // 3. Flush accumulator and complete its channel - sender will process remaining batches
+            await _accumulator.CloseAsync(shutdownCts.Token).ConfigureAwait(false);
+
+            // 4. Cancel linger loop (no longer needed) but let sender finish
+            _senderCts.Cancel();
+
+            // 5. Wait for sender to drain remaining batches
+            await _senderTask.WaitAsync(shutdownCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Graceful shutdown timed out - fall back to forceful shutdown
+            gracefulShutdown = false;
+            _logger?.LogWarning("Graceful shutdown timed out, forcing disposal");
         }
         catch
         {
-            // Ignore errors during shutdown
+            gracefulShutdown = false;
+        }
+
+        if (!gracefulShutdown)
+        {
+            // Forceful shutdown: cancel everything and fail pending batches
+            _senderCts.Cancel();
+
+            try
+            {
+                await Task.WhenAll(_workerTasks).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore
+            }
+        }
+
+        // Wait for linger task to exit (it should be quick after cancellation)
+        try
+        {
+            await _lingerTask.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Ignore
         }
 
         _senderCts.Dispose();
+
+        // Dispose accumulator - this will fail any remaining batches if graceful shutdown failed
+        await _accumulator.DisposeAsync().ConfigureAwait(false);
+
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
     }

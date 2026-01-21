@@ -108,6 +108,22 @@ public sealed class RecordAccumulator : IAsyncDisposable
         _batches.Clear();
     }
 
+    /// <summary>
+    /// Flushes all pending batches and completes the ready channel for graceful shutdown.
+    /// The sender loop will process remaining batches and exit when the channel is empty.
+    /// </summary>
+    public async ValueTask CloseAsync(CancellationToken cancellationToken)
+    {
+        if (_disposed)
+            return;
+
+        // Flush all pending batches to the ready channel
+        await FlushAsync(cancellationToken).ConfigureAwait(false);
+
+        // Complete the channel - sender will drain remaining batches and exit
+        _readyBatches.Writer.Complete();
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
