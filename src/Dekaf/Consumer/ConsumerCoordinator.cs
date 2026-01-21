@@ -120,16 +120,39 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             FindCoordinatorRequest.HighestSupportedVersion,
             cancellationToken).ConfigureAwait(false);
 
-        if (response.ErrorCode != ErrorCode.None)
+        // For v4+, coordinator info is in the Coordinators array
+        int nodeId;
+        string host;
+        int port;
+        ErrorCode errorCode;
+
+        if (response.Coordinators is { Count: > 0 })
         {
-            throw new Errors.GroupException(response.ErrorCode, $"FindCoordinator failed: {response.ErrorCode}")
+            var coordinator = response.Coordinators[0];
+            errorCode = coordinator.ErrorCode;
+            nodeId = coordinator.NodeId;
+            host = coordinator.Host;
+            port = coordinator.Port;
+        }
+        else
+        {
+            // v0-v3 format
+            errorCode = response.ErrorCode;
+            nodeId = response.NodeId;
+            host = response.Host ?? throw new InvalidOperationException("Coordinator host is null");
+            port = response.Port;
+        }
+
+        if (errorCode != ErrorCode.None)
+        {
+            throw new Errors.GroupException(errorCode, $"FindCoordinator failed: {errorCode}")
             {
                 GroupId = _options.GroupId
             };
         }
 
-        _coordinatorId = response.NodeId;
-        _connectionPool.RegisterBroker(response.NodeId, response.Host!, response.Port);
+        _coordinatorId = nodeId;
+        _connectionPool.RegisterBroker(nodeId, host, port);
 
         _logger?.LogDebug("Found coordinator {NodeId} for group {GroupId}", _coordinatorId, _options.GroupId);
     }
