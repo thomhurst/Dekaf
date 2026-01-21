@@ -32,7 +32,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly HashSet<string> _subscription = [];
     private readonly HashSet<TopicPartition> _assignment = [];
     private readonly HashSet<TopicPartition> _paused = [];
-    private readonly Dictionary<TopicPartition, long> _positions = [];
+    private readonly Dictionary<TopicPartition, long> _positions = [];      // Consumed position (what app has seen)
+    private readonly Dictionary<TopicPartition, long> _fetchPositions = []; // Fetch position (what to fetch next)
     private readonly Dictionary<TopicPartition, long> _committed = [];
     private readonly Channel<ConsumeResult<TKey, TValue>> _fetchBuffer;
     private readonly SemaphoreSlim _lock = new(1, 1);
@@ -163,6 +164,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             // Yield records from buffer
             while (_fetchBuffer.Reader.TryRead(out var result))
             {
+                // Update consumed position (what the application has seen)
+                _positions[new TopicPartition(result.Topic, result.Partition)] = result.Offset + 1;
                 yield return result;
             }
         }
@@ -235,7 +238,10 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     public IKafkaConsumer<TKey, TValue> Seek(TopicPartitionOffset offset)
     {
-        _positions[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+        var tp = new TopicPartition(offset.Topic, offset.Partition);
+        _positions[tp] = offset.Offset;
+        _fetchPositions[tp] = offset.Offset;
+        ClearFetchBuffer();
         return this;
     }
 
@@ -244,7 +250,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         foreach (var partition in partitions)
         {
             _positions[partition] = 0;
+            _fetchPositions[partition] = 0;
         }
+        ClearFetchBuffer();
         return this;
     }
 
@@ -253,8 +261,19 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         foreach (var partition in partitions)
         {
             _positions[partition] = -1; // Special value meaning end
+            _fetchPositions[partition] = -1; // Special value meaning end
         }
+        ClearFetchBuffer();
         return this;
+    }
+
+    private void ClearFetchBuffer()
+    {
+        // Drain the fetch buffer to discard stale records
+        while (_fetchBuffer.Reader.TryRead(out _))
+        {
+            // Discard
+        }
     }
 
     public IKafkaConsumer<TKey, TValue> Pause(params TopicPartition[] partitions)
@@ -294,13 +313,116 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             await _coordinator.EnsureActiveGroupAsync(_subscription, cancellationToken).ConfigureAwait(false);
 
+            // Check for new partitions that need initialization
+            var newPartitions = new List<TopicPartition>();
+            foreach (var partition in _coordinator.Assignment)
+            {
+                if (!_assignment.Contains(partition))
+                {
+                    newPartitions.Add(partition);
+                }
+            }
+
             // Update assignment from coordinator
             _assignment.Clear();
             foreach (var partition in _coordinator.Assignment)
             {
                 _assignment.Add(partition);
             }
+
+            // Initialize positions for new partitions
+            if (newPartitions.Count > 0)
+            {
+                await InitializePositionsAsync(newPartitions, cancellationToken).ConfigureAwait(false);
+            }
         }
+    }
+
+    private async ValueTask InitializePositionsAsync(List<TopicPartition> partitions, CancellationToken cancellationToken)
+    {
+        // Fetch committed offsets for all partitions
+        var committedOffsets = await _coordinator!.FetchOffsetsAsync(partitions, cancellationToken).ConfigureAwait(false);
+
+        foreach (var partition in partitions)
+        {
+            if (committedOffsets.TryGetValue(partition, out var committedOffset) && committedOffset >= 0)
+            {
+                // Use committed offset
+                _positions[partition] = committedOffset;
+                _fetchPositions[partition] = committedOffset;
+                _committed[partition] = committedOffset;
+            }
+            else
+            {
+                // No committed offset, use auto offset reset
+                var offset = await GetResetOffsetAsync(partition, cancellationToken).ConfigureAwait(false);
+                _positions[partition] = offset;
+                _fetchPositions[partition] = offset;
+            }
+        }
+    }
+
+    private async ValueTask<long> GetResetOffsetAsync(TopicPartition partition, CancellationToken cancellationToken)
+    {
+        // Get the offset based on auto offset reset policy
+        var timestamp = _options.AutoOffsetReset switch
+        {
+            AutoOffsetReset.Earliest => -2, // Earliest
+            AutoOffsetReset.Latest => -1,   // Latest
+            _ => -2 // Default to earliest
+        };
+
+        var connection = await GetPartitionLeaderConnectionAsync(partition, cancellationToken).ConfigureAwait(false);
+        if (connection is null)
+            return 0;
+
+        var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.ListOffsets,
+            Protocol.Messages.ListOffsetsRequest.LowestSupportedVersion,
+            Protocol.Messages.ListOffsetsRequest.HighestSupportedVersion);
+
+        var request = new Protocol.Messages.ListOffsetsRequest
+        {
+            ReplicaId = -1,
+            IsolationLevel = _options.IsolationLevel,
+            Topics =
+            [
+                new Protocol.Messages.ListOffsetsRequestTopic
+                {
+                    Name = partition.Topic,
+                    Partitions =
+                    [
+                        new Protocol.Messages.ListOffsetsRequestPartition
+                        {
+                            PartitionIndex = partition.Partition,
+                            Timestamp = timestamp,
+                            CurrentLeaderEpoch = -1
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var response = await connection.SendAsync<Protocol.Messages.ListOffsetsRequest, Protocol.Messages.ListOffsetsResponse>(
+            request,
+            listOffsetsVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        var topicResponse = response.Topics.FirstOrDefault(t => t.Name == partition.Topic);
+        var partitionResponse = topicResponse?.Partitions.FirstOrDefault(p => p.PartitionIndex == partition.Partition);
+
+        return partitionResponse?.Offset ?? 0;
+    }
+
+    private async ValueTask<IKafkaConnection?> GetPartitionLeaderConnectionAsync(TopicPartition partition, CancellationToken cancellationToken)
+    {
+        var leader = await _metadataManager.GetPartitionLeaderAsync(partition.Topic, partition.Partition, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (leader is null)
+            return null;
+
+        return await _connectionPool.GetConnectionAsync(leader.NodeId, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask FetchRecordsAsync(CancellationToken cancellationToken)
@@ -377,7 +499,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 Partitions = g.Select(p => new FetchRequestPartition
                 {
                     Partition = p.Partition,
-                    FetchOffset = _positions.GetValueOrDefault(p, 0),
+                    FetchOffset = _fetchPositions.GetValueOrDefault(p, 0),
                     PartitionMaxBytes = _options.MaxPartitionFetchBytes
                 }).ToList()
             }).ToList();
@@ -449,8 +571,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
                         await _fetchBuffer.Writer.WriteAsync(result, cancellationToken).ConfigureAwait(false);
 
-                        // Update position
-                        _positions[new TopicPartition(topic, partitionResponse.PartitionIndex)] = offset + 1;
+                        // Update fetch position (where to fetch next from broker)
+                        _fetchPositions[new TopicPartition(topic, partitionResponse.PartitionIndex)] = offset + 1;
                     }
                 }
             }
@@ -496,6 +618,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             try
             {
                 await Task.Delay(_options.AutoCommitIntervalMs, cancellationToken).ConfigureAwait(false);
+
+                // Only commit if coordinator is stable (fully joined)
+                if (_coordinator is null || _coordinator.State != CoordinatorState.Stable)
+                    continue;
+
                 await CommitAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

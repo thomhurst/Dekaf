@@ -379,9 +379,15 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             GroupInstanceId = _options.GroupInstanceId
         };
 
+        // Use negotiated API version
+        var heartbeatVersion = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.Heartbeat,
+            HeartbeatRequest.LowestSupportedVersion,
+            HeartbeatRequest.HighestSupportedVersion);
+
         var response = await connection.SendAsync<HeartbeatRequest, HeartbeatResponse>(
             request,
-            HeartbeatRequest.HighestSupportedVersion,
+            heartbeatVersion,
             cancellationToken).ConfigureAwait(false);
 
         if (response.ErrorCode != ErrorCode.None)
@@ -425,9 +431,15 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             Topics = topicOffsets
         };
 
+        // Use negotiated API version
+        var offsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.OffsetCommit,
+            OffsetCommitRequest.LowestSupportedVersion,
+            OffsetCommitRequest.HighestSupportedVersion);
+
         var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
             request,
-            OffsetCommitRequest.HighestSupportedVersion,
+            offsetCommitVersion,
             cancellationToken).ConfigureAwait(false);
 
         // Check for errors
@@ -472,13 +484,20 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             Topics = topicPartitions
         };
 
+        // Use negotiated API version
+        var offsetFetchVersion = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.OffsetFetch,
+            OffsetFetchRequest.LowestSupportedVersion,
+            OffsetFetchRequest.HighestSupportedVersion);
+
         var response = await connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
             request,
-            OffsetFetchRequest.HighestSupportedVersion,
+            offsetFetchVersion,
             cancellationToken).ConfigureAwait(false);
 
         var result = new Dictionary<TopicPartition, long>();
 
+        // v0-v7: Topics field
         if (response.Topics is not null)
         {
             foreach (var topic in response.Topics)
@@ -488,6 +507,27 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                     if (partition.ErrorCode == ErrorCode.None && partition.CommittedOffset >= 0)
                     {
                         result[new TopicPartition(topic.Name, partition.PartitionIndex)] = partition.CommittedOffset;
+                    }
+                }
+            }
+        }
+
+        // v8+: Groups field
+        if (response.Groups is not null)
+        {
+            foreach (var group in response.Groups)
+            {
+                if (group.ErrorCode != ErrorCode.None)
+                    continue;
+
+                foreach (var topic in group.Topics)
+                {
+                    foreach (var partition in topic.Partitions)
+                    {
+                        if (partition.ErrorCode == ErrorCode.None && partition.CommittedOffset >= 0)
+                        {
+                            result[new TopicPartition(topic.Name, partition.PartitionIndex)] = partition.CommittedOffset;
+                        }
                     }
                 }
             }

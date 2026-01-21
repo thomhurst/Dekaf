@@ -18,7 +18,8 @@ public sealed class MetadataManager : IAsyncDisposable
     private readonly List<string> _bootstrapServers;
 
     private short _metadataApiVersion = -1;
-    private readonly Dictionary<ApiKey, (short MinVersion, short MaxVersion)> _apiVersions = new();
+    private readonly Dictionary<ApiKey, (short MinVersion, short MaxVersion)> _brokerApiVersions = new();
+    private readonly Dictionary<(ApiKey, short, short), short> _negotiatedVersionCache = new();
     private volatile bool _disposed;
     private CancellationTokenSource? _backgroundRefreshCts;
     private Task? _backgroundRefreshTask;
@@ -43,20 +44,36 @@ public sealed class MetadataManager : IAsyncDisposable
     /// <summary>
     /// Gets the negotiated API version for the specified API key.
     /// Returns the minimum of the broker's max version and our supported version.
+    /// Negotiated versions are cached for performance.
     /// </summary>
     public short GetNegotiatedApiVersion(ApiKey apiKey, short ourMinVersion, short ourMaxVersion)
     {
-        if (_apiVersions.TryGetValue(apiKey, out var brokerVersions))
+        var cacheKey = (apiKey, ourMinVersion, ourMaxVersion);
+
+        // Check cache first (fast path)
+        if (_negotiatedVersionCache.TryGetValue(cacheKey, out var cached))
+        {
+            return cached;
+        }
+
+        // Calculate and cache
+        short negotiated;
+        if (_brokerApiVersions.TryGetValue(apiKey, out var brokerVersions))
         {
             // Use the minimum of our max and broker's max
-            var negotiated = Math.Min(ourMaxVersion, brokerVersions.MaxVersion);
+            negotiated = Math.Min(ourMaxVersion, brokerVersions.MaxVersion);
             // But not below our minimum or broker's minimum
             negotiated = Math.Max(negotiated, ourMinVersion);
             negotiated = Math.Max(negotiated, brokerVersions.MinVersion);
-            return negotiated;
         }
-        // Fall back to our minimum version if we don't have broker info yet
-        return ourMinVersion;
+        else
+        {
+            // Fall back to our minimum version if we don't have broker info yet
+            negotiated = ourMinVersion;
+        }
+
+        _negotiatedVersionCache[cacheKey] = negotiated;
+        return negotiated;
     }
 
     /// <summary>
@@ -234,8 +251,11 @@ public sealed class MetadataManager : IAsyncDisposable
         // Store all API versions for later use
         foreach (var apiKey in response.ApiKeys)
         {
-            _apiVersions[apiKey.ApiKey] = (apiKey.MinVersion, apiKey.MaxVersion);
+            _brokerApiVersions[apiKey.ApiKey] = (apiKey.MinVersion, apiKey.MaxVersion);
         }
+
+        // Clear negotiated version cache to force recalculation with new broker versions
+        _negotiatedVersionCache.Clear();
 
         // Find metadata API version
         var metadataApi = response.ApiKeys.FirstOrDefault(a => a.ApiKey == ApiKey.Metadata);
