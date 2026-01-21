@@ -1,5 +1,6 @@
 using Dekaf.Compression;
 using Dekaf.Protocol.Records;
+using Dekaf.Security.Sasl;
 using Dekaf.Serialization;
 
 namespace Dekaf.Producer;
@@ -103,6 +104,21 @@ public sealed class ProducerOptions
     /// Use TLS.
     /// </summary>
     public bool UseTls { get; init; }
+
+    /// <summary>
+    /// SASL authentication mechanism.
+    /// </summary>
+    public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
+
+    /// <summary>
+    /// SASL username for PLAIN and SCRAM authentication.
+    /// </summary>
+    public string? SaslUsername { get; init; }
+
+    /// <summary>
+    /// SASL password for PLAIN and SCRAM authentication.
+    /// </summary>
+    public string? SaslPassword { get; init; }
 }
 
 /// <summary>

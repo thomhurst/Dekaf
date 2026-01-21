@@ -1,5 +1,6 @@
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.Security.Sasl;
 using Dekaf.Serialization;
 
 namespace Dekaf;
@@ -43,6 +44,9 @@ public sealed class ProducerBuilder<TKey, TValue>
     private Protocol.Records.CompressionType _compressionType = Protocol.Records.CompressionType.None;
     private PartitionerType _partitionerType = PartitionerType.Default;
     private bool _useTls;
+    private SaslMechanism _saslMechanism = SaslMechanism.None;
+    private string? _saslUsername;
+    private string? _saslPassword;
     private ISerializer<TKey>? _keySerializer;
     private ISerializer<TValue>? _valueSerializer;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
@@ -140,6 +144,30 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    public ProducerBuilder<TKey, TValue> WithSaslPlain(string username, string password)
+    {
+        _saslMechanism = SaslMechanism.Plain;
+        _saslUsername = username;
+        _saslPassword = password;
+        return this;
+    }
+
+    public ProducerBuilder<TKey, TValue> WithSaslScramSha256(string username, string password)
+    {
+        _saslMechanism = SaslMechanism.ScramSha256;
+        _saslUsername = username;
+        _saslPassword = password;
+        return this;
+    }
+
+    public ProducerBuilder<TKey, TValue> WithSaslScramSha512(string username, string password)
+    {
+        _saslMechanism = SaslMechanism.ScramSha512;
+        _saslUsername = username;
+        _saslPassword = password;
+        return this;
+    }
+
     public ProducerBuilder<TKey, TValue> WithKeySerializer(ISerializer<TKey> serializer)
     {
         _keySerializer = serializer;
@@ -177,7 +205,10 @@ public sealed class ProducerBuilder<TKey, TValue>
             TransactionalId = _transactionalId,
             CompressionType = _compressionType,
             Partitioner = _partitionerType,
-            UseTls = _useTls
+            UseTls = _useTls,
+            SaslMechanism = _saslMechanism,
+            SaslUsername = _saslUsername,
+            SaslPassword = _saslPassword
         };
 
         return new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory);
@@ -219,6 +250,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _maxPollRecords = 500;
     private int _sessionTimeoutMs = 45000;
     private bool _useTls;
+    private SaslMechanism _saslMechanism = SaslMechanism.None;
+    private string? _saslUsername;
+    private string? _saslPassword;
     private IDeserializer<TKey>? _keyDeserializer;
     private IDeserializer<TValue>? _valueDeserializer;
     private IRebalanceListener? _rebalanceListener;
@@ -298,6 +332,30 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    public ConsumerBuilder<TKey, TValue> WithSaslPlain(string username, string password)
+    {
+        _saslMechanism = SaslMechanism.Plain;
+        _saslUsername = username;
+        _saslPassword = password;
+        return this;
+    }
+
+    public ConsumerBuilder<TKey, TValue> WithSaslScramSha256(string username, string password)
+    {
+        _saslMechanism = SaslMechanism.ScramSha256;
+        _saslUsername = username;
+        _saslPassword = password;
+        return this;
+    }
+
+    public ConsumerBuilder<TKey, TValue> WithSaslScramSha512(string username, string password)
+    {
+        _saslMechanism = SaslMechanism.ScramSha512;
+        _saslUsername = username;
+        _saslPassword = password;
+        return this;
+    }
+
     public ConsumerBuilder<TKey, TValue> WithKeyDeserializer(IDeserializer<TKey> deserializer)
     {
         _keyDeserializer = deserializer;
@@ -342,6 +400,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
             MaxPollRecords = _maxPollRecords,
             SessionTimeoutMs = _sessionTimeoutMs,
             UseTls = _useTls,
+            SaslMechanism = _saslMechanism,
+            SaslUsername = _saslUsername,
+            SaslPassword = _saslPassword,
             RebalanceListener = _rebalanceListener
         };
 

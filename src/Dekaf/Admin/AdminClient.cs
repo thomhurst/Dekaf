@@ -1,7 +1,9 @@
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol.Messages;
+using Dekaf.Security.Sasl;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Admin;
@@ -27,7 +29,10 @@ public sealed class AdminClient : IAdminClient
             new ConnectionOptions
             {
                 UseTls = options.UseTls,
-                RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs)
+                RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
+                SaslMechanism = options.SaslMechanism,
+                SaslUsername = options.SaslUsername,
+                SaslPassword = options.SaslPassword
             },
             loggerFactory);
 
@@ -48,8 +53,52 @@ public sealed class AdminClient : IAdminClient
 
         var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
 
-        // TODO: Implement CreateTopics request
-        throw new NotImplementedException("CreateTopics not yet implemented");
+        var opts = options ?? new CreateTopicsOptions();
+
+        // Convert NewTopic to CreateTopicData
+        var topicData = topics.Select(t => new CreateTopicData
+        {
+            Name = t.Name,
+            NumPartitions = t.NumPartitions,
+            ReplicationFactor = t.ReplicationFactor,
+            Assignments = t.ReplicaAssignments?.Select(a => new CreateTopicAssignment
+            {
+                PartitionIndex = a.Key,
+                BrokerIds = a.Value.ToList()
+            }).ToList(),
+            Configs = t.Configs?.Select(c => new CreateTopicConfig
+            {
+                Name = c.Key,
+                Value = c.Value
+            }).ToList()
+        }).ToList();
+
+        var request = new CreateTopicsRequest
+        {
+            Topics = topicData,
+            TimeoutMs = opts.TimeoutMs,
+            ValidateOnly = opts.ValidateOnly
+        };
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.CreateTopics,
+            CreateTopicsRequest.LowestSupportedVersion,
+            CreateTopicsRequest.HighestSupportedVersion);
+
+        var response = await controller.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
+            request,
+            apiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        // Check for errors
+        foreach (var topic in response.Topics)
+        {
+            if (topic.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new KafkaException(topic.ErrorCode,
+                    $"Failed to create topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
+            }
+        }
     }
 
     public async ValueTask DeleteTopicsAsync(
@@ -61,8 +110,48 @@ public sealed class AdminClient : IAdminClient
 
         var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
 
-        // TODO: Implement DeleteTopics request
-        throw new NotImplementedException("DeleteTopics not yet implemented");
+        var opts = options ?? new DeleteTopicsOptions();
+        var names = topicNames.ToList();
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.DeleteTopics,
+            DeleteTopicsRequest.LowestSupportedVersion,
+            DeleteTopicsRequest.HighestSupportedVersion);
+
+        DeleteTopicsRequest request;
+        if (apiVersion >= 6)
+        {
+            // v6+: Use Topics array with name/id
+            request = new DeleteTopicsRequest
+            {
+                Topics = names.Select(n => new DeleteTopicState { Name = n }).ToList(),
+                TimeoutMs = opts.TimeoutMs
+            };
+        }
+        else
+        {
+            // v0-v5: Use TopicNames array
+            request = new DeleteTopicsRequest
+            {
+                TopicNames = names,
+                TimeoutMs = opts.TimeoutMs
+            };
+        }
+
+        var response = await controller.SendAsync<DeleteTopicsRequest, DeleteTopicsResponse>(
+            request,
+            apiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        // Check for errors
+        foreach (var topic in response.Responses)
+        {
+            if (topic.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new KafkaException(topic.ErrorCode,
+                    $"Failed to delete topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
+            }
+        }
     }
 
     public async ValueTask<IReadOnlyList<TopicListing>> ListTopicsAsync(
@@ -332,6 +421,9 @@ public sealed class AdminClientOptions
     public string? ClientId { get; init; } = "dekaf-admin";
     public int RequestTimeoutMs { get; init; } = 30000;
     public bool UseTls { get; init; }
+    public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
+    public string? SaslUsername { get; init; }
+    public string? SaslPassword { get; init; }
 }
 
 /// <summary>
@@ -342,6 +434,9 @@ public sealed class AdminClientBuilder
     private readonly List<string> _bootstrapServers = [];
     private string? _clientId;
     private bool _useTls;
+    private SaslMechanism _saslMechanism = SaslMechanism.None;
+    private string? _saslUsername;
+    private string? _saslPassword;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
 
     public AdminClientBuilder WithBootstrapServers(string servers)
@@ -363,6 +458,30 @@ public sealed class AdminClientBuilder
         return this;
     }
 
+    public AdminClientBuilder WithSaslPlain(string username, string password)
+    {
+        _saslMechanism = SaslMechanism.Plain;
+        _saslUsername = username;
+        _saslPassword = password;
+        return this;
+    }
+
+    public AdminClientBuilder WithSaslScramSha256(string username, string password)
+    {
+        _saslMechanism = SaslMechanism.ScramSha256;
+        _saslUsername = username;
+        _saslPassword = password;
+        return this;
+    }
+
+    public AdminClientBuilder WithSaslScramSha512(string username, string password)
+    {
+        _saslMechanism = SaslMechanism.ScramSha512;
+        _saslUsername = username;
+        _saslPassword = password;
+        return this;
+    }
+
     public AdminClientBuilder WithLoggerFactory(Microsoft.Extensions.Logging.ILoggerFactory loggerFactory)
     {
         _loggerFactory = loggerFactory;
@@ -378,7 +497,10 @@ public sealed class AdminClientBuilder
         {
             BootstrapServers = _bootstrapServers,
             ClientId = _clientId,
-            UseTls = _useTls
+            UseTls = _useTls,
+            SaslMechanism = _saslMechanism,
+            SaslUsername = _saslUsername,
+            SaslPassword = _saslPassword
         };
 
         return new AdminClient(options, _loggerFactory);

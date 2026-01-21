@@ -6,6 +6,8 @@ using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
+using Dekaf.Security.Sasl;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Networking;
@@ -101,6 +103,12 @@ public sealed class KafkaConnection : IKafkaConnection
         }
 
         _stream = networkStream;
+
+        // Perform SASL authentication if configured
+        if (_options.SaslMechanism != SaslMechanism.None)
+        {
+            await PerformSaslAuthenticationAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         var pipe = new Pipe(new PipeOptions(
             pool: MemoryPool<byte>.Shared,
@@ -364,6 +372,189 @@ public sealed class KafkaConnection : IKafkaConnection
         }
     }
 
+    private async ValueTask PerformSaslAuthenticationAsync(CancellationToken cancellationToken)
+    {
+        if (_stream is null)
+            throw new InvalidOperationException("Not connected");
+
+        _logger?.LogDebug("Starting SASL authentication with mechanism {Mechanism}", _options.SaslMechanism);
+
+        // Create the appropriate authenticator
+        ISaslAuthenticator authenticator = _options.SaslMechanism switch
+        {
+            SaslMechanism.Plain => new PlainAuthenticator(
+                _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
+                _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
+            SaslMechanism.ScramSha256 => new ScramAuthenticator(
+                SaslMechanism.ScramSha256,
+                _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
+                _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
+            SaslMechanism.ScramSha512 => new ScramAuthenticator(
+                SaslMechanism.ScramSha512,
+                _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
+                _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
+            _ => throw new InvalidOperationException($"Unsupported SASL mechanism: {_options.SaslMechanism}")
+        };
+
+        // Step 1: Send SaslHandshake to negotiate mechanism
+        var handshakeResponse = await SendSaslMessageAsync<SaslHandshakeRequest, SaslHandshakeResponse>(
+            new SaslHandshakeRequest { Mechanism = authenticator.MechanismName },
+            1, // Use v1 for SaslHandshake
+            cancellationToken).ConfigureAwait(false);
+
+        if (handshakeResponse.ErrorCode != ErrorCode.None)
+        {
+            throw new AuthenticationException(
+                $"SASL handshake failed: {handshakeResponse.ErrorCode}. " +
+                $"Supported mechanisms: {string.Join(", ", handshakeResponse.Mechanisms)}");
+        }
+
+        _logger?.LogDebug("SASL handshake successful, starting authentication");
+
+        // Step 2: Perform authentication exchanges
+        var authBytes = authenticator.GetInitialResponse();
+
+        while (!authenticator.IsComplete)
+        {
+            var authResponse = await SendSaslMessageAsync<SaslAuthenticateRequest, SaslAuthenticateResponse>(
+                new SaslAuthenticateRequest { AuthBytes = authBytes },
+                2, // Use v2 for SaslAuthenticate (flexible version)
+                cancellationToken).ConfigureAwait(false);
+
+            if (authResponse.ErrorCode != ErrorCode.None)
+            {
+                throw new AuthenticationException(
+                    $"SASL authentication failed: {authResponse.ErrorCode}" +
+                    (authResponse.ErrorMessage is not null ? $" - {authResponse.ErrorMessage}" : ""));
+            }
+
+            if (authenticator.IsComplete)
+                break;
+
+            var challenge = authResponse.AuthBytes;
+            var response = authenticator.EvaluateChallenge(challenge);
+
+            if (response is null)
+                break;
+
+            authBytes = response;
+        }
+
+        _logger?.LogInformation("SASL authentication successful with mechanism {Mechanism}", _options.SaslMechanism);
+    }
+
+    private async ValueTask<TResponse> SendSaslMessageAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+    {
+        if (_stream is null)
+            throw new InvalidOperationException("Not connected");
+
+        var correlationId = Interlocked.Increment(ref _correlationId);
+        var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
+
+        // Build the request
+        var bodyBuffer = new ArrayBufferWriter<byte>();
+        var bodyWriter = new KafkaProtocolWriter(bodyBuffer);
+
+        var header = new RequestHeader
+        {
+            ApiKey = TRequest.ApiKey,
+            ApiVersion = apiVersion,
+            CorrelationId = correlationId,
+            ClientId = _clientId,
+            HeaderVersion = headerVersion
+        };
+        header.Write(ref bodyWriter);
+        request.Write(ref bodyWriter, apiVersion);
+
+        // Write to stream directly (no pipe yet)
+        var totalSize = bodyBuffer.WrittenCount;
+        var buffer = new byte[4 + totalSize];
+        BinaryPrimitives.WriteInt32BigEndian(buffer, totalSize);
+        bodyBuffer.WrittenSpan.CopyTo(buffer.AsSpan(4));
+
+        await _stream.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
+        await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+        // Read response
+        var sizeBuffer = new byte[4];
+        await ReadExactlyAsync(_stream, sizeBuffer, cancellationToken).ConfigureAwait(false);
+        var responseSize = BinaryPrimitives.ReadInt32BigEndian(sizeBuffer);
+
+        var responseBuffer = new byte[responseSize];
+        await ReadExactlyAsync(_stream, responseBuffer, cancellationToken).ConfigureAwait(false);
+
+        // Parse response header
+        var responseCorrelationId = BinaryPrimitives.ReadInt32BigEndian(responseBuffer);
+        if (responseCorrelationId != correlationId)
+        {
+            throw new InvalidOperationException(
+                $"Correlation ID mismatch: expected {correlationId}, got {responseCorrelationId}");
+        }
+
+        // Skip response header and parse body
+        var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
+        var offset = 4; // Correlation ID
+
+        if (responseHeaderVersion >= 1)
+        {
+            // Skip tagged fields
+            var span = responseBuffer.AsSpan(offset);
+            var (tagCount, bytesRead) = ReadUnsignedVarInt(span);
+            offset += bytesRead;
+
+            for (var i = 0; i < tagCount; i++)
+            {
+                span = responseBuffer.AsSpan(offset);
+                var (_, tagBytesRead) = ReadUnsignedVarInt(span);
+                offset += tagBytesRead;
+
+                span = responseBuffer.AsSpan(offset);
+                var (size, sizeBytesRead) = ReadUnsignedVarInt(span);
+                offset += sizeBytesRead + size;
+            }
+        }
+
+        var reader = new KafkaProtocolReader(responseBuffer.AsMemory(offset));
+        return (TResponse)TResponse.Read(ref reader, apiVersion);
+    }
+
+    private static async ValueTask ReadExactlyAsync(Stream stream, byte[] buffer, CancellationToken cancellationToken)
+    {
+        var totalRead = 0;
+        while (totalRead < buffer.Length)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(totalRead), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+                throw new IOException("Connection closed unexpectedly");
+            totalRead += read;
+        }
+    }
+
+    private static (int value, int bytesRead) ReadUnsignedVarInt(ReadOnlySpan<byte> span)
+    {
+        var result = 0;
+        var shift = 0;
+        var bytesRead = 0;
+
+        while (bytesRead < span.Length && shift < 35)
+        {
+            var b = span[bytesRead++];
+            result |= (b & 0x7F) << shift;
+
+            if ((b & 0x80) == 0)
+                return (result, bytesRead);
+
+            shift += 7;
+        }
+
+        return (result, bytesRead);
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
@@ -483,6 +674,21 @@ public sealed class ConnectionOptions
     /// Custom certificate validation callback.
     /// </summary>
     public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; init; }
+
+    /// <summary>
+    /// SASL authentication mechanism.
+    /// </summary>
+    public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
+
+    /// <summary>
+    /// SASL username for PLAIN and SCRAM authentication.
+    /// </summary>
+    public string? SaslUsername { get; init; }
+
+    /// <summary>
+    /// SASL password for PLAIN and SCRAM authentication.
+    /// </summary>
+    public string? SaslPassword { get; init; }
 
     /// <summary>
     /// Send buffer size in bytes.

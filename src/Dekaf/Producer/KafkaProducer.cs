@@ -63,7 +63,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             new ConnectionOptions
             {
                 UseTls = options.UseTls,
-                RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs)
+                RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
+                SaslMechanism = options.SaslMechanism,
+                SaslUsername = options.SaslUsername,
+                SaslPassword = options.SaslPassword
             },
             loggerFactory);
 
