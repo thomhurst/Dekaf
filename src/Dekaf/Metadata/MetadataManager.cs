@@ -185,10 +185,14 @@ public sealed class MetadataManager : IAsyncDisposable
         }
 
         // Find metadata API version
+        // Use v1 for now to avoid flexible version issues during debugging
         var metadataApi = response.ApiKeys.FirstOrDefault(a => a.ApiKey == ApiKey.Metadata);
-        _metadataApiVersion = metadataApi.MaxVersion > 0
-            ? Math.Min(metadataApi.MaxVersion, MetadataRequest.HighestSupportedVersion)
+        var maxSupported = Math.Min(metadataApi.MaxVersion, MetadataRequest.HighestSupportedVersion);
+        // Cap at v8 to avoid flexible versions (v9+) for now
+        _metadataApiVersion = maxSupported > 0
+            ? Math.Min(maxSupported, (short)8)
             : MetadataRequest.LowestSupportedVersion;
+        Console.WriteLine($"[Dekaf] Negotiated Metadata API version: {_metadataApiVersion} (broker supports up to {metadataApi.MaxVersion})");
 
         _logger?.LogDebug("Negotiated Metadata API version: {Version}", _metadataApiVersion);
     }
