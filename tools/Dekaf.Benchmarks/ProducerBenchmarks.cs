@@ -50,7 +50,8 @@ public class ProducerBenchmarks
             ClientId = "confluent-benchmark",
             Acks = Confluent.Kafka.Acks.Leader,
             LingerMs = 5,
-            BatchSize = 16384
+            BatchSize = 16384,
+            QueueBufferingMaxMessages = 1000000  // Increase queue size for fire-and-forget benchmarks
         };
         _confluentProducer = new Confluent.Kafka.ProducerBuilder<string, string>(confluentConfig).Build();
 
@@ -78,6 +79,13 @@ public class ProducerBenchmarks
         }
 
         _confluentProducer.Flush(TimeSpan.FromSeconds(5));
+    }
+
+    [IterationCleanup]
+    public void IterationCleanup()
+    {
+        // Flush Confluent producer between iterations to prevent queue buildup
+        _confluentProducer.Flush(TimeSpan.FromSeconds(30));
     }
 
     [GlobalCleanup]
