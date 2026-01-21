@@ -105,7 +105,6 @@ jobs:
             --hangdump-timeout 2m \
             --hangdump-type Full \
             --results-directory ./TestResults/Integration
-        continue-on-error: true
 
       - name: Upload HangDump artifacts
         uses: actions/upload-artifact@v4
