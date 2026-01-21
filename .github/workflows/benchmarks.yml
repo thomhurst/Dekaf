@@ -54,18 +54,11 @@ jobs:
         run: |
           docker run -d --name kafka \
             -p 9092:9092 \
-            -e KAFKA_CFG_NODE_ID=0 \
-            -e KAFKA_CFG_PROCESS_ROLES=controller,broker \
-            -e KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
-            -e KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
-            -e KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@localhost:9093 \
-            -e KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER \
-            -e KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
-            bitnami/kafka:latest
+            apache/kafka:latest
 
           echo "Waiting for Kafka to start..."
           for i in {1..30}; do
-            if docker exec kafka kafka-topics.sh --bootstrap-server localhost:9092 --list 2>/dev/null; then
+            if docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list 2>/dev/null; then
               echo "Kafka is ready"
               break
             fi
@@ -176,7 +169,7 @@ jobs:
 
           echo "## Notes" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- Producer and Consumer benchmarks run against Kafka in Docker (bitnami/kafka)" >> $GITHUB_STEP_SUMMARY
+          echo "- Producer and Consumer benchmarks run against Kafka in Docker (apache/kafka)" >> $GITHUB_STEP_SUMMARY
           echo "- Memory benchmarks highlight Dekaf's zero-allocation design" >> $GITHUB_STEP_SUMMARY
           echo "- Full results are available in the uploaded artifacts" >> $GITHUB_STEP_SUMMARY
 
