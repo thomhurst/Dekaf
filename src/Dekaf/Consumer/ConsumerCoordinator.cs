@@ -288,8 +288,6 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             SyncGroupRequest.LowestSupportedVersion,
             SyncGroupRequest.HighestSupportedVersion);
 
-        Console.WriteLine($"[Dekaf] SyncGroup: isLeader={IsLeader}, assignments={assignments.Length}, version={syncGroupVersion}");
-
         var response = await connection.SendAsync<SyncGroupRequest, SyncGroupResponse>(
             request,
             syncGroupVersion,
@@ -306,9 +304,6 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         // Parse assignment
         var oldAssignment = _assignedPartitions;
         _assignedPartitions = ParseAssignment(response.Assignment);
-
-        Console.WriteLine($"[Dekaf] SyncGroup response: errorCode={response.ErrorCode}, assignmentBytes={response.Assignment.Length}, parsedPartitions={_assignedPartitions.Count}");
-        Console.WriteLine($"[Dekaf] Assigned partitions: {string.Join(", ", _assignedPartitions)}");
 
         // Notify listener
         if (_rebalanceListener is not null)

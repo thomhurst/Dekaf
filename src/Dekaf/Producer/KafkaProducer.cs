@@ -93,8 +93,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             throw new InvalidOperationException($"Topic '{message.Topic}' not found");
         }
 
-        Console.WriteLine($"[Dekaf] Topic '{message.Topic}' has {topicInfo.PartitionCount} partitions, error: {topicInfo.ErrorCode}");
-
         if (topicInfo.PartitionCount == 0)
         {
             throw new InvalidOperationException($"Topic '{message.Topic}' has no partitions. Error code: {topicInfo.ErrorCode}");
@@ -226,12 +224,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 $"No leader for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}");
         }
 
-        Console.WriteLine($"[Dekaf] Leader for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition} is broker {leader.NodeId} at {leader.Host}:{leader.Port}");
-
         var connection = await _connectionPool.GetConnectionAsync(leader.NodeId, cancellationToken)
             .ConfigureAwait(false);
-
-        Console.WriteLine($"[Dekaf] Got connection to broker {leader.NodeId}, IsConnected={connection.IsConnected}");
 
         // Ensure API version is negotiated
         if (_produceApiVersion < 0)
@@ -240,7 +234,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 ApiKey.Produce,
                 ProduceRequest.LowestSupportedVersion,
                 ProduceRequest.HighestSupportedVersion);
-            Console.WriteLine($"[Dekaf] Negotiated Produce API version: {_produceApiVersion}");
         }
 
         var request = new ProduceRequest
@@ -264,9 +257,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 }
             ]
         };
-
-        Console.WriteLine($"[Dekaf] Sending Produce with version {_produceApiVersion}, acks={request.Acks}, timeout={request.TimeoutMs}, records={batch.RecordBatch.Records.Count}");
-        Console.WriteLine($"[Dekaf] RecordBatch: baseOffset={batch.RecordBatch.BaseOffset}, baseTimestamp={batch.RecordBatch.BaseTimestamp}, magic={batch.RecordBatch.Magic}");
 
         // Handle Acks.None (fire-and-forget) - broker doesn't send response
         if (_options.Acks == Acks.None)

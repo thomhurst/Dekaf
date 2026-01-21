@@ -161,8 +161,6 @@ public sealed class ClusterMetadata
             _topicsById.Clear();
             foreach (var topic in response.Topics)
             {
-                Console.WriteLine($"[Dekaf] Metadata topic: '{topic.Name}', error: {topic.ErrorCode}, partitions: {topic.Partitions.Count}");
-
                 var topicInfo = new TopicInfo
                 {
                     Name = topic.Name,

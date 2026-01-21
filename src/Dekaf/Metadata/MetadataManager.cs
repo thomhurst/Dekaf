@@ -119,7 +119,6 @@ public sealed class MetadataManager : IAsyncDisposable
             // Check for transient errors that indicate topic is being created
             if (topic?.ErrorCode is ErrorCode.LeaderNotAvailable or ErrorCode.UnknownTopicOrPartition)
             {
-                Console.WriteLine($"[Dekaf] Topic '{topicName}' not ready (error: {topic.ErrorCode}), retrying in {retryDelayMs}ms...");
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                 continue;
             }
@@ -211,7 +210,6 @@ public sealed class MetadataManager : IAsyncDisposable
                 // Register brokers with connection pool
                 foreach (var broker in response.Brokers)
                 {
-                    Console.WriteLine($"[Dekaf] Discovered broker {broker.NodeId} at {broker.Host}:{broker.Port}");
                     _connectionPool.RegisterBroker(broker.NodeId, broker.Host, broker.Port);
                 }
 
@@ -264,7 +262,6 @@ public sealed class MetadataManager : IAsyncDisposable
         {
             _metadataApiVersion = MetadataRequest.LowestSupportedVersion;
         }
-        Console.WriteLine($"[Dekaf] Negotiated Metadata API version: {_metadataApiVersion} (broker supports up to {metadataApi.MaxVersion})");
 
         _logger?.LogDebug("Negotiated Metadata API version: {Version}", _metadataApiVersion);
     }

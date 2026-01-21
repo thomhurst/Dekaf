@@ -571,7 +571,6 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 ApiKey.Fetch,
                 FetchRequest.LowestSupportedVersion,
                 FetchRequest.HighestSupportedVersion);
-            Console.WriteLine($"[Dekaf] Negotiated Fetch API version: {_fetchApiVersion}");
         }
 
         // Resolve any special offset values (-1 for end, -2 for beginning) before fetching
@@ -605,8 +604,6 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             _fetchApiVersion,
             cancellationToken).ConfigureAwait(false);
 
-        Console.WriteLine($"[Dekaf] Fetch response: {response.Responses.Count} topics, errorCode={response.ErrorCode}");
-
         // Process response
         foreach (var topicResponse in response.Responses)
         {
@@ -614,8 +611,6 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             foreach (var partitionResponse in topicResponse.Partitions)
             {
-                Console.WriteLine($"[Dekaf] Partition {partitionResponse.PartitionIndex}: error={partitionResponse.ErrorCode}, highWatermark={partitionResponse.HighWatermark}, recordBatches={(partitionResponse.Records?.Count ?? 0)}");
-
                 if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
                     _logger?.LogWarning(
