@@ -14,6 +14,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
     private readonly Channel<ReadyBatch> _readyBatches;
     private volatile bool _disposed;
+    private volatile bool _closed;
 
     public RecordAccumulator(ProducerOptions options)
     {
@@ -114,8 +115,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// </summary>
     public async ValueTask CloseAsync(CancellationToken cancellationToken)
     {
-        if (_disposed)
+        if (_disposed || _closed)
             return;
+
+        _closed = true;
 
         // Flush all pending batches to the ready channel
         await FlushAsync(cancellationToken).ConfigureAwait(false);
@@ -141,8 +144,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
         }
         _batches.Clear();
 
-        // Complete the channel to stop readers, then drain and fail any remaining batches
-        _readyBatches.Writer.Complete();
+        // Complete the channel if not already closed by CloseAsync
+        if (!_closed)
+        {
+            _readyBatches.Writer.Complete();
+        }
 
         // Drain any batches that were in the channel but not yet processed
         while (_readyBatches.Reader.TryRead(out var batch))
