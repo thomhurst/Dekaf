@@ -192,12 +192,31 @@ jobs:
           name: benchmark-results
           path: benchmark-results
 
+      - name: Combine Benchmark Results
+        run: |
+          # Find all BenchmarkDotNet JSON result files and combine them
+          mkdir -p combined-results
+
+          # Create a combined JSON file with all benchmarks
+          echo '{"Benchmarks":[]}' > combined-results/combined.json
+
+          for f in $(find benchmark-results -name "*.json" -path "*/results/*" 2>/dev/null); do
+            if [ -f "$f" ]; then
+              echo "Processing: $f"
+              # Extract benchmarks and append to combined file
+              jq -s '.[0].Benchmarks += .[1].Benchmarks | .[0]' combined-results/combined.json "$f" > combined-results/temp.json && mv combined-results/temp.json combined-results/combined.json
+            fi
+          done
+
+          echo "Combined results:"
+          cat combined-results/combined.json | jq '.Benchmarks | length'
+
       - name: Store Benchmark Results
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: Dekaf Benchmarks
           tool: 'benchmarkdotnet'
-          output-file-path: benchmark-results/**/*.json
+          output-file-path: combined-results/combined.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           alert-threshold: '150%'
