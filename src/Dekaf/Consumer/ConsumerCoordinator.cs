@@ -106,55 +106,82 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             throw new InvalidOperationException("No brokers available");
         }
 
-        var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
-            .ConfigureAwait(false);
-
         var request = new FindCoordinatorRequest
         {
             Key = _options.GroupId!,
             KeyType = CoordinatorType.Group
         };
 
-        var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-            request,
-            FindCoordinatorRequest.HighestSupportedVersion,
-            cancellationToken).ConfigureAwait(false);
+        // Retry loop for transient errors (CoordinatorNotAvailable, CoordinatorLoadInProgress)
+        const int maxRetries = 5;
+        var retryDelayMs = 100;
 
-        // For v4+, coordinator info is in the Coordinators array
-        int nodeId;
-        string host;
-        int port;
-        ErrorCode errorCode;
+        for (var attempt = 0; attempt < maxRetries; attempt++)
+        {
+            var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
+                .ConfigureAwait(false);
 
-        if (response.Coordinators is { Count: > 0 })
-        {
-            var coordinator = response.Coordinators[0];
-            errorCode = coordinator.ErrorCode;
-            nodeId = coordinator.NodeId;
-            host = coordinator.Host;
-            port = coordinator.Port;
-        }
-        else
-        {
-            // v0-v3 format
-            errorCode = response.ErrorCode;
-            nodeId = response.NodeId;
-            host = response.Host ?? throw new InvalidOperationException("Coordinator host is null");
-            port = response.Port;
-        }
+            var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                request,
+                FindCoordinatorRequest.HighestSupportedVersion,
+                cancellationToken).ConfigureAwait(false);
 
-        if (errorCode != ErrorCode.None)
-        {
-            throw new Errors.GroupException(errorCode, $"FindCoordinator failed: {errorCode}")
+            // For v4+, coordinator info is in the Coordinators array
+            int nodeId;
+            string host;
+            int port;
+            ErrorCode errorCode;
+
+            if (response.Coordinators is { Count: > 0 })
             {
-                GroupId = _options.GroupId
-            };
+                var coordinator = response.Coordinators[0];
+                errorCode = coordinator.ErrorCode;
+                nodeId = coordinator.NodeId;
+                host = coordinator.Host;
+                port = coordinator.Port;
+            }
+            else
+            {
+                // v0-v3 format
+                errorCode = response.ErrorCode;
+                nodeId = response.NodeId;
+                host = response.Host ?? throw new InvalidOperationException("Coordinator host is null");
+                port = response.Port;
+            }
+
+            // Retry on transient coordinator errors
+            if (errorCode == ErrorCode.CoordinatorNotAvailable ||
+                errorCode == ErrorCode.CoordinatorLoadInProgress)
+            {
+                _logger?.LogDebug(
+                    "Coordinator not available (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
+                    attempt + 1, maxRetries, retryDelayMs);
+
+                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                retryDelayMs = Math.Min(retryDelayMs * 2, 1000); // Exponential backoff, max 1s
+                continue;
+            }
+
+            if (errorCode != ErrorCode.None)
+            {
+                throw new Errors.GroupException(errorCode, $"FindCoordinator failed: {errorCode}")
+                {
+                    GroupId = _options.GroupId
+                };
+            }
+
+            _coordinatorId = nodeId;
+            _connectionPool.RegisterBroker(nodeId, host, port);
+
+            _logger?.LogDebug("Found coordinator {NodeId} for group {GroupId}", _coordinatorId, _options.GroupId);
+            return;
         }
 
-        _coordinatorId = nodeId;
-        _connectionPool.RegisterBroker(nodeId, host, port);
-
-        _logger?.LogDebug("Found coordinator {NodeId} for group {GroupId}", _coordinatorId, _options.GroupId);
+        throw new Errors.GroupException(ErrorCode.CoordinatorNotAvailable,
+            $"FindCoordinator failed after {maxRetries} retries: CoordinatorNotAvailable")
+        {
+            GroupId = _options.GroupId
+        };
     }
 
     private async ValueTask JoinGroupAsync(IReadOnlySet<string> topics, CancellationToken cancellationToken)
