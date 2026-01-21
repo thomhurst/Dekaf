@@ -336,6 +336,29 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 await InitializePositionsAsync(newPartitions, cancellationToken).ConfigureAwait(false);
             }
         }
+        else if (_assignment.Count > 0)
+        {
+            // Manual assignment - initialize positions for partitions that don't have positions yet
+            var uninitializedPartitions = _assignment
+                .Where(p => !_fetchPositions.ContainsKey(p))
+                .ToList();
+
+            if (uninitializedPartitions.Count > 0)
+            {
+                await InitializeManualAssignmentPositionsAsync(uninitializedPartitions, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async ValueTask InitializeManualAssignmentPositionsAsync(List<TopicPartition> partitions, CancellationToken cancellationToken)
+    {
+        // For manual assignment without a group, use auto offset reset to determine starting position
+        foreach (var partition in partitions)
+        {
+            var offset = await GetResetOffsetAsync(partition, cancellationToken).ConfigureAwait(false);
+            _positions[partition] = offset;
+            _fetchPositions[partition] = offset;
+        }
     }
 
     private async ValueTask InitializePositionsAsync(List<TopicPartition> partitions, CancellationToken cancellationToken)
@@ -372,6 +395,67 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             _ => -2 // Default to earliest
         };
 
+        var connection = await GetPartitionLeaderConnectionAsync(partition, cancellationToken).ConfigureAwait(false);
+        if (connection is null)
+            return 0;
+
+        var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.ListOffsets,
+            Protocol.Messages.ListOffsetsRequest.LowestSupportedVersion,
+            Protocol.Messages.ListOffsetsRequest.HighestSupportedVersion);
+
+        var request = new Protocol.Messages.ListOffsetsRequest
+        {
+            ReplicaId = -1,
+            IsolationLevel = _options.IsolationLevel,
+            Topics =
+            [
+                new Protocol.Messages.ListOffsetsRequestTopic
+                {
+                    Name = partition.Topic,
+                    Partitions =
+                    [
+                        new Protocol.Messages.ListOffsetsRequestPartition
+                        {
+                            PartitionIndex = partition.Partition,
+                            Timestamp = timestamp,
+                            CurrentLeaderEpoch = -1
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var response = await connection.SendAsync<Protocol.Messages.ListOffsetsRequest, Protocol.Messages.ListOffsetsResponse>(
+            request,
+            listOffsetsVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        var topicResponse = response.Topics.FirstOrDefault(t => t.Name == partition.Topic);
+        var partitionResponse = topicResponse?.Partitions.FirstOrDefault(p => p.PartitionIndex == partition.Partition);
+
+        return partitionResponse?.Offset ?? 0;
+    }
+
+    private async ValueTask ResolveSpecialOffsetsAsync(List<TopicPartition> partitions, CancellationToken cancellationToken)
+    {
+        // Check for partitions with special offset values (-1 for end, -2 for beginning)
+        // and resolve them to actual offsets using ListOffsets
+        foreach (var partition in partitions)
+        {
+            var fetchPosition = _fetchPositions.GetValueOrDefault(partition, 0);
+            if (fetchPosition == -1 || fetchPosition == -2)
+            {
+                // -1 = latest, -2 = earliest
+                var resolvedOffset = await ResolveOffsetAsync(partition, fetchPosition, cancellationToken).ConfigureAwait(false);
+                _fetchPositions[partition] = resolvedOffset;
+                _positions[partition] = resolvedOffset;
+            }
+        }
+    }
+
+    private async ValueTask<long> ResolveOffsetAsync(TopicPartition partition, long timestamp, CancellationToken cancellationToken)
+    {
         var connection = await GetPartitionLeaderConnectionAsync(partition, cancellationToken).ConfigureAwait(false);
         if (connection is null)
             return 0;
@@ -489,6 +573,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 FetchRequest.HighestSupportedVersion);
             Console.WriteLine($"[Dekaf] Negotiated Fetch API version: {_fetchApiVersion}");
         }
+
+        // Resolve any special offset values (-1 for end, -2 for beginning) before fetching
+        await ResolveSpecialOffsetsAsync(partitions, cancellationToken).ConfigureAwait(false);
 
         // Build fetch request
         var topicData = partitions
