@@ -408,8 +408,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         _disposed = true;
 
-        // Graceful shutdown timeout
-        using var shutdownCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        // Graceful shutdown: flush all pending messages to Kafka before closing.
+        // CloseTimeoutMs controls how long to wait (0 = no timeout, wait indefinitely).
+        var hasTimeout = _options.CloseTimeoutMs > 0;
+        using var shutdownCts = hasTimeout
+            ? new CancellationTokenSource(TimeSpan.FromMilliseconds(_options.CloseTimeoutMs))
+            : new CancellationTokenSource();
         var gracefulShutdown = true;
 
         try
@@ -419,7 +423,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             // 2. Wait for workers to drain - they'll process remaining items and exit
             //    when the channel is empty and completed
-            await Task.WhenAll(_workerTasks).WaitAsync(shutdownCts.Token).ConfigureAwait(false);
+            if (hasTimeout)
+                await Task.WhenAll(_workerTasks).WaitAsync(shutdownCts.Token).ConfigureAwait(false);
+            else
+                await Task.WhenAll(_workerTasks).ConfigureAwait(false);
 
             // 3. Flush accumulator and complete its channel - sender will process remaining batches
             await _accumulator.CloseAsync(shutdownCts.Token).ConfigureAwait(false);
@@ -428,13 +435,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             _senderCts.Cancel();
 
             // 5. Wait for sender to drain remaining batches
-            await _senderTask.WaitAsync(shutdownCts.Token).ConfigureAwait(false);
+            if (hasTimeout)
+                await _senderTask.WaitAsync(shutdownCts.Token).ConfigureAwait(false);
+            else
+                await _senderTask.ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             // Graceful shutdown timed out - fall back to forceful shutdown
             gracefulShutdown = false;
-            _logger?.LogWarning("Graceful shutdown timed out, forcing disposal");
+            _logger?.LogWarning("Graceful shutdown timed out after {Timeout}ms, forcing disposal", _options.CloseTimeoutMs);
         }
         catch
         {

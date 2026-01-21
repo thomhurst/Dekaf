@@ -91,6 +91,13 @@ public sealed class ProducerOptions
     public int TransactionTimeoutMs { get; init; } = 60000;
 
     /// <summary>
+    /// Maximum time in milliseconds to wait for pending messages to be delivered during close/dispose.
+    /// All pending messages are flushed to Kafka before the producer closes.
+    /// Set to 0 for no timeout (wait indefinitely). Default is 30 seconds.
+    /// </summary>
+    public int CloseTimeoutMs { get; init; } = 30000;
+
+    /// <summary>
     /// Maximum request size in bytes.
     /// </summary>
     public int MaxRequestSize { get; init; } = 1048576;
