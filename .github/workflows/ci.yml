@@ -79,11 +79,32 @@ jobs:
       - name: Build
         run: dotnet build --configuration Release --no-restore
 
+      - name: Start Kafka
+        run: |
+          docker run -d --name kafka \
+            -p 9092:9092 \
+            apache/kafka:latest
+
+          echo "Waiting for Kafka to start..."
+          for i in {1..30}; do
+            if docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list 2>/dev/null; then
+              echo "Kafka is ready"
+              break
+            fi
+            echo "Attempt $i: Kafka not ready yet..."
+            sleep 2
+          done
+
       - name: Run Integration Tests
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
         run: |
           dotnet build tests/Dekaf.Tests.Integration --configuration Release
           ./tests/Dekaf.Tests.Integration/bin/Release/net10.0/Dekaf.Tests.Integration
-        continue-on-error: true  # Integration tests may be skipped
+
+      - name: Stop Kafka
+        if: always()
+        run: docker rm -f kafka || true
 
   code-quality:
     name: Code Quality

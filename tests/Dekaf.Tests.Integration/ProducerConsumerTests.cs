@@ -4,7 +4,6 @@ namespace Dekaf.Tests.Integration;
 public class ProducerConsumerTests(KafkaFixture kafka)
 {
     [Test]
-    [Skip("Requires Docker")]
     public async Task Producer_CanConnect_ToKafka()
     {
         // Arrange
@@ -18,7 +17,6 @@ public class ProducerConsumerTests(KafkaFixture kafka)
     }
 
     [Test]
-    [Skip("Requires Docker")]
     public async Task Consumer_CanConnect_ToKafka()
     {
         // Arrange
@@ -33,7 +31,6 @@ public class ProducerConsumerTests(KafkaFixture kafka)
     }
 
     [Test]
-    [Skip("Requires Docker")]
     public async Task ProduceAndConsume_RoundTrip()
     {
         // Arrange
