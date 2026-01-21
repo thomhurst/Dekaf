@@ -226,13 +226,21 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 $"No leader for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}");
         }
 
+        Console.WriteLine($"[Dekaf] Leader for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition} is broker {leader.NodeId} at {leader.Host}:{leader.Port}");
+
         var connection = await _connectionPool.GetConnectionAsync(leader.NodeId, cancellationToken)
             .ConfigureAwait(false);
+
+        Console.WriteLine($"[Dekaf] Got connection to broker {leader.NodeId}, IsConnected={connection.IsConnected}");
 
         // Ensure API version is negotiated
         if (_produceApiVersion < 0)
         {
-            _produceApiVersion = ProduceRequest.HighestSupportedVersion;
+            _produceApiVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.Produce,
+                ProduceRequest.LowestSupportedVersion,
+                ProduceRequest.HighestSupportedVersion);
+            Console.WriteLine($"[Dekaf] Negotiated Produce API version: {_produceApiVersion}");
         }
 
         var request = new ProduceRequest
@@ -256,6 +264,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 }
             ]
         };
+
+        Console.WriteLine($"[Dekaf] Sending Produce with version {_produceApiVersion}, acks={request.Acks}, timeout={request.TimeoutMs}, records={batch.RecordBatch.Records.Count}");
+        Console.WriteLine($"[Dekaf] RecordBatch: baseOffset={batch.RecordBatch.BaseOffset}, baseTimestamp={batch.RecordBatch.BaseTimestamp}, magic={batch.RecordBatch.Magic}");
 
         var response = await connection.SendAsync<ProduceRequest, ProduceResponse>(
             request,

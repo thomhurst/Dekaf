@@ -231,6 +231,10 @@ public sealed class KafkaConnection : IKafkaConnection
         var result = await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
         Console.WriteLine($"[Dekaf] Flushed {totalSize + 4} bytes to {_host}:{_port}");
 
+        // Debug: print first few bytes of request
+        var debugBytes = Math.Min(40, totalSize);
+        Console.WriteLine($"[Dekaf] Request data (first {debugBytes} bytes): {BitConverter.ToString(memory.Span[..(4 + debugBytes)].ToArray())}");
+
         if (result.IsCompleted || result.IsCanceled)
         {
             throw new IOException("Connection closed while writing");
@@ -261,6 +265,10 @@ public sealed class KafkaConnection : IKafkaConnection
                     _logger?.LogDebug("Received response for correlation ID {CorrelationId}, {Length} bytes", correlationId, responseData.Length);
                     Console.WriteLine($"[Dekaf] Parsed response for correlation {correlationId}, {responseData.Length} bytes");
 
+                    // Debug: print first few bytes of response
+                    var debugBytes = responseData.Length > 20 ? responseData[..20] : responseData;
+                    Console.WriteLine($"[Dekaf] Response data (first {debugBytes.Length} bytes): {BitConverter.ToString(debugBytes.ToArray())}");
+
                     if (_pendingRequests.TryGetValue(correlationId, out var pending))
                     {
                         pending.Complete(responseData);
@@ -287,6 +295,7 @@ public sealed class KafkaConnection : IKafkaConnection
         catch (Exception ex)
         {
             _logger?.LogError(ex, "Error in receive loop");
+            Console.WriteLine($"[Dekaf] Error in receive loop: {ex.GetType().Name}: {ex.Message}");
             FailAllPendingRequests(ex);
         }
     }

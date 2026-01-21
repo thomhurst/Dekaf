@@ -18,6 +18,7 @@ public sealed class MetadataManager : IAsyncDisposable
     private readonly List<string> _bootstrapServers;
 
     private short _metadataApiVersion = -1;
+    private readonly Dictionary<ApiKey, (short MinVersion, short MaxVersion)> _apiVersions = new();
     private volatile bool _disposed;
     private CancellationTokenSource? _backgroundRefreshCts;
     private Task? _backgroundRefreshTask;
@@ -38,6 +39,25 @@ public sealed class MetadataManager : IAsyncDisposable
     /// Gets the current cluster metadata.
     /// </summary>
     public ClusterMetadata Metadata => _metadata;
+
+    /// <summary>
+    /// Gets the negotiated API version for the specified API key.
+    /// Returns the minimum of the broker's max version and our supported version.
+    /// </summary>
+    public short GetNegotiatedApiVersion(ApiKey apiKey, short ourMinVersion, short ourMaxVersion)
+    {
+        if (_apiVersions.TryGetValue(apiKey, out var brokerVersions))
+        {
+            // Use the minimum of our max and broker's max
+            var negotiated = Math.Min(ourMaxVersion, brokerVersions.MaxVersion);
+            // But not below our minimum or broker's minimum
+            negotiated = Math.Max(negotiated, ourMinVersion);
+            negotiated = Math.Max(negotiated, brokerVersions.MinVersion);
+            return negotiated;
+        }
+        // Fall back to our minimum version if we don't have broker info yet
+        return ourMinVersion;
+    }
 
     /// <summary>
     /// Initializes the metadata manager by fetching initial metadata.
@@ -174,6 +194,7 @@ public sealed class MetadataManager : IAsyncDisposable
                 // Register brokers with connection pool
                 foreach (var broker in response.Brokers)
                 {
+                    Console.WriteLine($"[Dekaf] Discovered broker {broker.NodeId} at {broker.Host}:{broker.Port}");
                     _connectionPool.RegisterBroker(broker.NodeId, broker.Host, broker.Port);
                 }
 
@@ -208,6 +229,12 @@ public sealed class MetadataManager : IAsyncDisposable
         if (response.ErrorCode != ErrorCode.None)
         {
             throw new InvalidOperationException($"ApiVersions failed: {response.ErrorCode}");
+        }
+
+        // Store all API versions for later use
+        foreach (var apiKey in response.ApiKeys)
+        {
+            _apiVersions[apiKey.ApiKey] = (apiKey.MinVersion, apiKey.MaxVersion);
         }
 
         // Find metadata API version

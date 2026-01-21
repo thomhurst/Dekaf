@@ -36,14 +36,27 @@ public class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
         }
 
         Console.WriteLine("[KafkaTestContainer] Starting Kafka container via Testcontainers...");
+        // Use KafkaBuilder without custom port binding - it handles listeners correctly
         _container = new KafkaBuilder("confluentinc/cp-kafka:7.5.0")
-            .WithPortBinding(9092, true)
             .Build();
 
         await _container.StartAsync();
-        _bootstrapServers = _container.GetBootstrapAddress();
+        var rawAddress = _container.GetBootstrapAddress();
+        // GetBootstrapAddress() may return "plaintext://host:port/" - extract just host:port
+        _bootstrapServers = ExtractHostPort(rawAddress);
         Console.WriteLine($"[KafkaTestContainer] Kafka started at {_bootstrapServers}");
         await WaitForKafkaAsync();
+    }
+
+    private static string ExtractHostPort(string address)
+    {
+        // Handle format like "plaintext://127.0.0.1:9092/" or just "127.0.0.1:9092"
+        if (Uri.TryCreate(address, UriKind.Absolute, out var uri))
+        {
+            return $"{uri.Host}:{uri.Port}";
+        }
+        // Already in host:port format
+        return address.TrimEnd('/');
     }
 
     private async Task WaitForKafkaAsync()
@@ -51,10 +64,10 @@ public class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
         Console.WriteLine("[KafkaTestContainer] Waiting for Kafka to be ready...");
         const int maxAttempts = 30;
 
-        // Parse host and port
-        var parts = _bootstrapServers.Split(':');
-        var host = parts[0];
-        var port = int.Parse(parts[1]);
+        // Parse host and port from host:port format
+        var colonIndex = _bootstrapServers.LastIndexOf(':');
+        var host = _bootstrapServers[..colonIndex];
+        var port = int.Parse(_bootstrapServers[(colonIndex + 1)..]);
 
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
@@ -143,9 +156,13 @@ public class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 
     private async Task CreateTopicViaTestcontainersAsync(string topicName, int partitions, int replicationFactor)
     {
+        // Use the internal broker listener (BROKER://localhost:9093 in Testcontainers.Kafka)
+        // The default Testcontainers.Kafka configuration has:
+        // - PLAINTEXT listener on port 9092 (external)
+        // - BROKER listener on port 9093 (internal inter-broker communication)
         var result = await _container!.ExecAsync([
             "kafka-topics",
-            "--bootstrap-server", "localhost:9092",
+            "--bootstrap-server", "localhost:9093",
             "--create",
             "--topic", topicName,
             "--partitions", partitions.ToString(),

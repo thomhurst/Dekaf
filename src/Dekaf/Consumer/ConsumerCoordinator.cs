@@ -23,6 +23,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
     private string? _memberId;
     private int _generationId = -1;
     private string? _leaderId;
+    private IReadOnlyList<JoinGroupResponseMember>? _groupMembers;
     private HashSet<TopicPartition> _assignedPartitions = [];
     private readonly SemaphoreSlim _lock = new(1, 1);
     private CancellationTokenSource? _heartbeatCts;
@@ -121,9 +122,15 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
                 .ConfigureAwait(false);
 
+            // Use negotiated API version
+            var findCoordinatorVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.FindCoordinator,
+                FindCoordinatorRequest.LowestSupportedVersion,
+                FindCoordinatorRequest.HighestSupportedVersion);
+
             var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
                 request,
-                FindCoordinatorRequest.HighestSupportedVersion,
+                findCoordinatorVersion,
                 cancellationToken).ConfigureAwait(false);
 
             // For v4+, coordinator info is in the Coordinators array
@@ -210,9 +217,15 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             ]
         };
 
+        // Use negotiated API version
+        var joinGroupVersion = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.JoinGroup,
+            JoinGroupRequest.LowestSupportedVersion,
+            JoinGroupRequest.HighestSupportedVersion);
+
         var response = await connection.SendAsync<JoinGroupRequest, JoinGroupResponse>(
             request,
-            JoinGroupRequest.HighestSupportedVersion,
+            joinGroupVersion,
             cancellationToken).ConfigureAwait(false);
 
         if (response.ErrorCode == ErrorCode.MemberIdRequired)
@@ -235,6 +248,9 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         _generationId = response.GenerationId;
         _leaderId = response.Leader;
 
+        // Store members list if we're the leader (need it for assignment)
+        _groupMembers = response.IsLeader ? response.Members : null;
+
         _logger?.LogDebug(
             "Joined group {GroupId}, member={MemberId}, generation={Generation}, isLeader={IsLeader}",
             _options.GroupId, _memberId, _generationId, IsLeader);
@@ -248,7 +264,12 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         // Only leader sends assignments
         var assignments = Array.Empty<SyncGroupRequestAssignment>();
 
-        // TODO: If leader, compute assignments using assignor
+        if (IsLeader && _groupMembers is not null)
+        {
+            assignments = await ComputeAssignmentsAsync(topics, _groupMembers, cancellationToken)
+                .ConfigureAwait(false);
+            _logger?.LogDebug("Leader computed {Count} assignments", assignments.Length);
+        }
 
         var request = new SyncGroupRequest
         {
@@ -256,12 +277,22 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             GenerationId = _generationId,
             MemberId = _memberId!,
             GroupInstanceId = _options.GroupInstanceId,
+            ProtocolType = "consumer",  // Must match JoinGroup protocol type
+            ProtocolName = GetAssignorName(),  // Must match JoinGroup protocol name
             Assignments = assignments
         };
 
+        // Use negotiated API version
+        var syncGroupVersion = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.SyncGroup,
+            SyncGroupRequest.LowestSupportedVersion,
+            SyncGroupRequest.HighestSupportedVersion);
+
+        Console.WriteLine($"[Dekaf] SyncGroup: isLeader={IsLeader}, assignments={assignments.Length}, version={syncGroupVersion}");
+
         var response = await connection.SendAsync<SyncGroupRequest, SyncGroupResponse>(
             request,
-            SyncGroupRequest.HighestSupportedVersion,
+            syncGroupVersion,
             cancellationToken).ConfigureAwait(false);
 
         if (response.ErrorCode != ErrorCode.None)
@@ -275,6 +306,9 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         // Parse assignment
         var oldAssignment = _assignedPartitions;
         _assignedPartitions = ParseAssignment(response.Assignment);
+
+        Console.WriteLine($"[Dekaf] SyncGroup response: errorCode={response.ErrorCode}, assignmentBytes={response.Assignment.Length}, parsedPartitions={_assignedPartitions.Count}");
+        Console.WriteLine($"[Dekaf] Assigned partitions: {string.Join(", ", _assignedPartitions)}");
 
         // Notify listener
         if (_rebalanceListener is not null)
@@ -512,6 +546,134 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         PartitionAssignmentStrategy.CooperativeSticky => "cooperative-sticky",
         _ => "range"
     };
+
+    private async ValueTask<SyncGroupRequestAssignment[]> ComputeAssignmentsAsync(
+        IReadOnlySet<string> topics,
+        IReadOnlyList<JoinGroupResponseMember> members,
+        CancellationToken cancellationToken)
+    {
+        // Get partition info for all subscribed topics
+        var topicPartitions = new Dictionary<string, int>(); // topic -> partition count
+        foreach (var topic in topics)
+        {
+            var topicInfo = await _metadataManager.GetTopicMetadataAsync(topic, cancellationToken)
+                .ConfigureAwait(false);
+            if (topicInfo is not null && topicInfo.PartitionCount > 0)
+            {
+                topicPartitions[topic] = topicInfo.PartitionCount;
+            }
+        }
+
+        // Parse each member's subscription
+        var memberSubscriptions = new Dictionary<string, HashSet<string>>(); // memberId -> subscribed topics
+        foreach (var member in members)
+        {
+            var subscribedTopics = ParseSubscriptionMetadata(member.Metadata);
+            memberSubscriptions[member.MemberId] = subscribedTopics;
+        }
+
+        // Compute assignments using range assignor (simple per-topic partitioning)
+        var memberAssignments = new Dictionary<string, List<TopicPartition>>();
+        foreach (var member in members)
+        {
+            memberAssignments[member.MemberId] = [];
+        }
+
+        foreach (var (topic, partitionCount) in topicPartitions)
+        {
+            // Get members interested in this topic
+            var interestedMembers = members
+                .Where(m => memberSubscriptions[m.MemberId].Contains(topic))
+                .Select(m => m.MemberId)
+                .OrderBy(id => id) // Sort for deterministic assignment
+                .ToList();
+
+            if (interestedMembers.Count == 0)
+                continue;
+
+            // Range assignment: divide partitions evenly among interested members
+            var partitionsPerMember = partitionCount / interestedMembers.Count;
+            var extraPartitions = partitionCount % interestedMembers.Count;
+
+            var partitionIndex = 0;
+            for (var memberIdx = 0; memberIdx < interestedMembers.Count; memberIdx++)
+            {
+                var memberId = interestedMembers[memberIdx];
+                var assignedCount = partitionsPerMember + (memberIdx < extraPartitions ? 1 : 0);
+
+                for (var i = 0; i < assignedCount; i++)
+                {
+                    memberAssignments[memberId].Add(new TopicPartition(topic, partitionIndex++));
+                }
+            }
+        }
+
+        // Build SyncGroupRequestAssignment for each member
+        var result = new List<SyncGroupRequestAssignment>();
+        foreach (var (memberId, partitions) in memberAssignments)
+        {
+            var assignmentBytes = BuildAssignmentData(partitions);
+            result.Add(new SyncGroupRequestAssignment
+            {
+                MemberId = memberId,
+                Assignment = assignmentBytes
+            });
+
+            _logger?.LogDebug(
+                "Assigned {Count} partitions to member {MemberId}: {Partitions}",
+                partitions.Count, memberId, string.Join(", ", partitions));
+        }
+
+        return result.ToArray();
+    }
+
+    private static HashSet<string> ParseSubscriptionMetadata(byte[] data)
+    {
+        if (data.Length == 0)
+            return [];
+
+        var result = new HashSet<string>();
+        var reader = new Protocol.KafkaProtocolReader(data);
+
+        var version = reader.ReadInt16();
+        var topics = reader.ReadArray((ref Protocol.KafkaProtocolReader r) => r.ReadString()!);
+
+        foreach (var topic in topics)
+        {
+            result.Add(topic);
+        }
+
+        return result;
+    }
+
+    private static byte[] BuildAssignmentData(List<TopicPartition> partitions)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new Protocol.KafkaProtocolWriter(buffer);
+
+        // Group partitions by topic
+        var byTopic = partitions
+            .GroupBy(p => p.Topic)
+            .ToDictionary(g => g.Key, g => g.Select(p => p.Partition).ToArray());
+
+        // Write assignment format
+        writer.WriteInt16(0); // Version
+
+        // Write topics array
+        writer.WriteArray(
+            byTopic.ToArray().AsSpan(),
+            (ref Protocol.KafkaProtocolWriter w, KeyValuePair<string, int[]> tp) =>
+            {
+                w.WriteString(tp.Key); // Topic name
+                w.WriteArray(
+                    tp.Value.AsSpan(),
+                    (ref Protocol.KafkaProtocolWriter w2, int partition) => w2.WriteInt32(partition));
+            });
+
+        writer.WriteBytes([]); // User data
+
+        return buffer.WrittenSpan.ToArray();
+    }
 
     public async ValueTask DisposeAsync()
     {
