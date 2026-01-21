@@ -1,7 +1,7 @@
 namespace Dekaf.Tests.Integration;
 
-[ClassDataSource<KafkaFixture>]
-public class ProducerConsumerTests(KafkaFixture kafka)
+[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
+public class ProducerConsumerTests(KafkaTestContainer kafka)
 {
     [Test]
     public async Task Producer_CanConnect_ToKafka()
@@ -33,8 +33,8 @@ public class ProducerConsumerTests(KafkaFixture kafka)
     [Test]
     public async Task ProduceAndConsume_RoundTrip()
     {
-        // Arrange
-        var topic = $"test-topic-{Guid.NewGuid():N}";
+        // Arrange - create a unique topic for this test
+        var testTopic = await kafka.CreateTestTopicAsync(partitions: 1);
 
         await using var producer = Dekaf.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -45,23 +45,23 @@ public class ProducerConsumerTests(KafkaFixture kafka)
         await using var consumer = Dekaf.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
-            .WithGroupId("test-group")
+            .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
             .Build();
 
         // Act - Produce
         var metadata = await producer.ProduceAsync(new Producer.ProducerMessage<string, string>
         {
-            Topic = topic,
+            Topic = testTopic,
             Key = "test-key",
             Value = "test-value"
         });
 
-        await Assert.That(metadata.Topic).IsEqualTo(topic);
+        await Assert.That(metadata.Topic).IsEqualTo(testTopic);
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Act - Consume
-        consumer.Subscribe(topic);
+        consumer.Subscribe(testTopic);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var received = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);

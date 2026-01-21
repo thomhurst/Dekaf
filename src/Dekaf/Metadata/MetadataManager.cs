@@ -65,9 +65,8 @@ public sealed class MetadataManager : IAsyncDisposable
         }
 
         // Retry logic for topics being created
-        // Topic creation can take several seconds in CI/Docker environments
-        const int maxRetries = 10;
-        const int retryDelayMs = 1000;
+        const int maxRetries = 3;
+        const int retryDelayMs = 500;
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
