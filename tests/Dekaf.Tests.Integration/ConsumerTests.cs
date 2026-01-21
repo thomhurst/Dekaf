@@ -783,7 +783,7 @@ public class ConsumerTests(KafkaTestContainer kafka)
 
         // Start consuming in background - should not get old messages
         var receivedMessages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var consumeTask = Task.Run(async () =>
         {
@@ -798,8 +798,22 @@ public class ConsumerTests(KafkaTestContainer kafka)
             catch (OperationCanceledException) { }
         });
 
-        // Wait a bit for consumer to be ready, then produce new message
-        await Task.Delay(2000);
+        // Wait for consumer to get partition assignment before producing new message
+        // This ensures ListOffsets (which determines "latest") is called before our produce
+        var assignmentTimeout = TimeSpan.FromSeconds(15);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (consumer.Assignment.Count == 0 && sw.Elapsed < assignmentTimeout)
+        {
+            await Task.Delay(100);
+        }
+
+        if (consumer.Assignment.Count == 0)
+        {
+            throw new InvalidOperationException("Consumer did not receive assignment within timeout");
+        }
+
+        // Small additional delay to ensure positions are initialized after assignment
+        await Task.Delay(500);
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
