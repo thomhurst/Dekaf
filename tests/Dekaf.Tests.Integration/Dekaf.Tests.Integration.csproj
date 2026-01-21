@@ -13,6 +13,7 @@
   <ItemGroup>
     <PackageReference Include="TUnit" Version="1.11.*" />
     <PackageReference Include="Testcontainers.Kafka" Version="*" />
+    <PackageReference Include="Microsoft.Testing.Extensions.HangDump" Version="*" />
   </ItemGroup>
 
 </Project>

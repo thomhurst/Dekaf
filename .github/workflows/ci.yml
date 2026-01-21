@@ -100,7 +100,24 @@ jobs:
           KAFKA_BOOTSTRAP_SERVERS: localhost:9092
         run: |
           dotnet build tests/Dekaf.Tests.Integration --configuration Release
-          ./tests/Dekaf.Tests.Integration/bin/Release/net10.0/Dekaf.Tests.Integration
+          ./tests/Dekaf.Tests.Integration/bin/Release/net10.0/Dekaf.Tests.Integration \
+            --hangdump \
+            --hangdump-timeout 2m \
+            --hangdump-type Full \
+            --results-directory ./TestResults/Integration
+        continue-on-error: true
+
+      - name: Upload HangDump artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hangdump-artifacts
+          path: |
+            ./TestResults/**/*.dmp
+            ./TestResults/**/*hangdump*
+            ./**/*.dmp
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Stop Kafka
         if: always()
