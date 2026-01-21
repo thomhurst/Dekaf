@@ -146,6 +146,9 @@ public sealed class KafkaConnection : IKafkaConnection
 
         try
         {
+            _logger?.LogDebug("Sending {ApiKey} request (correlation {CorrelationId}, version {Version}) to {Host}:{Port}",
+                TRequest.ApiKey, correlationId, apiVersion, _host, _port);
+
             await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -157,7 +160,23 @@ public sealed class KafkaConnection : IKafkaConnection
                 _writeLock.Release();
             }
 
-            var responseData = await pending.Task.ConfigureAwait(false);
+            _logger?.LogDebug("Request sent, waiting for response (correlation {CorrelationId})", correlationId);
+
+            // Apply request timeout
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(_options.RequestTimeout);
+
+            ReadOnlyMemory<byte> responseData;
+            try
+            {
+                responseData = await pending.Task.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
+            }
+
+            _logger?.LogDebug("Response received for correlation {CorrelationId}", correlationId);
 
             var reader = new KafkaProtocolReader(responseData);
             return (TResponse)TResponse.Read(ref reader, apiVersion);
@@ -220,6 +239,8 @@ public sealed class KafkaConnection : IKafkaConnection
         if (_reader is null)
             return;
 
+        _logger?.LogDebug("Receive loop started for {Host}:{Port}", _host, _port);
+
         try
         {
             while (!cancellationToken.IsCancellationRequested)
@@ -227,8 +248,12 @@ public sealed class KafkaConnection : IKafkaConnection
                 var result = await _reader.ReadAsync(cancellationToken).ConfigureAwait(false);
                 var buffer = result.Buffer;
 
+                _logger?.LogTrace("Received {Length} bytes from {Host}:{Port}", buffer.Length, _host, _port);
+
                 while (TryReadResponse(ref buffer, out var correlationId, out var responseData))
                 {
+                    _logger?.LogDebug("Received response for correlation ID {CorrelationId}, {Length} bytes", correlationId, responseData.Length);
+
                     if (_pendingRequests.TryGetValue(correlationId, out var pending))
                     {
                         pending.Complete(responseData);
@@ -242,7 +267,10 @@ public sealed class KafkaConnection : IKafkaConnection
                 _reader.AdvanceTo(buffer.Start, buffer.End);
 
                 if (result.IsCompleted)
+                {
+                    _logger?.LogDebug("Receive loop completed (connection closed) for {Host}:{Port}", _host, _port);
                     break;
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
