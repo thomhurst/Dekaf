@@ -92,7 +92,18 @@ internal sealed class StringSerde : ISerde<string>
             return Encoding.UTF8.GetString(data.FirstSpan);
         }
 
-        return Encoding.UTF8.GetString(data.ToArray());
+        // Use ArrayPool for multi-segment case to avoid allocation
+        var length = (int)data.Length;
+        var buffer = ArrayPool<byte>.Shared.Rent(length);
+        try
+        {
+            data.CopyTo(buffer);
+            return Encoding.UTF8.GetString(buffer.AsSpan(0, length));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 }
 
@@ -119,7 +130,18 @@ internal sealed class NullableStringSerde : ISerde<string?>
             return Encoding.UTF8.GetString(data.FirstSpan);
         }
 
-        return Encoding.UTF8.GetString(data.ToArray());
+        // Use ArrayPool for multi-segment case to avoid allocation
+        var length = (int)data.Length;
+        var buffer = ArrayPool<byte>.Shared.Rent(length);
+        try
+        {
+            data.CopyTo(buffer);
+            return Encoding.UTF8.GetString(buffer.AsSpan(0, length));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 }
 

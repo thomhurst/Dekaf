@@ -3,6 +3,7 @@ namespace Dekaf.Protocol.Records;
 /// <summary>
 /// A single record within a RecordBatch.
 /// Uses variable-length encoding for efficiency.
+/// Key and Value use ReadOnlyMemory to avoid copying data from the network buffer.
 /// </summary>
 public sealed class Record
 {
@@ -10,9 +11,19 @@ public sealed class Record
     public byte Attributes { get; init; }
     public int TimestampDelta { get; init; }
     public int OffsetDelta { get; init; }
-    public byte[]? Key { get; init; }
-    public byte[]? Value { get; init; }
+    public ReadOnlyMemory<byte> Key { get; init; }
+    public ReadOnlyMemory<byte> Value { get; init; }
     public IReadOnlyList<RecordHeader>? Headers { get; init; }
+
+    /// <summary>
+    /// Returns true if the key is null (empty memory with special flag).
+    /// </summary>
+    public bool IsKeyNull { get; init; }
+
+    /// <summary>
+    /// Returns true if the value is null (empty memory with special flag).
+    /// </summary>
+    public bool IsValueNull { get; init; }
 
     /// <summary>
     /// Writes the record to the protocol writer.
@@ -35,25 +46,25 @@ public sealed class Record
         writer.WriteVarInt(OffsetDelta);
 
         // Write key
-        if (Key is null)
+        if (IsKeyNull)
         {
             writer.WriteVarInt(-1);
         }
         else
         {
             writer.WriteVarInt(Key.Length);
-            writer.WriteRawBytes(Key);
+            writer.WriteRawBytes(Key.Span);
         }
 
         // Write value
-        if (Value is null)
+        if (IsValueNull)
         {
             writer.WriteVarInt(-1);
         }
         else
         {
             writer.WriteVarInt(Value.Length);
-            writer.WriteRawBytes(Value);
+            writer.WriteRawBytes(Value.Span);
         }
 
         // Write headers
@@ -71,6 +82,7 @@ public sealed class Record
 
     /// <summary>
     /// Reads a record from the protocol reader.
+    /// The returned Record's Key and Value reference memory from the reader's buffer.
     /// </summary>
     public static Record Read(ref KafkaProtocolReader reader)
     {
@@ -80,10 +92,12 @@ public sealed class Record
         var offsetDelta = reader.ReadVarInt();
 
         var keyLength = reader.ReadVarInt();
-        var key = keyLength < 0 ? null : reader.ReadRawBytes(keyLength);
+        var isKeyNull = keyLength < 0;
+        var key = isKeyNull ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(keyLength);
 
         var valueLength = reader.ReadVarInt();
-        var value = valueLength < 0 ? null : reader.ReadRawBytes(valueLength);
+        var isValueNull = valueLength < 0;
+        var value = isValueNull ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(valueLength);
 
         var headerCount = reader.ReadVarInt();
         List<RecordHeader>? headers = null;
@@ -104,7 +118,9 @@ public sealed class Record
             TimestampDelta = timestampDelta,
             OffsetDelta = offsetDelta,
             Key = key,
+            IsKeyNull = isKeyNull,
             Value = value,
+            IsValueNull = isValueNull,
             Headers = headers
         };
     }
@@ -116,7 +132,7 @@ public sealed class Record
         size += VarIntSize(TimestampDelta);
         size += VarIntSize(OffsetDelta);
 
-        if (Key is null)
+        if (IsKeyNull)
         {
             size += VarIntSize(-1);
         }
@@ -126,7 +142,7 @@ public sealed class Record
             size += Key.Length;
         }
 
-        if (Value is null)
+        if (IsValueNull)
         {
             size += VarIntSize(-1);
         }
@@ -170,11 +186,17 @@ public sealed class Record
 
 /// <summary>
 /// A header within a record.
+/// Uses ReadOnlyMemory for zero-copy value storage.
 /// </summary>
 public sealed class RecordHeader
 {
     public required string Key { get; init; }
-    public byte[]? Value { get; init; }
+    public ReadOnlyMemory<byte> Value { get; init; }
+
+    /// <summary>
+    /// Returns true if the value is null.
+    /// </summary>
+    public bool IsValueNull { get; init; }
 
     /// <summary>
     /// Writes the header to the protocol writer.
@@ -185,14 +207,14 @@ public sealed class RecordHeader
         writer.WriteVarInt(keyBytes.Length);
         writer.WriteRawBytes(keyBytes);
 
-        if (Value is null)
+        if (IsValueNull)
         {
             writer.WriteVarInt(-1);
         }
         else
         {
             writer.WriteVarInt(Value.Length);
-            writer.WriteRawBytes(Value);
+            writer.WriteRawBytes(Value.Span);
         }
     }
 
@@ -202,16 +224,17 @@ public sealed class RecordHeader
     public static RecordHeader Read(ref KafkaProtocolReader reader)
     {
         var keyLength = reader.ReadVarInt();
-        var keyBytes = reader.ReadRawBytes(keyLength);
-        var key = System.Text.Encoding.UTF8.GetString(keyBytes);
+        var key = reader.ReadStringContent(keyLength);
 
         var valueLength = reader.ReadVarInt();
-        var value = valueLength < 0 ? null : reader.ReadRawBytes(valueLength);
+        var isValueNull = valueLength < 0;
+        var value = isValueNull ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(valueLength);
 
         return new RecordHeader
         {
             Key = key,
-            Value = value
+            Value = value,
+            IsValueNull = isValueNull
         };
     }
 
@@ -220,7 +243,7 @@ public sealed class RecordHeader
         var keyBytes = System.Text.Encoding.UTF8.GetByteCount(Key);
         var size = Record.VarIntSize(keyBytes) + keyBytes;
 
-        if (Value is null)
+        if (IsValueNull)
         {
             size += Record.VarIntSize(-1);
         }

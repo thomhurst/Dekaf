@@ -62,7 +62,7 @@ public class RecordBatchTests
                 {
                     OffsetDelta = 0,
                     TimestampDelta = 0,
-                    Key = null,
+                    IsKeyNull = true,
                     Value = "test"u8.ToArray()
                 }
             ]
@@ -144,8 +144,10 @@ public class RecordBatchTests
         await Assert.That(parsedBatch.Records.Count).IsEqualTo(1);
 
         var record = parsedBatch.Records[0];
-        await Assert.That(record.Key).IsEquivalentTo("key"u8.ToArray());
-        await Assert.That(record.Value).IsEquivalentTo("value"u8.ToArray());
+        await Assert.That(record.IsKeyNull).IsFalse();
+        await Assert.That(record.Key.ToArray()).IsEquivalentTo("key"u8.ToArray());
+        await Assert.That(record.IsValueNull).IsFalse();
+        await Assert.That(record.Value.ToArray()).IsEquivalentTo("value"u8.ToArray());
     }
 
     [Test]
@@ -192,9 +194,9 @@ public class RecordBatchTests
         var parsedBatch = RecordBatch.Read(ref reader);
 
         await Assert.That(parsedBatch.Records.Count).IsEqualTo(3);
-        await Assert.That(parsedBatch.Records[0].Key).IsEquivalentTo("k1"u8.ToArray());
-        await Assert.That(parsedBatch.Records[1].Key).IsEquivalentTo("k2"u8.ToArray());
-        await Assert.That(parsedBatch.Records[2].Key).IsEquivalentTo("k3"u8.ToArray());
+        await Assert.That(parsedBatch.Records[0].Key.ToArray()).IsEquivalentTo("k1"u8.ToArray());
+        await Assert.That(parsedBatch.Records[1].Key.ToArray()).IsEquivalentTo("k2"u8.ToArray());
+        await Assert.That(parsedBatch.Records[2].Key.ToArray()).IsEquivalentTo("k3"u8.ToArray());
     }
 
     [Test]
@@ -213,7 +215,7 @@ public class RecordBatchTests
                 {
                     OffsetDelta = 0,
                     TimestampDelta = 0,
-                    Key = null,
+                    IsKeyNull = true,
                     Value = "value"u8.ToArray()
                 }
             ]
@@ -224,8 +226,9 @@ public class RecordBatchTests
         var reader = new KafkaProtocolReader(buffer.WrittenMemory);
         var parsedBatch = RecordBatch.Read(ref reader);
 
-        await Assert.That(parsedBatch.Records[0].Key).IsNull();
-        await Assert.That(parsedBatch.Records[0].Value).IsEquivalentTo("value"u8.ToArray());
+        await Assert.That(parsedBatch.Records[0].IsKeyNull).IsTrue();
+        await Assert.That(parsedBatch.Records[0].IsValueNull).IsFalse();
+        await Assert.That(parsedBatch.Records[0].Value.ToArray()).IsEquivalentTo("value"u8.ToArray());
     }
 
     #endregion

@@ -8,13 +8,22 @@ namespace Dekaf.Serialization;
 /// </summary>
 public sealed class Headers : IEnumerable<Header>
 {
-    private readonly List<Header> _headers = [];
+    private readonly List<Header> _headers;
 
     /// <summary>
     /// Creates an empty headers collection.
     /// </summary>
     public Headers()
     {
+        _headers = [];
+    }
+
+    /// <summary>
+    /// Creates a headers collection with the specified capacity.
+    /// </summary>
+    public Headers(int capacity)
+    {
+        _headers = new List<Header>(capacity);
     }
 
     /// <summary>
@@ -22,7 +31,7 @@ public sealed class Headers : IEnumerable<Header>
     /// </summary>
     public Headers(IEnumerable<Header> headers)
     {
-        _headers.AddRange(headers);
+        _headers = [..headers];
     }
 
     /// <summary>

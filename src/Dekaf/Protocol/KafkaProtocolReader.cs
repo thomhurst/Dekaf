@@ -236,8 +236,14 @@ public ref struct KafkaProtocolReader
         return ReadCompactString() ?? string.Empty;
     }
 
-    private string ReadStringContent(int length)
+    /// <summary>
+    /// Reads string content of the specified length without additional allocation for single-segment data.
+    /// </summary>
+    public string ReadStringContent(int length)
     {
+        if (length == 0)
+            return string.Empty;
+
         if (_reader.UnreadSpan.Length >= length)
         {
             var result = Encoding.UTF8.GetString(_reader.UnreadSpan[..length]);
@@ -317,6 +323,35 @@ public ref struct KafkaProtocolReader
         var result = new byte[count];
         ReadRawBytes(result);
         return result;
+    }
+
+    /// <summary>
+    /// Reads a slice of the underlying buffer as ReadOnlyMemory without copying,
+    /// if the data is in a single contiguous segment. Falls back to copying if data spans segments.
+    /// This is optimized for the common case where protocol messages fit in a single buffer segment.
+    /// </summary>
+    public ReadOnlyMemory<byte> ReadMemorySlice(int count)
+    {
+        if (count == 0)
+            return ReadOnlyMemory<byte>.Empty;
+
+        // Fast path: data is in a single contiguous segment
+        if (_reader.UnreadSpan.Length >= count)
+        {
+            // Get the underlying memory from the current position
+            var sequence = _reader.UnreadSequence;
+            var first = sequence.First;
+            var result = first.Slice(0, count);
+            _reader.Advance(count);
+            return result;
+        }
+
+        // Slow path: data spans multiple segments, need to copy
+        var buffer = new byte[count];
+        if (!_reader.TryCopyTo(buffer))
+            ThrowInsufficientData();
+        _reader.Advance(count);
+        return buffer;
     }
 
     /// <summary>

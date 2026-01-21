@@ -270,7 +270,7 @@ internal sealed class PartitionBatch
         {
             foreach (var header in headers)
             {
-                size += header.Key.Length + (header.Value?.Length ?? 0) + 10;
+                size += header.Key.Length + (header.IsValueNull ? 0 : header.Value.Length) + 10;
             }
         }
 

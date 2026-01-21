@@ -343,11 +343,17 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         else if (_assignment.Count > 0)
         {
             // Manual assignment - initialize positions for partitions that don't have positions yet
-            var uninitializedPartitions = _assignment
-                .Where(p => !_fetchPositions.ContainsKey(p))
-                .ToList();
+            List<TopicPartition>? uninitializedPartitions = null;
+            foreach (var p in _assignment)
+            {
+                if (!_fetchPositions.ContainsKey(p))
+                {
+                    uninitializedPartitions ??= new List<TopicPartition>();
+                    uninitializedPartitions.Add(p);
+                }
+            }
 
-            if (uninitializedPartitions.Count > 0)
+            if (uninitializedPartitions is not null)
             {
                 await InitializeManualAssignmentPositionsAsync(uninitializedPartitions, cancellationToken).ConfigureAwait(false);
             }
@@ -580,19 +586,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         // Resolve any special offset values (-1 for end, -2 for beginning) before fetching
         await ResolveSpecialOffsetsAsync(partitions, cancellationToken).ConfigureAwait(false);
 
-        // Build fetch request
-        var topicData = partitions
-            .GroupBy(p => p.Topic)
-            .Select(g => new FetchRequestTopic
-            {
-                Topic = g.Key,
-                Partitions = g.Select(p => new FetchRequestPartition
-                {
-                    Partition = p.Partition,
-                    FetchOffset = _fetchPositions.GetValueOrDefault(p, 0),
-                    PartitionMaxBytes = _options.MaxPartitionFetchBytes
-                }).ToList()
-            }).ToList();
+        // Build fetch request - use imperative code to avoid LINQ allocations
+        var topicData = BuildFetchRequestTopics(partitions);
 
         var request = new FetchRequest
         {
@@ -634,12 +629,10 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                         var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
                             batch.BaseTimestamp + record.TimestampDelta);
 
-                        var key = DeserializeKey(record.Key, topic);
-                        var value = DeserializeValue(record.Value, topic);
+                        var key = DeserializeKey(record.Key, record.IsKeyNull, topic);
+                        var value = DeserializeValue(record.Value, record.IsValueNull, topic);
 
-                        var headers = record.Headers is not null
-                            ? new Headers(record.Headers.Select(h => new Header(h.Key, h.Value)))
-                            : null;
+                        var headers = ConvertHeaders(record.Headers);
 
                         var result = new ConsumeResult<TKey, TValue>
                         {
@@ -670,9 +663,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
     }
 
-    private TKey? DeserializeKey(byte[]? data, string topic)
+    private TKey? DeserializeKey(ReadOnlyMemory<byte> data, bool isNull, string topic)
     {
-        if (data is null)
+        if (isNull)
             return default;
 
         var context = new SerializationContext
@@ -684,7 +677,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         return _keyDeserializer.Deserialize(new ReadOnlySequence<byte>(data), context);
     }
 
-    private TValue DeserializeValue(byte[]? data, string topic)
+    private TValue DeserializeValue(ReadOnlyMemory<byte> data, bool isNull, string topic)
     {
         var context = new SerializationContext
         {
@@ -692,7 +685,63 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             Component = SerializationComponent.Value
         };
 
-        return _valueDeserializer.Deserialize(new ReadOnlySequence<byte>(data ?? []), context);
+        if (isNull)
+            return _valueDeserializer.Deserialize(ReadOnlySequence<byte>.Empty, context);
+
+        return _valueDeserializer.Deserialize(new ReadOnlySequence<byte>(data), context);
+    }
+
+    private static Headers? ConvertHeaders(IReadOnlyList<RecordHeader>? recordHeaders)
+    {
+        if (recordHeaders is null || recordHeaders.Count == 0)
+            return null;
+
+        var headers = new Headers(recordHeaders.Count);
+        foreach (var h in recordHeaders)
+        {
+            // Convert ReadOnlyMemory<byte> to byte[]? for Header
+            headers.Add(new Header(h.Key, h.IsValueNull ? null : h.Value.ToArray()));
+        }
+        return headers;
+    }
+
+    private List<FetchRequestTopic> BuildFetchRequestTopics(List<TopicPartition> partitions)
+    {
+        // Group partitions by topic without using LINQ GroupBy
+        Dictionary<string, List<FetchRequestPartition>>? topicPartitions = null;
+
+        foreach (var p in partitions)
+        {
+            topicPartitions ??= new Dictionary<string, List<FetchRequestPartition>>();
+
+            if (!topicPartitions.TryGetValue(p.Topic, out var list))
+            {
+                list = new List<FetchRequestPartition>();
+                topicPartitions[p.Topic] = list;
+            }
+
+            list.Add(new FetchRequestPartition
+            {
+                Partition = p.Partition,
+                FetchOffset = _fetchPositions.GetValueOrDefault(p, 0),
+                PartitionMaxBytes = _options.MaxPartitionFetchBytes
+            });
+        }
+
+        if (topicPartitions is null)
+            return [];
+
+        var result = new List<FetchRequestTopic>(topicPartitions.Count);
+        foreach (var kvp in topicPartitions)
+        {
+            result.Add(new FetchRequestTopic
+            {
+                Topic = kvp.Key,
+                Partitions = kvp.Value
+            });
+        }
+
+        return result;
     }
 
     private void StartAutoCommit()
