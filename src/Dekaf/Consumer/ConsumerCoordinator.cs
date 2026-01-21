@@ -70,8 +70,8 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             if (_state == CoordinatorState.Stable)
                 return;
 
-            const int maxRetries = 3;
-            var retryDelayMs = 100;
+            const int maxRetries = 5;
+            var retryDelayMs = 200;
 
             for (var attempt = 0; attempt < maxRetries; attempt++)
             {
@@ -104,9 +104,10 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                 }
                 catch (Errors.GroupException ex) when (
                     ex.ErrorCode == ErrorCode.NotCoordinator ||
-                    ex.ErrorCode == ErrorCode.CoordinatorNotAvailable)
+                    ex.ErrorCode == ErrorCode.CoordinatorNotAvailable ||
+                    ex.ErrorCode == ErrorCode.CoordinatorLoadInProgress)
                 {
-                    // Coordinator has changed or is unavailable, re-discover
+                    // Coordinator has changed, is unavailable, or still loading - re-discover
                     _logger?.LogDebug(
                         "Coordinator error {ErrorCode} (attempt {Attempt}/{MaxRetries}), re-discovering coordinator",
                         ex.ErrorCode, attempt + 1, maxRetries);
@@ -117,7 +118,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                     if (attempt < maxRetries - 1)
                     {
                         await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                        retryDelayMs = Math.Min(retryDelayMs * 2, 1000);
+                        retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                     }
                     else
                     {
@@ -387,11 +388,13 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                      ge.ErrorCode == ErrorCode.UnknownMemberId ||
                      ge.ErrorCode == ErrorCode.IllegalGeneration ||
                      ge.ErrorCode == ErrorCode.NotCoordinator ||
-                     ge.ErrorCode == ErrorCode.CoordinatorNotAvailable))
+                     ge.ErrorCode == ErrorCode.CoordinatorNotAvailable ||
+                     ge.ErrorCode == ErrorCode.CoordinatorLoadInProgress))
                 {
                     // Reset coordinator on coordinator errors so next operation re-discovers it
                     if (ge.ErrorCode == ErrorCode.NotCoordinator ||
-                        ge.ErrorCode == ErrorCode.CoordinatorNotAvailable)
+                        ge.ErrorCode == ErrorCode.CoordinatorNotAvailable ||
+                        ge.ErrorCode == ErrorCode.CoordinatorLoadInProgress)
                     {
                         _coordinatorId = -1;
                     }
