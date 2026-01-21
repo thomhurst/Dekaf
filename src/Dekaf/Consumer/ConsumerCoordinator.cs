@@ -70,28 +70,61 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             if (_state == CoordinatorState.Stable)
                 return;
 
-            // Find coordinator
-            if (_coordinatorId < 0)
+            const int maxRetries = 3;
+            var retryDelayMs = 100;
+
+            for (var attempt = 0; attempt < maxRetries; attempt++)
             {
-                await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    // Find coordinator
+                    if (_coordinatorId < 0)
+                    {
+                        await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                    }
+
+                    // Join group
+                    _state = CoordinatorState.Joining;
+                    await JoinGroupAsync(topics, cancellationToken).ConfigureAwait(false);
+
+                    // Sync group
+                    _state = CoordinatorState.Syncing;
+                    await SyncGroupAsync(topics, cancellationToken).ConfigureAwait(false);
+
+                    _state = CoordinatorState.Stable;
+
+                    // Start heartbeat
+                    StartHeartbeat();
+
+                    _logger?.LogInformation(
+                        "Joined group {GroupId} as member {MemberId} (generation {Generation})",
+                        _options.GroupId, _memberId, _generationId);
+
+                    return; // Success
+                }
+                catch (Errors.GroupException ex) when (
+                    ex.ErrorCode == ErrorCode.NotCoordinator ||
+                    ex.ErrorCode == ErrorCode.CoordinatorNotAvailable)
+                {
+                    // Coordinator has changed or is unavailable, re-discover
+                    _logger?.LogDebug(
+                        "Coordinator error {ErrorCode} (attempt {Attempt}/{MaxRetries}), re-discovering coordinator",
+                        ex.ErrorCode, attempt + 1, maxRetries);
+
+                    _coordinatorId = -1;
+                    _state = CoordinatorState.Unjoined;
+
+                    if (attempt < maxRetries - 1)
+                    {
+                        await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                        retryDelayMs = Math.Min(retryDelayMs * 2, 1000);
+                    }
+                    else
+                    {
+                        throw;
+                    }
+                }
             }
-
-            // Join group
-            _state = CoordinatorState.Joining;
-            await JoinGroupAsync(topics, cancellationToken).ConfigureAwait(false);
-
-            // Sync group
-            _state = CoordinatorState.Syncing;
-            await SyncGroupAsync(topics, cancellationToken).ConfigureAwait(false);
-
-            _state = CoordinatorState.Stable;
-
-            // Start heartbeat
-            StartHeartbeat();
-
-            _logger?.LogInformation(
-                "Joined group {GroupId} as member {MemberId} (generation {Generation})",
-                _options.GroupId, _memberId, _generationId);
         }
         finally
         {
@@ -352,8 +385,17 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                 if (ex is Errors.GroupException ge &&
                     (ge.ErrorCode == ErrorCode.RebalanceInProgress ||
                      ge.ErrorCode == ErrorCode.UnknownMemberId ||
-                     ge.ErrorCode == ErrorCode.IllegalGeneration))
+                     ge.ErrorCode == ErrorCode.IllegalGeneration ||
+                     ge.ErrorCode == ErrorCode.NotCoordinator ||
+                     ge.ErrorCode == ErrorCode.CoordinatorNotAvailable))
                 {
+                    // Reset coordinator on coordinator errors so next operation re-discovers it
+                    if (ge.ErrorCode == ErrorCode.NotCoordinator ||
+                        ge.ErrorCode == ErrorCode.CoordinatorNotAvailable)
+                    {
+                        _coordinatorId = -1;
+                    }
+
                     _state = CoordinatorState.Unjoined;
                     break;
                 }
