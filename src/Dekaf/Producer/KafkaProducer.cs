@@ -230,9 +230,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             .ConfigureAwait(false);
 
         // Ensure API version is negotiated
+        // Cap at v8 to avoid flexible versions (v9+) for now
         if (_produceApiVersion < 0)
         {
-            _produceApiVersion = ProduceRequest.HighestSupportedVersion;
+            _produceApiVersion = Math.Min(ProduceRequest.HighestSupportedVersion, (short)8);
         }
 
         var request = new ProduceRequest
