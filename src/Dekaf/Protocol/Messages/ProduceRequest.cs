@@ -148,12 +148,13 @@ public sealed class ProduceRequestPartitionData
 
         if (isFlexible)
         {
-            // COMPACT_RECORDS uses plain varint length (not length+1 like COMPACT_BYTES)
-            writer.WriteRecords(recordsBuffer.WrittenSpan);
+            // COMPACT_RECORDS uses COMPACT_NULLABLE_BYTES encoding (length+1, 0 = null)
+            writer.WriteCompactNullableBytes(recordsBuffer.WrittenSpan, isNull: false);
         }
         else
         {
-            writer.WriteBytes(recordsBuffer.WrittenSpan);
+            // RECORDS uses NULLABLE_BYTES encoding
+            writer.WriteNullableBytes(recordsBuffer.WrittenSpan, isNull: false);
         }
 
         if (isFlexible)

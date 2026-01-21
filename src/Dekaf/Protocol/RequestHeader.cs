@@ -28,14 +28,13 @@ public sealed class RequestHeader
 
         if (HeaderVersion >= 1)
         {
+            // ClientId is ALWAYS NULLABLE_STRING (flexibleVersions: "none" in schema)
+            // even in header v2, it uses INT16 length prefix for backward compatibility
+            writer.WriteString(ClientId);
+
             if (HeaderVersion >= 2)
             {
-                writer.WriteCompactString(ClientId);
                 writer.WriteEmptyTaggedFields();
-            }
-            else
-            {
-                writer.WriteString(ClientId);
             }
         }
     }
@@ -49,9 +48,8 @@ public sealed class RequestHeader
 
         if (headerVersion >= 1)
         {
-            clientId = headerVersion >= 2
-                ? reader.ReadCompactString()
-                : reader.ReadString();
+            // ClientId is ALWAYS NULLABLE_STRING (flexibleVersions: "none" in schema)
+            clientId = reader.ReadString();
 
             if (headerVersion >= 2)
             {
