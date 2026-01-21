@@ -38,6 +38,17 @@ public interface IKafkaConnection : IAsyncDisposable
         where TResponse : IKafkaResponse;
 
     /// <summary>
+    /// Sends a request without waiting for a response (fire-and-forget).
+    /// Used for Produce requests with acks=0.
+    /// </summary>
+    ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken = default)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse;
+
+    /// <summary>
     /// Connects to the broker.
     /// </summary>
     ValueTask ConnectAsync(CancellationToken cancellationToken = default);

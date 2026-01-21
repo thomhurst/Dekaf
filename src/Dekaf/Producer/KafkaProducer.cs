@@ -268,6 +268,20 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         Console.WriteLine($"[Dekaf] Sending Produce with version {_produceApiVersion}, acks={request.Acks}, timeout={request.TimeoutMs}, records={batch.RecordBatch.Records.Count}");
         Console.WriteLine($"[Dekaf] RecordBatch: baseOffset={batch.RecordBatch.BaseOffset}, baseTimestamp={batch.RecordBatch.BaseTimestamp}, magic={batch.RecordBatch.Magic}");
 
+        // Handle Acks.None (fire-and-forget) - broker doesn't send response
+        if (_options.Acks == Acks.None)
+        {
+            await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
+                request,
+                _produceApiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            // Complete with synthetic metadata since we don't get a response
+            // Offset is unknown (-1) for fire-and-forget
+            batch.Complete(-1, DateTimeOffset.UtcNow);
+            return;
+        }
+
         var response = await connection.SendAsync<ProduceRequest, ProduceResponse>(
             request,
             _produceApiVersion,

@@ -189,6 +189,41 @@ public sealed class KafkaConnection : IKafkaConnection
         }
     }
 
+    public async ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken = default)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(KafkaConnection));
+
+        if (!IsConnected)
+            throw new InvalidOperationException("Not connected");
+
+        var correlationId = Interlocked.Increment(ref _correlationId);
+        var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
+
+        // Don't register a pending request - we won't receive a response
+
+        _logger?.LogDebug("Sending fire-and-forget {ApiKey} request (correlation {CorrelationId}, version {Version}) to {Host}:{Port}",
+            TRequest.ApiKey, correlationId, apiVersion, _host, _port);
+
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await WriteRequestAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+
+        _logger?.LogDebug("Fire-and-forget request sent (correlation {CorrelationId})", correlationId);
+    }
+
     private async ValueTask WriteRequestAsync<TRequest, TResponse>(
         TRequest request,
         int correlationId,

@@ -1,3 +1,4 @@
+using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 
@@ -61,11 +62,11 @@ public class ProducerTests(KafkaTestContainer kafka)
     }
 
     [Test]
-    [Skip("Acks.None requires fire-and-forget producer implementation - broker doesn't send response")]
     public async Task Producer_ProduceWithAcksNone_SuccessfullyProduces()
     {
-        // Note: With acks=0, Kafka doesn't send a response, so the producer would need
-        // special handling to not wait for a response. This test is skipped until that's implemented.
+        // With acks=0, Kafka doesn't send a response, so this is fire-and-forget.
+        // The producer returns immediately without waiting for broker acknowledgment.
+        // Offset will be -1 since we don't receive it from the broker.
 
         // Arrange
         var topic = await kafka.CreateTestTopicAsync();
@@ -84,8 +85,28 @@ public class ProducerTests(KafkaTestContainer kafka)
             Value = "value1"
         });
 
-        // Assert
+        // Assert - topic and partition are known, but offset is -1 for fire-and-forget
         await Assert.That(metadata.Topic).IsEqualTo(topic);
+        await Assert.That(metadata.Partition).IsGreaterThanOrEqualTo(0);
+        await Assert.That(metadata.Offset).IsEqualTo(-1); // Unknown for acks=0
+
+        // Verify the message was actually produced by consuming it
+        await using var consumer = Dekaf.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-consumer-verify")
+            .WithGroupId($"test-group-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .Build();
+
+        consumer.Subscribe(topic);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            await Assert.That(msg.Key).IsEqualTo("key1");
+            await Assert.That(msg.Value).IsEqualTo("value1");
+            break;
+        }
     }
 
     [Test]
