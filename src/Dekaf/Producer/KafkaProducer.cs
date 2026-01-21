@@ -93,6 +93,13 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             throw new InvalidOperationException($"Topic '{message.Topic}' not found");
         }
 
+        Console.WriteLine($"[Dekaf] Topic '{message.Topic}' has {topicInfo.PartitionCount} partitions, error: {topicInfo.ErrorCode}");
+
+        if (topicInfo.PartitionCount == 0)
+        {
+            throw new InvalidOperationException($"Topic '{message.Topic}' has no partitions. Error code: {topicInfo.ErrorCode}");
+        }
+
         // Serialize key and value
         var keyBytes = SerializeKey(message.Key, message.Topic, message.Headers);
         var valueBytes = SerializeValue(message.Value, message.Topic, message.Headers);
