@@ -59,6 +59,32 @@ dotnet build tests/Dekaf.Tests.Integration --configuration Release
 dotnet run --project tools/Dekaf.Benchmarks --configuration Release -- --filter "*Memory*"
 ```
 
+### Test Filtering (TUnit)
+
+TUnit uses `--treenode-filter` with the syntax `/<Assembly>/<Namespace>/<Class>/<Test>`. Use `*` as wildcard.
+
+```bash
+# Run all tests in a specific class
+./Dekaf.Tests.Unit --treenode-filter /*/*/SerializerTests/*
+
+# Run a specific test by name
+./Dekaf.Tests.Unit --treenode-filter /*/*/*/StringSerializer_RoundTrip_PreservesValue
+
+# Run tests matching a pattern
+./Dekaf.Tests.Unit --treenode-filter /*/*/Producer*/*
+```
+
+**Operators:**
+- `=` exact match: `/*/*/*[Category=Unit]`
+- `!=` exclude: `/*/*/*[Category!=Slow]`
+- `&` AND: `/*/*/*[Category=Unit]&[Priority=High]`
+- `|` OR (requires parentheses): `(/*/*/ClassA/*)|(/*/*/ClassB/*)`
+
+**Common mistakes to avoid:**
+- Do NOT use `--filter` (that's for VSTest, not Microsoft.Testing.Platform)
+- Do NOT use `dotnet test --filter` syntax like `FullyQualifiedName~Pattern`
+- The path segments are `/<Assembly>/<Namespace>/<Class>/<Test>` - use `*` to skip segments
+
 ## Code Principles
 
 ### Zero-Allocation Protocol Code
