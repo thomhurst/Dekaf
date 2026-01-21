@@ -46,9 +46,6 @@ public class ConsumerBenchmarks
         _topic = $"{TopicPrefix}{++_topicCounter}-{MessageCount}-{MessageSize}";
         _kafka.CreateTopicAsync(_topic, 1).GetAwaiter().GetResult();
 
-        // Wait for topic to be fully ready (metadata propagation)
-        Thread.Sleep(1000);
-
         // Seed the topic with messages
         var value = new string('x', MessageSize);
         for (var i = 0; i < MessageCount; i++)
@@ -60,9 +57,6 @@ public class ConsumerBenchmarks
             });
         }
         _confluentProducer.Flush(TimeSpan.FromSeconds(30));
-
-        // Give Kafka a moment to index the messages
-        Thread.Sleep(500);
     }
 
     [GlobalCleanup]

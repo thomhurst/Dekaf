@@ -655,7 +655,12 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                                 : TimestampType.CreateTime
                         };
 
-                        await _fetchBuffer.Writer.WriteAsync(result, cancellationToken).ConfigureAwait(false);
+                        // Use TryWrite to avoid blocking if buffer is full.
+                        // If full, return and let caller drain - next fetch will resume from current position.
+                        if (!_fetchBuffer.Writer.TryWrite(result))
+                        {
+                            return;
+                        }
 
                         // Update fetch position (where to fetch next from broker)
                         _fetchPositions[new TopicPartition(topic, partitionResponse.PartitionIndex)] = offset + 1;
