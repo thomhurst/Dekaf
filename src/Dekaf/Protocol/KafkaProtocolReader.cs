@@ -73,6 +73,26 @@ public ref struct KafkaProtocolReader
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ushort ReadUInt16()
+    {
+        Span<byte> buffer = stackalloc byte[2];
+        if (!_reader.TryCopyTo(buffer))
+            ThrowInsufficientData();
+        _reader.Advance(2);
+        return BinaryPrimitives.ReadUInt16BigEndian(buffer);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public uint ReadUInt32()
+    {
+        Span<byte> buffer = stackalloc byte[4];
+        if (!_reader.TryCopyTo(buffer))
+            ThrowInsufficientData();
+        _reader.Advance(4);
+        return BinaryPrimitives.ReadUInt32BigEndian(buffer);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public Guid ReadUuid()
     {
         Span<byte> buffer = stackalloc byte[16];
@@ -264,19 +284,6 @@ public ref struct KafkaProtocolReader
             return null;
         if (length == 0)
             return [];
-
-        return ReadBytesContent(length);
-    }
-
-    /// <summary>
-    /// Reads records with unsigned varint length prefix.
-    /// Note: COMPACT_RECORDS uses plain length (not length-1 like COMPACT_BYTES).
-    /// </summary>
-    public byte[]? ReadRecords()
-    {
-        var length = ReadUnsignedVarInt();
-        if (length == 0)
-            return null;
 
         return ReadBytesContent(length);
     }

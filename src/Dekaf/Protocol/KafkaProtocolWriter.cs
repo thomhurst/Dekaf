@@ -68,6 +68,24 @@ public ref struct KafkaProtocolWriter
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void WriteUInt16(ushort value)
+    {
+        var span = _output.GetSpan(2);
+        BinaryPrimitives.WriteUInt16BigEndian(span, value);
+        _output.Advance(2);
+        _bytesWritten += 2;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void WriteUInt32(uint value)
+    {
+        var span = _output.GetSpan(4);
+        BinaryPrimitives.WriteUInt32BigEndian(span, value);
+        _output.Advance(4);
+        _bytesWritten += 4;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void WriteUuid(Guid value)
     {
         var span = _output.GetSpan(16);
@@ -297,29 +315,6 @@ public ref struct KafkaProtocolWriter
             return;
         }
         WriteCompactBytes(value);
-    }
-
-    /// <summary>
-    /// Writes records with unsigned varint length prefix.
-    /// Note: COMPACT_RECORDS uses plain length (not length+1 like COMPACT_BYTES).
-    /// </summary>
-    public void WriteRecords(ReadOnlySpan<byte> value)
-    {
-        WriteUnsignedVarInt(value.Length);
-        WriteRawBytes(value);
-    }
-
-    /// <summary>
-    /// Writes nullable records with unsigned varint length prefix.
-    /// </summary>
-    public void WriteNullableRecords(ReadOnlySpan<byte> value, bool isNull)
-    {
-        if (isNull)
-        {
-            WriteUnsignedVarInt(0);
-            return;
-        }
-        WriteRecords(value);
     }
 
     /// <summary>
