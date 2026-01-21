@@ -1,0 +1,159 @@
+using Dekaf.Serialization;
+
+namespace Dekaf.Producer;
+
+/// <summary>
+/// Interface for Kafka producer.
+/// </summary>
+/// <typeparam name="TKey">Key type.</typeparam>
+/// <typeparam name="TValue">Value type.</typeparam>
+public interface IKafkaProducer<TKey, TValue> : IAsyncDisposable
+{
+    /// <summary>
+    /// Produces a message to Kafka.
+    /// </summary>
+    ValueTask<RecordMetadata> ProduceAsync(
+        ProducerMessage<TKey, TValue> message,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Produces a message to the specified topic.
+    /// </summary>
+    ValueTask<RecordMetadata> ProduceAsync(
+        string topic,
+        TKey? key,
+        TValue value,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Flushes any pending messages.
+    /// </summary>
+    ValueTask FlushAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Begins a transaction (if transactional).
+    /// </summary>
+    ITransaction<TKey, TValue> BeginTransaction();
+
+    /// <summary>
+    /// Initializes transactions (must be called before BeginTransaction).
+    /// </summary>
+    ValueTask InitTransactionsAsync(CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Message to produce.
+/// </summary>
+/// <typeparam name="TKey">Key type.</typeparam>
+/// <typeparam name="TValue">Value type.</typeparam>
+public sealed record ProducerMessage<TKey, TValue>
+{
+    /// <summary>
+    /// The topic to produce to.
+    /// </summary>
+    public required string Topic { get; init; }
+
+    /// <summary>
+    /// The message key.
+    /// </summary>
+    public TKey? Key { get; init; }
+
+    /// <summary>
+    /// The message value.
+    /// </summary>
+    public required TValue Value { get; init; }
+
+    /// <summary>
+    /// Optional headers.
+    /// </summary>
+    public Headers? Headers { get; init; }
+
+    /// <summary>
+    /// Optional partition. If not set, partitioner will choose.
+    /// </summary>
+    public int? Partition { get; init; }
+
+    /// <summary>
+    /// Optional timestamp. If not set, current time will be used.
+    /// </summary>
+    public DateTimeOffset? Timestamp { get; init; }
+}
+
+/// <summary>
+/// Metadata about a produced record.
+/// </summary>
+public sealed record RecordMetadata
+{
+    /// <summary>
+    /// The topic the record was produced to.
+    /// </summary>
+    public required string Topic { get; init; }
+
+    /// <summary>
+    /// The partition the record was produced to.
+    /// </summary>
+    public required int Partition { get; init; }
+
+    /// <summary>
+    /// The offset of the record.
+    /// </summary>
+    public required long Offset { get; init; }
+
+    /// <summary>
+    /// The timestamp of the record.
+    /// </summary>
+    public required DateTimeOffset Timestamp { get; init; }
+
+    /// <summary>
+    /// Size of the serialized key in bytes.
+    /// </summary>
+    public int KeySize { get; init; }
+
+    /// <summary>
+    /// Size of the serialized value in bytes.
+    /// </summary>
+    public int ValueSize { get; init; }
+}
+
+/// <summary>
+/// Interface for a transaction.
+/// </summary>
+/// <typeparam name="TKey">Key type.</typeparam>
+/// <typeparam name="TValue">Value type.</typeparam>
+public interface ITransaction<TKey, TValue> : IAsyncDisposable
+{
+    /// <summary>
+    /// Produces a message within the transaction.
+    /// </summary>
+    ValueTask<RecordMetadata> ProduceAsync(
+        ProducerMessage<TKey, TValue> message,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Commits the transaction.
+    /// </summary>
+    ValueTask CommitAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Aborts the transaction.
+    /// </summary>
+    ValueTask AbortAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Sends offsets to transaction for exactly-once semantics.
+    /// </summary>
+    ValueTask SendOffsetsToTransactionAsync(
+        IEnumerable<TopicPartitionOffset> offsets,
+        string consumerGroupId,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Represents a topic, partition, and offset.
+/// </summary>
+public readonly record struct TopicPartitionOffset(string Topic, int Partition, long Offset);
+
+/// <summary>
+/// Represents a topic and partition.
+/// </summary>
+public readonly record struct TopicPartition(string Topic, int Partition);

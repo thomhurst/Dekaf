@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Compression.Zstd</PackageId>
+    <Description>Zstd compression codec for Dekaf Kafka client</Description>
+    <PackageTags>kafka;compression;zstd</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.*" />
+  </ItemGroup>
+
+</Project>

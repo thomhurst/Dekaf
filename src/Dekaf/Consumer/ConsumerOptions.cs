@@ -1,0 +1,188 @@
+using Dekaf.Protocol.Messages;
+
+namespace Dekaf.Consumer;
+
+/// <summary>
+/// Configuration options for the Kafka consumer.
+/// </summary>
+public sealed class ConsumerOptions
+{
+    /// <summary>
+    /// Bootstrap servers (host:port,host:port).
+    /// </summary>
+    public required IReadOnlyList<string> BootstrapServers { get; init; }
+
+    /// <summary>
+    /// Client ID.
+    /// </summary>
+    public string? ClientId { get; init; } = "dekaf-consumer";
+
+    /// <summary>
+    /// Consumer group ID.
+    /// </summary>
+    public string? GroupId { get; init; }
+
+    /// <summary>
+    /// Group instance ID for static membership.
+    /// </summary>
+    public string? GroupInstanceId { get; init; }
+
+    /// <summary>
+    /// Enable auto-commit.
+    /// </summary>
+    public bool EnableAutoCommit { get; init; } = true;
+
+    /// <summary>
+    /// Auto-commit interval in milliseconds.
+    /// </summary>
+    public int AutoCommitIntervalMs { get; init; } = 5000;
+
+    /// <summary>
+    /// Auto offset reset behavior.
+    /// </summary>
+    public AutoOffsetReset AutoOffsetReset { get; init; } = AutoOffsetReset.Latest;
+
+    /// <summary>
+    /// Fetch minimum bytes.
+    /// </summary>
+    public int FetchMinBytes { get; init; } = 1;
+
+    /// <summary>
+    /// Fetch maximum bytes.
+    /// </summary>
+    public int FetchMaxBytes { get; init; } = 52428800;
+
+    /// <summary>
+    /// Maximum bytes per partition.
+    /// </summary>
+    public int MaxPartitionFetchBytes { get; init; } = 1048576;
+
+    /// <summary>
+    /// Fetch maximum wait time in milliseconds.
+    /// </summary>
+    public int FetchMaxWaitMs { get; init; } = 500;
+
+    /// <summary>
+    /// Maximum poll records.
+    /// </summary>
+    public int MaxPollRecords { get; init; } = 500;
+
+    /// <summary>
+    /// Maximum poll interval in milliseconds.
+    /// </summary>
+    public int MaxPollIntervalMs { get; init; } = 300000;
+
+    /// <summary>
+    /// Session timeout in milliseconds.
+    /// </summary>
+    public int SessionTimeoutMs { get; init; } = 45000;
+
+    /// <summary>
+    /// Heartbeat interval in milliseconds.
+    /// </summary>
+    public int HeartbeatIntervalMs { get; init; } = 3000;
+
+    /// <summary>
+    /// Rebalance timeout in milliseconds.
+    /// </summary>
+    public int RebalanceTimeoutMs { get; init; } = 60000;
+
+    /// <summary>
+    /// Partition assignment strategy.
+    /// </summary>
+    public PartitionAssignmentStrategy PartitionAssignmentStrategy { get; init; } =
+        PartitionAssignmentStrategy.CooperativeSticky;
+
+    /// <summary>
+    /// Isolation level for transactional reads.
+    /// </summary>
+    public IsolationLevel IsolationLevel { get; init; } = IsolationLevel.ReadUncommitted;
+
+    /// <summary>
+    /// Request timeout in milliseconds.
+    /// </summary>
+    public int RequestTimeoutMs { get; init; } = 30000;
+
+    /// <summary>
+    /// Check CRCs.
+    /// </summary>
+    public bool CheckCrcs { get; init; }
+
+    /// <summary>
+    /// Use TLS.
+    /// </summary>
+    public bool UseTls { get; init; }
+
+    /// <summary>
+    /// Rebalance listener.
+    /// </summary>
+    public IRebalanceListener? RebalanceListener { get; init; }
+}
+
+/// <summary>
+/// Auto offset reset behavior.
+/// </summary>
+public enum AutoOffsetReset
+{
+    /// <summary>
+    /// Start from earliest available offset.
+    /// </summary>
+    Earliest,
+
+    /// <summary>
+    /// Start from latest offset.
+    /// </summary>
+    Latest,
+
+    /// <summary>
+    /// Throw exception if no offset is found.
+    /// </summary>
+    None
+}
+
+/// <summary>
+/// Partition assignment strategies.
+/// </summary>
+public enum PartitionAssignmentStrategy
+{
+    /// <summary>
+    /// Range assignor.
+    /// </summary>
+    Range,
+
+    /// <summary>
+    /// Round-robin assignor.
+    /// </summary>
+    RoundRobin,
+
+    /// <summary>
+    /// Sticky assignor.
+    /// </summary>
+    Sticky,
+
+    /// <summary>
+    /// Cooperative sticky assignor (incremental rebalance).
+    /// </summary>
+    CooperativeSticky
+}
+
+/// <summary>
+/// Interface for rebalance callbacks.
+/// </summary>
+public interface IRebalanceListener
+{
+    /// <summary>
+    /// Called when partitions are assigned.
+    /// </summary>
+    ValueTask OnPartitionsAssignedAsync(IEnumerable<Producer.TopicPartition> partitions, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Called when partitions are revoked.
+    /// </summary>
+    ValueTask OnPartitionsRevokedAsync(IEnumerable<Producer.TopicPartition> partitions, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Called when partitions are lost (for cooperative rebalancing).
+    /// </summary>
+    ValueTask OnPartitionsLostAsync(IEnumerable<Producer.TopicPartition> partitions, CancellationToken cancellationToken);
+}

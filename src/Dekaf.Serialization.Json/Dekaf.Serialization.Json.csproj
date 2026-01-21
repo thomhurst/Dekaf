@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Serialization.Json</PackageId>
+    <Description>System.Text.Json serialization for Dekaf Kafka client</Description>
+    <PackageTags>kafka;serialization;json</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+  </ItemGroup>
+
+</Project>

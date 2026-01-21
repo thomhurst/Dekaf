@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Extensions.Hosting</PackageId>
+    <Description>Microsoft.Extensions.Hosting integration for Dekaf Kafka client</Description>
+    <PackageTags>kafka;hosting;background-service</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+    <ProjectReference Include="..\Dekaf.Extensions.DependencyInjection\Dekaf.Extensions.DependencyInjection.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0-preview.*" />
+  </ItemGroup>
+
+</Project>

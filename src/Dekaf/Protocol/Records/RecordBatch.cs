@@ -1,0 +1,225 @@
+using System.Buffers;
+
+namespace Dekaf.Protocol.Records;
+
+/// <summary>
+/// Kafka RecordBatch v2 format (magic byte 2).
+/// This is the modern record format used since Kafka 0.11.
+/// </summary>
+public sealed class RecordBatch
+{
+    public long BaseOffset { get; init; }
+    public int BatchLength { get; init; }
+    public int PartitionLeaderEpoch { get; init; } = -1;
+    public byte Magic { get; init; } = 2;
+    public uint Crc { get; init; }
+    public RecordBatchAttributes Attributes { get; init; }
+    public int LastOffsetDelta { get; init; }
+    public long BaseTimestamp { get; init; }
+    public long MaxTimestamp { get; init; }
+    public long ProducerId { get; init; } = -1;
+    public short ProducerEpoch { get; init; } = -1;
+    public int BaseSequence { get; init; } = -1;
+    public required IReadOnlyList<Record> Records { get; init; }
+
+    /// <summary>
+    /// Writes the record batch to the output buffer.
+    /// </summary>
+    public void Write(IBufferWriter<byte> output, CompressionType compression = CompressionType.None)
+    {
+        var writer = new KafkaProtocolWriter(output);
+
+        // First, serialize records to calculate length and CRC
+        var recordsBuffer = new ArrayBufferWriter<byte>();
+        var recordsWriter = new KafkaProtocolWriter(recordsBuffer);
+
+        foreach (var record in Records)
+        {
+            record.Write(ref recordsWriter);
+        }
+
+        var recordsData = recordsBuffer.WrittenSpan;
+
+        // TODO: Apply compression if needed
+        var compressedRecords = recordsData;
+
+        // Calculate batch length: from partition leader epoch to end
+        // 4 (partition leader epoch) + 1 (magic) + 4 (crc) + 2 (attributes) +
+        // 4 (last offset delta) + 8 (base timestamp) + 8 (max timestamp) +
+        // 8 (producer id) + 2 (producer epoch) + 4 (base sequence) + 4 (records count) + records
+        var batchLength = 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4 + compressedRecords.Length;
+
+        // Write base offset and batch length
+        writer.WriteInt64(BaseOffset);
+        writer.WriteInt32(batchLength);
+
+        // Write partition leader epoch
+        writer.WriteInt32(PartitionLeaderEpoch);
+
+        // Write magic byte
+        writer.WriteUInt8(Magic);
+
+        // Calculate CRC32C over everything after the CRC field
+        var crcBuffer = new ArrayBufferWriter<byte>();
+        var crcWriter = new KafkaProtocolWriter(crcBuffer);
+
+        var attributes = (short)Attributes;
+        if (compression != CompressionType.None)
+        {
+            attributes = (short)((attributes & ~0x07) | (int)compression);
+        }
+
+        crcWriter.WriteInt16(attributes);
+        crcWriter.WriteInt32(LastOffsetDelta);
+        crcWriter.WriteInt64(BaseTimestamp);
+        crcWriter.WriteInt64(MaxTimestamp);
+        crcWriter.WriteInt64(ProducerId);
+        crcWriter.WriteInt16(ProducerEpoch);
+        crcWriter.WriteInt32(BaseSequence);
+        crcWriter.WriteInt32(Records.Count);
+        crcWriter.WriteRawBytes(compressedRecords);
+
+        var crc = Crc32C.Compute(crcBuffer.WrittenSpan);
+        writer.WriteInt32((int)crc);
+
+        // Write the content
+        writer.WriteRawBytes(crcBuffer.WrittenSpan);
+    }
+
+    /// <summary>
+    /// Reads a record batch from the input buffer.
+    /// </summary>
+    public static RecordBatch Read(ref KafkaProtocolReader reader)
+    {
+        var baseOffset = reader.ReadInt64();
+        var batchLength = reader.ReadInt32();
+        var partitionLeaderEpoch = reader.ReadInt32();
+        var magic = reader.ReadUInt8();
+
+        if (magic != 2)
+        {
+            throw new NotSupportedException($"Unsupported record batch magic byte: {magic}. Only v2 (magic=2) is supported.");
+        }
+
+        var crc = (uint)reader.ReadInt32();
+        var attributes = (RecordBatchAttributes)reader.ReadInt16();
+        var lastOffsetDelta = reader.ReadInt32();
+        var baseTimestamp = reader.ReadInt64();
+        var maxTimestamp = reader.ReadInt64();
+        var producerId = reader.ReadInt64();
+        var producerEpoch = reader.ReadInt16();
+        var baseSequence = reader.ReadInt32();
+        var recordCount = reader.ReadInt32();
+
+        // Calculate remaining bytes for records
+        var recordsLength = batchLength - (4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4);
+
+        // TODO: Handle decompression based on attributes
+        var compression = (CompressionType)((int)attributes & 0x07);
+
+        var records = new List<Record>(recordCount);
+        var recordsEndPosition = reader.Consumed + recordsLength;
+
+        for (var i = 0; i < recordCount && reader.Consumed < recordsEndPosition; i++)
+        {
+            records.Add(Record.Read(ref reader));
+        }
+
+        return new RecordBatch
+        {
+            BaseOffset = baseOffset,
+            BatchLength = batchLength,
+            PartitionLeaderEpoch = partitionLeaderEpoch,
+            Magic = magic,
+            Crc = crc,
+            Attributes = attributes,
+            LastOffsetDelta = lastOffsetDelta,
+            BaseTimestamp = baseTimestamp,
+            MaxTimestamp = maxTimestamp,
+            ProducerId = producerId,
+            ProducerEpoch = producerEpoch,
+            BaseSequence = baseSequence,
+            Records = records
+        };
+    }
+}
+
+/// <summary>
+/// Record batch attributes bit flags.
+/// </summary>
+[Flags]
+public enum RecordBatchAttributes : short
+{
+    None = 0,
+
+    // Compression type (bits 0-2)
+    CompressionNone = 0,
+    CompressionGzip = 1,
+    CompressionSnappy = 2,
+    CompressionLz4 = 3,
+    CompressionZstd = 4,
+
+    // Timestamp type (bit 3)
+    TimestampTypeCreateTime = 0,
+    TimestampTypeLogAppendTime = 0x08,
+
+    // Is transactional (bit 4)
+    IsTransactional = 0x10,
+
+    // Is control batch (bit 5)
+    IsControlBatch = 0x20,
+
+    // Has delete horizon (bit 6)
+    HasDeleteHorizon = 0x40
+}
+
+/// <summary>
+/// Compression types supported by Kafka.
+/// </summary>
+public enum CompressionType
+{
+    None = 0,
+    Gzip = 1,
+    Snappy = 2,
+    Lz4 = 3,
+    Zstd = 4
+}
+
+/// <summary>
+/// CRC32C implementation for Kafka record batch checksums.
+/// Uses the Castagnoli polynomial (0x1EDC6F41).
+/// </summary>
+internal static class Crc32C
+{
+    private static readonly uint[] Table = GenerateTable();
+
+    private static uint[] GenerateTable()
+    {
+        var table = new uint[256];
+        const uint polynomial = 0x82F63B78; // Reversed Castagnoli polynomial
+
+        for (uint i = 0; i < 256; i++)
+        {
+            var crc = i;
+            for (var j = 0; j < 8; j++)
+            {
+                crc = (crc & 1) != 0 ? (crc >> 1) ^ polynomial : crc >> 1;
+            }
+            table[i] = crc;
+        }
+
+        return table;
+    }
+
+    public static uint Compute(ReadOnlySpan<byte> data)
+    {
+        var crc = 0xFFFFFFFF;
+
+        foreach (var b in data)
+        {
+            crc = Table[(crc ^ b) & 0xFF] ^ (crc >> 8);
+        }
+
+        return crc ^ 0xFFFFFFFF;
+    }
+}

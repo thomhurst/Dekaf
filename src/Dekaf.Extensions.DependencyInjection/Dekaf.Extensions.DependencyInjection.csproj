@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Extensions.DependencyInjection</PackageId>
+    <Description>Microsoft.Extensions.DependencyInjection integration for Dekaf Kafka client</Description>
+    <PackageTags>kafka;dependency-injection;di</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0-preview.*" />
+  </ItemGroup>
+
+</Project>

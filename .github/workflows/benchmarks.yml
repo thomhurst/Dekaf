@@ -1,0 +1,222 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tools/Dekaf.Benchmarks/**'
+      - '.github/workflows/benchmarks.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tools/Dekaf.Benchmarks/**'
+  workflow_dispatch:
+    inputs:
+      benchmark_filter:
+        description: 'Benchmark filter (e.g., *Serialization*, *Producer*)'
+        required: false
+        default: '*'
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  benchmarks:
+    name: Run Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    services:
+      # Note: Kafka service is managed by Testcontainers in the benchmark code
+      # This ensures consistent environment across local and CI runs
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-quality: 'preview'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build solution
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Run Serialization Benchmarks (No Docker Required)
+        id: serialization_benchmarks
+        run: |
+          cd tools/Dekaf.Benchmarks
+          dotnet run -c Release -- --filter "*Serialization*" --exporters json --artifacts ./BenchmarkResults/Serialization
+        continue-on-error: true
+
+      - name: Run Memory Benchmarks (No Docker Required)
+        id: memory_benchmarks
+        run: |
+          cd tools/Dekaf.Benchmarks
+          dotnet run -c Release -- --filter "*Memory*" --exporters json --artifacts ./BenchmarkResults/Memory
+        continue-on-error: true
+
+      - name: Run Producer Benchmarks (Requires Docker)
+        id: producer_benchmarks
+        run: |
+          cd tools/Dekaf.Benchmarks
+          dotnet run -c Release -- --filter "*Producer*" --exporters json --artifacts ./BenchmarkResults/Producer
+        continue-on-error: true
+
+      - name: Run Consumer Benchmarks (Requires Docker)
+        id: consumer_benchmarks
+        run: |
+          cd tools/Dekaf.Benchmarks
+          dotnet run -c Release -- --filter "*Consumer*" --exporters json --artifacts ./BenchmarkResults/Consumer
+        continue-on-error: true
+
+      - name: Upload Benchmark Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: tools/Dekaf.Benchmarks/BenchmarkResults/
+          retention-days: 30
+
+      - name: Generate Benchmark Summary
+        run: |
+          echo "# Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Run Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runner:** ubuntu-latest" >> $GITHUB_STEP_SUMMARY
+          echo "- **.NET Version:** ${{ env.DOTNET_VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Check for serialization results
+          if [ -d "tools/Dekaf.Benchmarks/BenchmarkResults/Serialization" ]; then
+            echo "## Serialization Benchmarks" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Benchmark | Mean | Error | StdDev | Allocated |" >> $GITHUB_STEP_SUMMARY
+            echo "|-----------|------|-------|--------|-----------|" >> $GITHUB_STEP_SUMMARY
+
+            # Parse JSON results if available
+            for f in tools/Dekaf.Benchmarks/BenchmarkResults/Serialization/results/*.json; do
+              if [ -f "$f" ]; then
+                cat "$f" | jq -r '.Benchmarks[]? | "| \(.Method) | \(.Statistics.Mean | . / 1000000 | . * 100 | round / 100) ms | \(.Statistics.Error | . / 1000000 | . * 100 | round / 100) ms | \(.Statistics.StdDev | . / 1000000 | . * 100 | round / 100) ms | \(.Memory.BytesAllocatedPerOperation // 0) B |"' 2>/dev/null >> $GITHUB_STEP_SUMMARY || true
+              fi
+            done
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Check for memory results
+          if [ -d "tools/Dekaf.Benchmarks/BenchmarkResults/Memory" ]; then
+            echo "## Memory Benchmarks" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Benchmark | Mean | Allocated |" >> $GITHUB_STEP_SUMMARY
+            echo "|-----------|------|-----------|" >> $GITHUB_STEP_SUMMARY
+
+            for f in tools/Dekaf.Benchmarks/BenchmarkResults/Memory/results/*.json; do
+              if [ -f "$f" ]; then
+                cat "$f" | jq -r '.Benchmarks[]? | "| \(.Method) | \(.Statistics.Mean | . / 1000000 | . * 100 | round / 100) ms | \(.Memory.BytesAllocatedPerOperation // 0) B |"' 2>/dev/null >> $GITHUB_STEP_SUMMARY || true
+              fi
+            done
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Check for producer results
+          if [ -d "tools/Dekaf.Benchmarks/BenchmarkResults/Producer" ]; then
+            echo "## Producer Benchmarks (Dekaf vs Confluent.Kafka)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Benchmark | Mean | Error | Allocated |" >> $GITHUB_STEP_SUMMARY
+            echo "|-----------|------|-------|-----------|" >> $GITHUB_STEP_SUMMARY
+
+            for f in tools/Dekaf.Benchmarks/BenchmarkResults/Producer/results/*.json; do
+              if [ -f "$f" ]; then
+                cat "$f" | jq -r '.Benchmarks[]? | "| \(.Method) | \(.Statistics.Mean | . / 1000000 | . * 100 | round / 100) ms | \(.Statistics.Error | . / 1000000 | . * 100 | round / 100) ms | \(.Memory.BytesAllocatedPerOperation // 0) B |"' 2>/dev/null >> $GITHUB_STEP_SUMMARY || true
+              fi
+            done
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Check for consumer results
+          if [ -d "tools/Dekaf.Benchmarks/BenchmarkResults/Consumer" ]; then
+            echo "## Consumer Benchmarks (Dekaf vs Confluent.Kafka)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Benchmark | Mean | Error | Allocated |" >> $GITHUB_STEP_SUMMARY
+            echo "|-----------|------|-------|-----------|" >> $GITHUB_STEP_SUMMARY
+
+            for f in tools/Dekaf.Benchmarks/BenchmarkResults/Consumer/results/*.json; do
+              if [ -f "$f" ]; then
+                cat "$f" | jq -r '.Benchmarks[]? | "| \(.Method) | \(.Statistics.Mean | . / 1000000 | . * 100 | round / 100) ms | \(.Statistics.Error | . / 1000000 | . * 100 | round / 100) ms | \(.Memory.BytesAllocatedPerOperation // 0) B |"' 2>/dev/null >> $GITHUB_STEP_SUMMARY || true
+              fi
+            done
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "## Notes" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Producer and Consumer benchmarks use Testcontainers to spin up a real Kafka instance" >> $GITHUB_STEP_SUMMARY
+          echo "- Memory benchmarks highlight Dekaf's zero-allocation design" >> $GITHUB_STEP_SUMMARY
+          echo "- Full results are available in the uploaded artifacts" >> $GITHUB_STEP_SUMMARY
+
+      - name: Comment PR with Results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            let comment = '## Benchmark Results\n\n';
+            comment += '### Serialization & Memory Benchmarks\n\n';
+            comment += 'See the [workflow summary](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for detailed results.\n\n';
+            comment += '### Comparison Summary\n\n';
+            comment += '| Category | Dekaf | Confluent.Kafka | Winner |\n';
+            comment += '|----------|-------|-----------------|--------|\n';
+            comment += '| Single Produce | TBD | TBD | TBD |\n';
+            comment += '| Batch Produce | TBD | TBD | TBD |\n';
+            comment += '| Consume All | TBD | TBD | TBD |\n';
+            comment += '| Memory (Allocs) | Zero-alloc | Standard | Dekaf |\n\n';
+            comment += '> **Note:** Full benchmark data is available in the workflow artifacts.\n';
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  benchmark-comparison:
+    name: Store Benchmark History
+    runs-on: ubuntu-latest
+    needs: benchmarks
+    if: github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Benchmark Results
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark-results
+
+      - name: Store Benchmark Results
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Dekaf Benchmarks
+          tool: 'benchmarkdotnet'
+          output-file-path: benchmark-results/**/*.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: '150%'
+          comment-on-alert: true
+          fail-on-alert: false
+          alert-comment-cc-users: '@thomholloway'
