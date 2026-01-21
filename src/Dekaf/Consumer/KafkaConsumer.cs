@@ -15,6 +15,8 @@ namespace Dekaf.Consumer;
 
 /// <summary>
 /// Kafka consumer implementation.
+/// NOT thread-safe - all methods must be called from a single thread.
+/// For parallel consumption, use multiple consumers in a consumer group.
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
@@ -36,12 +38,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly Dictionary<TopicPartition, long> _fetchPositions = []; // Fetch position (what to fetch next)
     private readonly Dictionary<TopicPartition, long> _committed = [];
     private readonly Channel<ConsumeResult<TKey, TValue>> _fetchBuffer;
-    private readonly SemaphoreSlim _lock = new(1, 1);
 
     private CancellationTokenSource? _wakeupCts;
     private CancellationTokenSource? _autoCommitCts;
     private Task? _autoCommitTask;
-    private short _fetchApiVersion = -1;
+    private volatile short _fetchApiVersion = -1;
     private volatile bool _disposed;
 
     public KafkaConsumer(
@@ -750,7 +751,5 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
-
-        _lock.Dispose();
     }
 }

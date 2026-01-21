@@ -13,7 +13,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private readonly ProducerOptions _options;
     private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
     private readonly Channel<ReadyBatch> _readyBatches;
-    private readonly SemaphoreSlim _memoryLock = new(1, 1);
     private volatile bool _disposed;
 
     public RecordAccumulator(ProducerOptions options)
@@ -116,7 +115,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         _disposed = true;
         _readyBatches.Writer.Complete();
-        _memoryLock.Dispose();
     }
 }
 

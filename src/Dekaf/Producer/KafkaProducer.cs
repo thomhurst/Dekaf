@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Threading.Channels;
 using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -31,7 +32,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly Task _senderTask;
     private readonly Task _lingerTask;
 
-    private short _produceApiVersion = -1;
+    // Channel-based worker pool for thread-safe produce operations
+    private readonly Channel<ProduceWorkItem<TKey, TValue>> _workChannel;
+    private readonly Task[] _workerTasks;
+    private readonly int _workerCount;
+
+    private volatile short _produceApiVersion = -1;
     private volatile bool _disposed;
 
     public KafkaProducer(
@@ -72,6 +78,23 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _senderCts = new CancellationTokenSource();
         _senderTask = SenderLoopAsync(_senderCts.Token);
         _lingerTask = LingerLoopAsync(_senderCts.Token);
+
+        // Set up worker pool for thread-safe produce operations
+        _workerCount = Environment.ProcessorCount;
+        _workChannel = Channel.CreateBounded<ProduceWorkItem<TKey, TValue>>(
+            new BoundedChannelOptions(_workerCount * 16)
+            {
+                SingleReader = false,   // Multiple workers read
+                SingleWriter = false,   // Multiple callers write
+                FullMode = BoundedChannelFullMode.Wait
+            });
+
+        // Start worker tasks
+        _workerTasks = new Task[_workerCount];
+        for (var i = 0; i < _workerCount; i++)
+        {
+            _workerTasks[i] = ProcessWorkAsync(_senderCts.Token);
+        }
     }
 
     public async ValueTask<RecordMetadata> ProduceAsync(
@@ -81,6 +104,44 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
+        // Create work item with completion source
+        var completion = new TaskCompletionSource<RecordMetadata>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, cancellationToken);
+
+        // Write to channel (backpressure if full)
+        await _workChannel.Writer.WriteAsync(workItem, cancellationToken).ConfigureAwait(false);
+
+        // Await the result
+        return await completion.Task.ConfigureAwait(false);
+    }
+
+    private async Task ProcessWorkAsync(CancellationToken cancellationToken)
+    {
+        await foreach (var work in _workChannel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            try
+            {
+                var result = await ProduceInternalAsync(work.Message, work.CancellationToken)
+                    .ConfigureAwait(false);
+                work.Completion.TrySetResult(result);
+            }
+            catch (OperationCanceledException) when (work.CancellationToken.IsCancellationRequested)
+            {
+                work.Completion.TrySetCanceled(work.CancellationToken);
+            }
+            catch (Exception ex)
+            {
+                work.Completion.TrySetException(ex);
+            }
+        }
+    }
+
+    private async ValueTask<RecordMetadata> ProduceInternalAsync(
+        ProducerMessage<TKey, TValue> message,
+        CancellationToken cancellationToken)
+    {
         // Ensure metadata is initialized
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
@@ -344,7 +405,21 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         _disposed = true;
 
+        // Complete the channel (no more writes)
+        _workChannel.Writer.Complete();
+
+        // Cancel background tasks
         _senderCts.Cancel();
+
+        // Wait for workers to drain
+        try
+        {
+            await Task.WhenAll(_workerTasks).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Ignore shutdown errors
+        }
 
         try
         {
@@ -359,6 +434,26 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         await _accumulator.DisposeAsync().ConfigureAwait(false);
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
+    }
+}
+
+/// <summary>
+/// Work item for the producer worker pool.
+/// </summary>
+internal readonly struct ProduceWorkItem<TKey, TValue>
+{
+    public readonly ProducerMessage<TKey, TValue> Message;
+    public readonly TaskCompletionSource<RecordMetadata> Completion;
+    public readonly CancellationToken CancellationToken;
+
+    public ProduceWorkItem(
+        ProducerMessage<TKey, TValue> message,
+        TaskCompletionSource<RecordMetadata> completion,
+        CancellationToken cancellationToken)
+    {
+        Message = message;
+        Completion = completion;
+        CancellationToken = cancellationToken;
     }
 }
 

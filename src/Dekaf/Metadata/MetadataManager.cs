@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
@@ -17,9 +18,9 @@ public sealed class MetadataManager : IAsyncDisposable
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private readonly List<string> _bootstrapServers;
 
-    private short _metadataApiVersion = -1;
-    private readonly Dictionary<ApiKey, (short MinVersion, short MaxVersion)> _brokerApiVersions = new();
-    private readonly Dictionary<(ApiKey, short, short), short> _negotiatedVersionCache = new();
+    private volatile short _metadataApiVersion = -1;
+    private readonly ConcurrentDictionary<ApiKey, (short MinVersion, short MaxVersion)> _brokerApiVersions = new();
+    private readonly ConcurrentDictionary<(ApiKey, short, short), short> _negotiatedVersionCache = new();
     private volatile bool _disposed;
     private CancellationTokenSource? _backgroundRefreshCts;
     private Task? _backgroundRefreshTask;
@@ -72,7 +73,8 @@ public sealed class MetadataManager : IAsyncDisposable
             negotiated = ourMinVersion;
         }
 
-        _negotiatedVersionCache[cacheKey] = negotiated;
+        // Cache it (benign race - same value computed)
+        _negotiatedVersionCache.TryAdd(cacheKey, negotiated);
         return negotiated;
     }
 
@@ -246,14 +248,15 @@ public sealed class MetadataManager : IAsyncDisposable
             throw new InvalidOperationException($"ApiVersions failed: {response.ErrorCode}");
         }
 
+        // Clear old versions and negotiated cache
+        _brokerApiVersions.Clear();
+        _negotiatedVersionCache.Clear();
+
         // Store all API versions for later use
         foreach (var apiKey in response.ApiKeys)
         {
             _brokerApiVersions[apiKey.ApiKey] = (apiKey.MinVersion, apiKey.MaxVersion);
         }
-
-        // Clear negotiated version cache to force recalculation with new broker versions
-        _negotiatedVersionCache.Clear();
 
         // Find metadata API version
         var metadataApi = response.ApiKeys.FirstOrDefault(a => a.ApiKey == ApiKey.Metadata);

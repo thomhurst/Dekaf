@@ -29,7 +29,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
     private CancellationTokenSource? _heartbeatCts;
     private Task? _heartbeatTask;
 
-    private CoordinatorState _state = CoordinatorState.Unjoined;
+    private volatile CoordinatorState _state = CoordinatorState.Unjoined;
     private volatile bool _disposed;
 
     public ConsumerCoordinator(
