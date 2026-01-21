@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.SchemaRegistry</PackageId>
+    <Description>Confluent Schema Registry integration for Dekaf Kafka client</Description>
+    <PackageTags>kafka;schema-registry;avro;json-schema</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+  </ItemGroup>
+
+</Project>
