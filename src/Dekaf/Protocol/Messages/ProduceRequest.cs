@@ -148,7 +148,8 @@ public sealed class ProduceRequestPartitionData
 
         if (isFlexible)
         {
-            writer.WriteCompactBytes(recordsBuffer.WrittenSpan);
+            // COMPACT_RECORDS uses plain varint length (not length+1 like COMPACT_BYTES)
+            writer.WriteRecords(recordsBuffer.WrittenSpan);
         }
         else
         {

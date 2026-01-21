@@ -300,6 +300,29 @@ public ref struct KafkaProtocolWriter
     }
 
     /// <summary>
+    /// Writes records with unsigned varint length prefix.
+    /// Note: COMPACT_RECORDS uses plain length (not length+1 like COMPACT_BYTES).
+    /// </summary>
+    public void WriteRecords(ReadOnlySpan<byte> value)
+    {
+        WriteUnsignedVarInt(value.Length);
+        WriteRawBytes(value);
+    }
+
+    /// <summary>
+    /// Writes nullable records with unsigned varint length prefix.
+    /// </summary>
+    public void WriteNullableRecords(ReadOnlySpan<byte> value, bool isNull)
+    {
+        if (isNull)
+        {
+            WriteUnsignedVarInt(0);
+            return;
+        }
+        WriteRecords(value);
+    }
+
+    /// <summary>
     /// Writes raw bytes without a length prefix.
     /// </summary>
     public void WriteRawBytes(ReadOnlySpan<byte> value)

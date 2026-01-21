@@ -204,8 +204,9 @@ public sealed class FetchResponsePartition
         var preferredReadReplica = version >= 11 ? reader.ReadInt32() : -1;
 
         // Read record batches
+        // Note: COMPACT_RECORDS uses plain varint length (not length-1 like COMPACT_BYTES)
         var recordsLength = isFlexible
-            ? reader.ReadUnsignedVarInt() - 1
+            ? reader.ReadUnsignedVarInt()
             : reader.ReadInt32();
 
         List<RecordBatch>? records = null;

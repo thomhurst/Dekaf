@@ -268,6 +268,19 @@ public ref struct KafkaProtocolReader
         return ReadBytesContent(length);
     }
 
+    /// <summary>
+    /// Reads records with unsigned varint length prefix.
+    /// Note: COMPACT_RECORDS uses plain length (not length-1 like COMPACT_BYTES).
+    /// </summary>
+    public byte[]? ReadRecords()
+    {
+        var length = ReadUnsignedVarInt();
+        if (length == 0)
+            return null;
+
+        return ReadBytesContent(length);
+    }
+
     private byte[] ReadBytesContent(int length)
     {
         var result = new byte[length];
