@@ -36,30 +36,26 @@ public sealed class ApiVersionsResponse : IKafkaResponse
 
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
+        var isFlexible = version >= 3;
         var errorCode = (ErrorCode)reader.ReadInt16();
 
-        var apiKeys = version >= 3
-            ? reader.ReadCompactArray(ReadApiVersion)
-            : reader.ReadArray(ReadApiVersion);
+        var apiKeys = isFlexible
+            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => ReadApiVersion(ref r, isFlexible))
+            : reader.ReadArray((ref KafkaProtocolReader r) => ReadApiVersion(ref r, isFlexible));
 
         var throttleTimeMs = version >= 1 ? reader.ReadInt32() : 0;
 
+        // In v3+, SupportedFeatures, FinalizedFeaturesEpoch, FinalizedFeatures, and ZkMigrationReady
+        // are in the tagged fields section (tags 0-3), not as regular inline fields
         IReadOnlyList<SupportedFeature>? supportedFeatures = null;
         var finalizedFeaturesEpoch = -1L;
         IReadOnlyList<FinalizedFeature>? finalizedFeatures = null;
         var zkMigrationReady = false;
 
-        if (version >= 3)
+        if (isFlexible)
         {
-            supportedFeatures = reader.ReadCompactArray(ReadSupportedFeature);
-            finalizedFeaturesEpoch = reader.ReadInt64();
-            finalizedFeatures = reader.ReadCompactArray(ReadFinalizedFeature);
-
-            if (version >= 3)
-            {
-                zkMigrationReady = reader.ReadBoolean();
-            }
-
+            // Skip tagged fields for now - we don't need these fields for basic operation
+            // TODO: Parse tagged fields properly if we need SupportedFeatures, etc.
             reader.SkipTaggedFields();
         }
 
@@ -75,11 +71,18 @@ public sealed class ApiVersionsResponse : IKafkaResponse
         };
     }
 
-    private static ApiVersion ReadApiVersion(ref KafkaProtocolReader reader)
+    private static ApiVersion ReadApiVersion(ref KafkaProtocolReader reader, bool isFlexible)
     {
         var apiKey = (ApiKey)reader.ReadInt16();
         var minVersion = reader.ReadInt16();
         var maxVersion = reader.ReadInt16();
+
+        // In flexible versions, every struct ends with tagged fields (even if empty)
+        if (isFlexible)
+        {
+            reader.SkipTaggedFields();
+        }
+
         return new ApiVersion(apiKey, minVersion, maxVersion);
     }
 
