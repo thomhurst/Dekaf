@@ -36,10 +36,17 @@ jobs:
       - name: Build
         run: dotnet build --configuration Release --no-restore
 
-      - name: Run Unit Tests
+      - name: Run Unit Tests (Linux/macOS)
+        if: runner.os != 'Windows'
         run: |
           dotnet build tests/Dekaf.Tests.Unit --configuration Release
           ./tests/Dekaf.Tests.Unit/bin/Release/net10.0/Dekaf.Tests.Unit
+
+      - name: Run Unit Tests (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          dotnet build tests/Dekaf.Tests.Unit --configuration Release
+          .\tests\Dekaf.Tests.Unit\bin\Release\net10.0\Dekaf.Tests.Unit.exe
 
       - name: Upload Test Results
         uses: actions/upload-artifact@v4
@@ -55,9 +62,6 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-latest
     needs: build
-
-    services:
-      # Kafka managed by Testcontainers
 
     steps:
       - name: Checkout
