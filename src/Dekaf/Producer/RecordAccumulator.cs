@@ -114,7 +114,25 @@ public sealed class RecordAccumulator : IAsyncDisposable
             return;
 
         _disposed = true;
+
+        // Fail all pending batches that haven't been sent yet
+        var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
+
+        foreach (var kvp in _batches)
+        {
+            var readyBatch = kvp.Value.Complete();
+            readyBatch?.Fail(disposedException);
+        }
+        _batches.Clear();
+
+        // Complete the channel to stop readers, then drain and fail any remaining batches
         _readyBatches.Writer.Complete();
+
+        // Drain any batches that were in the channel but not yet processed
+        while (_readyBatches.Reader.TryRead(out var batch))
+        {
+            batch.Fail(disposedException);
+        }
     }
 }
 

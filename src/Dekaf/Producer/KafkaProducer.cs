@@ -411,22 +411,26 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Complete the channel (no more writes)
         _workChannel.Writer.Complete();
 
+        // Dispose accumulator FIRST to fail all pending batch futures.
+        // This unblocks any workers that are waiting on result.Future in ProduceInternalAsync.
+        await _accumulator.DisposeAsync().ConfigureAwait(false);
+
         // Cancel background tasks
         _senderCts.Cancel();
 
-        // Wait for workers to drain
+        // Wait for workers to drain (with timeout as safety measure)
         try
         {
-            await Task.WhenAll(_workerTasks).ConfigureAwait(false);
+            await Task.WhenAll(_workerTasks).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
         catch
         {
-            // Ignore shutdown errors
+            // Ignore shutdown errors and timeouts
         }
 
         try
         {
-            await Task.WhenAll(_senderTask, _lingerTask).ConfigureAwait(false);
+            await Task.WhenAll(_senderTask, _lingerTask).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
         catch
         {
@@ -434,7 +438,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
 
         _senderCts.Dispose();
-        await _accumulator.DisposeAsync().ConfigureAwait(false);
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
     }
