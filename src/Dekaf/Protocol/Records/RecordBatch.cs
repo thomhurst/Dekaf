@@ -5,6 +5,7 @@ namespace Dekaf.Protocol.Records;
 /// <summary>
 /// Kafka RecordBatch v2 format (magic byte 2).
 /// This is the modern record format used since Kafka 0.11.
+/// Supports lazy record parsing - records are only parsed when enumerated.
 /// </summary>
 public sealed class RecordBatch
 {
@@ -20,6 +21,11 @@ public sealed class RecordBatch
     public long ProducerId { get; init; } = -1;
     public short ProducerEpoch { get; init; } = -1;
     public int BaseSequence { get; init; } = -1;
+
+    /// <summary>
+    /// The records in this batch. For batches created via Read(), records are parsed lazily
+    /// on first enumeration to avoid allocations for unconsumed records.
+    /// </summary>
     public required IReadOnlyList<Record> Records { get; init; }
 
     /// <summary>
@@ -88,6 +94,7 @@ public sealed class RecordBatch
 
     /// <summary>
     /// Reads a record batch from the input buffer.
+    /// Records are parsed lazily to avoid allocations for unconsumed records.
     /// </summary>
     public static RecordBatch Read(ref KafkaProtocolReader reader)
     {
@@ -117,13 +124,11 @@ public sealed class RecordBatch
         // TODO: Handle decompression based on attributes
         var compression = (CompressionType)((int)attributes & 0x07);
 
-        var records = new List<Record>(recordCount);
-        var recordsEndPosition = reader.Consumed + recordsLength;
+        // Capture the raw record data for lazy parsing instead of parsing all records now
+        var rawRecordData = reader.ReadMemorySlice(recordsLength);
 
-        for (var i = 0; i < recordCount && reader.Consumed < recordsEndPosition; i++)
-        {
-            records.Add(Record.Read(ref reader));
-        }
+        // Create a lazy record list that parses on-demand
+        var lazyRecords = new LazyRecordList(rawRecordData, recordCount);
 
         return new RecordBatch
         {
@@ -139,8 +144,71 @@ public sealed class RecordBatch
             ProducerId = producerId,
             ProducerEpoch = producerEpoch,
             BaseSequence = baseSequence,
-            Records = records
+            Records = lazyRecords
         };
+    }
+}
+
+/// <summary>
+/// A lazy list that parses records on-demand from raw byte data.
+/// Records are only parsed when accessed, avoiding allocations for unconsumed records.
+/// </summary>
+internal sealed class LazyRecordList : IReadOnlyList<Record>
+{
+    private readonly ReadOnlyMemory<byte> _rawData;
+    private readonly int _count;
+    private Record[]? _parsedRecords;
+    private int _parsedCount;
+    private int _nextParseOffset;
+
+    public LazyRecordList(ReadOnlyMemory<byte> rawData, int count)
+    {
+        _rawData = rawData;
+        _count = count;
+    }
+
+    public int Count => _count;
+
+    public Record this[int index]
+    {
+        get
+        {
+            if (index < 0 || index >= _count)
+                throw new ArgumentOutOfRangeException(nameof(index));
+
+            EnsureParsedUpTo(index);
+            return _parsedRecords![index];
+        }
+    }
+
+    public IEnumerator<Record> GetEnumerator()
+    {
+        for (var i = 0; i < _count; i++)
+        {
+            yield return this[i];
+        }
+    }
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+    private void EnsureParsedUpTo(int index)
+    {
+        if (_parsedRecords is null)
+        {
+            _parsedRecords = new Record[_count];
+            _parsedCount = 0;
+            _nextParseOffset = 0;
+        }
+
+        while (_parsedCount <= index && _parsedCount < _count)
+        {
+            var slice = _rawData.Slice(_nextParseOffset);
+            var reader = new KafkaProtocolReader(slice);
+            var record = Record.Read(ref reader);
+            _parsedRecords[_parsedCount] = record;
+            _nextParseOffset += (int)reader.Consumed;
+            _parsedCount++;
+        }
     }
 }
 
