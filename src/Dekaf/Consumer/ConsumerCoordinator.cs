@@ -70,14 +70,20 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             if (_state == CoordinatorState.Stable)
                 return;
 
-            const int maxRetries = 5;
+            var deadline = DateTime.UtcNow.AddMilliseconds(_options.RebalanceTimeoutMs);
             var retryDelayMs = 200;
 
-            for (var attempt = 0; attempt < maxRetries; attempt++)
+            while (_state != CoordinatorState.Stable)
             {
+                if (DateTime.UtcNow > deadline)
+                {
+                    throw new TimeoutException(
+                        $"Failed to join group '{_options.GroupId}' within rebalance timeout ({_options.RebalanceTimeoutMs}ms)");
+                }
+
                 try
                 {
-                    // Find coordinator
+                    // Find coordinator if unknown
                     if (_coordinatorId < 0)
                     {
                         await FindCoordinatorAsync(cancellationToken).ConfigureAwait(false);
@@ -99,31 +105,18 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                     _logger?.LogInformation(
                         "Joined group {GroupId} as member {MemberId} (generation {Generation})",
                         _options.GroupId, _memberId, _generationId);
-
-                    return; // Success
                 }
-                catch (Errors.GroupException ex) when (
-                    ex.ErrorCode == ErrorCode.NotCoordinator ||
-                    ex.ErrorCode == ErrorCode.CoordinatorNotAvailable ||
-                    ex.ErrorCode == ErrorCode.CoordinatorLoadInProgress)
+                catch (Errors.GroupException ex) when (IsRetriableCoordinatorError(ex.ErrorCode))
                 {
-                    // Coordinator has changed, is unavailable, or still loading - re-discover
+                    // Coordinator has changed, is unavailable, or still loading - mark unknown and retry
                     _logger?.LogDebug(
-                        "Coordinator error {ErrorCode} (attempt {Attempt}/{MaxRetries}), re-discovering coordinator",
-                        ex.ErrorCode, attempt + 1, maxRetries);
+                        "Retriable coordinator error {ErrorCode}, will re-discover coordinator",
+                        ex.ErrorCode);
 
-                    _coordinatorId = -1;
-                    _state = CoordinatorState.Unjoined;
+                    MarkCoordinatorUnknown();
 
-                    if (attempt < maxRetries - 1)
-                    {
-                        await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
-                        retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
-                    }
-                    else
-                    {
-                        throw;
-                    }
+                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                 }
             }
         }
@@ -132,6 +125,34 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             _lock.Release();
         }
     }
+
+    /// <summary>
+    /// Marks the coordinator as unknown, forcing re-discovery on next operation.
+    /// </summary>
+    private void MarkCoordinatorUnknown()
+    {
+        _coordinatorId = -1;
+        _state = CoordinatorState.Unjoined;
+    }
+
+    /// <summary>
+    /// Returns true if the error code indicates a retriable coordinator error.
+    /// </summary>
+    private static bool IsRetriableCoordinatorError(ErrorCode? errorCode) =>
+        errorCode is ErrorCode.NotCoordinator
+            or ErrorCode.CoordinatorNotAvailable
+            or ErrorCode.CoordinatorLoadInProgress;
+
+    /// <summary>
+    /// Returns true if the error code indicates a rejoin is needed.
+    /// </summary>
+    private static bool IsRejoinNeededError(ErrorCode? errorCode) =>
+        errorCode is ErrorCode.RebalanceInProgress
+            or ErrorCode.UnknownMemberId
+            or ErrorCode.IllegalGeneration
+            or ErrorCode.NotCoordinator
+            or ErrorCode.CoordinatorNotAvailable
+            or ErrorCode.CoordinatorLoadInProgress;
 
     private async ValueTask FindCoordinatorAsync(CancellationToken cancellationToken)
     {
@@ -383,23 +404,18 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             {
                 _logger?.LogWarning(ex, "Heartbeat failed");
 
-                if (ex is Errors.GroupException ge &&
-                    (ge.ErrorCode == ErrorCode.RebalanceInProgress ||
-                     ge.ErrorCode == ErrorCode.UnknownMemberId ||
-                     ge.ErrorCode == ErrorCode.IllegalGeneration ||
-                     ge.ErrorCode == ErrorCode.NotCoordinator ||
-                     ge.ErrorCode == ErrorCode.CoordinatorNotAvailable ||
-                     ge.ErrorCode == ErrorCode.CoordinatorLoadInProgress))
+                if (ex is Errors.GroupException ge && IsRejoinNeededError(ge.ErrorCode))
                 {
-                    // Reset coordinator on coordinator errors so next operation re-discovers it
-                    if (ge.ErrorCode == ErrorCode.NotCoordinator ||
-                        ge.ErrorCode == ErrorCode.CoordinatorNotAvailable ||
-                        ge.ErrorCode == ErrorCode.CoordinatorLoadInProgress)
+                    // Mark coordinator unknown if it's a coordinator error
+                    if (IsRetriableCoordinatorError(ge.ErrorCode))
                     {
-                        _coordinatorId = -1;
+                        MarkCoordinatorUnknown();
+                    }
+                    else
+                    {
+                        _state = CoordinatorState.Unjoined;
                     }
 
-                    _state = CoordinatorState.Unjoined;
                     break;
                 }
             }
