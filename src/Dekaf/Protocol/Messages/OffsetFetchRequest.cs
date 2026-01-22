@@ -57,13 +57,13 @@ public sealed class OffsetFetchRequest : IKafkaRequest<OffsetFetchResponse>
             else if (isFlexible)
             {
                 writer.WriteCompactArray(
-                    Topics.ToArray().AsSpan(),
+                    Topics,
                     (ref KafkaProtocolWriter w, OffsetFetchRequestTopic t) => t.Write(ref w, version));
             }
             else
             {
                 writer.WriteArray(
-                    Topics.ToArray().AsSpan(),
+                    Topics,
                     (ref KafkaProtocolWriter w, OffsetFetchRequestTopic t) => t.Write(ref w, version));
             }
 
@@ -84,7 +84,7 @@ public sealed class OffsetFetchRequest : IKafkaRequest<OffsetFetchResponse>
             }];
 
             writer.WriteCompactArray(
-                groups.ToArray().AsSpan(),
+                groups,
                 (ref KafkaProtocolWriter w, OffsetFetchRequestGroup g) => g.Write(ref w, version));
 
             writer.WriteBoolean(RequireStable);
@@ -117,13 +117,13 @@ public sealed class OffsetFetchRequestTopic
         if (isFlexible)
         {
             writer.WriteCompactArray(
-                PartitionIndexes.ToArray().AsSpan(),
+                PartitionIndexes,
                 (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
         }
         else
         {
             writer.WriteArray(
-                PartitionIndexes.ToArray().AsSpan(),
+                PartitionIndexes,
                 (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
         }
 
@@ -161,7 +161,7 @@ public sealed class OffsetFetchRequestGroup
         else
         {
             writer.WriteCompactArray(
-                Topics.ToArray().AsSpan(),
+                Topics,
                 (ref KafkaProtocolWriter w, OffsetFetchRequestTopic t) => t.Write(ref w, version));
         }
 

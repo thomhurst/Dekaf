@@ -91,13 +91,13 @@ public sealed class JoinGroupRequest : IKafkaRequest<JoinGroupResponse>
         if (isFlexible)
         {
             writer.WriteCompactArray(
-                Protocols.ToArray().AsSpan(),
+                Protocols,
                 (ref KafkaProtocolWriter w, JoinGroupRequestProtocol p) => p.Write(ref w, version));
         }
         else
         {
             writer.WriteArray(
-                Protocols.ToArray().AsSpan(),
+                Protocols,
                 (ref KafkaProtocolWriter w, JoinGroupRequestProtocol p) => p.Write(ref w, version));
         }
 

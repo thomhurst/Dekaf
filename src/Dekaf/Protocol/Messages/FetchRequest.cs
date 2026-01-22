@@ -111,13 +111,13 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
         if (isFlexible)
         {
             writer.WriteCompactArray(
-                Topics.ToArray().AsSpan(),
+                Topics,
                 (ref KafkaProtocolWriter w, FetchRequestTopic t) => t.Write(ref w, version));
         }
         else
         {
             writer.WriteArray(
-                Topics.ToArray().AsSpan(),
+                Topics,
                 (ref KafkaProtocolWriter w, FetchRequestTopic t) => t.Write(ref w, version));
         }
 
@@ -127,13 +127,13 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
             if (isFlexible)
             {
                 writer.WriteCompactArray(
-                    forgottenTopics.ToArray().AsSpan(),
+                    forgottenTopics,
                     (ref KafkaProtocolWriter w, ForgottenTopic t) => t.Write(ref w, version));
             }
             else
             {
                 writer.WriteArray(
-                    forgottenTopics.ToArray().AsSpan(),
+                    forgottenTopics,
                     (ref KafkaProtocolWriter w, ForgottenTopic t) => t.Write(ref w, version));
             }
         }
@@ -192,13 +192,13 @@ public sealed class FetchRequestTopic
         if (isFlexible)
         {
             writer.WriteCompactArray(
-                Partitions.ToArray().AsSpan(),
+                Partitions,
                 (ref KafkaProtocolWriter w, FetchRequestPartition p) => p.Write(ref w, version));
         }
         else
         {
             writer.WriteArray(
-                Partitions.ToArray().AsSpan(),
+                Partitions,
                 (ref KafkaProtocolWriter w, FetchRequestPartition p) => p.Write(ref w, version));
         }
 
@@ -315,13 +315,13 @@ public sealed class ForgottenTopic
         if (isFlexible)
         {
             writer.WriteCompactArray(
-                Partitions.ToArray().AsSpan(),
+                Partitions,
                 (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
         }
         else
         {
             writer.WriteArray(
-                Partitions.ToArray().AsSpan(),
+                Partitions,
                 (ref KafkaProtocolWriter w, int p) => w.WriteInt32(p));
         }
 

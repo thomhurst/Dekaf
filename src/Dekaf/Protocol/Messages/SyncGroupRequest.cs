@@ -82,13 +82,13 @@ public sealed class SyncGroupRequest : IKafkaRequest<SyncGroupResponse>
         if (isFlexible)
         {
             writer.WriteCompactArray(
-                Assignments.ToArray().AsSpan(),
+                Assignments,
                 (ref KafkaProtocolWriter w, SyncGroupRequestAssignment a) => a.Write(ref w, version));
         }
         else
         {
             writer.WriteArray(
-                Assignments.ToArray().AsSpan(),
+                Assignments,
                 (ref KafkaProtocolWriter w, SyncGroupRequestAssignment a) => a.Write(ref w, version));
         }
 

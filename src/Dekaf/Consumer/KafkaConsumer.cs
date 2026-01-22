@@ -291,7 +291,13 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         if (_coordinator is null)
             return;
 
-        var offsets = _positions.Select(kvp => new TopicPartitionOffset(kvp.Key.Topic, kvp.Key.Partition, kvp.Value));
+        // Build offsets list without LINQ to avoid enumerator allocations
+        var offsets = new List<TopicPartitionOffset>(_positions.Count);
+        foreach (var kvp in _positions)
+        {
+            offsets.Add(new TopicPartitionOffset(kvp.Key.Topic, kvp.Key.Partition, kvp.Value));
+        }
+
         await _coordinator.CommitOffsetsAsync(offsets, cancellationToken).ConfigureAwait(false);
 
         foreach (var kvp in _positions)

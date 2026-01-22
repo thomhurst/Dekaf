@@ -174,15 +174,20 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         var timestamp = message.Timestamp ?? DateTimeOffset.UtcNow;
         var timestampMs = timestamp.ToUnixTimeMilliseconds();
 
-        // Convert headers
+        // Convert headers without LINQ to avoid enumerator allocations
         IReadOnlyList<RecordHeader>? recordHeaders = null;
         if (message.Headers is not null && message.Headers.Count > 0)
         {
-            recordHeaders = message.Headers.Select(h => new RecordHeader
+            var headers = new List<RecordHeader>(message.Headers.Count);
+            foreach (var h in message.Headers)
             {
-                Key = h.Key,
-                Value = h.Value
-            }).ToList();
+                headers.Add(new RecordHeader
+                {
+                    Key = h.Key,
+                    Value = h.Value
+                });
+            }
+            recordHeaders = headers;
         }
 
         // Append to accumulator

@@ -43,14 +43,14 @@ public sealed class ListOffsetsRequest : IKafkaRequest<ListOffsetsResponse>
         if (isFlexible)
         {
             writer.WriteCompactArray(
-                Topics.ToArray().AsSpan(),
+                Topics,
                 (ref KafkaProtocolWriter w, ListOffsetsRequestTopic t) => t.Write(ref w, version));
             writer.WriteEmptyTaggedFields();
         }
         else
         {
             writer.WriteArray(
-                Topics.ToArray().AsSpan(),
+                Topics,
                 (ref KafkaProtocolWriter w, ListOffsetsRequestTopic t) => t.Write(ref w, version));
         }
     }
@@ -76,14 +76,14 @@ public sealed class ListOffsetsRequestTopic
         if (isFlexible)
         {
             writer.WriteCompactArray(
-                Partitions.ToArray().AsSpan(),
+                Partitions,
                 (ref KafkaProtocolWriter w, ListOffsetsRequestPartition p) => p.Write(ref w, version));
             writer.WriteEmptyTaggedFields();
         }
         else
         {
             writer.WriteArray(
-                Partitions.ToArray().AsSpan(),
+                Partitions,
                 (ref KafkaProtocolWriter w, ListOffsetsRequestPartition p) => p.Write(ref w, version));
         }
     }

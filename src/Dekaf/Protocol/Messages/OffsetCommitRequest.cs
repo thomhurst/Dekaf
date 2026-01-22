@@ -79,13 +79,13 @@ public sealed class OffsetCommitRequest : IKafkaRequest<OffsetCommitResponse>
         if (isFlexible)
         {
             writer.WriteCompactArray(
-                Topics.ToArray().AsSpan(),
+                Topics,
                 (ref KafkaProtocolWriter w, OffsetCommitRequestTopic t) => t.Write(ref w, version));
         }
         else
         {
             writer.WriteArray(
-                Topics.ToArray().AsSpan(),
+                Topics,
                 (ref KafkaProtocolWriter w, OffsetCommitRequestTopic t) => t.Write(ref w, version));
         }
 
@@ -116,13 +116,13 @@ public sealed class OffsetCommitRequestTopic
         if (isFlexible)
         {
             writer.WriteCompactArray(
-                Partitions.ToArray().AsSpan(),
+                Partitions,
                 (ref KafkaProtocolWriter w, OffsetCommitRequestPartition p) => p.Write(ref w, version));
         }
         else
         {
             writer.WriteArray(
-                Partitions.ToArray().AsSpan(),
+                Partitions,
                 (ref KafkaProtocolWriter w, OffsetCommitRequestPartition p) => p.Write(ref w, version));
         }
 

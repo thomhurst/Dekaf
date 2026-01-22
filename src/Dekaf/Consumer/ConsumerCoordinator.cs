@@ -468,15 +468,35 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         var connection = await _connectionPool.GetConnectionAsync(_coordinatorId, cancellationToken)
             .ConfigureAwait(false);
 
-        var topicOffsets = offsets.GroupBy(o => o.Topic).Select(g => new OffsetCommitRequestTopic
+        // Group offsets by topic without LINQ to avoid allocations
+        Dictionary<string, List<OffsetCommitRequestPartition>>? topicGroups = null;
+        foreach (var offset in offsets)
         {
-            Name = g.Key,
-            Partitions = g.Select(o => new OffsetCommitRequestPartition
+            topicGroups ??= new Dictionary<string, List<OffsetCommitRequestPartition>>();
+            if (!topicGroups.TryGetValue(offset.Topic, out var partitions))
             {
-                PartitionIndex = o.Partition,
-                CommittedOffset = o.Offset
-            }).ToList()
-        }).ToList();
+                partitions = new List<OffsetCommitRequestPartition>();
+                topicGroups[offset.Topic] = partitions;
+            }
+            partitions.Add(new OffsetCommitRequestPartition
+            {
+                PartitionIndex = offset.Partition,
+                CommittedOffset = offset.Offset
+            });
+        }
+
+        var topicOffsets = new List<OffsetCommitRequestTopic>();
+        if (topicGroups is not null)
+        {
+            foreach (var kvp in topicGroups)
+            {
+                topicOffsets.Add(new OffsetCommitRequestTopic
+                {
+                    Name = kvp.Key,
+                    Partitions = kvp.Value
+                });
+            }
+        }
 
         var request = new OffsetCommitRequest
         {
@@ -528,11 +548,31 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         var connection = await _connectionPool.GetConnectionAsync(_coordinatorId, cancellationToken)
             .ConfigureAwait(false);
 
-        var topicPartitions = partitions.GroupBy(p => p.Topic).Select(g => new OffsetFetchRequestTopic
+        // Group partitions by topic without LINQ to avoid allocations
+        Dictionary<string, List<int>>? topicGroups = null;
+        foreach (var partition in partitions)
         {
-            Name = g.Key,
-            PartitionIndexes = g.Select(p => p.Partition).ToList()
-        }).ToList();
+            topicGroups ??= new Dictionary<string, List<int>>();
+            if (!topicGroups.TryGetValue(partition.Topic, out var indexes))
+            {
+                indexes = new List<int>();
+                topicGroups[partition.Topic] = indexes;
+            }
+            indexes.Add(partition.Partition);
+        }
+
+        var topicPartitions = new List<OffsetFetchRequestTopic>();
+        if (topicGroups is not null)
+        {
+            foreach (var kvp in topicGroups)
+            {
+                topicPartitions.Add(new OffsetFetchRequestTopic
+                {
+                    Name = kvp.Key,
+                    PartitionIndexes = kvp.Value
+                });
+            }
+        }
 
         var request = new OffsetFetchRequest
         {

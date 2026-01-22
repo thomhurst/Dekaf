@@ -36,13 +36,13 @@ public sealed class CreateTopicsRequest : IKafkaRequest<CreateTopicsResponse>
         if (isFlexible)
         {
             writer.WriteCompactArray(
-                Topics.ToArray().AsSpan(),
+                Topics,
                 (ref KafkaProtocolWriter w, CreateTopicData t) => t.Write(ref w, version));
         }
         else
         {
             writer.WriteArray(
-                Topics.ToArray().AsSpan(),
+                Topics,
                 (ref KafkaProtocolWriter w, CreateTopicData t) => t.Write(ref w, version));
         }
 
@@ -107,13 +107,13 @@ public sealed class CreateTopicData
         if (isFlexible)
         {
             writer.WriteCompactArray(
-                assignments.ToArray().AsSpan(),
+                assignments,
                 (ref KafkaProtocolWriter w, CreateTopicAssignment a) => a.Write(ref w, version));
         }
         else
         {
             writer.WriteArray(
-                assignments.ToArray().AsSpan(),
+                assignments,
                 (ref KafkaProtocolWriter w, CreateTopicAssignment a) => a.Write(ref w, version));
         }
 
@@ -122,13 +122,13 @@ public sealed class CreateTopicData
         if (isFlexible)
         {
             writer.WriteCompactArray(
-                configs.ToArray().AsSpan(),
+                configs,
                 (ref KafkaProtocolWriter w, CreateTopicConfig c) => c.Write(ref w, version));
         }
         else
         {
             writer.WriteArray(
-                configs.ToArray().AsSpan(),
+                configs,
                 (ref KafkaProtocolWriter w, CreateTopicConfig c) => c.Write(ref w, version));
         }
 
@@ -163,13 +163,13 @@ public sealed class CreateTopicAssignment
         if (isFlexible)
         {
             writer.WriteCompactArray(
-                BrokerIds.ToArray().AsSpan(),
+                BrokerIds,
                 (ref KafkaProtocolWriter w, int id) => w.WriteInt32(id));
         }
         else
         {
             writer.WriteArray(
-                BrokerIds.ToArray().AsSpan(),
+                BrokerIds,
                 (ref KafkaProtocolWriter w, int id) => w.WriteInt32(id));
         }
 

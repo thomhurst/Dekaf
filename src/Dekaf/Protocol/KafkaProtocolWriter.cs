@@ -344,11 +344,38 @@ public ref struct KafkaProtocolWriter
     }
 
     /// <summary>
+    /// Writes an array with 4-byte length prefix (legacy format).
+    /// Zero-allocation overload for IReadOnlyList.
+    /// </summary>
+    public void WriteArray<T>(IReadOnlyList<T> items, WriteAction<T> writeItem)
+    {
+        WriteInt32(items.Count);
+        for (var i = 0; i < items.Count; i++)
+        {
+            writeItem(ref this, items[i]);
+        }
+    }
+
+    /// <summary>
     /// Writes a nullable array with 4-byte length prefix.
     /// </summary>
     public void WriteNullableArray<T>(ReadOnlySpan<T> items, WriteAction<T> writeItem, bool isNull)
     {
         if (isNull)
+        {
+            WriteInt32(-1);
+            return;
+        }
+        WriteArray(items, writeItem);
+    }
+
+    /// <summary>
+    /// Writes a nullable array with 4-byte length prefix.
+    /// Zero-allocation overload for IReadOnlyList.
+    /// </summary>
+    public void WriteNullableArray<T>(IReadOnlyList<T>? items, WriteAction<T> writeItem)
+    {
+        if (items is null)
         {
             WriteInt32(-1);
             return;
@@ -370,11 +397,38 @@ public ref struct KafkaProtocolWriter
     }
 
     /// <summary>
+    /// Writes a compact array with unsigned varint length prefix (flexible format).
+    /// Zero-allocation overload for IReadOnlyList.
+    /// </summary>
+    public void WriteCompactArray<T>(IReadOnlyList<T> items, WriteAction<T> writeItem)
+    {
+        WriteUnsignedVarInt(items.Count + 1);
+        for (var i = 0; i < items.Count; i++)
+        {
+            writeItem(ref this, items[i]);
+        }
+    }
+
+    /// <summary>
     /// Writes a compact nullable array.
     /// </summary>
     public void WriteCompactNullableArray<T>(ReadOnlySpan<T> items, WriteAction<T> writeItem, bool isNull)
     {
         if (isNull)
+        {
+            WriteUnsignedVarInt(0);
+            return;
+        }
+        WriteCompactArray(items, writeItem);
+    }
+
+    /// <summary>
+    /// Writes a compact nullable array.
+    /// Zero-allocation overload for IReadOnlyList.
+    /// </summary>
+    public void WriteCompactNullableArray<T>(IReadOnlyList<T>? items, WriteAction<T> writeItem)
+    {
+        if (items is null)
         {
             WriteUnsignedVarInt(0);
             return;

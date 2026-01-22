@@ -50,7 +50,7 @@ public sealed class FindCoordinatorRequest : IKafkaRequest<FindCoordinatorRespon
         {
             var keys = CoordinatorKeys ?? [Key];
             writer.WriteCompactArray(
-                keys.ToArray().AsSpan(),
+                keys,
                 (ref KafkaProtocolWriter w, string k) => w.WriteCompactString(k));
         }
 

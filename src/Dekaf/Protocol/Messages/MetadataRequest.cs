@@ -51,13 +51,13 @@ public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
         else if (isFlexible)
         {
             writer.WriteCompactArray(
-                Topics.ToArray().AsSpan(),
+                Topics,
                 (ref KafkaProtocolWriter w, MetadataRequestTopic t) => t.Write(ref w, version));
         }
         else
         {
             writer.WriteArray(
-                Topics.ToArray().AsSpan(),
+                Topics,
                 (ref KafkaProtocolWriter w, MetadataRequestTopic t) => t.Write(ref w, version));
         }
 
