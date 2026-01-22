@@ -203,9 +203,10 @@ public sealed class RecordHeader
     /// </summary>
     public void Write(ref KafkaProtocolWriter writer)
     {
-        var keyBytes = System.Text.Encoding.UTF8.GetBytes(Key);
-        writer.WriteVarInt(keyBytes.Length);
-        writer.WriteRawBytes(keyBytes);
+        // Write key with VarInt length prefix - use the writer's string encoding support
+        var keyByteCount = System.Text.Encoding.UTF8.GetByteCount(Key);
+        writer.WriteVarInt(keyByteCount);
+        writer.WriteStringContent(Key);
 
         if (IsValueNull)
         {

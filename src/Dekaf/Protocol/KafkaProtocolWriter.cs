@@ -208,6 +208,22 @@ public ref struct KafkaProtocolWriter
     }
 
     /// <summary>
+    /// Writes a string's UTF-8 bytes without any length prefix.
+    /// Use when length is written separately (e.g., with VarInt).
+    /// </summary>
+    public void WriteStringContent(string value)
+    {
+        var byteCount = Encoding.UTF8.GetByteCount(value);
+        if (byteCount > 0)
+        {
+            var span = _output.GetSpan(byteCount);
+            Encoding.UTF8.GetBytes(value, span);
+            _output.Advance(byteCount);
+            _bytesWritten += byteCount;
+        }
+    }
+
+    /// <summary>
     /// Writes a string with 2-byte length prefix (legacy format) from a span.
     /// </summary>
     public void WriteString(ReadOnlySpan<char> value)

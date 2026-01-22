@@ -250,13 +250,16 @@ internal sealed class PartitionBatch
                 BaseTimestamp = _baseTimestamp,
                 MaxTimestamp = _baseTimestamp + (_records.Count > 0 ? _records[^1].TimestampDelta : 0),
                 LastOffsetDelta = _records.Count - 1,
-                Records = _records.ToList()
+                // Pass the list directly - PartitionBatch is discarded after Complete()
+                // so no defensive copy needed
+                Records = _records
             };
 
+            // Pass list directly - PartitionBatch is discarded after Complete()
             return new ReadyBatch(
                 _topicPartition,
                 batch,
-                _completionSources.ToList());
+                _completionSources);
         }
     }
 

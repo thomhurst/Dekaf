@@ -123,6 +123,25 @@ public sealed class ProduceRequestTopicData
 /// </summary>
 public sealed class ProduceRequestPartitionData
 {
+    // Thread-local reusable buffer for record serialization
+    [ThreadStatic]
+    private static System.Buffers.ArrayBufferWriter<byte>? t_recordsBuffer;
+
+    private static System.Buffers.ArrayBufferWriter<byte> GetRecordsBuffer()
+    {
+        var buffer = t_recordsBuffer;
+        if (buffer is null)
+        {
+            buffer = new System.Buffers.ArrayBufferWriter<byte>(8192);
+            t_recordsBuffer = buffer;
+        }
+        else
+        {
+            buffer.Clear();
+        }
+        return buffer;
+    }
+
     /// <summary>
     /// Partition index.
     /// </summary>
@@ -139,8 +158,8 @@ public sealed class ProduceRequestPartitionData
 
         writer.WriteInt32(Index);
 
-        // Serialize records to a buffer first to get the length
-        var recordsBuffer = new System.Buffers.ArrayBufferWriter<byte>();
+        // Serialize records to a thread-local buffer to avoid per-partition allocation
+        var recordsBuffer = GetRecordsBuffer();
         foreach (var batch in Records)
         {
             batch.Write(recordsBuffer);

@@ -40,6 +40,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private volatile short _produceApiVersion = -1;
     private volatile bool _disposed;
 
+    // Thread-local reusable buffers for serialization to avoid per-message allocations
+    [ThreadStatic]
+    private static ArrayBufferWriter<byte>? t_serializationBuffer;
+
     public KafkaProducer(
         ProducerOptions options,
         ISerializer<TKey> keySerializer,
@@ -377,12 +381,27 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
     }
 
+    private static ArrayBufferWriter<byte> GetSerializationBuffer()
+    {
+        var buffer = t_serializationBuffer;
+        if (buffer is null)
+        {
+            buffer = new ArrayBufferWriter<byte>(256);
+            t_serializationBuffer = buffer;
+        }
+        else
+        {
+            buffer.Clear();
+        }
+        return buffer;
+    }
+
     private byte[]? SerializeKey(TKey? key, string topic, Headers? headers)
     {
         if (key is null)
             return null;
 
-        var buffer = new ArrayBufferWriter<byte>();
+        var buffer = GetSerializationBuffer();
         var context = new SerializationContext
         {
             Topic = topic,
@@ -395,7 +414,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     private byte[] SerializeValue(TValue value, string topic, Headers? headers)
     {
-        var buffer = new ArrayBufferWriter<byte>();
+        var buffer = GetSerializationBuffer();
         var context = new SerializationContext
         {
             Topic = topic,

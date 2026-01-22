@@ -9,6 +9,42 @@ namespace Dekaf.Protocol.Records;
 /// </summary>
 public sealed class RecordBatch
 {
+    // Thread-local reusable buffers for serialization to avoid per-batch allocations
+    [ThreadStatic]
+    private static ArrayBufferWriter<byte>? t_recordsBuffer;
+    [ThreadStatic]
+    private static ArrayBufferWriter<byte>? t_crcBuffer;
+
+    private static ArrayBufferWriter<byte> GetRecordsBuffer()
+    {
+        var buffer = t_recordsBuffer;
+        if (buffer is null)
+        {
+            buffer = new ArrayBufferWriter<byte>(4096);
+            t_recordsBuffer = buffer;
+        }
+        else
+        {
+            buffer.Clear();
+        }
+        return buffer;
+    }
+
+    private static ArrayBufferWriter<byte> GetCrcBuffer()
+    {
+        var buffer = t_crcBuffer;
+        if (buffer is null)
+        {
+            buffer = new ArrayBufferWriter<byte>(4096);
+            t_crcBuffer = buffer;
+        }
+        else
+        {
+            buffer.Clear();
+        }
+        return buffer;
+    }
+
     public long BaseOffset { get; init; }
     public int BatchLength { get; init; }
     public int PartitionLeaderEpoch { get; init; } = -1;
@@ -36,7 +72,8 @@ public sealed class RecordBatch
         var writer = new KafkaProtocolWriter(output);
 
         // First, serialize records to calculate length and CRC
-        var recordsBuffer = new ArrayBufferWriter<byte>();
+        // Use thread-local buffer to avoid per-batch allocation
+        var recordsBuffer = GetRecordsBuffer();
         var recordsWriter = new KafkaProtocolWriter(recordsBuffer);
 
         foreach (var record in Records)
@@ -66,7 +103,8 @@ public sealed class RecordBatch
         writer.WriteUInt8(Magic);
 
         // Calculate CRC32C over everything after the CRC field
-        var crcBuffer = new ArrayBufferWriter<byte>();
+        // Use thread-local buffer to avoid per-batch allocation
+        var crcBuffer = GetCrcBuffer();
         var crcWriter = new KafkaProtocolWriter(crcBuffer);
 
         var attributes = (short)Attributes;
