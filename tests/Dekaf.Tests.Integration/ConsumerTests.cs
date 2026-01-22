@@ -45,9 +45,10 @@ public class ConsumerTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Topic).IsEqualTo(topic);
-        await Assert.That(result.Key).IsEqualTo("test-key");
-        await Assert.That(result.Value).IsEqualTo("test-value");
+        var r = result!.Value;
+        await Assert.That(r.Topic).IsEqualTo(topic);
+        await Assert.That(r.Key).IsEqualTo("test-key");
+        await Assert.That(r.Value).IsEqualTo("test-value");
     }
 
     [Test]
@@ -132,8 +133,9 @@ public class ConsumerTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Partition).IsEqualTo(1);
-        await Assert.That(result.Value).IsEqualTo("partition-1-message");
+        var r = result!.Value;
+        await Assert.That(r.Partition).IsEqualTo(1);
+        await Assert.That(r.Value).IsEqualTo("partition-1-message");
     }
 
     [Test]
@@ -175,8 +177,9 @@ public class ConsumerTests(KafkaTestContainer kafka)
 
         // Assert - should get message at offset 3
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Offset).IsEqualTo(3);
-        await Assert.That(result.Value).IsEqualTo("value-3");
+        var r = result!.Value;
+        await Assert.That(r.Offset).IsEqualTo(3);
+        await Assert.That(r.Value).IsEqualTo("value-3");
     }
 
     [Test]
@@ -216,7 +219,7 @@ public class ConsumerTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Offset).IsEqualTo(0);
+        await Assert.That(result!.Value.Offset).IsEqualTo(0);
     }
 
     [Test]
@@ -286,7 +289,7 @@ public class ConsumerTests(KafkaTestContainer kafka)
 
         // Assert - should get second message (first was committed)
         await Assert.That(result2).IsNotNull();
-        await Assert.That(result2!.Value).IsEqualTo("value2");
+        await Assert.That(result2!.Value.Value).IsEqualTo("value2");
     }
 
     [Test]
@@ -384,10 +387,11 @@ public class ConsumerTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Headers).IsNotNull();
-        await Assert.That(result.Headers!.Count).IsEqualTo(2);
+        var r = result!.Value;
+        await Assert.That(r.Headers).IsNotNull();
+        await Assert.That(r.Headers!.Count).IsEqualTo(2);
 
-        var header1 = result.Headers.FirstOrDefault(h => h.Key == "header1");
+        var header1 = r.Headers.FirstOrDefault(h => h.Key == "header1");
         await Assert.That(header1).IsNotNull();
         await Assert.That(System.Text.Encoding.UTF8.GetString(header1!.Value.Span)).IsEqualTo("headerValue1");
     }
@@ -897,8 +901,9 @@ public class ConsumerTests(KafkaTestContainer kafka)
 
         // Assert - should get message at offset 1, not offset 5
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Offset).IsEqualTo(1);
-        await Assert.That(result.Value).IsEqualTo("value-1");
+        var r = result!.Value;
+        await Assert.That(r.Offset).IsEqualTo(1);
+        await Assert.That(r.Value).IsEqualTo("value-1");
     }
 
     [Test]
@@ -940,7 +945,8 @@ public class ConsumerTests(KafkaTestContainer kafka)
 
         // Assert - should get message at offset 7 (last seek)
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Offset).IsEqualTo(7);
-        await Assert.That(result.Value).IsEqualTo("value-7");
+        var r = result!.Value;
+        await Assert.That(r.Offset).IsEqualTo(7);
+        await Assert.That(r.Value).IsEqualTo("value-7");
     }
 }

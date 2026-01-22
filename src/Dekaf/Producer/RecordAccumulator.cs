@@ -6,6 +6,67 @@ using Dekaf.Protocol.Records;
 namespace Dekaf.Producer;
 
 /// <summary>
+/// Represents memory rented from ArrayPool that must be returned when no longer needed.
+/// </summary>
+public readonly struct PooledMemory
+{
+    private readonly byte[]? _array;
+    private readonly int _length;
+    private readonly bool _isNull;
+
+    /// <summary>
+    /// Creates a null PooledMemory instance.
+    /// </summary>
+    public static PooledMemory Null => new(null, 0, isNull: true);
+
+    /// <summary>
+    /// Creates a PooledMemory from a rented array.
+    /// </summary>
+    public PooledMemory(byte[]? array, int length, bool isNull = false)
+    {
+        _array = array;
+        _length = length;
+        _isNull = isNull;
+    }
+
+    /// <summary>
+    /// Whether this represents a null key/value.
+    /// </summary>
+    public bool IsNull => _isNull;
+
+    /// <summary>
+    /// The length of the valid data in the array.
+    /// </summary>
+    public int Length => _length;
+
+    /// <summary>
+    /// Gets the underlying array (may be larger than Length).
+    /// </summary>
+    public byte[]? Array => _array;
+
+    /// <summary>
+    /// Gets the data as ReadOnlyMemory.
+    /// </summary>
+    public ReadOnlyMemory<byte> Memory => _array is null ? ReadOnlyMemory<byte>.Empty : _array.AsMemory(0, _length);
+
+    /// <summary>
+    /// Gets the data as ReadOnlySpan.
+    /// </summary>
+    public ReadOnlySpan<byte> Span => _array is null ? ReadOnlySpan<byte>.Empty : _array.AsSpan(0, _length);
+
+    /// <summary>
+    /// Returns the array to the shared pool.
+    /// </summary>
+    public void Return()
+    {
+        if (_array is not null)
+        {
+            ArrayPool<byte>.Shared.Return(_array);
+        }
+    }
+}
+
+/// <summary>
 /// Accumulates records into batches for efficient sending.
 /// </summary>
 public sealed class RecordAccumulator : IAsyncDisposable
@@ -29,12 +90,13 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Appends a record to the appropriate batch.
+    /// Key and value data are pooled - the batch will return them to the pool when complete.
     /// </summary>
     public async ValueTask<RecordAppendResult> AppendAsync(
         TopicPartition topicPartition,
         long timestamp,
-        byte[]? key,
-        byte[]? value,
+        PooledMemory key,
+        PooledMemory value,
         IReadOnlyList<RecordHeader>? headers,
         CancellationToken cancellationToken)
     {
@@ -160,35 +222,36 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
 /// <summary>
 /// A batch of records for a single partition.
+/// Tracks pooled arrays that are returned when the batch completes.
 /// </summary>
 internal sealed class PartitionBatch
 {
     private readonly TopicPartition _topicPartition;
     private readonly ProducerOptions _options;
-    private readonly ArrayBufferWriter<byte> _buffer;
     private readonly List<Record> _records = [];
     private readonly List<TaskCompletionSource<RecordMetadata>> _completionSources = [];
+    private readonly List<byte[]> _pooledArrays = []; // Arrays to return to pool
     private readonly object _lock = new();
 
     private long _baseTimestamp;
     private int _offsetDelta;
+    private int _estimatedSize;
     private DateTimeOffset _createdAt;
 
     public PartitionBatch(TopicPartition topicPartition, ProducerOptions options)
     {
         _topicPartition = topicPartition;
         _options = options;
-        _buffer = new ArrayBufferWriter<byte>(options.BatchSize);
         _createdAt = DateTimeOffset.UtcNow;
     }
 
     public int RecordCount => _records.Count;
-    public int EstimatedSize => _buffer.WrittenCount;
+    public int EstimatedSize => _estimatedSize;
 
     public RecordAppendResult TryAppend(
         long timestamp,
-        byte[]? key,
-        byte[]? value,
+        PooledMemory key,
+        PooledMemory value,
         IReadOnlyList<RecordHeader>? headers)
     {
         lock (_lock)
@@ -198,24 +261,37 @@ internal sealed class PartitionBatch
                 _baseTimestamp = timestamp;
             }
 
+            // Estimate size
+            var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
+            if (_estimatedSize + recordSize > _options.BatchSize && _records.Count > 0)
+            {
+                return new RecordAppendResult(false, null);
+            }
+
+            // Track pooled arrays for returning to pool later
+            if (key.Array is not null)
+            {
+                _pooledArrays.Add(key.Array);
+            }
+            if (value.Array is not null)
+            {
+                _pooledArrays.Add(value.Array);
+            }
+
             var timestampDelta = (int)(timestamp - _baseTimestamp);
             var record = new Record
             {
                 TimestampDelta = timestampDelta,
                 OffsetDelta = _offsetDelta,
-                Key = key,
-                Value = value,
+                Key = key.Memory,
+                IsKeyNull = key.IsNull,
+                Value = value.Memory,
+                IsValueNull = false,
                 Headers = headers
             };
 
-            // Estimate size
-            var estimatedSize = EstimateRecordSize(key, value, headers);
-            if (_buffer.WrittenCount + estimatedSize > _options.BatchSize && _records.Count > 0)
-            {
-                return new RecordAppendResult(false, null);
-            }
-
             _records.Add(record);
+            _estimatedSize += recordSize;
 
             var tcs = new TaskCompletionSource<RecordMetadata>(TaskCreationOptions.RunContinuationsAsynchronously);
             _completionSources.Add(tcs);
@@ -256,18 +332,20 @@ internal sealed class PartitionBatch
             };
 
             // Pass list directly - PartitionBatch is discarded after Complete()
+            // Also pass pooled arrays so they can be returned when the batch is done
             return new ReadyBatch(
                 _topicPartition,
                 batch,
-                _completionSources);
+                _completionSources,
+                _pooledArrays);
         }
     }
 
-    private static int EstimateRecordSize(byte[]? key, byte[]? value, IReadOnlyList<RecordHeader>? headers)
+    private static int EstimateRecordSize(int keyLength, int valueLength, IReadOnlyList<RecordHeader>? headers)
     {
-        var size = 20; // Base overhead
-        size += key?.Length ?? 0;
-        size += value?.Length ?? 0;
+        var size = 20; // Base overhead for varint lengths, timestamp delta, offset delta, etc.
+        size += keyLength;
+        size += valueLength;
 
         if (headers is not null)
         {
@@ -288,42 +366,68 @@ public readonly record struct RecordAppendResult(bool Success, Task<RecordMetada
 
 /// <summary>
 /// A batch ready to be sent.
+/// Returns pooled arrays to ArrayPool when complete.
 /// </summary>
 public sealed class ReadyBatch
 {
     public TopicPartition TopicPartition { get; }
     public RecordBatch RecordBatch { get; }
     public IReadOnlyList<TaskCompletionSource<RecordMetadata>> CompletionSources { get; }
+    private readonly IReadOnlyList<byte[]> _pooledArrays;
 
     public ReadyBatch(
         TopicPartition topicPartition,
         RecordBatch recordBatch,
-        IReadOnlyList<TaskCompletionSource<RecordMetadata>> completionSources)
+        IReadOnlyList<TaskCompletionSource<RecordMetadata>> completionSources,
+        IReadOnlyList<byte[]> pooledArrays)
     {
         TopicPartition = topicPartition;
         RecordBatch = recordBatch;
         CompletionSources = completionSources;
+        _pooledArrays = pooledArrays;
     }
 
     public void Complete(long baseOffset, DateTimeOffset timestamp)
     {
-        for (var i = 0; i < CompletionSources.Count; i++)
+        try
         {
-            CompletionSources[i].TrySetResult(new RecordMetadata
+            for (var i = 0; i < CompletionSources.Count; i++)
             {
-                Topic = TopicPartition.Topic,
-                Partition = TopicPartition.Partition,
-                Offset = baseOffset + i,
-                Timestamp = timestamp
-            });
+                CompletionSources[i].TrySetResult(new RecordMetadata
+                {
+                    Topic = TopicPartition.Topic,
+                    Partition = TopicPartition.Partition,
+                    Offset = baseOffset + i,
+                    Timestamp = timestamp
+                });
+            }
+        }
+        finally
+        {
+            ReturnPooledArrays();
         }
     }
 
     public void Fail(Exception exception)
     {
-        foreach (var tcs in CompletionSources)
+        try
         {
-            tcs.TrySetException(exception);
+            foreach (var tcs in CompletionSources)
+            {
+                tcs.TrySetException(exception);
+            }
+        }
+        finally
+        {
+            ReturnPooledArrays();
+        }
+    }
+
+    private void ReturnPooledArrays()
+    {
+        foreach (var array in _pooledArrays)
+        {
+            ArrayPool<byte>.Shared.Return(array);
         }
     }
 }

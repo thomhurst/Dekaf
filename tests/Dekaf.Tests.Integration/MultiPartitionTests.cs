@@ -104,8 +104,9 @@ public class MultiPartitionTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Partition).IsEqualTo(1);
-        await Assert.That(result.Value).IsEqualTo("value-partition-1");
+        var r = result!.Value;
+        await Assert.That(r.Partition).IsEqualTo(1);
+        await Assert.That(r.Value).IsEqualTo("value-partition-1");
     }
 
     [Test]

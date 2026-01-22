@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Dekaf.Compression;
 using Dekaf.Metadata;
@@ -42,7 +43,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     // Thread-local reusable buffers for serialization to avoid per-message allocations
     [ThreadStatic]
-    private static ArrayBufferWriter<byte>? t_serializationBuffer;
+    private static ArrayBufferWriter<byte>? t_keySerializationBuffer;
+    [ThreadStatic]
+    private static ArrayBufferWriter<byte>? t_valueSerializationBuffer;
 
     public KafkaProducer(
         ProducerOptions options,
@@ -166,13 +169,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             throw new InvalidOperationException($"Topic '{message.Topic}' has no partitions. Error code: {topicInfo.ErrorCode}");
         }
 
-        // Serialize key and value
-        var keyBytes = SerializeKey(message.Key, message.Topic, message.Headers);
-        var valueBytes = SerializeValue(message.Value, message.Topic, message.Headers);
+        // Serialize key and value to pooled memory (returned to pool when batch completes)
+        var keyIsNull = message.Key is null;
+        var key = keyIsNull ? PooledMemory.Null : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
+        var value = SerializeValueToPooled(message.Value, message.Topic, message.Headers);
 
         // Determine partition
         var partition = message.Partition
-            ?? _partitioner.Partition(message.Topic, keyBytes.AsSpan(), keyBytes is null, topicInfo.PartitionCount);
+            ?? _partitioner.Partition(message.Topic, key.Span, keyIsNull, topicInfo.PartitionCount);
 
         // Get timestamp
         var timestamp = message.Timestamp ?? DateTimeOffset.UtcNow;
@@ -194,12 +198,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             recordHeaders = headers;
         }
 
-        // Append to accumulator
+        // Append to accumulator (pooled memory is returned when batch completes)
         var result = await _accumulator.AppendAsync(
             new TopicPartition(message.Topic, partition),
             timestampMs,
-            keyBytes,
-            valueBytes,
+            key,
+            value,
             recordHeaders,
             cancellationToken).ConfigureAwait(false);
 
@@ -381,13 +385,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
     }
 
-    private static ArrayBufferWriter<byte> GetSerializationBuffer()
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ArrayBufferWriter<byte> GetKeySerializationBuffer()
     {
-        var buffer = t_serializationBuffer;
+        var buffer = t_keySerializationBuffer;
         if (buffer is null)
         {
             buffer = new ArrayBufferWriter<byte>(256);
-            t_serializationBuffer = buffer;
+            t_keySerializationBuffer = buffer;
         }
         else
         {
@@ -396,12 +401,28 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         return buffer;
     }
 
-    private byte[]? SerializeKey(TKey? key, string topic, Headers? headers)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ArrayBufferWriter<byte> GetValueSerializationBuffer()
     {
-        if (key is null)
-            return null;
+        var buffer = t_valueSerializationBuffer;
+        if (buffer is null)
+        {
+            buffer = new ArrayBufferWriter<byte>(256);
+            t_valueSerializationBuffer = buffer;
+        }
+        else
+        {
+            buffer.Clear();
+        }
+        return buffer;
+    }
 
-        var buffer = GetSerializationBuffer();
+    /// <summary>
+    /// Serializes the key into pooled memory that will be returned to the pool when the batch completes.
+    /// </summary>
+    private PooledMemory SerializeKeyToPooled(TKey key, string topic, Headers? headers)
+    {
+        var buffer = GetKeySerializationBuffer();
         var context = new SerializationContext
         {
             Topic = topic,
@@ -409,12 +430,20 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             Headers = headers
         };
         _keySerializer.Serialize(key, buffer, context);
-        return buffer.WrittenSpan.ToArray();
+
+        // Rent from pool and copy serialized data
+        var length = buffer.WrittenCount;
+        var array = ArrayPool<byte>.Shared.Rent(length);
+        buffer.WrittenSpan.CopyTo(array);
+        return new PooledMemory(array, length);
     }
 
-    private byte[] SerializeValue(TValue value, string topic, Headers? headers)
+    /// <summary>
+    /// Serializes the value into pooled memory that will be returned to the pool when the batch completes.
+    /// </summary>
+    private PooledMemory SerializeValueToPooled(TValue value, string topic, Headers? headers)
     {
-        var buffer = GetSerializationBuffer();
+        var buffer = GetValueSerializationBuffer();
         var context = new SerializationContext
         {
             Topic = topic,
@@ -422,7 +451,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             Headers = headers
         };
         _valueSerializer.Serialize(value, buffer, context);
-        return buffer.WrittenSpan.ToArray();
+
+        // Rent from pool and copy serialized data
+        var length = buffer.WrittenCount;
+        var array = ArrayPool<byte>.Shared.Rent(length);
+        buffer.WrittenSpan.CopyTo(array);
+        return new PooledMemory(array, length);
     }
 
     public async ValueTask DisposeAsync()

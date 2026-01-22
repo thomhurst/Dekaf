@@ -270,7 +270,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Value).IsEqualTo("value");
+        await Assert.That(result!.Value.Value).IsEqualTo("value");
     }
 
     [Test]
@@ -315,8 +315,9 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Headers).IsNotNull();
-        await Assert.That(result.Headers!.Count).IsEqualTo(1);
+        var r = result!.Value;
+        await Assert.That(r.Headers).IsNotNull();
+        await Assert.That(r.Headers!.Count).IsEqualTo(1);
     }
 
     [Test]

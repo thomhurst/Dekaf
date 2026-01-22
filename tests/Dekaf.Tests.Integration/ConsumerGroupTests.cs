@@ -219,8 +219,9 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
 
         // Assert - should start from offset 3 (after committed offset)
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Offset).IsEqualTo(3);
-        await Assert.That(result.Value).IsEqualTo("value-3");
+        var r = result!.Value;
+        await Assert.That(r.Offset).IsEqualTo(3);
+        await Assert.That(r.Value).IsEqualTo("value-3");
     }
 
     [Test]
@@ -384,8 +385,9 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Partition).IsEqualTo(1);
-        await Assert.That(result.Value).IsEqualTo("value");
+        var r = result!.Value;
+        await Assert.That(r.Partition).IsEqualTo(1);
+        await Assert.That(r.Value).IsEqualTo("value");
     }
 
     [Test]
@@ -424,7 +426,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             var result = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
             await Assert.That(result).IsNotNull();
-            await Assert.That(result!.Value).IsEqualTo("value1");
+            await Assert.That(result!.Value.Value).IsEqualTo("value1");
 
             // Commit the offset so consumer2 starts from the next message
             await consumer1.CommitAsync([new TopicPartitionOffset(topic, 0, 1)]);
@@ -455,7 +457,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         var result2 = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts2.Token);
 
         await Assert.That(result2).IsNotNull();
-        await Assert.That(result2!.Value).IsEqualTo("value2");
+        await Assert.That(result2!.Value.Value).IsEqualTo("value2");
     }
 
     [Test]
@@ -615,7 +617,8 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
 
         // Assert - should get first message again
         await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Offset).IsEqualTo(0);
-        await Assert.That(result.Value).IsEqualTo("value-0");
+        var r = result!.Value;
+        await Assert.That(r.Offset).IsEqualTo(0);
+        await Assert.That(r.Value).IsEqualTo("value-0");
     }
 }

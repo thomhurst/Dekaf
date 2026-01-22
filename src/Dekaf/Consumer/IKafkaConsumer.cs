@@ -118,25 +118,26 @@ public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
 
 /// <summary>
 /// Result of consuming a message.
+/// This is a struct to avoid heap allocations in the hot path.
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public sealed record ConsumeResult<TKey, TValue>
+public readonly record struct ConsumeResult<TKey, TValue>
 {
     /// <summary>
     /// The topic.
     /// </summary>
-    public required string Topic { get; init; }
+    public string Topic { get; init; }
 
     /// <summary>
     /// The partition.
     /// </summary>
-    public required int Partition { get; init; }
+    public int Partition { get; init; }
 
     /// <summary>
     /// The offset.
     /// </summary>
-    public required long Offset { get; init; }
+    public long Offset { get; init; }
 
     /// <summary>
     /// The deserialized key.
@@ -146,7 +147,7 @@ public sealed record ConsumeResult<TKey, TValue>
     /// <summary>
     /// The deserialized value.
     /// </summary>
-    public required TValue Value { get; init; }
+    public TValue Value { get; init; }
 
     /// <summary>
     /// The message headers.
@@ -156,7 +157,7 @@ public sealed record ConsumeResult<TKey, TValue>
     /// <summary>
     /// The message timestamp.
     /// </summary>
-    public required DateTimeOffset Timestamp { get; init; }
+    public DateTimeOffset Timestamp { get; init; }
 
     /// <summary>
     /// The timestamp type.

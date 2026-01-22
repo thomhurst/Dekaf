@@ -4,8 +4,9 @@ namespace Dekaf.Protocol.Records;
 /// A single record within a RecordBatch.
 /// Uses variable-length encoding for efficiency.
 /// Key and Value use ReadOnlyMemory to avoid copying data from the network buffer.
+/// This is a struct to avoid heap allocations in the hot path.
 /// </summary>
-public sealed class Record
+public readonly record struct Record
 {
     public int Length { get; init; }
     public byte Attributes { get; init; }
@@ -187,10 +188,11 @@ public sealed class Record
 /// <summary>
 /// A header within a record.
 /// Uses ReadOnlyMemory for zero-copy value storage.
+/// This is a struct to avoid heap allocations in the hot path.
 /// </summary>
-public sealed class RecordHeader
+public readonly record struct RecordHeader
 {
-    public required string Key { get; init; }
+    public string Key { get; init; }
     public ReadOnlyMemory<byte> Value { get; init; }
 
     /// <summary>

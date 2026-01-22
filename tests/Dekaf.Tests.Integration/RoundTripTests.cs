@@ -44,11 +44,12 @@ public class RoundTripTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(consumed).IsNotNull();
-        await Assert.That(consumed!.Topic).IsEqualTo(topic);
-        await Assert.That(consumed.Key).IsEqualTo("round-trip-key");
-        await Assert.That(consumed.Value).IsEqualTo("round-trip-value");
-        await Assert.That(consumed.Partition).IsEqualTo(producedMetadata.Partition);
-        await Assert.That(consumed.Offset).IsEqualTo(producedMetadata.Offset);
+        var c = consumed!.Value;
+        await Assert.That(c.Topic).IsEqualTo(topic);
+        await Assert.That(c.Key).IsEqualTo("round-trip-key");
+        await Assert.That(c.Value).IsEqualTo("round-trip-value");
+        await Assert.That(c.Partition).IsEqualTo(producedMetadata.Partition);
+        await Assert.That(c.Offset).IsEqualTo(producedMetadata.Offset);
     }
 
     [Test]
@@ -93,10 +94,11 @@ public class RoundTripTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(consumed).IsNotNull();
-        await Assert.That(consumed!.Headers).IsNotNull();
-        await Assert.That(consumed.Headers!.Count).IsEqualTo(3);
+        var c = consumed!.Value;
+        await Assert.That(c.Headers).IsNotNull();
+        await Assert.That(c.Headers!.Count).IsEqualTo(3);
 
-        var correlationId = consumed.Headers.FirstOrDefault(h => h.Key == "correlationId");
+        var correlationId = c.Headers.FirstOrDefault(h => h.Key == "correlationId");
         await Assert.That(correlationId).IsNotNull();
         await Assert.That(System.Text.Encoding.UTF8.GetString(correlationId!.Value.Span)).IsEqualTo("abc123");
     }
@@ -135,8 +137,9 @@ public class RoundTripTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(consumed).IsNotNull();
-        await Assert.That(consumed!.Key).IsNull();
-        await Assert.That(consumed.Value).IsEqualTo("value-with-null-key");
+        var c = consumed!.Value;
+        await Assert.That(c.Key).IsNull();
+        await Assert.That(c.Value).IsEqualTo("value-with-null-key");
     }
 
     [Test]
@@ -173,8 +176,9 @@ public class RoundTripTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(consumed).IsNotNull();
-        await Assert.That(consumed!.Key).IsEqualTo("key");
-        await Assert.That(consumed.Value).IsEqualTo(string.Empty);
+        var c = consumed!.Value;
+        await Assert.That(c.Key).IsEqualTo("key");
+        await Assert.That(c.Value).IsEqualTo(string.Empty);
     }
 
     [Test]
@@ -212,8 +216,9 @@ public class RoundTripTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(consumed).IsNotNull();
-        await Assert.That(consumed!.Value).IsEqualTo(largeValue);
-        await Assert.That(consumed.Value.Length).IsEqualTo(50_000);
+        var c = consumed!.Value;
+        await Assert.That(c.Value).IsEqualTo(largeValue);
+        await Assert.That(c.Value.Length).IsEqualTo(50_000);
     }
 
     [Test]
@@ -304,8 +309,9 @@ public class RoundTripTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(consumed).IsNotNull();
-        await Assert.That(consumed!.Key).IsEqualTo(unicodeKey);
-        await Assert.That(consumed.Value).IsEqualTo(unicodeValue);
+        var c = consumed!.Value;
+        await Assert.That(c.Key).IsEqualTo(unicodeKey);
+        await Assert.That(c.Value).IsEqualTo(unicodeValue);
     }
 
     [Test]
@@ -343,8 +349,9 @@ public class RoundTripTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(consumed).IsNotNull();
-        await Assert.That(consumed!.Partition).IsEqualTo(2);
-        await Assert.That(consumed.Value).IsEqualTo("value-partition-2");
+        var c = consumed!.Value;
+        await Assert.That(c.Partition).IsEqualTo(2);
+        await Assert.That(c.Value).IsEqualTo("value-partition-2");
         await Assert.That(metadata.Partition).IsEqualTo(2);
     }
 
@@ -384,7 +391,7 @@ public class RoundTripTests(KafkaTestContainer kafka)
 
         // Assert - timestamp should be close (within 1 second due to millisecond precision)
         await Assert.That(consumed).IsNotNull();
-        var diff = Math.Abs((consumed!.Timestamp - timestamp).TotalMilliseconds);
+        var diff = Math.Abs((consumed!.Value.Timestamp - timestamp).TotalMilliseconds);
         await Assert.That(diff).IsLessThan(1000);
     }
 
@@ -492,7 +499,8 @@ public class RoundTripTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(consumed).IsNotNull();
-        await Assert.That(consumed!.Key).IsEquivalentTo(keyBytes);
-        await Assert.That(consumed.Value).IsEquivalentTo(valueBytes);
+        var c = consumed!.Value;
+        await Assert.That(c.Key).IsEquivalentTo(keyBytes);
+        await Assert.That(c.Value).IsEquivalentTo(valueBytes);
     }
 }
