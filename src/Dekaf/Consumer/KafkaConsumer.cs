@@ -765,8 +765,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         var headers = new Headers(recordHeaders.Count);
         foreach (var h in recordHeaders)
         {
-            // Convert ReadOnlyMemory<byte> to byte[]? for Header
-            headers.Add(new Header(h.Key, h.IsValueNull ? null : h.Value.ToArray()));
+            // Use zero-copy constructor with ReadOnlyMemory<byte>
+            headers.Add(new Header(h.Key, h.Value, h.IsValueNull));
         }
         return headers;
     }

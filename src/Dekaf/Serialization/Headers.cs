@@ -119,16 +119,28 @@ public sealed class Headers : IEnumerable<Header>
 
 /// <summary>
 /// Represents a single header in a Kafka record.
+/// Uses ReadOnlyMemory to avoid copying header data.
 /// </summary>
 public sealed class Header
 {
     /// <summary>
-    /// Creates a new header.
+    /// Creates a new header with a byte array value.
     /// </summary>
     public Header(string key, byte[]? value)
     {
         Key = key;
+        Value = value.AsMemory();
+        IsValueNull = value is null;
+    }
+
+    /// <summary>
+    /// Creates a new header with a memory value (zero-copy).
+    /// </summary>
+    public Header(string key, ReadOnlyMemory<byte> value, bool isNull = false)
+    {
+        Key = key;
         Value = value;
+        IsValueNull = isNull;
     }
 
     /// <summary>
@@ -137,16 +149,26 @@ public sealed class Header
     public string Key { get; }
 
     /// <summary>
-    /// The header value as bytes.
+    /// The header value as bytes. Check IsValueNull before accessing.
     /// </summary>
-    public byte[]? Value { get; }
+    public ReadOnlyMemory<byte> Value { get; }
+
+    /// <summary>
+    /// Returns true if the header value is null.
+    /// </summary>
+    public bool IsValueNull { get; }
+
+    /// <summary>
+    /// Gets the value as a byte array. Prefer using Value property to avoid allocation.
+    /// </summary>
+    public byte[]? GetValueAsArray() => IsValueNull ? null : Value.ToArray();
 
     /// <summary>
     /// Gets the value as a UTF-8 string.
     /// </summary>
     public string? GetValueAsString()
     {
-        return Value is null ? null : Encoding.UTF8.GetString(Value);
+        return IsValueNull ? null : Encoding.UTF8.GetString(Value.Span);
     }
 
     public override string ToString() => $"{Key}={GetValueAsString() ?? "(null)"}";
