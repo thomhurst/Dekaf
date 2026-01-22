@@ -168,7 +168,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         // Determine partition
         var partition = message.Partition
-            ?? _partitioner.Partition(message.Topic, keyBytes, topicInfo.PartitionCount);
+            ?? _partitioner.Partition(message.Topic, keyBytes.AsSpan(), keyBytes is null, topicInfo.PartitionCount);
 
         // Get timestamp
         var timestamp = message.Timestamp ?? DateTimeOffset.UtcNow;

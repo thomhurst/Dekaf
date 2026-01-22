@@ -8,7 +8,7 @@ public interface IPartitioner
     /// <summary>
     /// Selects a partition for a message.
     /// </summary>
-    int Partition(string topic, byte[]? key, int partitionCount);
+    int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount);
 }
 
 /// <summary>
@@ -18,9 +18,9 @@ public sealed class DefaultPartitioner : IPartitioner
 {
     private int _counter;
 
-    public int Partition(string topic, byte[]? key, int partitionCount)
+    public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
-        if (key is null || key.Length == 0)
+        if (keyIsNull || key.Length == 0)
         {
             // Round-robin for null keys
             return Interlocked.Increment(ref _counter) % partitionCount;
@@ -40,9 +40,9 @@ public sealed class StickyPartitioner : IPartitioner
     private readonly object _lock = new();
     private int _counter;
 
-    public int Partition(string topic, byte[]? key, int partitionCount)
+    public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
-        if (key is null || key.Length == 0)
+        if (keyIsNull || key.Length == 0)
         {
             lock (_lock)
             {
@@ -77,7 +77,7 @@ public sealed class RoundRobinPartitioner : IPartitioner
 {
     private int _counter;
 
-    public int Partition(string topic, byte[]? key, int partitionCount)
+    public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         return Interlocked.Increment(ref _counter) % partitionCount;
     }
@@ -92,7 +92,7 @@ internal static class Murmur2
     private const int M = 0x5bd1e995;
     private const int R = 24;
 
-    public static uint Hash(byte[] data)
+    public static uint Hash(ReadOnlySpan<byte> data)
     {
         var length = data.Length;
         var h = Seed ^ (uint)length;

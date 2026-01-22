@@ -634,13 +634,19 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
 
     private static byte[] BuildSubscriptionMetadata(IReadOnlySet<string> topics)
     {
-        // Simple subscription format
+        // Simple subscription format - convert set to list for writer
+        var topicList = new List<string>(topics.Count);
+        foreach (var topic in topics)
+        {
+            topicList.Add(topic);
+        }
+
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new Protocol.KafkaProtocolWriter(buffer);
 
         writer.WriteInt16(0); // Version
         writer.WriteArray(
-            topics.ToArray().AsSpan(),
+            topicList,
             (ref Protocol.KafkaProtocolWriter w, string t) => w.WriteString(t));
         writer.WriteBytes([]); // User data
 
@@ -787,22 +793,36 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new Protocol.KafkaProtocolWriter(buffer);
 
-        // Group partitions by topic
-        var byTopic = partitions
-            .GroupBy(p => p.Topic)
-            .ToDictionary(g => g.Key, g => g.Select(p => p.Partition).ToArray());
+        // Group partitions by topic without LINQ
+        var byTopic = new Dictionary<string, List<int>>();
+        foreach (var p in partitions)
+        {
+            if (!byTopic.TryGetValue(p.Topic, out var list))
+            {
+                list = new List<int>();
+                byTopic[p.Topic] = list;
+            }
+            list.Add(p.Partition);
+        }
+
+        // Convert to list for the writer
+        var topicAssignments = new List<(string Topic, List<int> Partitions)>(byTopic.Count);
+        foreach (var kvp in byTopic)
+        {
+            topicAssignments.Add((kvp.Key, kvp.Value));
+        }
 
         // Write assignment format
         writer.WriteInt16(0); // Version
 
         // Write topics array
         writer.WriteArray(
-            byTopic.ToArray().AsSpan(),
-            (ref Protocol.KafkaProtocolWriter w, KeyValuePair<string, int[]> tp) =>
+            topicAssignments,
+            (ref Protocol.KafkaProtocolWriter w, (string Topic, List<int> Partitions) tp) =>
             {
-                w.WriteString(tp.Key); // Topic name
+                w.WriteString(tp.Topic); // Topic name
                 w.WriteArray(
-                    tp.Value.AsSpan(),
+                    tp.Partitions,
                     (ref Protocol.KafkaProtocolWriter w2, int partition) => w2.WriteInt32(partition));
             });
 
