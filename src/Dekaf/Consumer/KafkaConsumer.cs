@@ -14,6 +14,68 @@ using Microsoft.Extensions.Logging;
 namespace Dekaf.Consumer;
 
 /// <summary>
+/// Holds pending fetch data for lazy record iteration.
+/// Records are only parsed and deserialized when accessed.
+/// </summary>
+internal sealed class PendingFetchData
+{
+    private readonly IReadOnlyList<RecordBatch> _batches;
+    private int _batchIndex = -1;
+    private int _recordIndex = -1;
+
+    public string Topic { get; }
+    public int PartitionIndex { get; }
+
+    public PendingFetchData(string topic, int partitionIndex, IReadOnlyList<RecordBatch> batches)
+    {
+        Topic = topic;
+        PartitionIndex = partitionIndex;
+        _batches = batches;
+    }
+
+    public RecordBatch CurrentBatch => _batches[_batchIndex];
+    public Record CurrentRecord => _batches[_batchIndex].Records[_recordIndex];
+
+    /// <summary>
+    /// Advances to the next record across all batches.
+    /// Returns false when no more records are available.
+    /// </summary>
+    public bool MoveNext()
+    {
+        // First call - start at first batch, first record
+        if (_batchIndex < 0)
+        {
+            _batchIndex = 0;
+            _recordIndex = 0;
+            return HasCurrentRecord();
+        }
+
+        // Try next record in current batch
+        _recordIndex++;
+        if (_recordIndex < _batches[_batchIndex].Records.Count)
+            return true;
+
+        // Move to next batch
+        _batchIndex++;
+        _recordIndex = 0;
+        return HasCurrentRecord();
+    }
+
+    private bool HasCurrentRecord()
+    {
+        while (_batchIndex < _batches.Count)
+        {
+            if (_recordIndex < _batches[_batchIndex].Records.Count)
+                return true;
+            // Empty batch, try next
+            _batchIndex++;
+            _recordIndex = 0;
+        }
+        return false;
+    }
+}
+
+/// <summary>
 /// Kafka consumer implementation.
 /// NOT thread-safe - all methods must be called from a single thread.
 /// For parallel consumption, use multiple consumers in a consumer group.
@@ -37,7 +99,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly Dictionary<TopicPartition, long> _positions = [];      // Consumed position (what app has seen)
     private readonly Dictionary<TopicPartition, long> _fetchPositions = []; // Fetch position (what to fetch next)
     private readonly Dictionary<TopicPartition, long> _committed = [];
-    private readonly Channel<ConsumeResult<TKey, TValue>> _fetchBuffer;
+
+    // Pending fetch responses for lazy record iteration
+    private readonly Queue<PendingFetchData> _pendingFetches = new();
 
     private CancellationTokenSource? _wakeupCts;
     private CancellationTokenSource? _autoCommitCts;
@@ -83,13 +147,6 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
 
         _compressionCodecs = new CompressionCodecRegistry();
-
-        _fetchBuffer = Channel.CreateBounded<ConsumeResult<TKey, TValue>>(new BoundedChannelOptions(options.MaxPollRecords)
-        {
-            SingleReader = true,
-            SingleWriter = true,
-            FullMode = BoundedChannelFullMode.Wait
-        });
     }
 
     public IReadOnlySet<string> Subscription => _subscription;
@@ -162,15 +219,54 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 continue;
             }
 
-            // Fetch records
-            await FetchRecordsAsync(cancellationToken).ConfigureAwait(false);
-
-            // Yield records from buffer
-            while (_fetchBuffer.Reader.TryRead(out var result))
+            // If no pending records, fetch more
+            if (_pendingFetches.Count == 0)
             {
-                // Update consumed position (what the application has seen)
-                _positions[new TopicPartition(result.Topic, result.Partition)] = result.Offset + 1;
-                yield return result;
+                await FetchRecordsAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            // Yield records lazily from pending fetches
+            while (_pendingFetches.Count > 0)
+            {
+                var pending = _pendingFetches.Peek();
+
+                while (pending.MoveNext())
+                {
+                    var record = pending.CurrentRecord;
+                    var batch = pending.CurrentBatch;
+
+                    var offset = batch.BaseOffset + record.OffsetDelta;
+                    var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
+                        batch.BaseTimestamp + record.TimestampDelta);
+
+                    var key = DeserializeKey(record.Key, record.IsKeyNull, pending.Topic);
+                    var value = DeserializeValue(record.Value, record.IsValueNull, pending.Topic);
+                    var headers = ConvertHeaders(record.Headers);
+
+                    var result = new ConsumeResult<TKey, TValue>
+                    {
+                        Topic = pending.Topic,
+                        Partition = pending.PartitionIndex,
+                        Offset = offset,
+                        Key = key,
+                        Value = value,
+                        Headers = headers,
+                        Timestamp = timestamp,
+                        TimestampType = ((int)batch.Attributes & 0x08) != 0
+                            ? TimestampType.LogAppendTime
+                            : TimestampType.CreateTime
+                    };
+
+                    // Update positions
+                    var tp = new TopicPartition(pending.Topic, pending.PartitionIndex);
+                    _positions[tp] = offset + 1;
+                    _fetchPositions[tp] = offset + 1;
+
+                    yield return result;
+                }
+
+                // This pending fetch is exhausted, remove it
+                _pendingFetches.Dequeue();
             }
         }
     }
@@ -273,11 +369,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     private void ClearFetchBuffer()
     {
-        // Drain the fetch buffer to discard stale records
-        while (_fetchBuffer.Reader.TryRead(out _))
-        {
-            // Discard
-        }
+        // Clear pending fetches to discard stale records
+        _pendingFetches.Clear();
     }
 
     public IKafkaConsumer<TKey, TValue> Pause(params TopicPartition[] partitions)
@@ -603,7 +696,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             _fetchApiVersion,
             cancellationToken).ConfigureAwait(false);
 
-        // Process response
+        // Queue pending fetch data for lazy iteration - don't parse records yet!
         foreach (var topicResponse in response.Responses)
         {
             var topic = topicResponse.Topic ?? string.Empty;
@@ -618,47 +711,14 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     continue;
                 }
 
-                if (partitionResponse.Records is null)
+                if (partitionResponse.Records is null || partitionResponse.Records.Count == 0)
                     continue;
 
-                foreach (var batch in partitionResponse.Records)
-                {
-                    foreach (var record in batch.Records)
-                    {
-                        var offset = batch.BaseOffset + record.OffsetDelta;
-                        var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
-                            batch.BaseTimestamp + record.TimestampDelta);
-
-                        var key = DeserializeKey(record.Key, record.IsKeyNull, topic);
-                        var value = DeserializeValue(record.Value, record.IsValueNull, topic);
-
-                        var headers = ConvertHeaders(record.Headers);
-
-                        var result = new ConsumeResult<TKey, TValue>
-                        {
-                            Topic = topic,
-                            Partition = partitionResponse.PartitionIndex,
-                            Offset = offset,
-                            Key = key,
-                            Value = value,
-                            Headers = headers,
-                            Timestamp = timestamp,
-                            TimestampType = ((int)batch.Attributes & 0x08) != 0
-                                ? TimestampType.LogAppendTime
-                                : TimestampType.CreateTime
-                        };
-
-                        // Use TryWrite to avoid blocking if buffer is full.
-                        // If full, return and let caller drain - next fetch will resume from current position.
-                        if (!_fetchBuffer.Writer.TryWrite(result))
-                        {
-                            return;
-                        }
-
-                        // Update fetch position (where to fetch next from broker)
-                        _fetchPositions[new TopicPartition(topic, partitionResponse.PartitionIndex)] = offset + 1;
-                    }
-                }
+                // Queue the pending fetch data for lazy record iteration
+                _pendingFetches.Enqueue(new PendingFetchData(
+                    topic,
+                    partitionResponse.PartitionIndex,
+                    partitionResponse.Records));
             }
         }
     }
@@ -801,7 +861,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         _autoCommitCts?.Dispose();
         _wakeupCts?.Dispose();
 
-        _fetchBuffer.Writer.Complete();
+        // Clear any pending fetch data
+        _pendingFetches.Clear();
 
         if (_coordinator is not null)
             await _coordinator.DisposeAsync().ConfigureAwait(false);
