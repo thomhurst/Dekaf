@@ -98,7 +98,7 @@ public class RoundTripTests(KafkaTestContainer kafka)
 
         var correlationId = consumed.Headers.FirstOrDefault(h => h.Key == "correlationId");
         await Assert.That(correlationId).IsNotNull();
-        await Assert.That(System.Text.Encoding.UTF8.GetString(correlationId!.Value)).IsEqualTo("abc123");
+        await Assert.That(System.Text.Encoding.UTF8.GetString(correlationId!.Value.Span)).IsEqualTo("abc123");
     }
 
     [Test]
