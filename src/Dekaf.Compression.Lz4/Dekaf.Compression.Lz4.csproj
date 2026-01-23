@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Compression.Lz4</PackageId>
+    <Description>LZ4 compression codec for Dekaf Kafka client</Description>
+    <PackageTags>kafka;compression;lz4</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+    <PackageReference Include="K4os.Compression.LZ4.Streams" Version="1.3.*" />
+  </ItemGroup>
+
+</Project>
