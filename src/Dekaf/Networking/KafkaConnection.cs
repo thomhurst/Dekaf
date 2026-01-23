@@ -355,11 +355,13 @@ public sealed class KafkaConnection : IKafkaConnection
         responseBuffer.Slice(0, 4).CopyTo(correlationBuffer);
         correlationId = BinaryPrimitives.ReadInt32BigEndian(correlationBuffer);
 
-        // Get the response data - use ArrayPool to reduce allocation pressure
-        // The pooled array is wrapped so it gets returned to the pool when no longer referenced
-        var pooledArray = ArrayPool<byte>.Shared.Rent(size);
-        responseBuffer.CopyTo(pooledArray);
-        responseData = new PooledArrayMemory(pooledArray, size).Memory;
+        // Copy response data to a byte array
+        // Note: ArrayPool.Shared only pools arrays up to ~1MB. For larger responses
+        // (common with many messages), pooling provides no benefit.
+        // Using a simple allocation is safe and avoids use-after-return bugs.
+        var responseArray = new byte[size];
+        responseBuffer.CopyTo(responseArray);
+        responseData = responseArray;
 
         buffer = buffer.Slice(4 + size);
         return true;
@@ -725,34 +727,3 @@ public sealed class ConnectionOptions
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(30);
 }
 
-/// <summary>
-/// Wraps a pooled array and returns it to the pool when garbage collected.
-/// ReadOnlyMemory slices created from this memory keep the wrapper alive,
-/// ensuring the array isn't returned to the pool while still in use.
-/// </summary>
-internal sealed class PooledArrayMemory
-{
-    private byte[]? _array;
-    private readonly int _length;
-
-    public PooledArrayMemory(byte[] array, int length)
-    {
-        _array = array;
-        _length = length;
-    }
-
-    /// <summary>
-    /// Gets the memory slice. The returned ReadOnlyMemory holds a reference to this object,
-    /// keeping the pooled array alive until the memory is no longer referenced.
-    /// </summary>
-    public ReadOnlyMemory<byte> Memory => _array.AsMemory(0, _length);
-
-    ~PooledArrayMemory()
-    {
-        var array = Interlocked.Exchange(ref _array, null);
-        if (array is not null)
-        {
-            ArrayPool<byte>.Shared.Return(array);
-        }
-    }
-}
