@@ -358,6 +358,192 @@ public class MessageEncodingTests
 
     #endregion
 
+    #region OffsetDelete Tests
+
+    [Test]
+    public async Task OffsetDeleteRequest_V0_SingleTopicPartition()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        var request = new OffsetDeleteRequest
+        {
+            GroupId = "my-group",
+            Topics =
+            [
+                new OffsetDeleteRequestTopic
+                {
+                    Name = "test-topic",
+                    Partitions =
+                    [
+                        new OffsetDeleteRequestPartition { PartitionIndex = 0 }
+                    ]
+                }
+            ]
+        };
+        request.Write(ref writer, version: 0);
+
+        var expected = new List<byte>();
+        // GroupId (STRING with INT16 length prefix)
+        expected.AddRange(new byte[] { 0x00, 0x08 }); // length = 8
+        expected.AddRange("my-group"u8.ToArray());
+        // Topics array (INT32 length)
+        expected.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x01 }); // 1 topic
+        // Topic name (STRING)
+        expected.AddRange(new byte[] { 0x00, 0x0A }); // length = 10
+        expected.AddRange("test-topic"u8.ToArray());
+        // Partitions array (INT32 length)
+        expected.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x01 }); // 1 partition
+        // PartitionIndex (INT32)
+        expected.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x00 }); // partition 0
+
+        await Assert.That(buffer.WrittenSpan.ToArray()).IsEquivalentTo(expected.ToArray());
+    }
+
+    [Test]
+    public async Task OffsetDeleteRequest_V0_MultipleTopicsAndPartitions()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        var request = new OffsetDeleteRequest
+        {
+            GroupId = "grp",
+            Topics =
+            [
+                new OffsetDeleteRequestTopic
+                {
+                    Name = "t1",
+                    Partitions =
+                    [
+                        new OffsetDeleteRequestPartition { PartitionIndex = 0 },
+                        new OffsetDeleteRequestPartition { PartitionIndex = 1 }
+                    ]
+                },
+                new OffsetDeleteRequestTopic
+                {
+                    Name = "t2",
+                    Partitions =
+                    [
+                        new OffsetDeleteRequestPartition { PartitionIndex = 2 }
+                    ]
+                }
+            ]
+        };
+        request.Write(ref writer, version: 0);
+
+        var expected = new List<byte>();
+        // GroupId (STRING)
+        expected.AddRange(new byte[] { 0x00, 0x03 }); // length = 3
+        expected.AddRange("grp"u8.ToArray());
+        // Topics array (2 topics)
+        expected.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x02 });
+        // Topic 1: "t1"
+        expected.AddRange(new byte[] { 0x00, 0x02 }); // length = 2
+        expected.AddRange("t1"u8.ToArray());
+        // Partitions array (2 partitions)
+        expected.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x02 });
+        expected.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x00 }); // partition 0
+        expected.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x01 }); // partition 1
+        // Topic 2: "t2"
+        expected.AddRange(new byte[] { 0x00, 0x02 }); // length = 2
+        expected.AddRange("t2"u8.ToArray());
+        // Partitions array (1 partition)
+        expected.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x01 });
+        expected.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x02 }); // partition 2
+
+        await Assert.That(buffer.WrittenSpan.ToArray()).IsEquivalentTo(expected.ToArray());
+    }
+
+    [Test]
+    public async Task OffsetDeleteResponse_V0_Success_CanBeParsed()
+    {
+        var data = new List<byte>();
+        // ErrorCode (INT16)
+        data.AddRange(new byte[] { 0x00, 0x00 }); // None
+        // ThrottleTimeMs (INT32)
+        data.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x64 }); // 100ms
+        // Topics array (INT32 length)
+        data.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x01 }); // 1 topic
+        // Topic name (STRING)
+        data.AddRange(new byte[] { 0x00, 0x04 }); // length = 4
+        data.AddRange("test"u8.ToArray());
+        // Partitions array (INT32 length)
+        data.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x01 }); // 1 partition
+        // PartitionIndex (INT32)
+        data.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x00 }); // partition 0
+        // Partition ErrorCode (INT16)
+        data.AddRange(new byte[] { 0x00, 0x00 }); // None
+
+        var reader = new KafkaProtocolReader(data.ToArray());
+        var response = (OffsetDeleteResponse)OffsetDeleteResponse.Read(ref reader, version: 0);
+
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(response.ThrottleTimeMs).IsEqualTo(100);
+        await Assert.That(response.Topics.Count).IsEqualTo(1);
+        await Assert.That(response.Topics[0].Name).IsEqualTo("test");
+        await Assert.That(response.Topics[0].Partitions.Count).IsEqualTo(1);
+        await Assert.That(response.Topics[0].Partitions[0].PartitionIndex).IsEqualTo(0);
+        await Assert.That(response.Topics[0].Partitions[0].ErrorCode).IsEqualTo(ErrorCode.None);
+    }
+
+    [Test]
+    public async Task OffsetDeleteResponse_V0_WithPartitionError_CanBeParsed()
+    {
+        var data = new List<byte>();
+        // ErrorCode (INT16)
+        data.AddRange(new byte[] { 0x00, 0x00 }); // None (top-level)
+        // ThrottleTimeMs (INT32)
+        data.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x00 }); // 0ms
+        // Topics array (INT32 length)
+        data.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x01 }); // 1 topic
+        // Topic name (STRING)
+        data.AddRange(new byte[] { 0x00, 0x05 }); // length = 5
+        data.AddRange("topic"u8.ToArray());
+        // Partitions array (INT32 length)
+        data.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x01 }); // 1 partition
+        // PartitionIndex (INT32)
+        data.AddRange(new byte[] { 0x00, 0x00, 0x00, 0x05 }); // partition 5
+        // Partition ErrorCode (INT16) - GROUP_SUBSCRIBED_TO_TOPIC (86)
+        data.AddRange(new byte[] { 0x00, 0x56 }); // 86
+
+        var reader = new KafkaProtocolReader(data.ToArray());
+        var response = (OffsetDeleteResponse)OffsetDeleteResponse.Read(ref reader, version: 0);
+
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(response.Topics[0].Partitions[0].PartitionIndex).IsEqualTo(5);
+        await Assert.That((int)response.Topics[0].Partitions[0].ErrorCode).IsEqualTo(86);
+    }
+
+    [Test]
+    public async Task OffsetDeleteRequest_ApiKey_IsCorrect()
+    {
+        await Assert.That(OffsetDeleteRequest.ApiKey).IsEqualTo(ApiKey.OffsetDelete);
+    }
+
+    [Test]
+    public async Task OffsetDeleteRequest_VersionRange_IsCorrect()
+    {
+        await Assert.That(OffsetDeleteRequest.LowestSupportedVersion).IsEqualTo((short)0);
+        await Assert.That(OffsetDeleteRequest.HighestSupportedVersion).IsEqualTo((short)0);
+    }
+
+    [Test]
+    public async Task OffsetDeleteRequest_IsNotFlexible()
+    {
+        // OffsetDelete v0 is not flexible (no tagged fields)
+        await Assert.That(OffsetDeleteRequest.IsFlexibleVersion(0)).IsEqualTo(false);
+    }
+
+    [Test]
+    public async Task OffsetDeleteRequest_HeaderVersions()
+    {
+        await Assert.That(OffsetDeleteRequest.GetRequestHeaderVersion(0)).IsEqualTo((short)1);
+        await Assert.That(OffsetDeleteRequest.GetResponseHeaderVersion(0)).IsEqualTo((short)0);
+    }
+
+    #endregion
+
     #region Header Version Tests
 
     [Test]

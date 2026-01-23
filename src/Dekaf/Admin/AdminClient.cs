@@ -351,6 +351,76 @@ public sealed class AdminClient : IAdminClient
         throw new NotImplementedException("CreatePartitions not yet implemented");
     }
 
+    public async ValueTask DeleteConsumerGroupOffsetsAsync(
+        string groupId,
+        IEnumerable<TopicPartition> partitions,
+        DeleteConsumerGroupOffsetsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(groupId);
+        ArgumentNullException.ThrowIfNull(partitions);
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+        var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+
+        // Group partitions by topic
+        var topicPartitions = partitions
+            .GroupBy(p => p.Topic)
+            .Select(g => new OffsetDeleteRequestTopic
+            {
+                Name = g.Key,
+                Partitions = g.Select(p => new OffsetDeleteRequestPartition
+                {
+                    PartitionIndex = p.Partition
+                }).ToList()
+            })
+            .ToList();
+
+        var request = new OffsetDeleteRequest
+        {
+            GroupId = groupId,
+            Topics = topicPartitions
+        };
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.OffsetDelete,
+            OffsetDeleteRequest.LowestSupportedVersion,
+            OffsetDeleteRequest.HighestSupportedVersion);
+
+        var response = await connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+            request,
+            apiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        // Check for top-level error
+        if (response.ErrorCode != Protocol.ErrorCode.None)
+        {
+            throw new Errors.GroupException(response.ErrorCode,
+                $"DeleteConsumerGroupOffsets failed for group '{groupId}': {response.ErrorCode}")
+            {
+                GroupId = groupId
+            };
+        }
+
+        // Check for per-partition errors
+        foreach (var topic in response.Topics)
+        {
+            foreach (var partition in topic.Partitions)
+            {
+                if (partition.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new Errors.GroupException(partition.ErrorCode,
+                        $"DeleteConsumerGroupOffsets failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                    {
+                        GroupId = groupId
+                    };
+                }
+            }
+        }
+    }
+
     private async ValueTask EnsureInitializedAsync(CancellationToken cancellationToken)
     {
         if (_metadataManager.Metadata.LastRefreshed == default)

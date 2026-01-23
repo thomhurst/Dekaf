@@ -59,6 +59,16 @@ public interface IAdminClient : IAsyncDisposable
     ValueTask AlterConsumerGroupOffsetsAsync(string groupId, IEnumerable<TopicPartitionOffset> offsets, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Deletes committed offsets for specific partitions in a consumer group.
+    /// The group must not be actively consuming from the specified partitions.
+    /// </summary>
+    ValueTask DeleteConsumerGroupOffsetsAsync(
+        string groupId,
+        IEnumerable<TopicPartition> partitions,
+        DeleteConsumerGroupOffsetsOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Deletes records up to the specified offset.
     /// </summary>
     ValueTask<IReadOnlyDictionary<TopicPartition, long>> DeleteRecordsAsync(IReadOnlyDictionary<TopicPartition, long> offsets, CancellationToken cancellationToken = default);
@@ -118,6 +128,14 @@ public sealed class ListTopicsOptions
 public sealed class ListConsumerGroupsOptions
 {
     public IReadOnlyList<string>? States { get; init; }
+    public int TimeoutMs { get; init; } = 30000;
+}
+
+/// <summary>
+/// Options for DeleteConsumerGroupOffsets.
+/// </summary>
+public sealed class DeleteConsumerGroupOffsetsOptions
+{
     public int TimeoutMs { get; init; } = 30000;
 }
 
