@@ -24,16 +24,34 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          # Allow gh CLI for GitHub API access and git for diff analysis
+          allowed_tools: "Bash(gh pr:*),Bash(gh api:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Read,Glob,Grep"
+
           prompt: |
-            Review this pull request. This is a Kafka client library for .NET.
+            Review this pull request for the Dekaf Kafka client library (.NET).
 
-            IMPORTANT INSTRUCTIONS:
-            - If this is a new push to an existing PR (synchronize event), review ONLY the new changes since the last review
-            - Check if previous review comments have been addressed by the new commits
-            - Mark resolved issues as fixed and identify any remaining or new issues
-            - Focus on: CLAUDE.md compliance, zero-allocation in hot paths, ConfigureAwait(false), thread-safety, and test coverage
+            Use the following commands to gather information:
+            - `gh pr view ${{ github.event.pull_request.number }} --json title,body,files,commits` to get PR details
+            - `gh pr diff ${{ github.event.pull_request.number }}` to see the changes
+            - `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews` to see existing reviews
+            - Read the CLAUDE.md file for project-specific requirements
 
-            Review the PR at: https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+            REVIEW FOCUS:
+            1. CLAUDE.md compliance (zero-allocation in hot paths, ConfigureAwait(false), comprehensive testing)
+            2. Thread-safety issues
+            3. Resource leaks (IDisposable not disposed)
+            4. Security concerns
+            5. Code quality and best practices
 
-            After reviewing, post your findings as a PR review comment. If there are no issues, approve the PR.
+            IMPORTANT FOR SUBSEQUENT PUSHES:
+            - If there are existing reviews, check if previous issues have been addressed
+            - Only report NEW issues or issues that remain unfixed
+            - Acknowledge fixed issues briefly
+
+            After reviewing, post a PR review using:
+            `gh pr review ${{ github.event.pull_request.number }} --comment --body "YOUR_REVIEW"`
+
+            Or if approving:
+            `gh pr review ${{ github.event.pull_request.number }} --approve --body "YOUR_REVIEW"`
 
