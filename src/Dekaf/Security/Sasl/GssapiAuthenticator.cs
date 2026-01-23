@@ -18,13 +18,13 @@ namespace Dekaf.Security.Sasl;
 /// 3. Client initiates GSSAPI token exchange (multi-round)
 /// 4. Once tokens are complete, authentication is established
 /// </remarks>
-public sealed class GssapiAuthenticator : ISaslAuthenticator
+public sealed class GssapiAuthenticator : ISaslAuthenticator, IDisposable
 {
     private readonly GssapiConfig _config;
     private readonly string _targetHost;
     private NegotiateAuthentication? _auth;
     private GssapiState _state = GssapiState.Initial;
-    private byte[]? _initialToken;
+    private bool _disposed;
 
     private enum GssapiState
     {
@@ -58,6 +58,9 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator
             throw new InvalidOperationException("GetInitialResponse can only be called once");
         }
 
+        // Mark state early to prevent re-entry even if authentication fails
+        _state = GssapiState.TokenExchange;
+
         // Build the Service Principal Name (SPN)
         // Format: serviceName/hostname[@realm]
         var spn = BuildSpn();
@@ -72,34 +75,31 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator
             AllowedImpersonationLevel = System.Security.Principal.TokenImpersonationLevel.Identification
         };
 
-        // If a principal is specified, use a custom credential
-        // Otherwise, NegotiateAuthentication will use the default credentials from the cache
-        if (_config.Principal is not null)
-        {
-            // Note: For keytab-based authentication, the system Kerberos configuration
-            // should be set up to use the keytab. NegotiateAuthentication will use
-            // the credentials from the credential cache.
-            // Environment variables like KRB5_KTNAME can specify the keytab path.
-            clientOptions.Credential = System.Net.CredentialCache.DefaultNetworkCredentials;
-        }
+        // Note: NegotiateAuthentication always uses the credentials from the system credential cache.
+        // The Principal and KeytabPath configuration properties are provided for documentation purposes
+        // and to match librdkafka's configuration options, but they do not directly affect credential
+        // selection. To use specific credentials:
+        // - On Linux: Use kinit with the desired principal, or set KRB5_CLIENT_KTNAME for keytab-based auth
+        // - On Windows: Log in as the desired user or use runas
+        // - On macOS: Use kinit with the desired principal
 
         _auth = new NegotiateAuthentication(clientOptions);
 
         // Get the initial token
-        var status = _auth.GetOutgoingBlob(ReadOnlySpan<byte>.Empty, out var outgoingBlob);
+        var outgoingBlob = _auth.GetOutgoingBlob(ReadOnlySpan<byte>.Empty, out var statusCode);
 
-        if (status.ErrorCode != NegotiateAuthenticationStatusCode.ContinueNeeded &&
-            status.ErrorCode != NegotiateAuthenticationStatusCode.Completed)
+        if (statusCode != NegotiateAuthenticationStatusCode.ContinueNeeded &&
+            statusCode != NegotiateAuthenticationStatusCode.Completed)
         {
-            throw new AuthenticationException($"GSSAPI initial token generation failed: {status.ErrorCode}");
+            throw new AuthenticationException($"GSSAPI initial token generation failed: {statusCode}");
         }
 
-        _state = status.ErrorCode == NegotiateAuthenticationStatusCode.Completed
-            ? GssapiState.Complete
-            : GssapiState.TokenExchange;
+        if (statusCode == NegotiateAuthenticationStatusCode.Completed)
+        {
+            _state = GssapiState.Complete;
+        }
 
-        _initialToken = outgoingBlob ?? [];
-        return _initialToken;
+        return outgoingBlob ?? [];
     }
 
     /// <inheritdoc />
@@ -115,21 +115,21 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator
             return null;
         }
 
-        var status = _auth.GetOutgoingBlob(challenge, out var outgoingBlob);
+        var outgoingBlob = _auth.GetOutgoingBlob(challenge, out var statusCode);
 
-        if (status.ErrorCode == NegotiateAuthenticationStatusCode.Completed)
+        if (statusCode == NegotiateAuthenticationStatusCode.Completed)
         {
             _state = GssapiState.Complete;
             // Return any final token if present, otherwise null to indicate completion
             return outgoingBlob is { Length: > 0 } ? outgoingBlob : null;
         }
 
-        if (status.ErrorCode == NegotiateAuthenticationStatusCode.ContinueNeeded)
+        if (statusCode == NegotiateAuthenticationStatusCode.ContinueNeeded)
         {
             return outgoingBlob ?? [];
         }
 
-        throw new AuthenticationException($"GSSAPI authentication failed: {status.ErrorCode}");
+        throw new AuthenticationException($"GSSAPI authentication failed: {statusCode}");
     }
 
     private string BuildSpn()
@@ -144,5 +144,17 @@ public sealed class GssapiAuthenticator : ISaslAuthenticator
         }
 
         return spn;
+    }
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _auth?.Dispose();
+        _disposed = true;
     }
 }
