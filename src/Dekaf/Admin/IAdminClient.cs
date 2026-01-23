@@ -69,6 +69,43 @@ public interface IAdminClient : IAsyncDisposable
     ValueTask CreatePartitionsAsync(IReadOnlyDictionary<string, int> newPartitionCounts, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Describes configurations for the specified resources.
+    /// </summary>
+    /// <param name="resources">The resources to describe configurations for.</param>
+    /// <param name="options">Optional configuration options.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A dictionary mapping each resource to its configuration entries.</returns>
+    ValueTask<IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigEntry>>> DescribeConfigsAsync(
+        IEnumerable<ConfigResource> resources,
+        DescribeConfigsOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Alters configurations for the specified resources.
+    /// This replaces the entire configuration for each resource.
+    /// Consider using IncrementalAlterConfigsAsync for partial updates.
+    /// </summary>
+    /// <param name="configs">The configurations to set for each resource.</param>
+    /// <param name="options">Optional configuration options.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    ValueTask AlterConfigsAsync(
+        IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigEntry>> configs,
+        AlterConfigsOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Incrementally alters configurations for the specified resources.
+    /// This allows setting, deleting, appending to, or subtracting from individual configuration values.
+    /// </summary>
+    /// <param name="configs">The configuration alterations for each resource.</param>
+    /// <param name="options">Optional configuration options.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    ValueTask IncrementalAlterConfigsAsync(
+        IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigAlter>> configs,
+        IncrementalAlterConfigsOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gets the cluster metadata.
     /// </summary>
     ClusterMetadata Metadata { get; }

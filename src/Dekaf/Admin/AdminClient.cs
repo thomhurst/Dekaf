@@ -351,6 +351,198 @@ public sealed class AdminClient : IAdminClient
         throw new NotImplementedException("CreatePartitions not yet implemented");
     }
 
+    public async ValueTask<IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigEntry>>> DescribeConfigsAsync(
+        IEnumerable<ConfigResource> resources,
+        DescribeConfigsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var opts = options ?? new DescribeConfigsOptions();
+        var resourceList = resources.ToList();
+
+        // Any broker can handle DescribeConfigs
+        var brokers = _metadataManager.Metadata.GetBrokers();
+        if (brokers.Count == 0)
+        {
+            throw new InvalidOperationException("No brokers available");
+        }
+
+        var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+
+        var request = new DescribeConfigsRequest
+        {
+            Resources = resourceList.Select(r => new DescribeConfigsResource
+            {
+                ResourceType = (sbyte)r.Type,
+                ResourceName = r.Name,
+                ConfigurationKeys = null // Fetch all configs
+            }).ToList(),
+            IncludeSynonyms = opts.IncludeSynonyms,
+            IncludeDocumentation = opts.IncludeDocumentation
+        };
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.DescribeConfigs,
+            DescribeConfigsRequest.LowestSupportedVersion,
+            DescribeConfigsRequest.HighestSupportedVersion);
+
+        var response = await connection.SendAsync<DescribeConfigsRequest, DescribeConfigsResponse>(
+            request,
+            apiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        var result = new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>();
+
+        foreach (var resourceResult in response.Results)
+        {
+            if (resourceResult.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new KafkaException(resourceResult.ErrorCode,
+                    $"Failed to describe configs for {(ConfigResourceType)resourceResult.ResourceType}:{resourceResult.ResourceName}: " +
+                    $"{resourceResult.ErrorMessage ?? resourceResult.ErrorCode.ToString()}");
+            }
+
+            var configResource = new ConfigResource
+            {
+                Type = (ConfigResourceType)resourceResult.ResourceType,
+                Name = resourceResult.ResourceName
+            };
+
+            var entries = resourceResult.Configs.Select(c => new ConfigEntry
+            {
+                Name = c.Name,
+                Value = c.Value,
+                IsReadOnly = c.ReadOnly,
+                IsDefault = c.ConfigSource == (sbyte)ConfigSource.DefaultConfig || c.IsDefault,
+                IsSensitive = c.IsSensitive,
+                Source = (ConfigSource)c.ConfigSource,
+                Synonyms = c.Synonyms?.Select(s => new ConfigSynonym
+                {
+                    Name = s.Name,
+                    Value = s.Value,
+                    Source = (ConfigSource)s.Source
+                }).ToList(),
+                Documentation = c.Documentation
+            }).ToList();
+
+            result[configResource] = entries;
+        }
+
+        return result;
+    }
+
+    public async ValueTask AlterConfigsAsync(
+        IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigEntry>> configs,
+        AlterConfigsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var opts = options ?? new AlterConfigsOptions();
+
+        // Any broker can handle AlterConfigs
+        var brokers = _metadataManager.Metadata.GetBrokers();
+        if (brokers.Count == 0)
+        {
+            throw new InvalidOperationException("No brokers available");
+        }
+
+        var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+
+        var request = new AlterConfigsRequest
+        {
+            Resources = configs.Select(kvp => new AlterConfigsResource
+            {
+                ResourceType = (sbyte)kvp.Key.Type,
+                ResourceName = kvp.Key.Name,
+                Configs = kvp.Value.Select(e => new AlterableConfig
+                {
+                    Name = e.Name,
+                    Value = e.Value
+                }).ToList()
+            }).ToList(),
+            ValidateOnly = opts.ValidateOnly
+        };
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.AlterConfigs,
+            AlterConfigsRequest.LowestSupportedVersion,
+            AlterConfigsRequest.HighestSupportedVersion);
+
+        var response = await connection.SendAsync<AlterConfigsRequest, AlterConfigsResponse>(
+            request,
+            apiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        // Check for errors
+        foreach (var resourceResponse in response.Responses)
+        {
+            if (resourceResponse.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new KafkaException(resourceResponse.ErrorCode,
+                    $"Failed to alter configs for {(ConfigResourceType)resourceResponse.ResourceType}:{resourceResponse.ResourceName}: " +
+                    $"{resourceResponse.ErrorMessage ?? resourceResponse.ErrorCode.ToString()}");
+            }
+        }
+    }
+
+    public async ValueTask IncrementalAlterConfigsAsync(
+        IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigAlter>> configs,
+        IncrementalAlterConfigsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var opts = options ?? new IncrementalAlterConfigsOptions();
+
+        // Any broker can handle IncrementalAlterConfigs
+        var brokers = _metadataManager.Metadata.GetBrokers();
+        if (brokers.Count == 0)
+        {
+            throw new InvalidOperationException("No brokers available");
+        }
+
+        var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+
+        var request = new IncrementalAlterConfigsRequest
+        {
+            Resources = configs.Select(kvp => new IncrementalAlterConfigsResource
+            {
+                ResourceType = (sbyte)kvp.Key.Type,
+                ResourceName = kvp.Key.Name,
+                Configs = kvp.Value.Select(a => new IncrementalAlterableConfig
+                {
+                    Name = a.Name,
+                    ConfigOperation = (sbyte)a.Operation,
+                    Value = a.Value
+                }).ToList()
+            }).ToList(),
+            ValidateOnly = opts.ValidateOnly
+        };
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.IncrementalAlterConfigs,
+            IncrementalAlterConfigsRequest.LowestSupportedVersion,
+            IncrementalAlterConfigsRequest.HighestSupportedVersion);
+
+        var response = await connection.SendAsync<IncrementalAlterConfigsRequest, IncrementalAlterConfigsResponse>(
+            request,
+            apiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        // Check for errors
+        foreach (var resourceResponse in response.Responses)
+        {
+            if (resourceResponse.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new KafkaException(resourceResponse.ErrorCode,
+                    $"Failed to incrementally alter configs for {(ConfigResourceType)resourceResponse.ResourceType}:{resourceResponse.ResourceName}: " +
+                    $"{resourceResponse.ErrorMessage ?? resourceResponse.ErrorCode.ToString()}");
+            }
+        }
+    }
+
     private async ValueTask EnsureInitializedAsync(CancellationToken cancellationToken)
     {
         if (_metadataManager.Metadata.LastRefreshed == default)
