@@ -27,6 +27,12 @@ public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
     string? MemberId { get; }
 
     /// <summary>
+    /// Gets the consumer group metadata for use with transactional producers.
+    /// Returns null if not part of a consumer group or if the group has not yet been joined.
+    /// </summary>
+    ConsumerGroupMetadata? ConsumerGroupMetadata { get; }
+
+    /// <summary>
     /// Subscribes to topics.
     /// </summary>
     IKafkaConsumer<TKey, TValue> Subscribe(params string[] topics);
