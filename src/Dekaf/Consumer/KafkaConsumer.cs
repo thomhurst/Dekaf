@@ -628,11 +628,34 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         else
         {
             // Manual store mode: commit only explicitly stored offsets
-            offsets = new List<TopicPartitionOffset>(_storedOffsets.Count);
-            foreach (var kvp in _storedOffsets)
+            // Take a snapshot to avoid race condition where offsets stored by another thread
+            // between enumeration and removal would be lost
+            var snapshot = _storedOffsets.ToArray();
+            offsets = new List<TopicPartitionOffset>(snapshot.Length);
+            foreach (var kvp in snapshot)
             {
                 offsets.Add(new TopicPartitionOffset(kvp.Key.Topic, kvp.Key.Partition, kvp.Value));
             }
+
+            if (offsets.Count == 0)
+                return;
+
+            await _coordinator.CommitOffsetsAsync(offsets, cancellationToken).ConfigureAwait(false);
+
+            // Update committed offsets tracking
+            foreach (var offset in offsets)
+            {
+                _committed[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+            }
+
+            // Remove only the offsets we committed from the snapshot, preserving any
+            // new offsets that were stored by other threads during the commit
+            foreach (var kvp in snapshot)
+            {
+                _storedOffsets.TryRemove(kvp);
+            }
+
+            return;
         }
 
         if (offsets.Count == 0)
@@ -644,12 +667,6 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         foreach (var offset in offsets)
         {
             _committed[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
-        }
-
-        // Clear stored offsets after successful commit (manual mode only)
-        if (!_options.EnableAutoOffsetStore)
-        {
-            _storedOffsets.Clear();
         }
     }
 
