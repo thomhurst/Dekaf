@@ -177,6 +177,36 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     public string? MemberId => _coordinator?.MemberId;
     public IReadOnlySet<TopicPartition> Paused => _paused;
 
+    /// <summary>
+    /// Gets the consumer group metadata for use with transactional producers.
+    /// Returns null if not part of a consumer group or if the group has not yet been joined.
+    /// </summary>
+    public ConsumerGroupMetadata? ConsumerGroupMetadata
+    {
+        get
+        {
+            // Return null if not part of a consumer group
+            if (_coordinator is null || string.IsNullOrEmpty(_options.GroupId))
+                return null;
+
+            // Return null if not yet joined (no member ID assigned)
+            if (string.IsNullOrEmpty(_coordinator.MemberId))
+                return null;
+
+            // Return null if generation ID is invalid (not yet in a stable group)
+            if (_coordinator.GenerationId < 0)
+                return null;
+
+            return new ConsumerGroupMetadata
+            {
+                GroupId = _options.GroupId,
+                GenerationId = _coordinator.GenerationId,
+                MemberId = _coordinator.MemberId,
+                GroupInstanceId = _options.GroupInstanceId
+            };
+        }
+    }
+
     public IKafkaConsumer<TKey, TValue> Subscribe(params string[] topics)
     {
         _subscription.Clear();
