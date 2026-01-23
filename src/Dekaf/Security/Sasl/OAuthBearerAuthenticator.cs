@@ -91,10 +91,10 @@ public sealed class OAuthBearerAuthenticator : ISaslAuthenticator
         //   kvpair = key "=" value
         //
         // Required kvpair: auth=Bearer <token>
-        // Format: n,,\x01auth=Bearer <token>\x01\x01
+        // Format: n,,\x01auth=Bearer <token>\x01
         //
         // If extensions are present, they are added as additional kvpairs:
-        // n,,\x01auth=Bearer <token>\x01ext1=val1\x01ext2=val2\x01\x01
+        // n,,\x01auth=Bearer <token>\x01ext1=val1\x01ext2=val2\x01
 
         var builder = new StringBuilder();
 
