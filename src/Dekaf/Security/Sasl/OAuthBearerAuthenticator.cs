@@ -9,6 +9,7 @@ namespace Dekaf.Security.Sasl;
 public sealed class OAuthBearerAuthenticator : ISaslAuthenticator
 {
     private readonly Func<CancellationToken, ValueTask<OAuthBearerToken>> _tokenProvider;
+    private readonly object _tokenLock = new();
     private OAuthBearerToken? _currentToken;
     private bool _complete;
 
@@ -43,25 +44,41 @@ public sealed class OAuthBearerAuthenticator : ISaslAuthenticator
     /// </summary>
     public async ValueTask<OAuthBearerToken> GetTokenAsync(CancellationToken cancellationToken = default)
     {
-        if (_currentToken is null || _currentToken.IsExpired(bufferSeconds: 60))
+        OAuthBearerToken? cachedToken;
+        lock (_tokenLock)
         {
-            _currentToken = await _tokenProvider(cancellationToken).ConfigureAwait(false);
+            cachedToken = _currentToken;
         }
-        return _currentToken;
+
+        if (cachedToken is null || cachedToken.IsExpired(bufferSeconds: 60))
+        {
+            var newToken = await _tokenProvider(cancellationToken).ConfigureAwait(false);
+            lock (_tokenLock)
+            {
+                _currentToken = newToken;
+                cachedToken = newToken;
+            }
+        }
+        return cachedToken;
     }
 
     /// <inheritdoc />
     public byte[] GetInitialResponse()
     {
-        // For synchronous interface, we need to have the token already
-        // The async path should have called GetTokenAsync first
-        if (_currentToken is null)
+        OAuthBearerToken token;
+        lock (_tokenLock)
         {
-            throw new InvalidOperationException(
-                "Token not available. Call GetTokenAsync before authentication for dynamic token providers.");
+            // For synchronous interface, we need to have the token already
+            // The async path should have called GetTokenAsync first
+            if (_currentToken is null)
+            {
+                throw new InvalidOperationException(
+                    "Token not available. Call GetTokenAsync before authentication for dynamic token providers.");
+            }
+            token = _currentToken;
         }
 
-        if (_currentToken.IsExpired())
+        if (token.IsExpired())
         {
             throw new AuthenticationException("OAuth token has expired");
         }
@@ -89,12 +106,12 @@ public sealed class OAuthBearerAuthenticator : ISaslAuthenticator
 
         // Authorization header with bearer token
         builder.Append("auth=Bearer ");
-        builder.Append(_currentToken.TokenValue);
+        builder.Append(token.TokenValue);
 
         // Add any extensions
-        if (_currentToken.Extensions is { Count: > 0 })
+        if (token.Extensions is { Count: > 0 })
         {
-            foreach (var (key, value) in _currentToken.Extensions)
+            foreach (var (key, value) in token.Extensions)
             {
                 builder.Append('\x01');
                 builder.Append(key);
