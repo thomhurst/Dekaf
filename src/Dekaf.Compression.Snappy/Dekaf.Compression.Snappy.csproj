@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Compression.Snappy</PackageId>
+    <Description>Snappy compression codec for Dekaf Kafka client</Description>
+    <PackageTags>kafka;compression;snappy</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+    <PackageReference Include="Snappier" Version="1.1.*" />
+  </ItemGroup>
+
+</Project>
