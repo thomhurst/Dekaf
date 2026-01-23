@@ -218,6 +218,45 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         return this;
     }
 
+    public IKafkaConsumer<TKey, TValue> IncrementalAssign(IEnumerable<TopicPartitionOffset> partitions)
+    {
+        // Clear subscription since we're doing manual assignment
+        _subscription.Clear();
+
+        foreach (var tpo in partitions)
+        {
+            var tp = new TopicPartition(tpo.Topic, tpo.Partition);
+            _assignment.Add(tp);
+
+            // If an offset is specified (>= 0), set the position
+            if (tpo.Offset >= 0)
+            {
+                _positions[tp] = tpo.Offset;
+                _fetchPositions[tp] = tpo.Offset;
+            }
+            // Otherwise, positions will be initialized lazily based on auto.offset.reset
+        }
+
+        return this;
+    }
+
+    public IKafkaConsumer<TKey, TValue> IncrementalUnassign(IEnumerable<TopicPartition> partitions)
+    {
+        foreach (var partition in partitions)
+        {
+            _assignment.Remove(partition);
+            _paused.Remove(partition);
+            _positions.Remove(partition);
+            _fetchPositions.Remove(partition);
+            _committed.Remove(partition);
+        }
+
+        // Clear any pending fetch data for the removed partitions
+        ClearFetchBufferForPartitions(partitions);
+
+        return this;
+    }
+
     public async IAsyncEnumerable<ConsumeResult<TKey, TValue>> ConsumeAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -587,7 +626,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     public long? GetPosition(TopicPartition partition)
     {
-        return _positions.GetValueOrDefault(partition);
+        return _positions.TryGetValue(partition, out var position) ? position : null;
     }
 
     public IKafkaConsumer<TKey, TValue> Seek(TopicPartitionOffset offset)
@@ -625,6 +664,35 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     {
         // Clear pending fetches to discard stale records
         _pendingFetches.Clear();
+    }
+
+    private void ClearFetchBufferForPartitions(IEnumerable<TopicPartition> partitionsToRemove)
+    {
+        // Create a set for efficient lookup
+        var removeSet = partitionsToRemove is HashSet<TopicPartition> set
+            ? set
+            : new HashSet<TopicPartition>(partitionsToRemove);
+
+        if (removeSet.Count == 0)
+            return;
+
+        // We need to rebuild the queue, keeping only data for partitions not being removed
+        var tempQueue = new Queue<PendingFetchData>();
+        while (_pendingFetches.Count > 0)
+        {
+            var pending = _pendingFetches.Dequeue();
+            var tp = new TopicPartition(pending.Topic, pending.PartitionIndex);
+            if (!removeSet.Contains(tp))
+            {
+                tempQueue.Enqueue(pending);
+            }
+        }
+
+        // Put back the items we want to keep
+        while (tempQueue.Count > 0)
+        {
+            _pendingFetches.Enqueue(tempQueue.Dequeue());
+        }
     }
 
     public IKafkaConsumer<TKey, TValue> Pause(params TopicPartition[] partitions)

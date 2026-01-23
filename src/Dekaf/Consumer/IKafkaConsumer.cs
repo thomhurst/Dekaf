@@ -52,6 +52,24 @@ public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
     IKafkaConsumer<TKey, TValue> Unassign();
 
     /// <summary>
+    /// Incrementally adds partitions to the current assignment.
+    /// Used with cooperative rebalancing (CooperativeSticky assignor).
+    /// Unlike <see cref="Assign"/>, does not replace the entire assignment.
+    /// </summary>
+    /// <param name="partitions">The partitions to add with optional starting offsets.</param>
+    /// <returns>This consumer for method chaining.</returns>
+    IKafkaConsumer<TKey, TValue> IncrementalAssign(IEnumerable<TopicPartitionOffset> partitions);
+
+    /// <summary>
+    /// Incrementally removes partitions from the current assignment.
+    /// Used with cooperative rebalancing (CooperativeSticky assignor).
+    /// Unlike <see cref="Unassign"/>, only removes the specified partitions.
+    /// </summary>
+    /// <param name="partitions">The partitions to remove.</param>
+    /// <returns>This consumer for method chaining.</returns>
+    IKafkaConsumer<TKey, TValue> IncrementalUnassign(IEnumerable<TopicPartition> partitions);
+
+    /// <summary>
     /// Consumes messages as an async enumerable.
     /// </summary>
     IAsyncEnumerable<ConsumeResult<TKey, TValue>> ConsumeAsync(CancellationToken cancellationToken = default);
