@@ -56,6 +56,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     private ISerializer<TKey>? _keySerializer;
     private ISerializer<TValue>? _valueSerializer;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
+    private TimeSpan? _statisticsInterval;
+    private Action<Statistics.ProducerStatistics>? _statisticsHandler;
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -274,6 +276,29 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Sets the interval for emitting statistics events.
+    /// </summary>
+    /// <param name="interval">The interval between statistics events. Must be positive.</param>
+    public ProducerBuilder<TKey, TValue> WithStatisticsInterval(TimeSpan interval)
+    {
+        if (interval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(interval), "Statistics interval must be positive");
+
+        _statisticsInterval = interval;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the handler for statistics events.
+    /// </summary>
+    /// <param name="handler">The handler to invoke when statistics are emitted.</param>
+    public ProducerBuilder<TKey, TValue> OnStatistics(Action<Statistics.ProducerStatistics> handler)
+    {
+        _statisticsHandler = handler ?? throw new ArgumentNullException(nameof(handler));
+        return this;
+    }
+
     public IKafkaProducer<TKey, TValue> Build()
     {
         if (_bootstrapServers.Count == 0)
@@ -299,8 +324,10 @@ public sealed class ProducerBuilder<TKey, TValue>
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
             GssapiConfig = _gssapiConfig,
-            OAuthBearerConfig = _oauthConfig,
-            OAuthBearerTokenProvider = _oauthTokenProvider
+OAuthBearerConfig = _oauthConfig,
+            OAuthBearerTokenProvider = _oauthTokenProvider,
+            StatisticsInterval = _statisticsInterval,
+            StatisticsHandler = _statisticsHandler
         };
 
         return new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory);
@@ -354,7 +381,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private IDeserializer<TValue>? _valueDeserializer;
     private IRebalanceListener? _rebalanceListener;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
-    private bool _enablePartitionEof;
+private bool _enablePartitionEof;
+    private TimeSpan? _statisticsInterval;
+    private Action<Statistics.ConsumerStatistics>? _statisticsHandler;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -585,6 +614,29 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Sets the interval for emitting statistics events.
+    /// </summary>
+    /// <param name="interval">The interval between statistics events. Must be positive.</param>
+    public ConsumerBuilder<TKey, TValue> WithStatisticsInterval(TimeSpan interval)
+    {
+        if (interval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(interval), "Statistics interval must be positive");
+
+        _statisticsInterval = interval;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the handler for statistics events.
+    /// </summary>
+    /// <param name="handler">The handler to invoke when statistics are emitted.</param>
+    public ConsumerBuilder<TKey, TValue> OnStatistics(Action<Statistics.ConsumerStatistics> handler)
+    {
+        _statisticsHandler = handler ?? throw new ArgumentNullException(nameof(handler));
+        return this;
+    }
+
     public IKafkaConsumer<TKey, TValue> Build()
     {
         if (_bootstrapServers.Count == 0)
@@ -614,7 +666,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
             RebalanceListener = _rebalanceListener,
-            EnablePartitionEof = _enablePartitionEof
+            EnablePartitionEof = _enablePartitionEof,
+            StatisticsInterval = _statisticsInterval,
+            StatisticsHandler = _statisticsHandler
         };
 
         return new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory);

@@ -8,6 +8,7 @@ using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
+using Dekaf.Statistics;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Producer;
@@ -40,6 +41,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     private volatile short _produceApiVersion = -1;
     private volatile bool _disposed;
+
+    // Statistics collection
+    private readonly ProducerStatisticsCollector _statisticsCollector = new();
+    private readonly StatisticsEmitter<ProducerStatistics>? _statisticsEmitter;
 
     // Thread-local reusable buffers for serialization to avoid per-message allocations
     [ThreadStatic]
@@ -111,6 +116,40 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             _workerTasks[i] = ProcessWorkAsync(_senderCts.Token);
         }
+
+        // Start statistics emitter if configured
+        if (options.StatisticsInterval.HasValue &&
+            options.StatisticsInterval.Value > TimeSpan.Zero &&
+            options.StatisticsHandler is not null)
+        {
+            _statisticsEmitter = new StatisticsEmitter<ProducerStatistics>(
+                options.StatisticsInterval.Value,
+                CollectStatistics,
+                options.StatisticsHandler);
+        }
+    }
+
+    private ProducerStatistics CollectStatistics()
+    {
+        var (messagesProduced, messagesDelivered, messagesFailed, bytesProduced,
+            requestsSent, responsesReceived, retries, avgLatencyMs) = _statisticsCollector.GetGlobalStats();
+
+        return new ProducerStatistics
+        {
+            Timestamp = DateTimeOffset.UtcNow,
+            MessagesProduced = messagesProduced,
+            MessagesDelivered = messagesDelivered,
+            MessagesFailed = messagesFailed,
+            BytesProduced = bytesProduced,
+            QueuedMessages = (int)(messagesProduced - messagesDelivered - messagesFailed),
+            AccumulatorMemoryUsed = _accumulator.UsedMemory,
+            AccumulatorMemoryLimit = _options.BufferMemory,
+            RequestsSent = requestsSent,
+            ResponsesReceived = responsesReceived,
+            Retries = retries,
+            AvgRequestLatencyMs = avgLatencyMs,
+            Topics = _statisticsCollector.GetTopicStatistics()
+        };
     }
 
     public async ValueTask<RecordMetadata> ProduceAsync(
