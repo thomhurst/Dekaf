@@ -10,6 +10,7 @@ internal sealed class StatisticsEmitter<TStatistics> : IAsyncDisposable
     private readonly Action<TStatistics> _handler;
     private readonly CancellationTokenSource _cts;
     private readonly Task _emitTask;
+    private volatile bool _disposed;
 
     public StatisticsEmitter(
         TimeSpan interval,
@@ -47,6 +48,11 @@ internal sealed class StatisticsEmitter<TStatistics> : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
         _cts.Cancel();
 
         try

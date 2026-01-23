@@ -586,6 +586,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         _senderCts.Dispose();
 
+        // Dispose statistics emitter
+        if (_statisticsEmitter is not null)
+        {
+            await _statisticsEmitter.DisposeAsync().ConfigureAwait(false);
+        }
+
         // Dispose accumulator - this will fail any remaining batches if graceful shutdown failed
         await _accumulator.DisposeAsync().ConfigureAwait(false);
 

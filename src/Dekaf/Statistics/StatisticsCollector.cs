@@ -30,10 +30,19 @@ internal sealed class ProducerStatisticsCollector
         Interlocked.Increment(ref _messagesProduced);
         Interlocked.Add(ref _bytesProduced, bytes);
 
-        var topicCounters = _topicCounters.GetOrAdd(topic, _ => new TopicCounters());
+        if (!_topicCounters.TryGetValue(topic, out var topicCounters))
+        {
+            topicCounters = new TopicCounters();
+            _topicCounters.TryAdd(topic, topicCounters);
+        }
         topicCounters.IncrementProduced(bytes);
 
-        var partitionCounters = _partitionCounters.GetOrAdd((topic, partition), _ => new PartitionCounters());
+        var partitionKey = (topic, partition);
+        if (!_partitionCounters.TryGetValue(partitionKey, out var partitionCounters))
+        {
+            partitionCounters = new PartitionCounters();
+            _partitionCounters.TryAdd(partitionKey, partitionCounters);
+        }
         partitionCounters.IncrementProduced(bytes);
         partitionCounters.IncrementQueued();
     }
@@ -42,10 +51,19 @@ internal sealed class ProducerStatisticsCollector
     {
         Interlocked.Increment(ref _messagesDelivered);
 
-        var topicCounters = _topicCounters.GetOrAdd(topic, _ => new TopicCounters());
+        if (!_topicCounters.TryGetValue(topic, out var topicCounters))
+        {
+            topicCounters = new TopicCounters();
+            _topicCounters.TryAdd(topic, topicCounters);
+        }
         topicCounters.IncrementDelivered();
 
-        var partitionCounters = _partitionCounters.GetOrAdd((topic, partition), _ => new PartitionCounters());
+        var partitionKey = (topic, partition);
+        if (!_partitionCounters.TryGetValue(partitionKey, out var partitionCounters))
+        {
+            partitionCounters = new PartitionCounters();
+            _partitionCounters.TryAdd(partitionKey, partitionCounters);
+        }
         partitionCounters.IncrementDelivered();
         partitionCounters.DecrementQueued();
     }
@@ -54,10 +72,19 @@ internal sealed class ProducerStatisticsCollector
     {
         Interlocked.Add(ref _messagesDelivered, messageCount);
 
-        var topicCounters = _topicCounters.GetOrAdd(topic, _ => new TopicCounters());
+        if (!_topicCounters.TryGetValue(topic, out var topicCounters))
+        {
+            topicCounters = new TopicCounters();
+            _topicCounters.TryAdd(topic, topicCounters);
+        }
         topicCounters.AddDelivered(messageCount);
 
-        var partitionCounters = _partitionCounters.GetOrAdd((topic, partition), _ => new PartitionCounters());
+        var partitionKey = (topic, partition);
+        if (!_partitionCounters.TryGetValue(partitionKey, out var partitionCounters))
+        {
+            partitionCounters = new PartitionCounters();
+            _partitionCounters.TryAdd(partitionKey, partitionCounters);
+        }
         partitionCounters.AddDelivered(messageCount);
         partitionCounters.AddQueued(-messageCount);
     }
@@ -66,10 +93,19 @@ internal sealed class ProducerStatisticsCollector
     {
         Interlocked.Increment(ref _messagesFailed);
 
-        var topicCounters = _topicCounters.GetOrAdd(topic, _ => new TopicCounters());
+        if (!_topicCounters.TryGetValue(topic, out var topicCounters))
+        {
+            topicCounters = new TopicCounters();
+            _topicCounters.TryAdd(topic, topicCounters);
+        }
         topicCounters.IncrementFailed();
 
-        var partitionCounters = _partitionCounters.GetOrAdd((topic, partition), _ => new PartitionCounters());
+        var partitionKey = (topic, partition);
+        if (!_partitionCounters.TryGetValue(partitionKey, out var partitionCounters))
+        {
+            partitionCounters = new PartitionCounters();
+            _partitionCounters.TryAdd(partitionKey, partitionCounters);
+        }
         partitionCounters.IncrementFailed();
         partitionCounters.DecrementQueued();
     }
@@ -78,10 +114,19 @@ internal sealed class ProducerStatisticsCollector
     {
         Interlocked.Add(ref _messagesFailed, messageCount);
 
-        var topicCounters = _topicCounters.GetOrAdd(topic, _ => new TopicCounters());
+        if (!_topicCounters.TryGetValue(topic, out var topicCounters))
+        {
+            topicCounters = new TopicCounters();
+            _topicCounters.TryAdd(topic, topicCounters);
+        }
         topicCounters.AddFailed(messageCount);
 
-        var partitionCounters = _partitionCounters.GetOrAdd((topic, partition), _ => new PartitionCounters());
+        var partitionKey = (topic, partition);
+        if (!_partitionCounters.TryGetValue(partitionKey, out var partitionCounters))
+        {
+            partitionCounters = new PartitionCounters();
+            _partitionCounters.TryAdd(partitionKey, partitionCounters);
+        }
         partitionCounters.AddFailed(messageCount);
         partitionCounters.AddQueued(-messageCount);
     }
@@ -245,10 +290,19 @@ internal sealed class ConsumerStatisticsCollector
         Interlocked.Increment(ref _messagesConsumed);
         Interlocked.Add(ref _bytesConsumed, bytes);
 
-        var topicCounters = _topicCounters.GetOrAdd(topic, _ => new ConsumerTopicCounters());
+        if (!_topicCounters.TryGetValue(topic, out var topicCounters))
+        {
+            topicCounters = new ConsumerTopicCounters();
+            _topicCounters.TryAdd(topic, topicCounters);
+        }
         topicCounters.IncrementConsumed(bytes);
 
-        var partitionCounters = _partitionCounters.GetOrAdd((topic, partition), _ => new ConsumerPartitionCounters());
+        var partitionKey = (topic, partition);
+        if (!_partitionCounters.TryGetValue(partitionKey, out var partitionCounters))
+        {
+            partitionCounters = new ConsumerPartitionCounters();
+            _partitionCounters.TryAdd(partitionKey, partitionCounters);
+        }
         partitionCounters.IncrementConsumed(bytes);
     }
 
@@ -271,7 +325,12 @@ internal sealed class ConsumerStatisticsCollector
 
     public void UpdatePartitionHighWatermark(string topic, int partition, long highWatermark)
     {
-        var counters = _partitionCounters.GetOrAdd((topic, partition), _ => new ConsumerPartitionCounters());
+        var partitionKey = (topic, partition);
+        if (!_partitionCounters.TryGetValue(partitionKey, out var counters))
+        {
+            counters = new ConsumerPartitionCounters();
+            _partitionCounters.TryAdd(partitionKey, counters);
+        }
         counters.SetHighWatermark(highWatermark);
     }
 
