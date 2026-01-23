@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.SchemaRegistry.Avro</PackageId>
+    <Description>Apache Avro serialization with Schema Registry integration for Dekaf Kafka client</Description>
+    <PackageTags>kafka;schema-registry;avro;serialization</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Apache.Avro" Version="1.12.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
+  </ItemGroup>
+
+</Project>
