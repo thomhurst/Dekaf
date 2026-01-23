@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Dekaf\Dekaf.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Compression.Snappy\Dekaf.Compression.Snappy.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry\Dekaf.SchemaRegistry.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Protobuf\Dekaf.SchemaRegistry.Protobuf.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Compression.Lz4\Dekaf.Compression.Lz4.csproj" />
