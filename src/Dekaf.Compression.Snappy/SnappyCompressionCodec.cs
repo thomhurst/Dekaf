@@ -53,6 +53,9 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
         var maxCompressedLength = Snappier.Snappy.GetMaxCompressedLength(_blockSize);
         var compressedBuffer = ArrayPool<byte>.Shared.Rent(maxCompressedLength);
 
+        // Buffer for multi-segment sequences (rented on demand)
+        byte[]? uncompressedBuffer = null;
+
         try
         {
             while (remaining > 0)
@@ -60,8 +63,24 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
                 var blockLength = (int)Math.Min(remaining, _blockSize);
                 var blockSequence = source.Slice(position, blockLength);
 
-                // Get contiguous span for this block
-                var uncompressedBlock = GetContiguousSpan(blockSequence);
+                // Get contiguous span for this block, handling multi-segment sequences
+                ReadOnlySpan<byte> uncompressedBlock;
+                if (blockSequence.IsSingleSegment)
+                {
+                    uncompressedBlock = blockSequence.FirstSpan;
+                }
+                else
+                {
+                    // Ensure uncompressed buffer is large enough
+                    if (uncompressedBuffer == null || uncompressedBuffer.Length < blockLength)
+                    {
+                        if (uncompressedBuffer != null)
+                            ArrayPool<byte>.Shared.Return(uncompressedBuffer);
+                        uncompressedBuffer = ArrayPool<byte>.Shared.Rent(blockLength);
+                    }
+                    blockSequence.CopyTo(uncompressedBuffer);
+                    uncompressedBlock = uncompressedBuffer.AsSpan(0, blockLength);
+                }
 
                 // Compress the block
                 var compressedLength = Snappier.Snappy.Compress(uncompressedBlock, compressedBuffer);
@@ -84,6 +103,8 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
         finally
         {
             ArrayPool<byte>.Shared.Return(compressedBuffer);
+            if (uncompressedBuffer != null)
+                ArrayPool<byte>.Shared.Return(uncompressedBuffer);
         }
     }
 
@@ -162,21 +183,6 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
         }
     }
 
-    /// <summary>
-    /// Gets a contiguous span from a sequence, using stack allocation for small sequences
-    /// or renting from the array pool for larger ones.
-    /// </summary>
-    private static ReadOnlySpan<byte> GetContiguousSpan(ReadOnlySequence<byte> sequence)
-    {
-        if (sequence.IsSingleSegment)
-            return sequence.FirstSpan;
-
-        // Need to copy to contiguous buffer
-        var length = (int)sequence.Length;
-        var buffer = ArrayPool<byte>.Shared.Rent(length);
-        sequence.CopyTo(buffer);
-        return buffer.AsSpan(0, length);
-    }
 }
 
 /// <summary>
