@@ -1,0 +1,155 @@
+// Validating benchmarks:
+// ***** BenchmarkRunner: Start   *****
+// ***** Found 24 benchmark(s) in total *****
+// ***** Building 1 exe(s) in Parallel: Start   *****
+// start dotnet  restore /p:UseSharedCompilation=false /p:BuildInParallel=false /m:1 /p:Deterministic=true /p:Optimize=true /p:IntermediateOutputPath="/home/thomh/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/0ebdad6c-024d-4765-93a7-3b7e8e4ede3d/obj/Release/net10.0/" /p:OutDir="/home/thomh/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/0ebdad6c-024d-4765-93a7-3b7e8e4ede3d/bin/Release/net10.0/" /p:OutputPath="/home/thomh/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/0ebdad6c-024d-4765-93a7-3b7e8e4ede3d/bin/Release/net10.0/" in /home/thomh/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/0ebdad6c-024d-4765-93a7-3b7e8e4ede3d
+// command took 2.46 sec and exited with 0
+// start dotnet  build -c Release --no-restore /p:UseSharedCompilation=false /p:BuildInParallel=false /m:1 /p:Deterministic=true /p:Optimize=true /p:IntermediateOutputPath="/home/thomh/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/0ebdad6c-024d-4765-93a7-3b7e8e4ede3d/obj/Release/net10.0/" /p:OutDir="/home/thomh/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/0ebdad6c-024d-4765-93a7-3b7e8e4ede3d/bin/Release/net10.0/" /p:OutputPath="/home/thomh/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/0ebdad6c-024d-4765-93a7-3b7e8e4ede3d/bin/Release/net10.0/" --output "/home/thomh/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/0ebdad6c-024d-4765-93a7-3b7e8e4ede3d/bin/Release/net10.0/" in /home/thomh/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/0ebdad6c-024d-4765-93a7-3b7e8e4ede3d
+// command took 13.19 sec and exited with 0
+// ***** Done, took 00:00:15 (15.71 sec)   *****
+// Found 24 benchmarks:
+//   ProducerBenchmarks.'Dekaf: Single Message Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+//   ProducerBenchmarks.'Confluent: Single Message Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+//   ProducerBenchmarks.'Dekaf: Batch Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+//   ProducerBenchmarks.'Confluent: Batch Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+//   ProducerBenchmarks.'Dekaf: Fire-and-Forget Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+//   ProducerBenchmarks.'Confluent: Fire-and-Forget Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+//   ProducerBenchmarks.'Dekaf: Single Message Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+//   ProducerBenchmarks.'Confluent: Single Message Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+//   ProducerBenchmarks.'Dekaf: Batch Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+//   ProducerBenchmarks.'Confluent: Batch Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+//   ProducerBenchmarks.'Dekaf: Fire-and-Forget Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+//   ProducerBenchmarks.'Confluent: Fire-and-Forget Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+//   ProducerBenchmarks.'Dekaf: Single Message Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+//   ProducerBenchmarks.'Confluent: Single Message Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+//   ProducerBenchmarks.'Dekaf: Batch Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+//   ProducerBenchmarks.'Confluent: Batch Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+//   ProducerBenchmarks.'Dekaf: Fire-and-Forget Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+//   ProducerBenchmarks.'Confluent: Fire-and-Forget Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+//   ProducerBenchmarks.'Dekaf: Single Message Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+//   ProducerBenchmarks.'Confluent: Single Message Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+//   ProducerBenchmarks.'Dekaf: Batch Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+//   ProducerBenchmarks.'Confluent: Batch Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+//   ProducerBenchmarks.'Dekaf: Fire-and-Forget Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+//   ProducerBenchmarks.'Confluent: Fire-and-Forget Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+
+// **************************
+// Benchmark: ProducerBenchmarks.'Dekaf: Single Message Produce': Job-DEPUSO(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet 0ebdad6c-024d-4765-93a7-3b7e8e4ede3d.dll --anonymousPipes 124 125 --benchmarkName "Dekaf.Benchmarks.ProducerBenchmarks.DekafSingleProduce(MessageSize: 100, BatchSize: 100)" --job "InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3" --benchmarkId 0 in /home/thomh/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/0ebdad6c-024d-4765-93a7-3b7e8e4ede3d/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-QBKUCC(InvocationCount=1, IterationCount=10, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=3)
+
+Starting Kafka container via Testcontainers...
+[testcontainers.org 00:00:00.15] Connected to Docker:
+  Host: unix:///var/run/docker.sock
+  Server Version: 28.4.0
+  Kernel Version: 6.6.87.2-microsoft-standard-WSL2
+  API Version: 1.51
+  Operating System: Docker Desktop
+  Total Memory: 15.49 GB
+  Labels: 
+    com.docker.desktop.address=unix:///var/run/docker-cli.sock
+[testcontainers.org 00:00:00.34] Docker container b82b3cbe4bee created
+[testcontainers.org 00:00:00.45] Start Docker container b82b3cbe4bee
+[testcontainers.org 00:00:00.69] Wait for Docker container b82b3cbe4bee to complete readiness checks
+[testcontainers.org 00:00:00.71] Docker container b82b3cbe4bee ready
+[testcontainers.org 00:00:02.84] Docker container 38bcebbfd86e created
+[testcontainers.org 00:00:02.87] Start Docker container 38bcebbfd86e
+[testcontainers.org 00:00:03.16] Add file to tar archive: Content length: 390 byte(s), Target file: "/testcontainers.sh", UID: 0, GID: 0, Mode: 0755
+[testcontainers.org 00:00:03.17] Copy tar archive to container: Content length: 390 byte(s), Docker container: 38bcebbfd86e
+[testcontainers.org 00:00:03.19] Wait for Docker container 38bcebbfd86e to complete readiness checks
+[testcontainers.org 00:00:07.46] Docker container 38bcebbfd86e ready
+Kafka started at plaintext://127.0.0.1:56824/
+Waiting for Kafka to be ready...
+Kafka is ready with 1 broker(s)
+[testcontainers.org 00:00:07.71] Execute "kafka-topics --bootstrap-server localhost:9092 --create --topic benchmark-producer --partitions 3 --replication-factor 1" at Docker container 38bcebbfd86e
+Warning: Failed to create topic benchmark-producer: [2026-01-23 18:41:22,532] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:22,590] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:22,702] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:22,886] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:23,298] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:24,178] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:25,107] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:26,245] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:27,209] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:28,219] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:29,237] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:30,158] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:31,202] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:32,136] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:33,127] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:34,026] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:35,130] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:36,222] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:37,130] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:38,238] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:39,208] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:40,250] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:41,358] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:42,353] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:43,518] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:44,619] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:45,625] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:46,499] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:47,643] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:48,513] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:49,609] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:50,457] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:51,529] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:52,405] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:53,370] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:54,430] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:55,595] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:56,768] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:57,694] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:58,577] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:41:59,725] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:00,612] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:01,779] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:02,901] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:03,817] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:04,703] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:05,831] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:06,899] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:07,915] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:08,830] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:09,776] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:10,887] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:11,865] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:12,683] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:13,833] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:14,708] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:15,634] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:16,437] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:17,422] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:18,465] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:19,494] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:20,503] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:21,421] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:22,294] WARN [AdminClient clientId=adminclient-1] Connection to node 1 (/127.0.0.1:56824) could not be established. Broker may not be available. (org.apache.kafka.clients.NetworkClient)
+[2026-01-23 18:42:22,366] ERROR org.apache.kafka.common.errors.TimeoutException: Timed out waiting for a node assignment. Call: createTopics
+ (kafka.admin.TopicCommand$)
+
+System.Reflection.TargetInvocationException: Exception has been thrown by the target of an invocation.
+ ---> System.InvalidOperationException: Failed to refresh metadata from any broker
+   at Dekaf.Metadata.MetadataManager.RefreshMetadataInternalAsync(IEnumerable`1 topics, CancellationToken cancellationToken) in /home/thomh/dev/Dekaf/src/Dekaf/Metadata/MetadataManager.cs:line 232
+   at Dekaf.Metadata.MetadataManager.RefreshMetadataAsync(IEnumerable`1 topics, CancellationToken cancellationToken) in /home/thomh/dev/Dekaf/src/Dekaf/Metadata/MetadataManager.cs:line 172
+   at Dekaf.Metadata.MetadataManager.RefreshMetadataAsync(CancellationToken cancellationToken) in /home/thomh/dev/Dekaf/src/Dekaf/Metadata/MetadataManager.cs:line 158
+   at Dekaf.Metadata.MetadataManager.InitializeAsync(CancellationToken cancellationToken) in /home/thomh/dev/Dekaf/src/Dekaf/Metadata/MetadataManager.cs:line 86
+   at Dekaf.Producer.KafkaProducer`2.EnsureInitializedAsync(CancellationToken cancellationToken) in /home/thomh/dev/Dekaf/src/Dekaf/Producer/KafkaProducer.cs:line 388
+   at Dekaf.Producer.KafkaProducer`2.ProduceInternalAsync(ProducerMessage`2 message, TaskCompletionSource`1 completion, CancellationToken cancellationToken) in /home/thomh/dev/Dekaf/src/Dekaf/Producer/KafkaProducer.cs:line 158
+   at Dekaf.Producer.KafkaProducer`2.ProcessWorkAsync(CancellationToken cancellationToken) in /home/thomh/dev/Dekaf/src/Dekaf/Producer/KafkaProducer.cs:line 138
+   at Dekaf.Producer.KafkaProducer`2.ProduceAsync(ProducerMessage`2 message, CancellationToken cancellationToken) in /home/thomh/dev/Dekaf/src/Dekaf/Producer/KafkaProducer.cs:line 127
+   at Dekaf.Benchmarks.ProducerBenchmarks.WarmupAsync() in /home/thomh/dev/Dekaf/tools/Dekaf.Benchmarks/ProducerBenchmarks.cs:line 67
+   at Dekaf.Benchmarks.ProducerBenchmarks.Setup() in /home/thomh/dev/Dekaf/tools/Dekaf.Benchmarks/ProducerBenchmarks.cs:line 59
+   at BenchmarkDotNet.Helpers.AwaitHelper.GetResult(Task task)
+   at BenchmarkDotNet.Autogenerated.Runnable_0.<.ctor>b__3_0() in /home/

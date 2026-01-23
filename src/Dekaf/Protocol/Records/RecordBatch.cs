@@ -190,13 +190,13 @@ public sealed class RecordBatch
 /// <summary>
 /// A lazy list that parses records on-demand from raw byte data.
 /// Records are only parsed when accessed, avoiding allocations for unconsumed records.
+/// Uses incremental list growth instead of pre-allocating full array.
 /// </summary>
 internal sealed class LazyRecordList : IReadOnlyList<Record>
 {
     private readonly ReadOnlyMemory<byte> _rawData;
     private readonly int _count;
-    private Record[]? _parsedRecords;
-    private int _parsedCount;
+    private List<Record>? _parsedRecords;
     private int _nextParseOffset;
 
     public LazyRecordList(ReadOnlyMemory<byte> rawData, int count)
@@ -231,21 +231,17 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>
 
     private void EnsureParsedUpTo(int index)
     {
-        if (_parsedRecords is null)
-        {
-            _parsedRecords = new Record[_count];
-            _parsedCount = 0;
-            _nextParseOffset = 0;
-        }
+        // Initialize list on first access - don't pre-allocate full capacity
+        // This avoids allocating space for all records when only a few are needed
+        _parsedRecords ??= new List<Record>();
 
-        while (_parsedCount <= index && _parsedCount < _count)
+        while (_parsedRecords.Count <= index && _parsedRecords.Count < _count)
         {
             var slice = _rawData.Slice(_nextParseOffset);
             var reader = new KafkaProtocolReader(slice);
             var record = Record.Read(ref reader);
-            _parsedRecords[_parsedCount] = record;
+            _parsedRecords.Add(record);
             _nextParseOffset += (int)reader.Consumed;
-            _parsedCount++;
         }
     }
 }
