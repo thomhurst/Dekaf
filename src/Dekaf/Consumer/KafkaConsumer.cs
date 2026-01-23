@@ -105,6 +105,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly Dictionary<TopicPartition, long> _positions = [];      // Consumed position (what app has seen)
     private readonly Dictionary<TopicPartition, long> _fetchPositions = []; // Fetch position (what to fetch next)
     private readonly Dictionary<TopicPartition, long> _committed = [];
+    private readonly Dictionary<TopicPartition, WatermarkOffsets> _watermarks = []; // Cached watermark offsets from fetch responses
 
     // Stored offsets for manual offset storage (when EnableAutoOffsetStore = false)
     // Uses ConcurrentDictionary for thread-safety as StoreOffset may be called from different threads
@@ -540,6 +541,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             {
                 var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
 
+                // Update watermark cache from fetch response (even on errors, watermarks may be valid)
+                UpdateWatermarksFromFetchResponse(topic, partitionResponse);
+
                 if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
                     _logger?.LogWarning(
@@ -885,6 +889,117 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         _wakeupCts?.Cancel();
     }
 
+    public WatermarkOffsets? GetWatermarkOffsets(TopicPartition topicPartition)
+    {
+        if (_watermarks.TryGetValue(topicPartition, out var watermarks))
+            return watermarks;
+        return null;
+    }
+
+    public async ValueTask<WatermarkOffsets> QueryWatermarkOffsetsAsync(
+        TopicPartition topicPartition,
+        CancellationToken cancellationToken = default)
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var connection = await GetPartitionLeaderConnectionAsync(topicPartition, cancellationToken).ConfigureAwait(false);
+        if (connection is null)
+            throw new InvalidOperationException($"No leader found for partition {topicPartition}");
+
+        var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.ListOffsets,
+            Protocol.Messages.ListOffsetsRequest.LowestSupportedVersion,
+            Protocol.Messages.ListOffsetsRequest.HighestSupportedVersion);
+
+        // Query for earliest offset (low watermark) with timestamp -2
+        var earliestRequest = new Protocol.Messages.ListOffsetsRequest
+        {
+            ReplicaId = -1,
+            IsolationLevel = _options.IsolationLevel,
+            Topics =
+            [
+                new Protocol.Messages.ListOffsetsRequestTopic
+                {
+                    Name = topicPartition.Topic,
+                    Partitions =
+                    [
+                        new Protocol.Messages.ListOffsetsRequestPartition
+                        {
+                            PartitionIndex = topicPartition.Partition,
+                            Timestamp = -2, // Earliest
+                            CurrentLeaderEpoch = -1
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var earliestResponse = await connection.SendAsync<Protocol.Messages.ListOffsetsRequest, Protocol.Messages.ListOffsetsResponse>(
+            earliestRequest,
+            listOffsetsVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        var earliestTopicResponse = earliestResponse.Topics.FirstOrDefault(t => t.Name == topicPartition.Topic);
+        var earliestPartitionResponse = earliestTopicResponse?.Partitions.FirstOrDefault(p => p.PartitionIndex == topicPartition.Partition);
+
+        if (earliestPartitionResponse?.ErrorCode != ErrorCode.None)
+        {
+            throw new InvalidOperationException(
+                $"Failed to query earliest offset for {topicPartition}: {earliestPartitionResponse?.ErrorCode}");
+        }
+
+        var lowWatermark = earliestPartitionResponse?.Offset ?? 0;
+
+        // Query for latest offset (high watermark) with timestamp -1
+        var latestRequest = new Protocol.Messages.ListOffsetsRequest
+        {
+            ReplicaId = -1,
+            IsolationLevel = _options.IsolationLevel,
+            Topics =
+            [
+                new Protocol.Messages.ListOffsetsRequestTopic
+                {
+                    Name = topicPartition.Topic,
+                    Partitions =
+                    [
+                        new Protocol.Messages.ListOffsetsRequestPartition
+                        {
+                            PartitionIndex = topicPartition.Partition,
+                            Timestamp = -1, // Latest
+                            CurrentLeaderEpoch = -1
+                        }
+                    ]
+                }
+            ]
+        };
+
+        var latestResponse = await connection.SendAsync<Protocol.Messages.ListOffsetsRequest, Protocol.Messages.ListOffsetsResponse>(
+            latestRequest,
+            listOffsetsVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        var latestTopicResponse = latestResponse.Topics.FirstOrDefault(t => t.Name == topicPartition.Topic);
+        var latestPartitionResponse = latestTopicResponse?.Partitions.FirstOrDefault(p => p.PartitionIndex == topicPartition.Partition);
+
+        if (latestPartitionResponse?.ErrorCode != ErrorCode.None)
+        {
+            throw new InvalidOperationException(
+                $"Failed to query latest offset for {topicPartition}: {latestPartitionResponse?.ErrorCode}");
+        }
+
+        var highWatermark = latestPartitionResponse?.Offset ?? 0;
+
+        var watermarks = new WatermarkOffsets(lowWatermark, highWatermark);
+
+        // Cache the result
+        _watermarks[topicPartition] = watermarks;
+
+        return watermarks;
+    }
+
     private async ValueTask EnsureInitializedAsync(CancellationToken cancellationToken)
     {
         if (_metadataManager.Metadata.LastRefreshed == default)
@@ -1214,6 +1329,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             {
                 var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
 
+                // Update watermark cache from fetch response (even on errors, watermarks may be valid)
+                UpdateWatermarksFromFetchResponse(topic, partitionResponse);
+
                 if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
                     _logger?.LogWarning(
@@ -1275,6 +1393,24 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         // Return directly - no conversion needed, zero allocation
         return recordHeaders;
+    }
+
+    /// <summary>
+    /// Updates the watermark cache from a fetch response partition.
+    /// The fetch response contains HighWatermark and LogStartOffset which correspond to
+    /// the high and low watermarks respectively.
+    /// </summary>
+    private void UpdateWatermarksFromFetchResponse(string topic, FetchResponsePartition partitionResponse)
+    {
+        // Only update if we have valid watermark data
+        // HighWatermark is the next offset to be written (end of log)
+        // LogStartOffset is the earliest available offset (start of log, may be > 0 due to retention)
+        if (partitionResponse.HighWatermark >= 0)
+        {
+            var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
+            var low = partitionResponse.LogStartOffset >= 0 ? partitionResponse.LogStartOffset : 0;
+            _watermarks[tp] = new WatermarkOffsets(low, partitionResponse.HighWatermark);
+        }
     }
 
     private List<FetchRequestTopic> BuildFetchRequestTopics(List<TopicPartition> partitions)

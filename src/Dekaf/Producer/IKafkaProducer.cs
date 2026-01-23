@@ -158,7 +158,6 @@ public readonly record struct TopicPartitionOffset(string Topic, int Partition, 
 /// </summary>
 public readonly record struct TopicPartition(string Topic, int Partition);
 
-/// <summary>
 /// Represents a topic, partition, and timestamp for offset lookup.
 /// </summary>
 /// <param name="Topic">The topic name.</param>
@@ -197,3 +196,10 @@ public readonly record struct TopicPartitionTimestamp(string Topic, int Partitio
     /// </summary>
     public TopicPartition TopicPartition => new(Topic, Partition);
 }
+
+/// <summary>
+/// Represents the low and high watermark offsets for a partition.
+/// Low watermark is the earliest available offset (log start offset).
+/// High watermark is the next offset to be written (end of log).
+/// </summary>
+public readonly record struct WatermarkOffsets(long Low, long High);
