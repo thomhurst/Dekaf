@@ -130,6 +130,11 @@ public sealed class ConsumerOptions
     public string? SaslPassword { get; init; }
 
     /// <summary>
+    /// GSSAPI (Kerberos) configuration. Required when SaslMechanism is Gssapi.
+    /// </summary>
+    public Security.Sasl.GssapiConfig? GssapiConfig { get; init; }
+
+    /// <summary>
     /// Rebalance listener.
     /// </summary>
     public IRebalanceListener? RebalanceListener { get; init; }

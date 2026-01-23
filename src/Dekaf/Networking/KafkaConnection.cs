@@ -399,6 +399,9 @@ public sealed class KafkaConnection : IKafkaConnection
                 SaslMechanism.ScramSha512,
                 _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
                 _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
+            SaslMechanism.Gssapi => new GssapiAuthenticator(
+                _options.GssapiConfig ?? throw new InvalidOperationException("GSSAPI configuration not provided"),
+                _host),
             _ => throw new InvalidOperationException($"Unsupported SASL mechanism: {_options.SaslMechanism}")
         };
 
@@ -695,6 +698,11 @@ public sealed class ConnectionOptions
     /// SASL password for PLAIN and SCRAM authentication.
     /// </summary>
     public string? SaslPassword { get; init; }
+
+    /// <summary>
+    /// GSSAPI (Kerberos) configuration. Required when SaslMechanism is Gssapi.
+    /// </summary>
+    public GssapiConfig? GssapiConfig { get; init; }
 
     /// <summary>
     /// Send buffer size in bytes.
