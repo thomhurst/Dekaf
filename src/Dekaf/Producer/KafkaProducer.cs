@@ -75,6 +75,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
                 SaslPassword = options.SaslPassword,
+                GssapiConfig = options.GssapiConfig,
                 SendBufferSize = options.SocketSendBufferBytes,
                 ReceiveBufferSize = options.SocketReceiveBufferBytes
             },

@@ -625,54 +625,65 @@ public sealed class KafkaConnection : IKafkaConnection
                 SaslMechanism.ScramSha512,
                 _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
                 _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
+            SaslMechanism.Gssapi => new GssapiAuthenticator(
+                _options.GssapiConfig ?? throw new InvalidOperationException("GSSAPI configuration not provided"),
+                _host),
             _ => throw new InvalidOperationException($"Unsupported SASL mechanism: {_options.SaslMechanism}")
         };
 
-        // Step 1: Send SaslHandshake to negotiate mechanism
-        var handshakeResponse = await SendSaslMessageAsync<SaslHandshakeRequest, SaslHandshakeResponse>(
-            new SaslHandshakeRequest { Mechanism = authenticator.MechanismName },
-            1, // Use v1 for SaslHandshake
-            cancellationToken).ConfigureAwait(false);
-
-        if (handshakeResponse.ErrorCode != ErrorCode.None)
+        try
         {
-            throw new AuthenticationException(
-                $"SASL handshake failed: {handshakeResponse.ErrorCode}. " +
-                $"Supported mechanisms: {string.Join(", ", handshakeResponse.Mechanisms)}");
-        }
-
-        _logger?.LogDebug("SASL handshake successful, starting authentication");
-
-        // Step 2: Perform authentication exchanges
-        var authBytes = authenticator.GetInitialResponse();
-
-        while (!authenticator.IsComplete)
-        {
-            var authResponse = await SendSaslMessageAsync<SaslAuthenticateRequest, SaslAuthenticateResponse>(
-                new SaslAuthenticateRequest { AuthBytes = authBytes },
-                2, // Use v2 for SaslAuthenticate (flexible version)
+            // Step 1: Send SaslHandshake to negotiate mechanism
+            var handshakeResponse = await SendSaslMessageAsync<SaslHandshakeRequest, SaslHandshakeResponse>(
+                new SaslHandshakeRequest { Mechanism = authenticator.MechanismName },
+                1, // Use v1 for SaslHandshake
                 cancellationToken).ConfigureAwait(false);
 
-            if (authResponse.ErrorCode != ErrorCode.None)
+            if (handshakeResponse.ErrorCode != ErrorCode.None)
             {
                 throw new AuthenticationException(
-                    $"SASL authentication failed: {authResponse.ErrorCode}" +
-                    (authResponse.ErrorMessage is not null ? $" - {authResponse.ErrorMessage}" : ""));
+                    $"SASL handshake failed: {handshakeResponse.ErrorCode}. " +
+                    $"Supported mechanisms: {string.Join(", ", handshakeResponse.Mechanisms)}");
             }
 
-            if (authenticator.IsComplete)
-                break;
+            _logger?.LogDebug("SASL handshake successful, starting authentication");
 
-            var challenge = authResponse.AuthBytes;
-            var response = authenticator.EvaluateChallenge(challenge);
+            // Step 2: Perform authentication exchanges
+            var authBytes = authenticator.GetInitialResponse();
 
-            if (response is null)
-                break;
+            while (!authenticator.IsComplete)
+            {
+                var authResponse = await SendSaslMessageAsync<SaslAuthenticateRequest, SaslAuthenticateResponse>(
+                    new SaslAuthenticateRequest { AuthBytes = authBytes },
+                    2, // Use v2 for SaslAuthenticate (flexible version)
+                    cancellationToken).ConfigureAwait(false);
 
-            authBytes = response;
+                if (authResponse.ErrorCode != ErrorCode.None)
+                {
+                    throw new AuthenticationException(
+                        $"SASL authentication failed: {authResponse.ErrorCode}" +
+                        (authResponse.ErrorMessage is not null ? $" - {authResponse.ErrorMessage}" : ""));
+                }
+
+                if (authenticator.IsComplete)
+                    break;
+
+                var challenge = authResponse.AuthBytes;
+                var response = authenticator.EvaluateChallenge(challenge);
+
+                if (response is null)
+                    break;
+
+                authBytes = response;
+            }
+
+            _logger?.LogInformation("SASL authentication successful with mechanism {Mechanism}", _options.SaslMechanism);
         }
-
-        _logger?.LogInformation("SASL authentication successful with mechanism {Mechanism}", _options.SaslMechanism);
+        finally
+        {
+            // Dispose the authenticator if it implements IDisposable (e.g., GssapiAuthenticator)
+            (authenticator as IDisposable)?.Dispose();
+        }
     }
 
     private async ValueTask<TResponse> SendSaslMessageAsync<TRequest, TResponse>(
@@ -937,6 +948,11 @@ public sealed class ConnectionOptions
     /// SASL password for PLAIN and SCRAM authentication.
     /// </summary>
     public string? SaslPassword { get; init; }
+
+    /// <summary>
+    /// GSSAPI (Kerberos) configuration. Required when SaslMechanism is Gssapi.
+    /// </summary>
+    public GssapiConfig? GssapiConfig { get; init; }
 
     /// <summary>
     /// Send buffer size in bytes.

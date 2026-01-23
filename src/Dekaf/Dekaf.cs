@@ -50,6 +50,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
+    private GssapiConfig? _gssapiConfig;
     private ISerializer<TKey>? _keySerializer;
     private ISerializer<TValue>? _valueSerializer;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
@@ -217,6 +218,18 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Configures GSSAPI (Kerberos) authentication.
+    /// </summary>
+    /// <param name="config">The GSSAPI configuration.</param>
+    /// <returns>This builder for chaining.</returns>
+    public ProducerBuilder<TKey, TValue> WithGssapi(GssapiConfig config)
+    {
+        _saslMechanism = SaslMechanism.Gssapi;
+        _gssapiConfig = config ?? throw new ArgumentNullException(nameof(config));
+        return this;
+    }
+
     public ProducerBuilder<TKey, TValue> WithKeySerializer(ISerializer<TKey> serializer)
     {
         _keySerializer = serializer;
@@ -258,7 +271,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             TlsConfig = _tlsConfig,
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
-            SaslPassword = _saslPassword
+            SaslPassword = _saslPassword,
+            GssapiConfig = _gssapiConfig
         };
 
         return new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory);
@@ -304,6 +318,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
+    private GssapiConfig? _gssapiConfig;
     private IDeserializer<TKey>? _keyDeserializer;
     private IDeserializer<TValue>? _valueDeserializer;
     private IRebalanceListener? _rebalanceListener;
@@ -453,6 +468,18 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Configures GSSAPI (Kerberos) authentication.
+    /// </summary>
+    /// <param name="config">The GSSAPI configuration.</param>
+    /// <returns>This builder for chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> WithGssapi(GssapiConfig config)
+    {
+        _saslMechanism = SaslMechanism.Gssapi;
+        _gssapiConfig = config ?? throw new ArgumentNullException(nameof(config));
+        return this;
+    }
+
     public ConsumerBuilder<TKey, TValue> WithKeyDeserializer(IDeserializer<TKey> deserializer)
     {
         _keyDeserializer = deserializer;
@@ -501,6 +528,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
+            GssapiConfig = _gssapiConfig,
             RebalanceListener = _rebalanceListener
         };
 

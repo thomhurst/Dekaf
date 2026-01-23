@@ -135,6 +135,11 @@ public sealed class ProducerOptions
     public string? SaslPassword { get; init; }
 
     /// <summary>
+    /// GSSAPI (Kerberos) configuration. Required when SaslMechanism is Gssapi.
+    /// </summary>
+    public GssapiConfig? GssapiConfig { get; init; }
+
+    /// <summary>
     /// Socket send buffer size in bytes. Set to 0 to use system default.
     /// Larger buffers can improve throughput for high-volume producers.
     /// </summary>
