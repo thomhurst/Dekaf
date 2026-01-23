@@ -113,7 +113,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     // Partition EOF tracking
     private readonly Dictionary<TopicPartition, long> _highWatermarks = [];  // High watermark per partition
     private readonly HashSet<TopicPartition> _eofEmitted = [];               // Partitions where EOF has been emitted
-    private readonly Queue<(TopicPartition Partition, long Offset)> _pendingEofEvents = new(); // Pending EOF events to yield
+    private readonly ConcurrentQueue<(TopicPartition Partition, long Offset)> _pendingEofEvents = new(); // Pending EOF events to yield (thread-safe for prefetch thread)
 
     // Pending fetch responses for lazy record iteration
     private readonly Queue<PendingFetchData> _pendingFetches = new();
@@ -414,14 +414,13 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 _pendingFetches.Dequeue();
             }
 
-            // Yield any pending EOF events
-            while (_pendingEofEvents.Count > 0)
+            // Yield any pending EOF events (thread-safe with ConcurrentQueue)
+            while (_pendingEofEvents.TryDequeue(out var eofEvent))
             {
-                var (partition, offset) = _pendingEofEvents.Dequeue();
                 yield return ConsumeResult<TKey, TValue>.CreatePartitionEof(
-                    partition.Topic,
-                    partition.Partition,
-                    offset);
+                    eofEvent.Partition.Topic,
+                    eofEvent.Partition.Partition,
+                    eofEvent.Offset);
             }
         }
     }
@@ -758,22 +757,28 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     public IKafkaConsumer<TKey, TValue> Seek(TopicPartitionOffset offset)
     {
         var tp = new TopicPartition(offset.Topic, offset.Partition);
-        _positions[tp] = offset.Offset;
-        _fetchPositions[tp] = offset.Offset;
-        // Reset EOF state for this partition so it can fire again
-        _eofEmitted.Remove(tp);
+        lock (_prefetchLock)
+        {
+            _positions[tp] = offset.Offset;
+            _fetchPositions[tp] = offset.Offset;
+            // Reset EOF state for this partition so it can fire again
+            _eofEmitted.Remove(tp);
+        }
         ClearFetchBuffer();
         return this;
     }
 
     public IKafkaConsumer<TKey, TValue> SeekToBeginning(params TopicPartition[] partitions)
     {
-        foreach (var partition in partitions)
+        lock (_prefetchLock)
         {
-            _positions[partition] = 0;
-            _fetchPositions[partition] = 0;
-            // Reset EOF state for this partition so it can fire again
-            _eofEmitted.Remove(partition);
+            foreach (var partition in partitions)
+            {
+                _positions[partition] = 0;
+                _fetchPositions[partition] = 0;
+                // Reset EOF state for this partition so it can fire again
+                _eofEmitted.Remove(partition);
+            }
         }
         ClearFetchBuffer();
         return this;
@@ -781,12 +786,15 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     public IKafkaConsumer<TKey, TValue> SeekToEnd(params TopicPartition[] partitions)
     {
-        foreach (var partition in partitions)
+        lock (_prefetchLock)
         {
-            _positions[partition] = -1; // Special value meaning end
-            _fetchPositions[partition] = -1; // Special value meaning end
-            // Reset EOF state for this partition so it can fire again
-            _eofEmitted.Remove(partition);
+            foreach (var partition in partitions)
+            {
+                _positions[partition] = -1; // Special value meaning end
+                _fetchPositions[partition] = -1; // Special value meaning end
+                // Reset EOF state for this partition so it can fire again
+                _eofEmitted.Remove(partition);
+            }
         }
         ClearFetchBuffer();
         return this;
@@ -916,11 +924,14 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 _assignment.Add(partition);
             }
 
-            // Clean up EOF state for removed partitions
-            foreach (var partition in removedPartitions)
+            // Clean up EOF state for removed partitions (under lock for thread-safety with prefetch)
+            lock (_prefetchLock)
             {
-                _eofEmitted.Remove(partition);
-                _highWatermarks.Remove(partition);
+                foreach (var partition in removedPartitions)
+                {
+                    _eofEmitted.Remove(partition);
+                    _highWatermarks.Remove(partition);
+                }
             }
 
             // Initialize positions for new partitions
