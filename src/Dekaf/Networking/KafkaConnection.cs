@@ -38,6 +38,10 @@ public sealed class KafkaConnection : IKafkaConnection
     private CancellationTokenSource? _receiveCts;
     private volatile bool _disposed;
 
+    // Certificates loaded from files that we own and must dispose
+    private X509Certificate2Collection? _loadedCaCertificates;
+    private X509Certificate2? _loadedClientCertificate;
+
     public int BrokerId { get; private set; } = -1;
     public string Host => _host;
     public int Port => _port;
@@ -404,12 +408,15 @@ public sealed class KafkaConnection : IKafkaConnection
         if (tlsConfig is not null && !tlsConfig.ValidateServerCertificate)
         {
             // Disable server certificate validation (not recommended for production)
+            // This is intentional when user explicitly sets ValidateServerCertificate = false
+#pragma warning disable CA5359 // Do not disable certificate validation
             options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+#pragma warning restore CA5359
         }
-        else if (options.RemoteCertificateValidationCallback is null && tlsConfig?.CaCertificate is not null)
+        else if (options.RemoteCertificateValidationCallback is null && HasCustomCaCertificate(tlsConfig))
         {
             // Custom CA certificate validation
-            var caCertificates = LoadCaCertificates(tlsConfig.CaCertificate);
+            var caCertificates = LoadCaCertificatesWithOwnership(tlsConfig!);
             options.RemoteCertificateValidationCallback = (_, certificate, chain, sslPolicyErrors) =>
                 ValidateServerCertificate(certificate, chain, sslPolicyErrors, caCertificates);
         }
@@ -417,7 +424,7 @@ public sealed class KafkaConnection : IKafkaConnection
         // Configure client certificate for mTLS
         if (tlsConfig is not null)
         {
-            var clientCert = LoadClientCertificate(tlsConfig);
+            var clientCert = LoadClientCertificateWithOwnership(tlsConfig);
             if (clientCert is not null)
             {
                 options.ClientCertificates = [clientCert];
@@ -427,15 +434,44 @@ public sealed class KafkaConnection : IKafkaConnection
         return options;
     }
 
-    private static X509Certificate2Collection LoadCaCertificates(object caCertificate)
+    private static bool HasCustomCaCertificate(TlsConfig? tlsConfig)
     {
-        return caCertificate switch
+        if (tlsConfig is null)
+            return false;
+
+        return tlsConfig.CaCertificatePath is not null ||
+               tlsConfig.CaCertificateObject is not null ||
+               tlsConfig.CaCertificateCollection is not null;
+    }
+
+    /// <summary>
+    /// Loads CA certificates and tracks ownership for disposal.
+    /// Certificates loaded from files are owned by this instance and will be disposed.
+    /// Certificates provided directly via TlsConfig are NOT owned.
+    /// </summary>
+    private X509Certificate2Collection LoadCaCertificatesWithOwnership(TlsConfig tlsConfig)
+    {
+        if (tlsConfig.CaCertificateCollection is not null)
         {
-            X509Certificate2 cert => [cert],
-            X509Certificate2Collection collection => collection,
-            string path => LoadCertificatesFromFile(path),
-            _ => throw new ArgumentException($"Unsupported CA certificate type: {caCertificate.GetType()}", nameof(caCertificate))
-        };
+            // Not owned - provided by caller
+            return tlsConfig.CaCertificateCollection;
+        }
+
+        if (tlsConfig.CaCertificateObject is not null)
+        {
+            // Not owned - provided by caller
+            return [tlsConfig.CaCertificateObject];
+        }
+
+        if (tlsConfig.CaCertificatePath is not null)
+        {
+            // Owned - loaded from file, must dispose
+            var collection = LoadCertificatesFromFile(tlsConfig.CaCertificatePath);
+            _loadedCaCertificates = collection;
+            return collection;
+        }
+
+        return [];
     }
 
     private static X509Certificate2Collection LoadCertificatesFromFile(string path)
@@ -445,8 +481,8 @@ public sealed class KafkaConnection : IKafkaConnection
 
         if (extension is ".pfx" or ".p12")
         {
-            // Load PFX/PKCS12 file
-            collection.Add(new X509Certificate2(path));
+            // Load PFX/PKCS12 file using modern API
+            collection.Add(X509CertificateLoader.LoadPkcs12FromFile(path, password: null));
         }
         else
         {
@@ -457,26 +493,32 @@ public sealed class KafkaConnection : IKafkaConnection
         return collection;
     }
 
-    private static X509Certificate2? LoadClientCertificate(TlsConfig tlsConfig)
+    /// <summary>
+    /// Loads client certificate and tracks ownership for disposal.
+    /// Certificates loaded from files are owned by this instance and will be disposed.
+    /// Certificates provided directly via TlsConfig are NOT owned.
+    /// </summary>
+    private X509Certificate2? LoadClientCertificateWithOwnership(TlsConfig tlsConfig)
     {
-        // If an in-memory certificate is provided, use it directly
+        // If an in-memory certificate is provided, use it directly (not owned)
         if (tlsConfig.ClientCertificate is not null)
         {
             return tlsConfig.ClientCertificate;
         }
 
-        // If certificate path is provided, load from file
+        // If certificate path is provided, load from file (owned - must dispose)
         if (tlsConfig.ClientCertificatePath is not null)
         {
             var certPath = tlsConfig.ClientCertificatePath;
             var extension = Path.GetExtension(certPath).ToLowerInvariant();
 
+            X509Certificate2 cert;
             if (extension is ".pfx" or ".p12")
             {
-                // Load PFX/PKCS12 file (contains both certificate and private key)
-                return string.IsNullOrEmpty(tlsConfig.ClientKeyPassword)
-                    ? new X509Certificate2(certPath)
-                    : new X509Certificate2(certPath, tlsConfig.ClientKeyPassword);
+                // Load PFX/PKCS12 file (contains both certificate and private key) using modern API
+                cert = X509CertificateLoader.LoadPkcs12FromFile(
+                    certPath,
+                    string.IsNullOrEmpty(tlsConfig.ClientKeyPassword) ? null : tlsConfig.ClientKeyPassword);
             }
             else
             {
@@ -487,10 +529,13 @@ public sealed class KafkaConnection : IKafkaConnection
                         "Client key path is required when using PEM certificate format");
                 }
 
-                return string.IsNullOrEmpty(tlsConfig.ClientKeyPassword)
+                cert = string.IsNullOrEmpty(tlsConfig.ClientKeyPassword)
                     ? X509Certificate2.CreateFromPemFile(certPath, tlsConfig.ClientKeyPath)
                     : X509Certificate2.CreateFromEncryptedPemFile(certPath, tlsConfig.ClientKeyPassword, tlsConfig.ClientKeyPath);
             }
+
+            _loadedClientCertificate = cert;
+            return cert;
         }
 
         return null;
@@ -512,27 +557,47 @@ public sealed class KafkaConnection : IKafkaConnection
         // If the only error is an untrusted root, validate against our custom CA
         if (sslPolicyErrors == SslPolicyErrors.RemoteCertificateChainErrors && chain is not null)
         {
-            // Build a new chain with our custom trust store
-            using var customChain = new X509Chain();
-            customChain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-            customChain.ChainPolicy.VerificationFlags = X509VerificationFlags.AllowUnknownCertificateAuthority;
-            customChain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
-
-            foreach (var caCert in trustedCaCertificates)
+            // Track if we created a new certificate to dispose it later
+            X509Certificate2? ownedCert = null;
+            try
             {
-                customChain.ChainPolicy.CustomTrustStore.Add(caCert);
-            }
+                var cert2 = certificate as X509Certificate2 ?? (ownedCert = new X509Certificate2(certificate));
 
-            var cert2 = certificate as X509Certificate2 ?? new X509Certificate2(certificate);
-            if (customChain.Build(cert2))
-            {
-                // Verify the chain ends with one of our trusted CAs
-                var rootCert = customChain.ChainElements[^1].Certificate;
+                // Build a new chain with our custom trust store
+                using var customChain = new X509Chain();
+                customChain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                customChain.ChainPolicy.VerificationFlags = X509VerificationFlags.AllowUnknownCertificateAuthority;
+                customChain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+
                 foreach (var caCert in trustedCaCertificates)
                 {
-                    if (rootCert.Thumbprint == caCert.Thumbprint)
-                        return true;
+                    customChain.ChainPolicy.CustomTrustStore.Add(caCert);
                 }
+
+                if (customChain.Build(cert2))
+                {
+                    // Check chain status for errors other than UntrustedRoot
+                    foreach (var status in customChain.ChainStatus)
+                    {
+                        if (status.Status != X509ChainStatusFlags.UntrustedRoot &&
+                            status.Status != X509ChainStatusFlags.NoError)
+                        {
+                            return false;
+                        }
+                    }
+
+                    // Verify the chain ends with one of our trusted CAs
+                    var rootCert = customChain.ChainElements[^1].Certificate;
+                    foreach (var caCert in trustedCaCertificates)
+                    {
+                        if (rootCert.Thumbprint == caCert.Thumbprint)
+                            return true;
+                    }
+                }
+            }
+            finally
+            {
+                ownedCert?.Dispose();
             }
         }
 
@@ -755,6 +820,16 @@ public sealed class KafkaConnection : IKafkaConnection
         _socket?.Dispose();
 
         _writeLock.Dispose();
+
+        // Dispose certificates loaded from files
+        if (_loadedCaCertificates is not null)
+        {
+            foreach (var cert in _loadedCaCertificates)
+            {
+                cert.Dispose();
+            }
+        }
+        _loadedClientCertificate?.Dispose();
 
         FailAllPendingRequests(new ObjectDisposedException(nameof(KafkaConnection)));
     }

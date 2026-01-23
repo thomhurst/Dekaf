@@ -8,12 +8,22 @@ namespace Dekaf.Security;
 public sealed class TlsConfig
 {
     /// <summary>
-    /// The CA certificate used to validate the server's certificate.
-    /// Can be an <see cref="X509Certificate2"/>, <see cref="X509Certificate2Collection"/>,
-    /// or a file path to a PEM or PFX/PKCS12 file.
+    /// Path to the CA certificate file (PEM or PFX/PKCS12 format) used to validate the server's certificate.
     /// If null, the system's default certificate store is used.
     /// </summary>
-    public object? CaCertificate { get; init; }
+    public string? CaCertificatePath { get; init; }
+
+    /// <summary>
+    /// The CA certificate used to validate the server's certificate.
+    /// If null, the system's default certificate store is used.
+    /// </summary>
+    public X509Certificate2? CaCertificateObject { get; init; }
+
+    /// <summary>
+    /// A collection of CA certificates used to validate the server's certificate.
+    /// If null, the system's default certificate store is used.
+    /// </summary>
+    public X509Certificate2Collection? CaCertificateCollection { get; init; }
 
     /// <summary>
     /// The client certificate used for mutual TLS authentication.
@@ -86,7 +96,7 @@ public sealed class TlsConfig
     {
         return new TlsConfig
         {
-            CaCertificate = caCertPath,
+            CaCertificatePath = caCertPath,
             ClientCertificatePath = clientCertPath,
             ClientKeyPath = clientKeyPath,
             ClientKeyPassword = keyPassword,
@@ -107,7 +117,7 @@ public sealed class TlsConfig
         return new TlsConfig
         {
             ClientCertificate = clientCertificate,
-            CaCertificate = caCertificate,
+            CaCertificateObject = caCertificate,
             ValidateServerCertificate = true
         };
     }
