@@ -324,6 +324,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private IDeserializer<TValue>? _valueDeserializer;
     private IRebalanceListener? _rebalanceListener;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
+    private bool _enablePartitionEof;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -518,6 +519,18 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Enables partition end-of-file (EOF) events.
+    /// When enabled, the consumer will emit a special ConsumeResult with IsPartitionEof=true
+    /// when it reaches the end of a partition (caught up to the high watermark).
+    /// </summary>
+    /// <param name="enabled">Whether to enable partition EOF events. Default is true.</param>
+    public ConsumerBuilder<TKey, TValue> WithPartitionEof(bool enabled = true)
+    {
+        _enablePartitionEof = enabled;
+        return this;
+    }
+
     public IKafkaConsumer<TKey, TValue> Build()
     {
         if (_bootstrapServers.Count == 0)
@@ -544,7 +557,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
             GssapiConfig = _gssapiConfig,
-            RebalanceListener = _rebalanceListener
+            RebalanceListener = _rebalanceListener,
+            EnablePartitionEof = _enablePartitionEof
         };
 
         return new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory);
