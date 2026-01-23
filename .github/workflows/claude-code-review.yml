@@ -3,42 +3,37 @@ name: Claude Code Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
-      issues: read
+      pull-requests: write  # Required to post and update review comments
+      issues: write         # Required to create/update comments
       id-token: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0  # Full history for better diff analysis
 
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          prompt: |
+            Review this pull request. This is a Kafka client library for .NET.
+
+            IMPORTANT INSTRUCTIONS:
+            - If this is a new push to an existing PR (synchronize event), review ONLY the new changes since the last review
+            - Check if previous review comments have been addressed by the new commits
+            - Mark resolved issues as fixed and identify any remaining or new issues
+            - Focus on: CLAUDE.md compliance, zero-allocation in hot paths, ConfigureAwait(false), thread-safety, and test coverage
+
+            Review the PR at: https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+
+            After reviewing, post your findings as a PR review comment. If there are no issues, approve the PR.
 
