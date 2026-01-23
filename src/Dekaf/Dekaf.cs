@@ -1,5 +1,7 @@
+using System.Security.Cryptography.X509Certificates;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Dekaf.Serialization;
 
@@ -44,6 +46,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private Protocol.Records.CompressionType _compressionType = Protocol.Records.CompressionType.None;
     private PartitionerType _partitionerType = PartitionerType.Default;
     private bool _useTls;
+    private TlsConfig? _tlsConfig;
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
@@ -138,9 +141,55 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Enables TLS for secure connections.
+    /// </summary>
     public ProducerBuilder<TKey, TValue> UseTls()
     {
         _useTls = true;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures TLS with custom settings.
+    /// </summary>
+    /// <param name="config">The TLS configuration.</param>
+    public ProducerBuilder<TKey, TValue> UseTls(TlsConfig config)
+    {
+        _useTls = true;
+        _tlsConfig = config;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures mutual TLS (mTLS) authentication using certificate files.
+    /// </summary>
+    /// <param name="caCertPath">Path to the CA certificate file (PEM format).</param>
+    /// <param name="clientCertPath">Path to the client certificate file (PEM format).</param>
+    /// <param name="clientKeyPath">Path to the client private key file (PEM format).</param>
+    /// <param name="keyPassword">Optional password for the private key.</param>
+    public ProducerBuilder<TKey, TValue> UseMutualTls(
+        string caCertPath,
+        string clientCertPath,
+        string clientKeyPath,
+        string? keyPassword = null)
+    {
+        _useTls = true;
+        _tlsConfig = TlsConfig.CreateMutualTls(caCertPath, clientCertPath, clientKeyPath, keyPassword);
+        return this;
+    }
+
+    /// <summary>
+    /// Configures mutual TLS (mTLS) authentication using in-memory certificates.
+    /// </summary>
+    /// <param name="clientCertificate">The client certificate with private key.</param>
+    /// <param name="caCertificate">Optional CA certificate for server validation.</param>
+    public ProducerBuilder<TKey, TValue> UseMutualTls(
+        X509Certificate2 clientCertificate,
+        X509Certificate2? caCertificate = null)
+    {
+        _useTls = true;
+        _tlsConfig = TlsConfig.CreateMutualTls(clientCertificate, caCertificate);
         return this;
     }
 
@@ -206,6 +255,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             CompressionType = _compressionType,
             Partitioner = _partitionerType,
             UseTls = _useTls,
+            TlsConfig = _tlsConfig,
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword
@@ -250,6 +300,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _maxPollRecords = 500;
     private int _sessionTimeoutMs = 45000;
     private bool _useTls;
+    private TlsConfig? _tlsConfig;
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
@@ -326,9 +377,55 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Enables TLS for secure connections.
+    /// </summary>
     public ConsumerBuilder<TKey, TValue> UseTls()
     {
         _useTls = true;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures TLS with custom settings.
+    /// </summary>
+    /// <param name="config">The TLS configuration.</param>
+    public ConsumerBuilder<TKey, TValue> UseTls(TlsConfig config)
+    {
+        _useTls = true;
+        _tlsConfig = config;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures mutual TLS (mTLS) authentication using certificate files.
+    /// </summary>
+    /// <param name="caCertPath">Path to the CA certificate file (PEM format).</param>
+    /// <param name="clientCertPath">Path to the client certificate file (PEM format).</param>
+    /// <param name="clientKeyPath">Path to the client private key file (PEM format).</param>
+    /// <param name="keyPassword">Optional password for the private key.</param>
+    public ConsumerBuilder<TKey, TValue> UseMutualTls(
+        string caCertPath,
+        string clientCertPath,
+        string clientKeyPath,
+        string? keyPassword = null)
+    {
+        _useTls = true;
+        _tlsConfig = TlsConfig.CreateMutualTls(caCertPath, clientCertPath, clientKeyPath, keyPassword);
+        return this;
+    }
+
+    /// <summary>
+    /// Configures mutual TLS (mTLS) authentication using in-memory certificates.
+    /// </summary>
+    /// <param name="clientCertificate">The client certificate with private key.</param>
+    /// <param name="caCertificate">Optional CA certificate for server validation.</param>
+    public ConsumerBuilder<TKey, TValue> UseMutualTls(
+        X509Certificate2 clientCertificate,
+        X509Certificate2? caCertificate = null)
+    {
+        _useTls = true;
+        _tlsConfig = TlsConfig.CreateMutualTls(clientCertificate, caCertificate);
         return this;
     }
 
@@ -400,6 +497,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             MaxPollRecords = _maxPollRecords,
             SessionTimeoutMs = _sessionTimeoutMs,
             UseTls = _useTls,
+            TlsConfig = _tlsConfig,
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,

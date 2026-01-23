@@ -1,4 +1,5 @@
 using Dekaf.Protocol.Messages;
+using Dekaf.Security;
 using Dekaf.Security.Sasl;
 
 namespace Dekaf.Consumer;
@@ -113,6 +114,12 @@ public sealed class ConsumerOptions
     /// Use TLS.
     /// </summary>
     public bool UseTls { get; init; }
+
+    /// <summary>
+    /// TLS configuration for SSL/mTLS connections.
+    /// When set, <see cref="UseTls"/> is automatically enabled.
+    /// </summary>
+    public TlsConfig? TlsConfig { get; init; }
 
     /// <summary>
     /// SASL authentication mechanism.

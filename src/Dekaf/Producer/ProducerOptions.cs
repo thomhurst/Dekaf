@@ -1,5 +1,6 @@
 using Dekaf.Compression;
 using Dekaf.Protocol.Records;
+using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Dekaf.Serialization;
 
@@ -111,6 +112,12 @@ public sealed class ProducerOptions
     /// Use TLS.
     /// </summary>
     public bool UseTls { get; init; }
+
+    /// <summary>
+    /// TLS configuration for SSL/mTLS connections.
+    /// When set, <see cref="UseTls"/> is automatically enabled.
+    /// </summary>
+    public TlsConfig? TlsConfig { get; init; }
 
     /// <summary>
     /// SASL authentication mechanism.
