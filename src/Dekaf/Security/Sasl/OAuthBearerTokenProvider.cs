@@ -111,13 +111,6 @@ public sealed class OAuthBearerTokenProvider : IDisposable
             ["client_id"] = _config.ClientId
         };
 
-        // Include client_secret in body if not using Basic auth
-        // Some OAuth servers prefer this approach
-        if (!string.IsNullOrEmpty(_config.ClientSecret))
-        {
-            body["client_secret"] = _config.ClientSecret;
-        }
-
         if (!string.IsNullOrEmpty(_config.Scope))
         {
             body["scope"] = _config.Scope;

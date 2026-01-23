@@ -103,8 +103,8 @@ public sealed class OAuthBearerAuthenticator : ISaslAuthenticator
             }
         }
 
-        // Two SOH at the end (one as separator, one to terminate)
-        builder.Append("\x01\x01");
+        // Final SOH terminator (kvsep at end per RFC 7628)
+        builder.Append('\x01');
 
         _complete = true;
         return Encoding.UTF8.GetBytes(builder.ToString());

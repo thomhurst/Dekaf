@@ -28,15 +28,17 @@ public class OAuthBearerAuthenticatorTests
         var response = authenticator.GetInitialResponse();
         var responseStr = Encoding.UTF8.GetString(response);
 
-        // Format should be: n,,\x01auth=Bearer <token>\x01\x01
+        // Format should be: n,,\x01auth=Bearer <token>\x01
         // GS2 header
         await Assert.That(responseStr.StartsWith("n,,", StringComparison.Ordinal)).IsTrue();
         // SOH separator after GS2 header
         await Assert.That(responseStr[3]).IsEqualTo('\x01');
         // Authorization header
         await Assert.That(responseStr).Contains("auth=Bearer test-jwt-token");
-        // Double SOH terminator
-        await Assert.That(responseStr.EndsWith("\x01\x01", StringComparison.Ordinal)).IsTrue();
+        // Single SOH terminator (RFC 7628)
+        await Assert.That(responseStr.EndsWith('\x01')).IsTrue();
+        // Verify it's not double SOH
+        await Assert.That(responseStr.EndsWith("\x01\x01", StringComparison.Ordinal)).IsFalse();
     }
 
     [Test]
