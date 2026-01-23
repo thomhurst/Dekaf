@@ -115,6 +115,15 @@ public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
     /// Wakes up the consumer if it's blocked on a fetch.
     /// </summary>
     void Wakeup();
+
+    /// <summary>
+    /// Gracefully closes the consumer: commits pending offsets,
+    /// leaves the consumer group, and releases resources.
+    /// This method is idempotent and safe to call multiple times.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task representing the asynchronous close operation.</returns>
+    ValueTask CloseAsync(CancellationToken cancellationToken = default);
 }
 
 /// <summary>

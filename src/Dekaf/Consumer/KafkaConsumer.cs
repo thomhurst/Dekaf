@@ -120,6 +120,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private Task? _autoCommitTask;
     private volatile short _fetchApiVersion = -1;
     private volatile bool _disposed;
+    private volatile bool _closed;
 
     public KafkaConsumer(
         ConsumerOptions options,
@@ -1061,12 +1062,112 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
     }
 
+    /// <inheritdoc />
+    public async ValueTask CloseAsync(CancellationToken cancellationToken = default)
+    {
+        // Idempotent - return early if already closed/disposed
+        if (_closed || _disposed)
+            return;
+
+        _closed = true;
+
+        _logger?.LogDebug("Closing consumer gracefully");
+
+        // Step 1: Stop heartbeat background task
+        if (_coordinator is not null)
+        {
+            await _coordinator.StopHeartbeatAsync().ConfigureAwait(false);
+        }
+
+        // Step 2: Stop auto-commit task
+        _autoCommitCts?.Cancel();
+        if (_autoCommitTask is not null)
+        {
+            try
+            {
+                await _autoCommitTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore cancellation exceptions
+            }
+        }
+
+        // Step 3: Stop prefetch task
+        _prefetchCts?.Cancel();
+        if (_prefetchTask is not null)
+        {
+            try
+            {
+                await _prefetchTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore cancellation exceptions
+            }
+        }
+
+        // Step 4: Commit pending offsets (if auto-commit enabled and we have a coordinator)
+        if (_options.EnableAutoCommit && _coordinator is not null && _positions.Count > 0)
+        {
+            try
+            {
+                await CommitAsync(cancellationToken).ConfigureAwait(false);
+                _logger?.LogDebug("Committed pending offsets during close");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to commit offsets during close");
+            }
+        }
+
+        // Step 5: Send LeaveGroup request to coordinator
+        if (_coordinator is not null)
+        {
+            try
+            {
+                await _coordinator.LeaveGroupAsync("Consumer closing gracefully", cancellationToken).ConfigureAwait(false);
+                _logger?.LogDebug("Left consumer group during close");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to leave group during close");
+            }
+        }
+
+        // Step 6: Wake up any blocked operations
+        _wakeupCts?.Cancel();
+
+        // Step 7: Clear pending fetch data
+        _pendingFetches.Clear();
+        while (_prefetchChannel.Reader.TryRead(out _))
+        {
+            // Discard prefetched data
+        }
+
+        _logger?.LogInformation("Consumer closed gracefully");
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
             return;
 
         _disposed = true;
+
+        // If not already closed, perform graceful close first (but with a short timeout)
+        if (!_closed)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await CloseAsync(cts.Token).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore errors during dispose
+            }
+        }
 
         _wakeupCts?.Cancel();
         _autoCommitCts?.Cancel();
