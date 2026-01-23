@@ -69,6 +69,21 @@ public interface IAdminClient : IAsyncDisposable
     ValueTask CreatePartitionsAsync(IReadOnlyDictionary<string, int> newPartitionCounts, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Creates ACLs.
+    /// </summary>
+    ValueTask CreateAclsAsync(IEnumerable<AclBinding> aclBindings, CreateAclsOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes ACLs matching the specified filters.
+    /// </summary>
+    ValueTask<IReadOnlyList<AclBinding>> DeleteAclsAsync(IEnumerable<AclBindingFilter> filters, DeleteAclsOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Describes ACLs matching the specified filter.
+    /// </summary>
+    ValueTask<IReadOnlyList<AclBinding>> DescribeAclsAsync(AclBindingFilter filter, DescribeAclsOptions? options = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gets the cluster metadata.
     /// </summary>
     ClusterMetadata Metadata { get; }

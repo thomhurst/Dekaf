@@ -351,6 +351,202 @@ public sealed class AdminClient : IAdminClient
         throw new NotImplementedException("CreatePartitions not yet implemented");
     }
 
+    public async ValueTask CreateAclsAsync(
+        IEnumerable<AclBinding> aclBindings,
+        CreateAclsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+
+        var bindings = aclBindings.ToList();
+        if (bindings.Count == 0)
+            return;
+
+        var creations = bindings.Select(b => new AclCreation
+        {
+            ResourceType = (sbyte)b.Pattern.Type,
+            ResourceName = b.Pattern.Name,
+            ResourcePatternType = (sbyte)b.Pattern.PatternType,
+            Principal = b.Entry.Principal,
+            Host = b.Entry.Host,
+            Operation = (sbyte)b.Entry.Operation,
+            PermissionType = (sbyte)b.Entry.Permission
+        }).ToList();
+
+        var request = new CreateAclsRequest
+        {
+            Creations = creations
+        };
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.CreateAcls,
+            CreateAclsRequest.LowestSupportedVersion,
+            CreateAclsRequest.HighestSupportedVersion);
+
+        var response = await controller.SendAsync<CreateAclsRequest, CreateAclsResponse>(
+            request,
+            apiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        // Check for errors
+        for (var i = 0; i < response.Results.Count; i++)
+        {
+            var result = response.Results[i];
+            if (result.ErrorCode != Protocol.ErrorCode.None)
+            {
+                var binding = bindings[i];
+                throw new KafkaException(result.ErrorCode,
+                    $"Failed to create ACL for {binding.Pattern.Type}:{binding.Pattern.Name}: {result.ErrorMessage ?? result.ErrorCode.ToString()}");
+            }
+        }
+    }
+
+    public async ValueTask<IReadOnlyList<AclBinding>> DeleteAclsAsync(
+        IEnumerable<AclBindingFilter> filters,
+        DeleteAclsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+
+        var filterList = filters.ToList();
+        if (filterList.Count == 0)
+            return [];
+
+        var deleteFilters = filterList.Select(f => new DeleteAclsFilter
+        {
+            ResourceTypeFilter = (sbyte)f.ResourceType,
+            ResourceNameFilter = f.ResourceName,
+            PatternTypeFilter = (sbyte)f.PatternType,
+            PrincipalFilter = f.Principal,
+            HostFilter = f.Host,
+            Operation = (sbyte)f.Operation,
+            PermissionType = (sbyte)f.Permission
+        }).ToList();
+
+        var request = new DeleteAclsRequest
+        {
+            Filters = deleteFilters
+        };
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.DeleteAcls,
+            DeleteAclsRequest.LowestSupportedVersion,
+            DeleteAclsRequest.HighestSupportedVersion);
+
+        var response = await controller.SendAsync<DeleteAclsRequest, DeleteAclsResponse>(
+            request,
+            apiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        var deletedBindings = new List<AclBinding>();
+
+        // Check for errors and collect deleted ACLs
+        foreach (var filterResult in response.FilterResults)
+        {
+            if (filterResult.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new KafkaException(filterResult.ErrorCode,
+                    $"Failed to delete ACLs: {filterResult.ErrorMessage ?? filterResult.ErrorCode.ToString()}");
+            }
+
+            foreach (var matchingAcl in filterResult.MatchingAcls)
+            {
+                if (matchingAcl.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new KafkaException(matchingAcl.ErrorCode,
+                        $"Failed to delete ACL for {matchingAcl.ResourceName}: {matchingAcl.ErrorMessage ?? matchingAcl.ErrorCode.ToString()}");
+                }
+
+                deletedBindings.Add(new AclBinding
+                {
+                    Pattern = new ResourcePattern
+                    {
+                        Type = (ResourceType)matchingAcl.ResourceType,
+                        Name = matchingAcl.ResourceName,
+                        PatternType = (PatternType)matchingAcl.PatternType
+                    },
+                    Entry = new AccessControlEntry
+                    {
+                        Principal = matchingAcl.Principal,
+                        Host = matchingAcl.Host,
+                        Operation = (AclOperation)matchingAcl.Operation,
+                        Permission = (AclPermissionType)matchingAcl.PermissionType
+                    }
+                });
+            }
+        }
+
+        return deletedBindings;
+    }
+
+    public async ValueTask<IReadOnlyList<AclBinding>> DescribeAclsAsync(
+        AclBindingFilter filter,
+        DescribeAclsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+
+        var request = new DescribeAclsRequest
+        {
+            ResourceTypeFilter = (sbyte)filter.ResourceType,
+            ResourceNameFilter = filter.ResourceName,
+            PatternTypeFilter = (sbyte)filter.PatternType,
+            PrincipalFilter = filter.Principal,
+            HostFilter = filter.Host,
+            Operation = (sbyte)filter.Operation,
+            PermissionType = (sbyte)filter.Permission
+        };
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.DescribeAcls,
+            DescribeAclsRequest.LowestSupportedVersion,
+            DescribeAclsRequest.HighestSupportedVersion);
+
+        var response = await controller.SendAsync<DescribeAclsRequest, DescribeAclsResponse>(
+            request,
+            apiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        if (response.ErrorCode != Protocol.ErrorCode.None)
+        {
+            throw new KafkaException(response.ErrorCode,
+                $"Failed to describe ACLs: {response.ErrorMessage ?? response.ErrorCode.ToString()}");
+        }
+
+        var bindings = new List<AclBinding>();
+
+        foreach (var resource in response.Resources)
+        {
+            foreach (var acl in resource.Acls)
+            {
+                bindings.Add(new AclBinding
+                {
+                    Pattern = new ResourcePattern
+                    {
+                        Type = (ResourceType)resource.ResourceType,
+                        Name = resource.ResourceName,
+                        PatternType = (PatternType)resource.PatternType
+                    },
+                    Entry = new AccessControlEntry
+                    {
+                        Principal = acl.Principal,
+                        Host = acl.Host,
+                        Operation = (AclOperation)acl.Operation,
+                        Permission = (AclPermissionType)acl.PermissionType
+                    }
+                });
+            }
+        }
+
+        return bindings;
+    }
+
     private async ValueTask EnsureInitializedAsync(CancellationToken cancellationToken)
     {
         if (_metadataManager.Metadata.LastRefreshed == default)
