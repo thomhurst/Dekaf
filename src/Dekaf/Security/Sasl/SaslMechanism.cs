@@ -32,7 +32,13 @@ public enum SaslMechanism
     /// SASL GSSAPI mechanism. Kerberos authentication using GSSAPI.
     /// Provides strong mutual authentication and optional encryption.
     /// </summary>
-    Gssapi
+    Gssapi,
+
+    /// <summary>
+    /// SASL OAUTHBEARER mechanism. OAuth 2.0 / OpenID Connect authentication
+    /// using bearer tokens. Supports both static tokens and dynamic token providers.
+    /// </summary>
+    OAuthBearer
 }
 
 /// <summary>
@@ -49,6 +55,7 @@ public static class SaslMechanismExtensions
         SaslMechanism.ScramSha256 => "SCRAM-SHA-256",
         SaslMechanism.ScramSha512 => "SCRAM-SHA-512",
         SaslMechanism.Gssapi => "GSSAPI",
+        SaslMechanism.OAuthBearer => "OAUTHBEARER",
         _ => throw new ArgumentOutOfRangeException(nameof(mechanism), mechanism, "Unsupported SASL mechanism")
     };
 }

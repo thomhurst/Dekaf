@@ -149,6 +149,17 @@ public sealed class ConsumerOptions
     public Security.Sasl.GssapiConfig? GssapiConfig { get; init; }
 
     /// <summary>
+    /// OAuth bearer token configuration for OAUTHBEARER authentication.
+    /// </summary>
+    public OAuthBearerConfig? OAuthBearerConfig { get; init; }
+
+    /// <summary>
+    /// Custom OAuth bearer token provider function for OAUTHBEARER authentication.
+    /// Takes precedence over <see cref="OAuthBearerConfig"/> if both are specified.
+    /// </summary>
+    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
+
+    /// <summary>
     /// Rebalance listener.
     /// </summary>
     public IRebalanceListener? RebalanceListener { get; init; }
