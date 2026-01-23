@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -349,6 +351,150 @@ public sealed class AdminClient : IAdminClient
 
         // TODO: Implement CreatePartitions request
         throw new NotImplementedException("CreatePartitions not yet implemented");
+    }
+
+    public async ValueTask<IReadOnlyDictionary<string, IReadOnlyList<ScramCredentialInfo>>> DescribeUserScramCredentialsAsync(
+        IEnumerable<string>? users = null,
+        DescribeUserScramCredentialsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+
+        var usersList = users?.Select(u => new UserName { Name = u }).ToList();
+
+        var request = new DescribeUserScramCredentialsRequest
+        {
+            Users = usersList
+        };
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.DescribeUserScramCredentials,
+            DescribeUserScramCredentialsRequest.LowestSupportedVersion,
+            DescribeUserScramCredentialsRequest.HighestSupportedVersion);
+
+        var response = await controller.SendAsync<DescribeUserScramCredentialsRequest, DescribeUserScramCredentialsResponse>(
+            request,
+            apiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        // Check top-level error
+        if (response.ErrorCode != Protocol.ErrorCode.None)
+        {
+            throw new KafkaException(response.ErrorCode,
+                $"DescribeUserScramCredentials failed: {response.ErrorMessage ?? response.ErrorCode.ToString()}");
+        }
+
+        var result = new Dictionary<string, IReadOnlyList<ScramCredentialInfo>>();
+
+        foreach (var userResult in response.Results)
+        {
+            if (userResult.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new KafkaException(userResult.ErrorCode,
+                    $"DescribeUserScramCredentials failed for user '{userResult.User}': {userResult.ErrorMessage ?? userResult.ErrorCode.ToString()}");
+            }
+
+            var credentials = userResult.CredentialInfos
+                .Select(c => new ScramCredentialInfo
+                {
+                    Mechanism = (ScramMechanism)c.Mechanism,
+                    Iterations = c.Iterations
+                })
+                .ToList();
+
+            result[userResult.User] = credentials;
+        }
+
+        return result;
+    }
+
+    public async ValueTask AlterUserScramCredentialsAsync(
+        IEnumerable<UserScramCredentialAlteration> alterations,
+        AlterUserScramCredentialsOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
+
+        var deletions = new List<ScramCredentialDeletion>();
+        var upsertions = new List<ScramCredentialUpsertion>();
+
+        foreach (var alteration in alterations)
+        {
+            switch (alteration)
+            {
+                case UserScramCredentialDeletion deletion:
+                    deletions.Add(new ScramCredentialDeletion
+                    {
+                        Name = deletion.User,
+                        Mechanism = (byte)deletion.Mechanism
+                    });
+                    break;
+
+                case UserScramCredentialUpsertion upsertion:
+                    var salt = upsertion.Salt ?? RandomNumberGenerator.GetBytes(32);
+                    var saltedPassword = ComputeSaltedPassword(
+                        upsertion.Password,
+                        salt,
+                        upsertion.Iterations,
+                        upsertion.Mechanism);
+
+                    upsertions.Add(new ScramCredentialUpsertion
+                    {
+                        Name = upsertion.User,
+                        Mechanism = (byte)upsertion.Mechanism,
+                        Iterations = upsertion.Iterations,
+                        Salt = salt,
+                        SaltedPassword = saltedPassword
+                    });
+                    break;
+            }
+        }
+
+        var request = new AlterUserScramCredentialsRequest
+        {
+            Deletions = deletions,
+            Upsertions = upsertions
+        };
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            Protocol.ApiKey.AlterUserScramCredentials,
+            AlterUserScramCredentialsRequest.LowestSupportedVersion,
+            AlterUserScramCredentialsRequest.HighestSupportedVersion);
+
+        var response = await controller.SendAsync<AlterUserScramCredentialsRequest, AlterUserScramCredentialsResponse>(
+            request,
+            apiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        // Check for errors
+        foreach (var result in response.Results)
+        {
+            if (result.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new KafkaException(result.ErrorCode,
+                    $"AlterUserScramCredentials failed for user '{result.User}': {result.ErrorMessage ?? result.ErrorCode.ToString()}");
+            }
+        }
+    }
+
+    private static byte[] ComputeSaltedPassword(string password, byte[] salt, int iterations, ScramMechanism mechanism)
+    {
+        var hashAlgorithm = mechanism == ScramMechanism.ScramSha256
+            ? HashAlgorithmName.SHA256
+            : HashAlgorithmName.SHA512;
+
+        var hashSize = mechanism == ScramMechanism.ScramSha256 ? 32 : 64;
+
+        return Rfc2898DeriveBytes.Pbkdf2(
+            Encoding.UTF8.GetBytes(password),
+            salt,
+            iterations,
+            hashAlgorithm,
+            hashSize);
     }
 
     private async ValueTask EnsureInitializedAsync(CancellationToken cancellationToken)
