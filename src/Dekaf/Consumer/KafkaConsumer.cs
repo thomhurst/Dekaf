@@ -1438,6 +1438,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         IEnumerable<TopicPartitionTimestamp> timestampsToSearch,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(timestampsToSearch);
+
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 

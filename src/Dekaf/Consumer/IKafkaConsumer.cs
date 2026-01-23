@@ -172,12 +172,14 @@ public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
     /// Look up the offsets for the given partitions by timestamp.
     /// The returned offset for each partition is the earliest offset whose timestamp is greater than or equal to the given timestamp.
     /// </summary>
-    /// <param name="timestampsToSearch">The partitions and timestamps to search for.</param>
+    /// <param name="timestampsToSearch">The partitions and timestamps to search for. Must not be null.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>
     /// A dictionary mapping each topic-partition to the offset of the first message with timestamp greater than or equal to the target timestamp.
     /// If no such message exists, the offset will be -1.
+    /// If the input collection is empty, an empty dictionary is returned.
     /// </returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="timestampsToSearch"/> is null.</exception>
     /// <remarks>
     /// This method uses the Kafka ListOffsets API (API Key 2).
     /// Special timestamp values: -1 (latest offset), -2 (earliest offset).
