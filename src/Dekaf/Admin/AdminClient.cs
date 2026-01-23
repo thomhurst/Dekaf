@@ -965,20 +965,6 @@ public sealed class AdminClient : IAdminClient
         var opts = options ?? new ListOffsetsOptions();
         var specList = specs.ToList();
 
-        // Group specs by topic for the request
-        var topicGroups = specList
-            .GroupBy(s => s.TopicPartition.Topic)
-            .Select(g => new ListOffsetsRequestTopic
-            {
-                Name = g.Key,
-                Partitions = g.Select(s => new ListOffsetsRequestPartition
-                {
-                    PartitionIndex = s.TopicPartition.Partition,
-                    Timestamp = GetTimestampForSpec(s)
-                }).ToList()
-            })
-            .ToList();
-
         // Get partition leaders from metadata and group specs by leader
         var partitionsByLeader = new Dictionary<int, List<ListOffsetsRequestTopic>>();
 
