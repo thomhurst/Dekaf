@@ -40,6 +40,13 @@ public sealed class ConsumerOptions
     public int AutoCommitIntervalMs { get; init; } = 5000;
 
     /// <summary>
+    /// Enable automatic offset storage. When true, offsets are automatically stored
+    /// when messages are consumed. When false, offsets must be explicitly stored
+    /// using StoreOffset before they can be committed. Default is true.
+    /// </summary>
+    public bool EnableAutoOffsetStore { get; init; } = true;
+
+    /// <summary>
     /// Auto offset reset behavior.
     /// </summary>
     public AutoOffsetReset AutoOffsetReset { get; init; } = AutoOffsetReset.Latest;

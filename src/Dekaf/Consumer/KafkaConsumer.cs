@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Dekaf.Compression;
@@ -104,6 +105,10 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly Dictionary<TopicPartition, long> _positions = [];      // Consumed position (what app has seen)
     private readonly Dictionary<TopicPartition, long> _fetchPositions = []; // Fetch position (what to fetch next)
     private readonly Dictionary<TopicPartition, long> _committed = [];
+
+    // Stored offsets for manual offset storage (when EnableAutoOffsetStore = false)
+    // Uses ConcurrentDictionary for thread-safety as StoreOffset may be called from different threads
+    private readonly ConcurrentDictionary<TopicPartition, long> _storedOffsets = new();
 
     // Pending fetch responses for lazy record iteration
     private readonly Queue<PendingFetchData> _pendingFetches = new();
@@ -611,18 +616,59 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         if (_coordinator is null)
             return;
 
-        // Build offsets list without LINQ to avoid enumerator allocations
-        var offsets = new List<TopicPartitionOffset>(_positions.Count);
-        foreach (var kvp in _positions)
+        List<TopicPartitionOffset> offsets;
+
+        if (_options.EnableAutoOffsetStore)
         {
-            offsets.Add(new TopicPartitionOffset(kvp.Key.Topic, kvp.Key.Partition, kvp.Value));
+            // Auto-store mode: commit all consumed positions
+            offsets = new List<TopicPartitionOffset>(_positions.Count);
+            foreach (var kvp in _positions)
+            {
+                offsets.Add(new TopicPartitionOffset(kvp.Key.Topic, kvp.Key.Partition, kvp.Value));
+            }
         }
+        else
+        {
+            // Manual store mode: commit only explicitly stored offsets
+            // Take a snapshot to avoid race condition where offsets stored by another thread
+            // between enumeration and removal would be lost
+            var snapshot = _storedOffsets.ToArray();
+            offsets = new List<TopicPartitionOffset>(snapshot.Length);
+            foreach (var kvp in snapshot)
+            {
+                offsets.Add(new TopicPartitionOffset(kvp.Key.Topic, kvp.Key.Partition, kvp.Value));
+            }
+
+            if (offsets.Count == 0)
+                return;
+
+            await _coordinator.CommitOffsetsAsync(offsets, cancellationToken).ConfigureAwait(false);
+
+            // Update committed offsets tracking
+            foreach (var offset in offsets)
+            {
+                _committed[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+            }
+
+            // Remove only the offsets we committed from the snapshot, preserving any
+            // new offsets that were stored by other threads during the commit
+            foreach (var kvp in snapshot)
+            {
+                _storedOffsets.TryRemove(kvp);
+            }
+
+            return;
+        }
+
+        if (offsets.Count == 0)
+            return;
 
         await _coordinator.CommitOffsetsAsync(offsets, cancellationToken).ConfigureAwait(false);
 
-        foreach (var kvp in _positions)
+        // Update committed offsets tracking
+        foreach (var offset in offsets)
         {
-            _committed[kvp.Key] = kvp.Value;
+            _committed[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
         }
     }
 
@@ -690,6 +736,29 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             _fetchPositions[partition] = -1; // Special value meaning end
         }
         ClearFetchBuffer();
+        return this;
+    }
+
+    /// <summary>
+    /// Stores an offset for later commit. Does not commit immediately.
+    /// Use with EnableAutoOffsetStore = false for manual control.
+    /// </summary>
+    public IKafkaConsumer<TKey, TValue> StoreOffset(TopicPartitionOffset offset)
+    {
+        var tp = new TopicPartition(offset.Topic, offset.Partition);
+        _storedOffsets[tp] = offset.Offset;
+        return this;
+    }
+
+    /// <summary>
+    /// Stores the offset from a consume result for later commit.
+    /// The stored offset is the next offset to consume (result.Offset + 1).
+    /// </summary>
+    public IKafkaConsumer<TKey, TValue> StoreOffset(ConsumeResult<TKey, TValue> result)
+    {
+        var tp = new TopicPartition(result.Topic, result.Partition);
+        // Store the next offset to consume (current offset + 1)
+        _storedOffsets[tp] = result.Offset + 1;
         return this;
     }
 
