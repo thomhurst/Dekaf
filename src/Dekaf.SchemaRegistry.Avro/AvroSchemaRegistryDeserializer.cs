@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using Avro.Generic;
 using Avro.IO;
 using Avro.Specific;
@@ -64,13 +65,22 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         // Get writer schema from registry (cached)
         var writerSchema = GetWriterSchema(schemaId);
 
-        // Extract Avro payload
-        var payload = data.Slice(5).ToArray();
+        // Extract Avro payload using pooled buffer to avoid allocation
+        var payloadLength = (int)(data.Length - 5);
+        var rentedBuffer = ArrayPool<byte>.Shared.Rent(payloadLength);
+        try
+        {
+            data.Slice(5).CopyTo(rentedBuffer);
 
-        using var memoryStream = new MemoryStream(payload);
-        var decoder = new BinaryDecoder(memoryStream);
+            using var memoryStream = new PooledMemoryStream(rentedBuffer, payloadLength);
+            var decoder = new BinaryDecoder(memoryStream);
 
-        return ReadAvroValue(writerSchema, decoder);
+            return ReadAvroValue(writerSchema, decoder);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rentedBuffer);
+        }
     }
 
     private T ReadAvroValue(AvroSchema writerSchema, BinaryDecoder decoder)
@@ -100,7 +110,7 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
             return cachedSchema;
 
         var registrySchema = _schemaRegistry.GetSchemaAsync(schemaId)
-            .GetAwaiter().GetResult();
+            .ConfigureAwait(false).GetAwaiter().GetResult();
 
         if (registrySchema.SchemaType != SchemaType.Avro)
             throw new InvalidOperationException(

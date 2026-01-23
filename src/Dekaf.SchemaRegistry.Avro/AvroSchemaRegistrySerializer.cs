@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using Avro.Generic;
 using Avro.IO;
 using Avro.Specific;
@@ -55,24 +56,33 @@ public sealed class AvroSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         var subject = GetSubjectName(context.Topic, context.Component == SerializationComponent.Key);
         var schemaId = GetSchemaIdSync(subject, value);
 
-        // Serialize Avro payload to a temporary buffer
-        using var memoryStream = new MemoryStream();
-        var encoder = new BinaryEncoder(memoryStream);
+        // Use a pooled buffer for Avro serialization
+        // Initial estimate: 1KB should handle most messages, will grow if needed
+        var rentedBuffer = ArrayPool<byte>.Shared.Rent(1024);
+        try
+        {
+            using var memoryStream = new PooledMemoryStream(rentedBuffer);
+            var encoder = new BinaryEncoder(memoryStream);
 
-        WriteAvroValue(value, encoder);
-        encoder.Flush();
+            WriteAvroValue(value, encoder);
+            encoder.Flush();
 
-        var avroPayload = memoryStream.ToArray();
+            var avroPayloadLength = (int)memoryStream.Position;
 
-        // Write wire format: [0x00] [schema ID] [Avro payload]
-        var totalSize = 1 + 4 + avroPayload.Length;
-        var span = destination.GetSpan(totalSize);
+            // Write wire format: [0x00] [schema ID] [Avro payload]
+            var totalSize = 1 + 4 + avroPayloadLength;
+            var span = destination.GetSpan(totalSize);
 
-        span[0] = MagicByte;
-        BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
-        avroPayload.AsSpan().CopyTo(span.Slice(5));
+            span[0] = MagicByte;
+            BinaryPrimitives.WriteInt32BigEndian(span.Slice(1, 4), schemaId);
+            memoryStream.GetBuffer().AsSpan(0, avroPayloadLength).CopyTo(span.Slice(5));
 
-        destination.Advance(totalSize);
+            destination.Advance(totalSize);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rentedBuffer);
+        }
     }
 
     private static void WriteAvroValue(T value, BinaryEncoder encoder)
@@ -117,20 +127,20 @@ public sealed class AvroSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         {
             // Use latest schema from registry
             var registered = _schemaRegistry.GetSchemaBySubjectAsync(subject, "latest")
-                .GetAwaiter().GetResult();
+                .ConfigureAwait(false).GetAwaiter().GetResult();
             schemaId = registered.Id;
         }
         else if (_config.AutoRegisterSchemas)
         {
             // Register schema if auto-register is enabled
             schemaId = _schemaRegistry.GetOrRegisterSchemaAsync(subject, registrySchema)
-                .GetAwaiter().GetResult();
+                .ConfigureAwait(false).GetAwaiter().GetResult();
         }
         else
         {
             // Get existing schema ID from registry
             var registered = _schemaRegistry.GetSchemaBySubjectAsync(subject)
-                .GetAwaiter().GetResult();
+                .ConfigureAwait(false).GetAwaiter().GetResult();
             schemaId = registered.Id;
         }
 
