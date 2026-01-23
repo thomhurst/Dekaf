@@ -239,23 +239,26 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
                         batch.BaseTimestamp + record.TimestampDelta);
 
-                    var key = DeserializeKey(record.Key, record.IsKeyNull, pending.Topic);
-                    var value = DeserializeValue(record.Value, record.IsValueNull, pending.Topic);
                     var headers = GetHeaders(record.Headers);
+                    var timestampType = ((int)batch.Attributes & 0x08) != 0
+                        ? TimestampType.LogAppendTime
+                        : TimestampType.CreateTime;
 
-                    var result = new ConsumeResult<TKey, TValue>
-                    {
-                        Topic = pending.Topic,
-                        Partition = pending.PartitionIndex,
-                        Offset = offset,
-                        Key = key,
-                        Value = value,
-                        Headers = headers,
-                        Timestamp = timestamp,
-                        TimestampType = ((int)batch.Attributes & 0x08) != 0
-                            ? TimestampType.LogAppendTime
-                            : TimestampType.CreateTime
-                    };
+                    // Create result with raw data - deserialization happens lazily on Key/Value access
+                    var result = new ConsumeResult<TKey, TValue>(
+                        topic: pending.Topic,
+                        partition: pending.PartitionIndex,
+                        offset: offset,
+                        keyData: record.Key,
+                        isKeyNull: record.IsKeyNull,
+                        valueData: record.Value,
+                        isValueNull: record.IsValueNull,
+                        headers: headers,
+                        timestamp: timestamp,
+                        timestampType: timestampType,
+                        leaderEpoch: null,
+                        keyDeserializer: _keyDeserializer,
+                        valueDeserializer: _valueDeserializer);
 
                     // Update positions
                     var tp = new TopicPartition(pending.Topic, pending.PartitionIndex);
@@ -727,34 +730,6 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     partitionResponse.Records));
             }
         }
-    }
-
-    private TKey? DeserializeKey(ReadOnlyMemory<byte> data, bool isNull, string topic)
-    {
-        if (isNull)
-            return default;
-
-        var context = new SerializationContext
-        {
-            Topic = topic,
-            Component = SerializationComponent.Key
-        };
-
-        return _keyDeserializer.Deserialize(new ReadOnlySequence<byte>(data), context);
-    }
-
-    private TValue DeserializeValue(ReadOnlyMemory<byte> data, bool isNull, string topic)
-    {
-        var context = new SerializationContext
-        {
-            Topic = topic,
-            Component = SerializationComponent.Value
-        };
-
-        if (isNull)
-            return _valueDeserializer.Deserialize(ReadOnlySequence<byte>.Empty, context);
-
-        return _valueDeserializer.Deserialize(new ReadOnlySequence<byte>(data), context);
     }
 
     /// <summary>

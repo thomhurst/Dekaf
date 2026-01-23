@@ -120,56 +120,135 @@ public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
 /// <summary>
 /// Result of consuming a message.
 /// This is a struct to avoid heap allocations in the hot path.
+/// Key and Value are deserialized lazily on first access to minimize allocations.
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public readonly record struct ConsumeResult<TKey, TValue>
+public readonly struct ConsumeResult<TKey, TValue>
 {
+    // Raw data stored for lazy deserialization (zero-copy from network buffer)
+    private readonly ReadOnlyMemory<byte> _keyData;
+    private readonly ReadOnlyMemory<byte> _valueData;
+    private readonly bool _isKeyNull;
+    private readonly bool _isValueNull;
+
+    // Deserializers for lazy access
+    private readonly IDeserializer<TKey>? _keyDeserializer;
+    private readonly IDeserializer<TValue>? _valueDeserializer;
+
+    /// <summary>
+    /// Creates a new ConsumeResult with lazy deserialization.
+    /// </summary>
+    public ConsumeResult(
+        string topic,
+        int partition,
+        long offset,
+        ReadOnlyMemory<byte> keyData,
+        bool isKeyNull,
+        ReadOnlyMemory<byte> valueData,
+        bool isValueNull,
+        IReadOnlyList<RecordHeader>? headers,
+        DateTimeOffset timestamp,
+        TimestampType timestampType,
+        int? leaderEpoch,
+        IDeserializer<TKey>? keyDeserializer,
+        IDeserializer<TValue>? valueDeserializer)
+    {
+        Topic = topic;
+        Partition = partition;
+        Offset = offset;
+        _keyData = keyData;
+        _isKeyNull = isKeyNull;
+        _valueData = valueData;
+        _isValueNull = isValueNull;
+        Headers = headers;
+        Timestamp = timestamp;
+        TimestampType = timestampType;
+        LeaderEpoch = leaderEpoch;
+        _keyDeserializer = keyDeserializer;
+        _valueDeserializer = valueDeserializer;
+    }
+
     /// <summary>
     /// The topic.
     /// </summary>
-    public string Topic { get; init; }
+    public string Topic { get; }
 
     /// <summary>
     /// The partition.
     /// </summary>
-    public int Partition { get; init; }
+    public int Partition { get; }
 
     /// <summary>
     /// The offset.
     /// </summary>
-    public long Offset { get; init; }
+    public long Offset { get; }
 
     /// <summary>
-    /// The deserialized key.
+    /// The deserialized key. Deserialized lazily on first access.
+    /// Note: Accessing this property multiple times will deserialize each time.
+    /// Cache the result if you need to access it multiple times.
     /// </summary>
-    public TKey? Key { get; init; }
+    public TKey? Key
+    {
+        get
+        {
+            if (_isKeyNull)
+                return default;
+
+            var context = new SerializationContext
+            {
+                Topic = Topic,
+                Component = SerializationComponent.Key,
+                Headers = null
+            };
+            return _keyDeserializer!.Deserialize(new System.Buffers.ReadOnlySequence<byte>(_keyData), context);
+        }
+    }
 
     /// <summary>
-    /// The deserialized value.
+    /// The deserialized value. Deserialized lazily on first access.
+    /// Note: Accessing this property multiple times will deserialize each time.
+    /// Cache the result if you need to access it multiple times.
     /// </summary>
-    public TValue Value { get; init; }
+    public TValue Value
+    {
+        get
+        {
+            var context = new SerializationContext
+            {
+                Topic = Topic,
+                Component = SerializationComponent.Value,
+                Headers = null
+            };
+
+            if (_isValueNull)
+                return _valueDeserializer!.Deserialize(System.Buffers.ReadOnlySequence<byte>.Empty, context);
+
+            return _valueDeserializer!.Deserialize(new System.Buffers.ReadOnlySequence<byte>(_valueData), context);
+        }
+    }
 
     /// <summary>
     /// The message headers. Returns null if no headers.
     /// Uses RecordHeader directly to avoid per-message conversion allocations.
     /// </summary>
-    public IReadOnlyList<RecordHeader>? Headers { get; init; }
+    public IReadOnlyList<RecordHeader>? Headers { get; }
 
     /// <summary>
     /// The message timestamp.
     /// </summary>
-    public DateTimeOffset Timestamp { get; init; }
+    public DateTimeOffset Timestamp { get; }
 
     /// <summary>
     /// The timestamp type.
     /// </summary>
-    public TimestampType TimestampType { get; init; }
+    public TimestampType TimestampType { get; }
 
     /// <summary>
     /// The leader epoch.
     /// </summary>
-    public int? LeaderEpoch { get; init; }
+    public int? LeaderEpoch { get; }
 
     /// <summary>
     /// Gets the topic-partition-offset.
