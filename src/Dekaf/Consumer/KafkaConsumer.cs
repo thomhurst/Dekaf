@@ -241,7 +241,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
                     var key = DeserializeKey(record.Key, record.IsKeyNull, pending.Topic);
                     var value = DeserializeValue(record.Value, record.IsValueNull, pending.Topic);
-                    var headers = ConvertHeaders(record.Headers);
+                    var headers = GetHeaders(record.Headers);
 
                     var result = new ConsumeResult<TKey, TValue>
                     {
@@ -757,18 +757,17 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         return _valueDeserializer.Deserialize(new ReadOnlySequence<byte>(data), context);
     }
 
-    private static Headers? ConvertHeaders(IReadOnlyList<RecordHeader>? recordHeaders)
+    /// <summary>
+    /// Returns headers directly without conversion. Returns null if empty.
+    /// </summary>
+    private static IReadOnlyList<RecordHeader>? GetHeaders(IReadOnlyList<RecordHeader>? recordHeaders)
     {
+        // Return null for empty to avoid exposing empty lists
         if (recordHeaders is null || recordHeaders.Count == 0)
             return null;
 
-        var headers = new Headers(recordHeaders.Count);
-        foreach (var h in recordHeaders)
-        {
-            // Use zero-copy constructor with ReadOnlyMemory<byte>
-            headers.Add(new Header(h.Key, h.Value, h.IsValueNull));
-        }
-        return headers;
+        // Return directly - no conversion needed, zero allocation
+        return recordHeaders;
     }
 
     private List<FetchRequestTopic> BuildFetchRequestTopics(List<TopicPartition> partitions)

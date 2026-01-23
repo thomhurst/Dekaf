@@ -392,8 +392,8 @@ public class ConsumerTests(KafkaTestContainer kafka)
         await Assert.That(r.Headers!.Count).IsEqualTo(2);
 
         var header1 = r.Headers.FirstOrDefault(h => h.Key == "header1");
-        await Assert.That(header1).IsNotNull();
-        await Assert.That(System.Text.Encoding.UTF8.GetString(header1!.Value.Span)).IsEqualTo("headerValue1");
+        await Assert.That(header1.Key).IsNotNull();
+        await Assert.That(System.Text.Encoding.UTF8.GetString(header1.Value.Span)).IsEqualTo("headerValue1");
     }
 
     [Test]

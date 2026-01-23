@@ -120,8 +120,9 @@ public sealed class Headers : IEnumerable<Header>
 /// <summary>
 /// Represents a single header in a Kafka record.
 /// Uses ReadOnlyMemory to avoid copying header data.
+/// This is a struct to avoid heap allocations in the hot path.
 /// </summary>
-public sealed class Header
+public readonly record struct Header
 {
     /// <summary>
     /// Creates a new header with a byte array value.
@@ -146,17 +147,17 @@ public sealed class Header
     /// <summary>
     /// The header key.
     /// </summary>
-    public string Key { get; }
+    public string Key { get; init; }
 
     /// <summary>
     /// The header value as bytes. Check IsValueNull before accessing.
     /// </summary>
-    public ReadOnlyMemory<byte> Value { get; }
+    public ReadOnlyMemory<byte> Value { get; init; }
 
     /// <summary>
     /// Returns true if the header value is null.
     /// </summary>
-    public bool IsValueNull { get; }
+    public bool IsValueNull { get; init; }
 
     /// <summary>
     /// Gets the value as a byte array. Prefer using Value property to avoid allocation.
@@ -171,5 +172,6 @@ public sealed class Header
         return IsValueNull ? null : Encoding.UTF8.GetString(Value.Span);
     }
 
+    /// <inheritdoc/>
     public override string ToString() => $"{Key}={GetValueAsString() ?? "(null)"}";
 }
