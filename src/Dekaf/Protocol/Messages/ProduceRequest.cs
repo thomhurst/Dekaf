@@ -152,6 +152,11 @@ public sealed class ProduceRequestPartitionData
     /// </summary>
     public required IReadOnlyList<RecordBatch> Records { get; init; }
 
+    /// <summary>
+    /// Compression type to apply to record batches.
+    /// </summary>
+    public CompressionType Compression { get; init; } = CompressionType.None;
+
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         var isFlexible = version >= 9;
@@ -162,7 +167,7 @@ public sealed class ProduceRequestPartitionData
         var recordsBuffer = GetRecordsBuffer();
         foreach (var batch in Records)
         {
-            batch.Write(recordsBuffer);
+            batch.Write(recordsBuffer, Compression);
         }
 
         if (isFlexible)

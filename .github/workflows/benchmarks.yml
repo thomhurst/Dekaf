@@ -106,6 +106,18 @@ jobs:
           echo "- **.NET Version:** ${{ env.DOTNET_VERSION }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
+          # Helper function to format bytes
+          format_bytes() {
+            local bytes=$1
+            if [ "$bytes" -ge 1048576 ]; then
+              echo "$(echo "scale=2; $bytes / 1048576" | bc) MB"
+            elif [ "$bytes" -ge 1024 ]; then
+              echo "$(echo "scale=2; $bytes / 1024" | bc) KB"
+            else
+              echo "${bytes} B"
+            fi
+          }
+
           # Check for serialization results
           if [ -d "tools/Dekaf.Benchmarks/BenchmarkResults/Serialization" ]; then
             echo "## Serialization Benchmarks" >> $GITHUB_STEP_SUMMARY
@@ -113,10 +125,9 @@ jobs:
             echo "| Benchmark | Mean | Error | StdDev | Allocated |" >> $GITHUB_STEP_SUMMARY
             echo "|-----------|------|-------|--------|-----------|" >> $GITHUB_STEP_SUMMARY
 
-            # Parse JSON results if available
             for f in tools/Dekaf.Benchmarks/BenchmarkResults/Serialization/results/*.json; do
               if [ -f "$f" ]; then
-                cat "$f" | jq -r '.Benchmarks[]? | "| \(.Method) | \(.Statistics.Mean | . / 1000000 | . * 100 | round / 100) ms | \(.Statistics.Error | . / 1000000 | . * 100 | round / 100) ms | \(.Statistics.StdDev | . / 1000000 | . * 100 | round / 100) ms | \(.Memory.BytesAllocatedPerOperation // 0) B |"' 2>/dev/null >> $GITHUB_STEP_SUMMARY || true
+                jq -r '.Benchmarks[]? | "| \(.MethodTitle // .Method) | \((.Statistics.Mean / 1000000 * 100 | round) / 100) ms | \((.Statistics.StandardError / 1000000 * 100 | round) / 100) ms | \((.Statistics.StandardDeviation / 1000000 * 100 | round) / 100) ms | \(.Memory.BytesAllocatedPerOperation // 0) B |"' "$f" >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Failed to parse $f" >&2
               fi
             done
             echo "" >> $GITHUB_STEP_SUMMARY
@@ -131,7 +142,7 @@ jobs:
 
             for f in tools/Dekaf.Benchmarks/BenchmarkResults/Memory/results/*.json; do
               if [ -f "$f" ]; then
-                cat "$f" | jq -r '.Benchmarks[]? | "| \(.Method) | \(.Statistics.Mean | . / 1000000 | . * 100 | round / 100) ms | \(.Memory.BytesAllocatedPerOperation // 0) B |"' 2>/dev/null >> $GITHUB_STEP_SUMMARY || true
+                jq -r '.Benchmarks[]? | "| \(.MethodTitle // .Method) | \((.Statistics.Mean / 1000 * 100 | round) / 100) µs | \(.Memory.BytesAllocatedPerOperation // 0) B |"' "$f" >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Failed to parse $f" >&2
               fi
             done
             echo "" >> $GITHUB_STEP_SUMMARY
@@ -141,12 +152,12 @@ jobs:
           if [ -d "tools/Dekaf.Benchmarks/BenchmarkResults/Producer" ]; then
             echo "## Producer Benchmarks (Dekaf vs Confluent.Kafka)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Benchmark | Mean | Error | Allocated |" >> $GITHUB_STEP_SUMMARY
-            echo "|-----------|------|-------|-----------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Benchmark | Parameters | Mean | Error | Allocated |" >> $GITHUB_STEP_SUMMARY
+            echo "|-----------|------------|------|-------|-----------|" >> $GITHUB_STEP_SUMMARY
 
             for f in tools/Dekaf.Benchmarks/BenchmarkResults/Producer/results/*.json; do
               if [ -f "$f" ]; then
-                cat "$f" | jq -r '.Benchmarks[]? | "| \(.Method) | \(.Statistics.Mean | . / 1000000 | . * 100 | round / 100) ms | \(.Statistics.Error | . / 1000000 | . * 100 | round / 100) ms | \(.Memory.BytesAllocatedPerOperation // 0) B |"' 2>/dev/null >> $GITHUB_STEP_SUMMARY || true
+                jq -r '.Benchmarks[]? | "| \(.MethodTitle // .Method) | \(.Parameters // "-") | \((.Statistics.Mean / 1000000 * 100 | round) / 100) ms | \((.Statistics.StandardError / 1000000 * 100 | round) / 100) ms | \(.Memory.BytesAllocatedPerOperation // 0) B |"' "$f" >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Failed to parse $f" >&2
               fi
             done
             echo "" >> $GITHUB_STEP_SUMMARY
@@ -156,12 +167,12 @@ jobs:
           if [ -d "tools/Dekaf.Benchmarks/BenchmarkResults/Consumer" ]; then
             echo "## Consumer Benchmarks (Dekaf vs Confluent.Kafka)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Benchmark | Mean | Error | Allocated |" >> $GITHUB_STEP_SUMMARY
-            echo "|-----------|------|-------|-----------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Benchmark | Parameters | Mean | Error | Allocated |" >> $GITHUB_STEP_SUMMARY
+            echo "|-----------|------------|------|-------|-----------|" >> $GITHUB_STEP_SUMMARY
 
             for f in tools/Dekaf.Benchmarks/BenchmarkResults/Consumer/results/*.json; do
               if [ -f "$f" ]; then
-                cat "$f" | jq -r '.Benchmarks[]? | "| \(.Method) | \(.Statistics.Mean | . / 1000000 | . * 100 | round / 100) ms | \(.Statistics.Error | . / 1000000 | . * 100 | round / 100) ms | \(.Memory.BytesAllocatedPerOperation // 0) B |"' 2>/dev/null >> $GITHUB_STEP_SUMMARY || true
+                jq -r '.Benchmarks[]? | "| \(.MethodTitle // .Method) | \(.Parameters // "-") | \((.Statistics.Mean / 1000000000 * 100 | round) / 100) s | \((.Statistics.StandardError / 1000000000 * 100 | round) / 100) s | \(.Memory.BytesAllocatedPerOperation // 0) B |"' "$f" >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Failed to parse $f" >&2
               fi
             done
             echo "" >> $GITHUB_STEP_SUMMARY

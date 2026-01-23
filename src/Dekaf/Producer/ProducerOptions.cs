@@ -126,6 +126,17 @@ public sealed class ProducerOptions
     /// SASL password for PLAIN and SCRAM authentication.
     /// </summary>
     public string? SaslPassword { get; init; }
+
+    /// <summary>
+    /// Socket send buffer size in bytes. Set to 0 to use system default.
+    /// Larger buffers can improve throughput for high-volume producers.
+    /// </summary>
+    public int SocketSendBufferBytes { get; init; }
+
+    /// <summary>
+    /// Socket receive buffer size in bytes. Set to 0 to use system default.
+    /// </summary>
+    public int SocketReceiveBufferBytes { get; init; }
 }
 
 /// <summary>

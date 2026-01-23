@@ -32,6 +32,12 @@ public sealed class CompressionCodecRegistry
     private readonly Dictionary<CompressionType, ICompressionCodec> _codecs = [];
 
     /// <summary>
+    /// Default global registry with built-in codecs.
+    /// Used by RecordBatch for compression/decompression when no specific registry is provided.
+    /// </summary>
+    public static CompressionCodecRegistry Default { get; } = new();
+
+    /// <summary>
     /// Creates a registry with built-in codecs.
     /// </summary>
     public CompressionCodecRegistry()

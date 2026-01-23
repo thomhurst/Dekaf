@@ -1,4 +1,5 @@
 using System.Buffers;
+using Dekaf.Compression;
 
 namespace Dekaf.Protocol.Records;
 
@@ -67,7 +68,7 @@ public sealed class RecordBatch
     /// <summary>
     /// Writes the record batch to the output buffer.
     /// </summary>
-    public void Write(IBufferWriter<byte> output, CompressionType compression = CompressionType.None)
+    public void Write(IBufferWriter<byte> output, CompressionType compression = CompressionType.None, CompressionCodecRegistry? codecs = null)
     {
         var writer = new KafkaProtocolWriter(output);
 
@@ -83,8 +84,22 @@ public sealed class RecordBatch
 
         var recordsData = recordsBuffer.WrittenSpan;
 
-        // TODO: Apply compression if needed
-        var compressedRecords = recordsData;
+        // Apply compression if needed
+        ReadOnlySpan<byte> compressedRecords;
+        ArrayBufferWriter<byte>? compressedBuffer = null;
+
+        if (compression != CompressionType.None)
+        {
+            var registry = codecs ?? CompressionCodecRegistry.Default;
+            var codec = registry.GetCodec(compression);
+            compressedBuffer = new ArrayBufferWriter<byte>(recordsData.Length);
+            codec.Compress(new ReadOnlySequence<byte>(recordsData.ToArray()), compressedBuffer);
+            compressedRecords = compressedBuffer.WrittenSpan;
+        }
+        else
+        {
+            compressedRecords = recordsData;
+        }
 
         // Calculate batch length: from partition leader epoch to end
         // 4 (partition leader epoch) + 1 (magic) + 4 (crc) + 2 (attributes) +
@@ -134,7 +149,7 @@ public sealed class RecordBatch
     /// Reads a record batch from the input buffer.
     /// Records are parsed lazily to avoid allocations for unconsumed records.
     /// </summary>
-    public static RecordBatch Read(ref KafkaProtocolReader reader)
+    public static RecordBatch Read(ref KafkaProtocolReader reader, CompressionCodecRegistry? codecs = null)
     {
         var baseOffset = reader.ReadInt64();
         var batchLength = reader.ReadInt32();
@@ -159,14 +174,29 @@ public sealed class RecordBatch
         // Calculate remaining bytes for records
         var recordsLength = batchLength - (4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4);
 
-        // TODO: Handle decompression based on attributes
+        // Check compression type from attributes
         var compression = (CompressionType)((int)attributes & 0x07);
 
-        // Capture the raw record data for lazy parsing instead of parsing all records now
+        // Capture the raw record data
         var rawRecordData = reader.ReadMemorySlice(recordsLength);
 
+        // Decompress if needed
+        ReadOnlyMemory<byte> recordData;
+        if (compression != CompressionType.None)
+        {
+            var registry = codecs ?? CompressionCodecRegistry.Default;
+            var codec = registry.GetCodec(compression);
+            var decompressedBuffer = new ArrayBufferWriter<byte>(recordsLength * 4); // Estimate 4x expansion
+            codec.Decompress(new ReadOnlySequence<byte>(rawRecordData), decompressedBuffer);
+            recordData = decompressedBuffer.WrittenMemory.ToArray(); // Copy to owned memory
+        }
+        else
+        {
+            recordData = rawRecordData;
+        }
+
         // Create a lazy record list that parses on-demand
-        var lazyRecords = new LazyRecordList(rawRecordData, recordCount);
+        var lazyRecords = new LazyRecordList(recordData, recordCount);
 
         return new RecordBatch
         {

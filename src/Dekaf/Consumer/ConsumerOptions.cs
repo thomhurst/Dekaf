@@ -133,6 +133,30 @@ public sealed class ConsumerOptions
     /// Rebalance listener.
     /// </summary>
     public IRebalanceListener? RebalanceListener { get; init; }
+
+    /// <summary>
+    /// Socket send buffer size in bytes. Set to 0 to use system default.
+    /// </summary>
+    public int SocketSendBufferBytes { get; init; }
+
+    /// <summary>
+    /// Socket receive buffer size in bytes. Set to 0 to use system default.
+    /// Larger buffers can improve throughput for high-volume consumers.
+    /// </summary>
+    public int SocketReceiveBufferBytes { get; init; }
+
+    /// <summary>
+    /// Minimum number of messages to prefetch per partition.
+    /// The consumer will attempt to keep at least this many messages buffered.
+    /// Set to 0 to disable prefetching. Default is 1 (fetch on demand).
+    /// </summary>
+    public int QueuedMinMessages { get; init; } = 1;
+
+    /// <summary>
+    /// Maximum total size of prefetched messages in kilobytes.
+    /// Limits memory usage when prefetching is enabled. Default is 65536 KB (64 MB).
+    /// </summary>
+    public int QueuedMaxMessagesKbytes { get; init; } = 65536;
 }
 
 /// <summary>

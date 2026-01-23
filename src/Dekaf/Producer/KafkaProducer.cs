@@ -73,7 +73,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
-                SaslPassword = options.SaslPassword
+                SaslPassword = options.SaslPassword,
+                SendBufferSize = options.SocketSendBufferBytes,
+                ReceiveBufferSize = options.SocketReceiveBufferBytes
             },
             loggerFactory);
 
@@ -332,7 +334,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                         new ProduceRequestPartitionData
                         {
                             Index = batch.TopicPartition.Partition,
-                            Records = [batch.RecordBatch]
+                            Records = [batch.RecordBatch],
+                            Compression = _options.CompressionType
                         }
                     ]
                 }

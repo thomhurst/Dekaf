@@ -37,6 +37,11 @@ internal sealed class PendingFetchData
     public Record CurrentRecord => _batches[_batchIndex].Records[_recordIndex];
 
     /// <summary>
+    /// Gets all batches for memory estimation.
+    /// </summary>
+    public IReadOnlyList<RecordBatch> GetBatches() => _batches;
+
+    /// <summary>
     /// Advances to the next record across all batches.
     /// Returns false when no more records are available.
     /// </summary>
@@ -103,6 +108,13 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     // Pending fetch responses for lazy record iteration
     private readonly Queue<PendingFetchData> _pendingFetches = new();
 
+    // Background prefetch support
+    private readonly Channel<PendingFetchData> _prefetchChannel;
+    private CancellationTokenSource? _prefetchCts;
+    private Task? _prefetchTask;
+    private long _prefetchedBytes;
+    private readonly object _prefetchLock = new();
+
     private CancellationTokenSource? _wakeupCts;
     private CancellationTokenSource? _autoCommitCts;
     private Task? _autoCommitTask;
@@ -128,7 +140,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
-                SaslPassword = options.SaslPassword
+                SaslPassword = options.SaslPassword,
+                SendBufferSize = options.SocketSendBufferBytes,
+                ReceiveBufferSize = options.SocketReceiveBufferBytes
             },
             loggerFactory);
 
@@ -147,6 +161,15 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
 
         _compressionCodecs = new CompressionCodecRegistry();
+
+        // Initialize prefetch channel - bounded by QueuedMinMessages batches
+        var prefetchCapacity = Math.Max(options.QueuedMinMessages, 1);
+        _prefetchChannel = Channel.CreateBounded<PendingFetchData>(new BoundedChannelOptions(prefetchCapacity * 10)
+        {
+            SingleReader = true,
+            SingleWriter = true,
+            FullMode = BoundedChannelFullMode.Wait
+        });
     }
 
     public IReadOnlySet<string> Subscription => _subscription;
@@ -209,6 +232,13 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             StartAutoCommit();
         }
 
+        // Start background prefetch if enabled (QueuedMinMessages > 1)
+        var prefetchEnabled = _options.QueuedMinMessages > 1;
+        if (prefetchEnabled)
+        {
+            StartPrefetch(cancellationToken);
+        }
+
         while (!cancellationToken.IsCancellationRequested)
         {
             await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
@@ -219,10 +249,40 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 continue;
             }
 
-            // If no pending records, fetch more
+            // Get pending data - either from prefetch channel or direct fetch
             if (_pendingFetches.Count == 0)
             {
-                await FetchRecordsAsync(cancellationToken).ConfigureAwait(false);
+                if (prefetchEnabled)
+                {
+                    // Try to read from prefetch channel
+                    if (_prefetchChannel.Reader.TryRead(out var prefetched))
+                    {
+                        _pendingFetches.Enqueue(prefetched);
+                        TrackPrefetchedBytes(prefetched, release: true);
+                    }
+                    else
+                    {
+                        // Wait for prefetch with timeout, then try direct fetch
+                        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(_options.FetchMaxWaitMs));
+                        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+                        try
+                        {
+                            var fetched = await _prefetchChannel.Reader.ReadAsync(linkedCts.Token).ConfigureAwait(false);
+                            _pendingFetches.Enqueue(fetched);
+                            TrackPrefetchedBytes(fetched, release: true);
+                        }
+                        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+                        {
+                            // Prefetch not ready, continue loop
+                            continue;
+                        }
+                    }
+                }
+                else
+                {
+                    // Direct fetch (no prefetching)
+                    await FetchRecordsAsync(cancellationToken).ConfigureAwait(false);
+                }
             }
 
             // Yield records lazily from pending fetches
@@ -272,6 +332,191 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 _pendingFetches.Dequeue();
             }
         }
+    }
+
+    private void StartPrefetch(CancellationToken cancellationToken)
+    {
+        if (_prefetchTask is not null)
+            return;
+
+        _prefetchCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _prefetchTask = PrefetchLoopAsync(_prefetchCts.Token);
+    }
+
+    private async Task PrefetchLoopAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+
+                if (_assignment.Count == 0)
+                {
+                    await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                // Check memory limit
+                var maxBytes = (long)_options.QueuedMaxMessagesKbytes * 1024;
+                if (Interlocked.Read(ref _prefetchedBytes) >= maxBytes)
+                {
+                    // Wait for consumer to catch up
+                    await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                // Fetch records into prefetch channel
+                await PrefetchRecordsAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Error in prefetch loop");
+                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async ValueTask PrefetchRecordsAsync(CancellationToken cancellationToken)
+    {
+        _wakeupCts = new CancellationTokenSource();
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _wakeupCts.Token);
+
+        var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
+
+        foreach (var (brokerId, partitions) in partitionsByBroker)
+        {
+            try
+            {
+                await PrefetchFromBrokerAsync(brokerId, partitions, linkedCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_wakeupCts.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Failed to prefetch from broker {BrokerId}", brokerId);
+            }
+        }
+    }
+
+    private async ValueTask PrefetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
+    {
+        var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+
+        // Ensure API version is negotiated
+        if (_fetchApiVersion < 0)
+        {
+            _fetchApiVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.Fetch,
+                FetchRequest.LowestSupportedVersion,
+                FetchRequest.HighestSupportedVersion);
+        }
+
+        // Resolve any special offset values
+        await ResolveSpecialOffsetsAsync(partitions, cancellationToken).ConfigureAwait(false);
+
+        // Build fetch request
+        var topicData = BuildFetchRequestTopics(partitions);
+
+        var request = new FetchRequest
+        {
+            MaxWaitMs = _options.FetchMaxWaitMs,
+            MinBytes = _options.FetchMinBytes,
+            MaxBytes = _options.FetchMaxBytes,
+            IsolationLevel = _options.IsolationLevel,
+            Topics = topicData
+        };
+
+        var response = await connection.SendAsync<FetchRequest, FetchResponse>(
+            request,
+            _fetchApiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        // Write to prefetch channel
+        foreach (var topicResponse in response.Responses)
+        {
+            var topic = topicResponse.Topic ?? string.Empty;
+
+            foreach (var partitionResponse in topicResponse.Partitions)
+            {
+                if (partitionResponse.ErrorCode != ErrorCode.None)
+                {
+                    _logger?.LogWarning(
+                        "Prefetch error for {Topic}-{Partition}: {Error}",
+                        topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                    continue;
+                }
+
+                if (partitionResponse.Records is null || partitionResponse.Records.Count == 0)
+                    continue;
+
+                var pending = new PendingFetchData(
+                    topic,
+                    partitionResponse.PartitionIndex,
+                    partitionResponse.Records);
+
+                // Track memory before adding to channel
+                TrackPrefetchedBytes(pending, release: false);
+
+                // Update fetch positions for next prefetch
+                UpdateFetchPositionsFromPrefetch(pending);
+
+                await _prefetchChannel.Writer.WriteAsync(pending, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private void UpdateFetchPositionsFromPrefetch(PendingFetchData pending)
+    {
+        // Calculate the last offset in the prefetched data
+        // We need to update fetch positions so next prefetch gets new data
+        var batches = pending.GetBatches();
+        if (batches.Count == 0) return;
+
+        var lastBatch = batches[^1];
+        var lastOffset = lastBatch.BaseOffset + lastBatch.LastOffsetDelta;
+        var tp = new TopicPartition(pending.Topic, pending.PartitionIndex);
+
+        lock (_prefetchLock)
+        {
+            var currentPos = _fetchPositions.GetValueOrDefault(tp, 0);
+            if (lastOffset + 1 > currentPos)
+            {
+                _fetchPositions[tp] = lastOffset + 1;
+            }
+        }
+    }
+
+    private void TrackPrefetchedBytes(PendingFetchData pending, bool release)
+    {
+        // Estimate bytes from batches
+        var bytes = EstimatePendingFetchBytes(pending);
+
+        if (release)
+        {
+            Interlocked.Add(ref _prefetchedBytes, -bytes);
+        }
+        else
+        {
+            Interlocked.Add(ref _prefetchedBytes, bytes);
+        }
+    }
+
+    private static long EstimatePendingFetchBytes(PendingFetchData pending)
+    {
+        var batches = pending.GetBatches();
+        long bytes = 0;
+        foreach (var batch in batches)
+        {
+            bytes += batch.BatchLength;
+        }
+        return bytes;
     }
 
     public async ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneAsync(
@@ -825,6 +1070,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         _wakeupCts?.Cancel();
         _autoCommitCts?.Cancel();
+        _prefetchCts?.Cancel();
 
         if (_autoCommitTask is not null)
         {
@@ -838,11 +1084,30 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             }
         }
 
+        if (_prefetchTask is not null)
+        {
+            try
+            {
+                await _prefetchTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore
+            }
+        }
+
         _autoCommitCts?.Dispose();
         _wakeupCts?.Dispose();
+        _prefetchCts?.Dispose();
 
         // Clear any pending fetch data
         _pendingFetches.Clear();
+
+        // Drain prefetch channel
+        while (_prefetchChannel.Reader.TryRead(out _))
+        {
+            // Discard
+        }
 
         if (_coordinator is not null)
             await _coordinator.DisposeAsync().ConfigureAwait(false);
