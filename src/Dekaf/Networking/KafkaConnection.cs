@@ -5,8 +5,10 @@ using System.IO.Pipelines;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Microsoft.Extensions.Logging;
 
@@ -92,14 +94,11 @@ public sealed class KafkaConnection : IKafkaConnection
 
         Stream networkStream = new NetworkStream(_socket, ownsSocket: false);
 
-        if (_options.UseTls)
+        if (_options.UseTls || _options.TlsConfig is not null)
         {
             var sslStream = new SslStream(networkStream, leaveInnerStreamOpen: false);
-            await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
-            {
-                TargetHost = _host,
-                RemoteCertificateValidationCallback = _options.RemoteCertificateValidationCallback
-            }, cancellationToken).ConfigureAwait(false);
+            var sslOptions = BuildSslClientAuthenticationOptions();
+            await sslStream.AuthenticateAsClientAsync(sslOptions, cancellationToken).ConfigureAwait(false);
             networkStream = sslStream;
         }
 
@@ -376,6 +375,168 @@ public sealed class KafkaConnection : IKafkaConnection
                 pending.Fail(ex);
             }
         }
+    }
+
+    private SslClientAuthenticationOptions BuildSslClientAuthenticationOptions()
+    {
+        var tlsConfig = _options.TlsConfig;
+        var options = new SslClientAuthenticationOptions
+        {
+            TargetHost = tlsConfig?.TargetHost ?? _host,
+            RemoteCertificateValidationCallback = _options.RemoteCertificateValidationCallback
+        };
+
+        // Configure enabled SSL protocols if specified
+        if (tlsConfig?.EnabledSslProtocols is not null)
+        {
+            options.EnabledSslProtocols = tlsConfig.EnabledSslProtocols.Value;
+        }
+
+        // Configure certificate revocation checking
+        if (tlsConfig is not null)
+        {
+            options.CertificateRevocationCheckMode = tlsConfig.CheckCertificateRevocation
+                ? X509RevocationMode.Online
+                : X509RevocationMode.NoCheck;
+        }
+
+        // Configure server certificate validation
+        if (tlsConfig is not null && !tlsConfig.ValidateServerCertificate)
+        {
+            // Disable server certificate validation (not recommended for production)
+            options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+        }
+        else if (options.RemoteCertificateValidationCallback is null && tlsConfig?.CaCertificate is not null)
+        {
+            // Custom CA certificate validation
+            var caCertificates = LoadCaCertificates(tlsConfig.CaCertificate);
+            options.RemoteCertificateValidationCallback = (_, certificate, chain, sslPolicyErrors) =>
+                ValidateServerCertificate(certificate, chain, sslPolicyErrors, caCertificates);
+        }
+
+        // Configure client certificate for mTLS
+        if (tlsConfig is not null)
+        {
+            var clientCert = LoadClientCertificate(tlsConfig);
+            if (clientCert is not null)
+            {
+                options.ClientCertificates = [clientCert];
+            }
+        }
+
+        return options;
+    }
+
+    private static X509Certificate2Collection LoadCaCertificates(object caCertificate)
+    {
+        return caCertificate switch
+        {
+            X509Certificate2 cert => [cert],
+            X509Certificate2Collection collection => collection,
+            string path => LoadCertificatesFromFile(path),
+            _ => throw new ArgumentException($"Unsupported CA certificate type: {caCertificate.GetType()}", nameof(caCertificate))
+        };
+    }
+
+    private static X509Certificate2Collection LoadCertificatesFromFile(string path)
+    {
+        var collection = new X509Certificate2Collection();
+        var extension = Path.GetExtension(path).ToLowerInvariant();
+
+        if (extension is ".pfx" or ".p12")
+        {
+            // Load PFX/PKCS12 file
+            collection.Add(new X509Certificate2(path));
+        }
+        else
+        {
+            // Assume PEM format - can contain multiple certificates
+            collection.ImportFromPemFile(path);
+        }
+
+        return collection;
+    }
+
+    private static X509Certificate2? LoadClientCertificate(TlsConfig tlsConfig)
+    {
+        // If an in-memory certificate is provided, use it directly
+        if (tlsConfig.ClientCertificate is not null)
+        {
+            return tlsConfig.ClientCertificate;
+        }
+
+        // If certificate path is provided, load from file
+        if (tlsConfig.ClientCertificatePath is not null)
+        {
+            var certPath = tlsConfig.ClientCertificatePath;
+            var extension = Path.GetExtension(certPath).ToLowerInvariant();
+
+            if (extension is ".pfx" or ".p12")
+            {
+                // Load PFX/PKCS12 file (contains both certificate and private key)
+                return string.IsNullOrEmpty(tlsConfig.ClientKeyPassword)
+                    ? new X509Certificate2(certPath)
+                    : new X509Certificate2(certPath, tlsConfig.ClientKeyPassword);
+            }
+            else
+            {
+                // PEM format - need separate key file
+                if (tlsConfig.ClientKeyPath is null)
+                {
+                    throw new InvalidOperationException(
+                        "Client key path is required when using PEM certificate format");
+                }
+
+                return string.IsNullOrEmpty(tlsConfig.ClientKeyPassword)
+                    ? X509Certificate2.CreateFromPemFile(certPath, tlsConfig.ClientKeyPath)
+                    : X509Certificate2.CreateFromEncryptedPemFile(certPath, tlsConfig.ClientKeyPassword, tlsConfig.ClientKeyPath);
+            }
+        }
+
+        return null;
+    }
+
+    private static bool ValidateServerCertificate(
+        X509Certificate? certificate,
+        X509Chain? chain,
+        SslPolicyErrors sslPolicyErrors,
+        X509Certificate2Collection trustedCaCertificates)
+    {
+        if (certificate is null)
+            return false;
+
+        // If there are no policy errors, the certificate is valid
+        if (sslPolicyErrors == SslPolicyErrors.None)
+            return true;
+
+        // If the only error is an untrusted root, validate against our custom CA
+        if (sslPolicyErrors == SslPolicyErrors.RemoteCertificateChainErrors && chain is not null)
+        {
+            // Build a new chain with our custom trust store
+            using var customChain = new X509Chain();
+            customChain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            customChain.ChainPolicy.VerificationFlags = X509VerificationFlags.AllowUnknownCertificateAuthority;
+            customChain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+
+            foreach (var caCert in trustedCaCertificates)
+            {
+                customChain.ChainPolicy.CustomTrustStore.Add(caCert);
+            }
+
+            var cert2 = certificate as X509Certificate2 ?? new X509Certificate2(certificate);
+            if (customChain.Build(cert2))
+            {
+                // Verify the chain ends with one of our trusted CAs
+                var rootCert = customChain.ChainElements[^1].Certificate;
+                foreach (var caCert in trustedCaCertificates)
+                {
+                    if (rootCert.Thumbprint == caCert.Thumbprint)
+                        return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private async ValueTask PerformSaslAuthenticationAsync(CancellationToken cancellationToken)
@@ -675,6 +836,12 @@ public sealed class ConnectionOptions
     /// Whether to use TLS.
     /// </summary>
     public bool UseTls { get; init; }
+
+    /// <summary>
+    /// TLS configuration for SSL/mTLS connections.
+    /// When set, <see cref="UseTls"/> is automatically treated as true.
+    /// </summary>
+    public TlsConfig? TlsConfig { get; init; }
 
     /// <summary>
     /// Custom certificate validation callback.

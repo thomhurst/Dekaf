@@ -138,6 +138,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             new ConnectionOptions
             {
                 UseTls = options.UseTls,
+                TlsConfig = options.TlsConfig,
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
