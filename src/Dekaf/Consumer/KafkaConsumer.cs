@@ -1220,15 +1220,21 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     continue;
                 }
 
-                // Update high watermark from response
-                _highWatermarks[tp] = partitionResponse.HighWatermark;
+                // Update high watermark from response (thread-safe update)
+                lock (_prefetchLock)
+                {
+                    _highWatermarks[tp] = partitionResponse.HighWatermark;
+                }
 
                 var hasRecords = partitionResponse.Records is not null && partitionResponse.Records.Count > 0;
 
                 if (hasRecords)
                 {
                     // We have new records - reset EOF state for this partition
-                    _eofEmitted.Remove(tp);
+                    lock (_prefetchLock)
+                    {
+                        _eofEmitted.Remove(tp);
+                    }
 
                     // Queue the pending fetch data for lazy record iteration
                     _pendingFetches.Enqueue(new PendingFetchData(
@@ -1239,14 +1245,17 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 else if (_options.EnablePartitionEof)
                 {
                     // No records returned - check if we're at EOF
-                    var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
-
-                    // EOF condition: position >= high watermark and we haven't emitted EOF yet
-                    if (fetchPosition >= partitionResponse.HighWatermark && !_eofEmitted.Contains(tp))
+                    lock (_prefetchLock)
                     {
-                        // Queue EOF event and mark as emitted
-                        _pendingEofEvents.Enqueue((tp, fetchPosition));
-                        _eofEmitted.Add(tp);
+                        var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
+
+                        // EOF condition: position >= high watermark and we haven't emitted EOF yet
+                        if (fetchPosition >= partitionResponse.HighWatermark && !_eofEmitted.Contains(tp))
+                        {
+                            // Queue EOF event and mark as emitted
+                            _pendingEofEvents.Enqueue((tp, fetchPosition));
+                            _eofEmitted.Add(tp);
+                        }
                     }
                 }
             }
