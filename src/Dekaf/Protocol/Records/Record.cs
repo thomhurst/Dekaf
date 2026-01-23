@@ -101,14 +101,15 @@ public readonly record struct Record
         var value = isValueNull ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(valueLength);
 
         var headerCount = reader.ReadVarInt();
-        List<RecordHeader>? headers = null;
+        RecordHeader[]? headers = null;
 
         if (headerCount > 0)
         {
-            headers = new List<RecordHeader>(headerCount);
+            // Use array directly instead of List to avoid List's internal array allocation
+            headers = new RecordHeader[headerCount];
             for (var i = 0; i < headerCount; i++)
             {
-                headers.Add(RecordHeader.Read(ref reader));
+                headers[i] = RecordHeader.Read(ref reader);
             }
         }
 
