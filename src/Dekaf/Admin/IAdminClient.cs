@@ -69,6 +69,29 @@ public interface IAdminClient : IAsyncDisposable
     ValueTask CreatePartitionsAsync(IReadOnlyDictionary<string, int> newPartitionCounts, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Describes SCRAM credentials for one or more users.
+    /// </summary>
+    /// <param name="users">The users to describe, or null to describe all users.</param>
+    /// <param name="options">Options for the request.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A dictionary mapping user names to their SCRAM credential information.</returns>
+    ValueTask<IReadOnlyDictionary<string, IReadOnlyList<ScramCredentialInfo>>> DescribeUserScramCredentialsAsync(
+        IEnumerable<string>? users = null,
+        DescribeUserScramCredentialsOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Alters SCRAM credentials for users.
+    /// </summary>
+    /// <param name="alterations">The credential alterations to perform.</param>
+    /// <param name="options">Options for the request.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    ValueTask AlterUserScramCredentialsAsync(
+        IEnumerable<UserScramCredentialAlteration> alterations,
+        AlterUserScramCredentialsOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gets the cluster metadata.
     /// </summary>
     ClusterMetadata Metadata { get; }
