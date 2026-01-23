@@ -246,6 +246,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private string? _groupInstanceId;
     private bool _enableAutoCommit = true;
     private int _autoCommitIntervalMs = 5000;
+    private bool _enableAutoOffsetStore = true;
     private AutoOffsetReset _autoOffsetReset = AutoOffsetReset.Latest;
     private int _maxPollRecords = 500;
     private int _sessionTimeoutMs = 45000;
@@ -305,6 +306,19 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithAutoCommitInterval(int intervalMs)
     {
         _autoCommitIntervalMs = intervalMs;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures automatic offset storage. When enabled (default), offsets are automatically
+    /// stored when messages are consumed. When disabled, offsets must be explicitly stored
+    /// using StoreOffset before they can be committed.
+    /// </summary>
+    /// <param name="enabled">True to enable automatic offset storage, false for manual control.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> WithAutoOffsetStore(bool enabled)
+    {
+        _enableAutoOffsetStore = enabled;
         return this;
     }
 
@@ -396,6 +410,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             GroupInstanceId = _groupInstanceId,
             EnableAutoCommit = _enableAutoCommit,
             AutoCommitIntervalMs = _autoCommitIntervalMs,
+            EnableAutoOffsetStore = _enableAutoOffsetStore,
             AutoOffsetReset = _autoOffsetReset,
             MaxPollRecords = _maxPollRecords,
             SessionTimeoutMs = _sessionTimeoutMs,
