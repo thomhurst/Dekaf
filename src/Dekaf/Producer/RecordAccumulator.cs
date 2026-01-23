@@ -91,6 +91,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Appends a record to the appropriate batch.
     /// Key and value data are pooled - the batch will return them to the pool when complete.
+    /// The completion source will be completed when the batch is sent.
     /// </summary>
     public async ValueTask<RecordAppendResult> AppendAsync(
         TopicPartition topicPartition,
@@ -98,6 +99,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
         PooledMemory key,
         PooledMemory value,
         IReadOnlyList<RecordHeader>? headers,
+        TaskCompletionSource<RecordMetadata> completion,
         CancellationToken cancellationToken)
     {
         if (_disposed)
@@ -105,7 +107,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         var batch = _batches.GetOrAdd(topicPartition, tp => new PartitionBatch(tp, _options));
 
-        var result = batch.TryAppend(timestamp, key, value, headers);
+        var result = batch.TryAppend(timestamp, key, value, headers, completion);
 
         if (!result.Success)
         {
@@ -119,7 +121,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Create new batch and retry
             batch = new PartitionBatch(topicPartition, _options);
             _batches[topicPartition] = batch;
-            result = batch.TryAppend(timestamp, key, value, headers);
+            result = batch.TryAppend(timestamp, key, value, headers, completion);
         }
 
         return result;
@@ -226,11 +228,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
 /// </summary>
 internal sealed class PartitionBatch
 {
+    // Initial capacity based on typical batch sizes - avoids list resizing allocations
+    private const int InitialRecordCapacity = 64;
+
     private readonly TopicPartition _topicPartition;
     private readonly ProducerOptions _options;
-    private readonly List<Record> _records = [];
-    private readonly List<TaskCompletionSource<RecordMetadata>> _completionSources = [];
-    private readonly List<byte[]> _pooledArrays = []; // Arrays to return to pool
+    private readonly List<Record> _records = new(InitialRecordCapacity);
+    private readonly List<TaskCompletionSource<RecordMetadata>> _completionSources = new(InitialRecordCapacity);
+    private readonly List<byte[]> _pooledArrays = new(InitialRecordCapacity * 2); // 2 arrays per record (key + value)
     private readonly object _lock = new();
 
     private long _baseTimestamp;
@@ -252,7 +257,8 @@ internal sealed class PartitionBatch
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers)
+        IReadOnlyList<RecordHeader>? headers,
+        TaskCompletionSource<RecordMetadata> completion)
     {
         lock (_lock)
         {
@@ -265,7 +271,7 @@ internal sealed class PartitionBatch
             var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
             if (_estimatedSize + recordSize > _options.BatchSize && _records.Count > 0)
             {
-                return new RecordAppendResult(false, null);
+                return new RecordAppendResult(false);
             }
 
             // Track pooled arrays for returning to pool later
@@ -293,12 +299,12 @@ internal sealed class PartitionBatch
             _records.Add(record);
             _estimatedSize += recordSize;
 
-            var tcs = new TaskCompletionSource<RecordMetadata>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _completionSources.Add(tcs);
+            // Use the passed-in completion source - no allocation here
+            _completionSources.Add(completion);
 
             _offsetDelta++;
 
-            return new RecordAppendResult(true, tcs.Task);
+            return new RecordAppendResult(true);
         }
     }
 
@@ -362,7 +368,7 @@ internal sealed class PartitionBatch
 /// <summary>
 /// Result of appending a record.
 /// </summary>
-public readonly record struct RecordAppendResult(bool Success, Task<RecordMetadata>? Future);
+public readonly record struct RecordAppendResult(bool Success);
 
 /// <summary>
 /// A batch ready to be sent.

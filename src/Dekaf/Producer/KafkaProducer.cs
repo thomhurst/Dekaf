@@ -133,9 +133,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             try
             {
-                var result = await ProduceInternalAsync(work.Message, work.CancellationToken)
+                // ProduceInternalAsync adds the completion to the batch
+                // The batch will complete it when sent - no need to set result here
+                await ProduceInternalAsync(work.Message, work.Completion, work.CancellationToken)
                     .ConfigureAwait(false);
-                work.Completion.TrySetResult(result);
             }
             catch (OperationCanceledException) when (work.CancellationToken.IsCancellationRequested)
             {
@@ -148,8 +149,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
     }
 
-    private async ValueTask<RecordMetadata> ProduceInternalAsync(
+    private async ValueTask ProduceInternalAsync(
         ProducerMessage<TKey, TValue> message,
+        TaskCompletionSource<RecordMetadata> completion,
         CancellationToken cancellationToken)
     {
         // Ensure metadata is initialized
@@ -198,21 +200,23 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             recordHeaders = headers;
         }
 
-        // Append to accumulator (pooled memory is returned when batch completes)
+        // Append to accumulator - passes completion through to batch
+        // The batch will complete the TCS when sent, so we don't await anything here
         var result = await _accumulator.AppendAsync(
             new TopicPartition(message.Topic, partition),
             timestampMs,
             key,
             value,
             recordHeaders,
+            completion,
             cancellationToken).ConfigureAwait(false);
 
-        if (!result.Success || result.Future is null)
+        if (!result.Success)
         {
             throw new InvalidOperationException("Failed to append record");
         }
 
-        return await result.Future.ConfigureAwait(false);
+        // No await here - completion will be set by the batch when it's sent
     }
 
     public ValueTask<RecordMetadata> ProduceAsync(
