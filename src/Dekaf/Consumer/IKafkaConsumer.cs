@@ -159,6 +159,7 @@ public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
     /// </summary>
     void Wakeup();
 
+    /// <summary>
     /// Gracefully closes the consumer: commits pending offsets,
     /// leaves the consumer group, and releases resources.
     /// This method is idempotent and safe to call multiple times.

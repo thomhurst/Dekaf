@@ -105,7 +105,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly Dictionary<TopicPartition, long> _positions = [];      // Consumed position (what app has seen)
     private readonly Dictionary<TopicPartition, long> _fetchPositions = []; // Fetch position (what to fetch next)
     private readonly Dictionary<TopicPartition, long> _committed = [];
-    private readonly Dictionary<TopicPartition, WatermarkOffsets> _watermarks = []; // Cached watermark offsets from fetch responses
+    private readonly ConcurrentDictionary<TopicPartition, WatermarkOffsets> _watermarks = new(); // Cached watermark offsets from fetch responses
 
     // Stored offsets for manual offset storage (when EnableAutoOffsetStore = false)
     // Uses ConcurrentDictionary for thread-safety as StoreOffset may be called from different threads
