@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Dekaf.Protocol.Records;
 
@@ -202,6 +203,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Allocates memory from the buffer pool. Called by PartitionBatch.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void AllocateMemory(uint bytes)
     {
         Interlocked.Add(ref _usedMemory, bytes);
@@ -211,6 +213,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// Releases memory back to the buffer pool. Called when batches complete.
     /// Signals any waiting producers that memory is now available.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void ReleaseMemory(uint bytes)
     {
         // Atomic subtraction using CompareExchange loop (standard pattern for ulong)
@@ -448,6 +451,7 @@ internal sealed class PartitionBatch
         }
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool ShouldFlush(DateTimeOffset now, int lingerMs)
     {
         lock (_lock)
