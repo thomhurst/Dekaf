@@ -499,7 +499,12 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                 .ConfigureAwait(false);
 
             // Group offsets by topic using pooled dictionary to avoid allocations
-            _commitTopicGroups.Clear();
+            // Clear existing Lists before clearing the dictionary to reuse List instances
+            foreach (var list in _commitTopicGroups.Values)
+            {
+                list.Clear();
+            }
+
             foreach (var offset in offsets)
             {
                 if (!_commitTopicGroups.TryGetValue(offset.Topic, out var partitions))
@@ -583,7 +588,12 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                 .ConfigureAwait(false);
 
             // Group partitions by topic using pooled dictionary to avoid allocations
-            _fetchTopicGroups.Clear();
+            // Clear existing Lists before clearing the dictionary to reuse List instances
+            foreach (var list in _fetchTopicGroups.Values)
+            {
+                list.Clear();
+            }
+
             foreach (var partition in partitions)
             {
                 if (!_fetchTopicGroups.TryGetValue(partition.Topic, out var indexes))
@@ -750,10 +760,19 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         }
 
         // Compute assignments using range assignor (simple per-topic partitioning)
-        _memberAssignments.Clear();
+        // Clear existing Lists before clearing the dictionary to reuse List instances
+        foreach (var list in _memberAssignments.Values)
+        {
+            list.Clear();
+        }
+
         foreach (var member in members)
         {
-            _memberAssignments[member.MemberId] = [];
+            if (!_memberAssignments.TryGetValue(member.MemberId, out var assignments))
+            {
+                assignments = [];
+                _memberAssignments[member.MemberId] = assignments;
+            }
         }
 
         foreach (var (topic, partitionCount) in _topicPartitionCounts)
@@ -838,7 +857,12 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         var writer = new Protocol.KafkaProtocolWriter(buffer);
 
         // Group partitions by topic using pooled dictionary
-        _assignmentByTopic.Clear();
+        // Clear existing Lists before clearing the dictionary to reuse List instances
+        foreach (var list in _assignmentByTopic.Values)
+        {
+            list.Clear();
+        }
+
         foreach (var p in partitions)
         {
             if (!_assignmentByTopic.TryGetValue(p.Topic, out var list))
