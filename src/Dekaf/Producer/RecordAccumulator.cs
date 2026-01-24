@@ -106,6 +106,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// Header array may also be pooled (if large) and will be returned to pool when batch completes.
     /// The completion source will be completed when the batch is sent.
     /// Backpressure is applied through channel capacity when batches are written.
+    ///
+    /// Thread-safety: Uses ConcurrentDictionary to avoid cross-partition contention. Each partition
+    /// has its own batch with its own lock, so concurrent appends to different partitions don't block
+    /// each other. PartitionBatch.TryAppend uses a lock to protect List<T> mutations.
     /// </summary>
     public async ValueTask<RecordAppendResult> AppendAsync(
         TopicPartition topicPartition,
@@ -154,6 +158,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Checks for batches that have exceeded linger time.
+    /// Uses conditional removal to avoid race conditions where a new batch might be created
+    /// between Complete() and TryRemove() calls.
     /// </summary>
     public async ValueTask ExpireLingerAsync(CancellationToken cancellationToken)
     {
@@ -168,7 +174,13 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 if (readyBatch is not null)
                 {
                     await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-                    _batches.TryRemove(kvp.Key, out _);
+
+                    // Use conditional removal to ensure we only remove the batch we just completed.
+                    // If another thread already replaced this batch with a new one (via AppendAsync),
+                    // we don't want to remove the new batch.
+                    // TryRemove with ICollection<KeyValuePair<K,V>> compares by reference equality,
+                    // so this is safe even if a new batch was created for the same partition.
+                    _batches.TryRemove(kvp);
                 }
             }
         }
@@ -242,6 +254,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
 /// <summary>
 /// A batch of records for a single partition.
 /// Tracks pooled arrays that are returned when the batch completes.
+///
+/// Thread-safety: Multiple threads can call TryAppend concurrently (via ConcurrentDictionary.AddOrUpdate),
+/// so we use a lock to protect List<T> mutations and field updates. The lock is per-partition, so there
+/// is no cross-partition contention. Complete() uses Interlocked for lock-free idempotent completion.
 /// </summary>
 internal sealed class PartitionBatch
 {
@@ -255,12 +271,13 @@ internal sealed class PartitionBatch
     private readonly List<TaskCompletionSource<RecordMetadata>> _completionSources = new(InitialRecordCapacity);
     private readonly List<byte[]> _pooledArrays = new(InitialRecordCapacity * 2); // 2 arrays per record (key + value)
     private readonly List<RecordHeader[]> _pooledHeaderArrays = new(); // Pooled header arrays (for large header counts)
-    private readonly object _lock = new();
+    private readonly object _lock = new(); // Protects List<T> mutations and field updates
 
     private long _baseTimestamp;
     private int _offsetDelta;
     private int _estimatedSize;
-    private DateTimeOffset _createdAt;
+    private readonly DateTimeOffset _createdAt;
+    private int _isCompleted; // 0 = not completed, 1 = completed (Interlocked guard for idempotent Complete)
     private ReadyBatch? _completedBatch; // Cached result to ensure Complete() is idempotent
 
     public PartitionBatch(TopicPartition topicPartition, ProducerOptions options, Action<TaskCompletionSource<RecordMetadata>> returnTcsToPool)
@@ -282,6 +299,9 @@ internal sealed class PartitionBatch
         RecordHeader[]? pooledHeaderArray,
         TaskCompletionSource<RecordMetadata> completion)
     {
+        // Lock required: Multiple threads can call TryAppend concurrently via ConcurrentDictionary.AddOrUpdate.
+        // List<T> is not thread-safe, so we must synchronize access to _records, _completionSources, etc.
+        // This lock is per-partition, so there is no cross-partition contention.
         lock (_lock)
         {
             if (_records.Count == 0)
@@ -337,50 +357,48 @@ internal sealed class PartitionBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool ShouldFlush(DateTimeOffset now, int lingerMs)
     {
-        lock (_lock)
-        {
-            if (_records.Count == 0)
-                return false;
+        // Lock-free read: _createdAt is readonly, _records.Count read is atomic for reference types.
+        // Stale reads are acceptable for linger time checks - worst case we flush slightly late.
+        if (_records.Count == 0)
+            return false;
 
-            return (now - _createdAt).TotalMilliseconds >= lingerMs;
-        }
+        return (now - _createdAt).TotalMilliseconds >= lingerMs;
     }
 
     public ReadyBatch? Complete()
     {
-        lock (_lock)
+        // Atomically mark as completed - only first caller proceeds
+        if (Interlocked.Exchange(ref _isCompleted, 1) != 0)
         {
-            // Idempotency: If already completed, return the cached batch
-            // This prevents creating multiple ReadyBatch objects with duplicate pooled arrays.
-            if (_completedBatch is not null)
-                return _completedBatch;
-
-            if (_records.Count == 0)
-                return null;
-
-            var batch = new RecordBatch
-            {
-                BaseOffset = 0,
-                BaseTimestamp = _baseTimestamp,
-                MaxTimestamp = _baseTimestamp + (_records.Count > 0 ? _records[^1].TimestampDelta : 0),
-                LastOffsetDelta = _records.Count - 1,
-                // Pass the list directly - PartitionBatch is discarded after Complete()
-                // so no defensive copy needed
-                Records = _records
-            };
-
-            // Pass lists directly - PartitionBatch is discarded after Complete()
-            // Also pass pooled arrays (both byte[] and RecordHeader[]) so they can be returned when the batch is done
-            _completedBatch = new ReadyBatch(
-                _topicPartition,
-                batch,
-                _completionSources,
-                _pooledArrays,
-                _pooledHeaderArrays,
-                _returnTcsToPool);
-
+            // Already completed by another thread - return cached batch
             return _completedBatch;
         }
+
+        if (_records.Count == 0)
+            return null;
+
+        var batch = new RecordBatch
+        {
+            BaseOffset = 0,
+            BaseTimestamp = _baseTimestamp,
+            MaxTimestamp = _baseTimestamp + (_records.Count > 0 ? _records[^1].TimestampDelta : 0),
+            LastOffsetDelta = _records.Count - 1,
+            // Pass the list directly - PartitionBatch is discarded after Complete()
+            // so no defensive copy needed
+            Records = _records
+        };
+
+        // Pass lists directly - PartitionBatch is discarded after Complete()
+        // Also pass pooled arrays (both byte[] and RecordHeader[]) so they can be returned when the batch is done
+        _completedBatch = new ReadyBatch(
+            _topicPartition,
+            batch,
+            _completionSources,
+            _pooledArrays,
+            _pooledHeaderArrays,
+            _returnTcsToPool);
+
+        return _completedBatch;
     }
 
     private static int EstimateRecordSize(int keyLength, int valueLength, IReadOnlyList<RecordHeader>? headers)
