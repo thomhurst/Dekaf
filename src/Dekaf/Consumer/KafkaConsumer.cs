@@ -1434,6 +1434,134 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         _logger?.LogInformation("Consumer closed gracefully");
     }
 
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> GetOffsetsForTimesAsync(
+        IEnumerable<TopicPartitionTimestamp> timestampsToSearch,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(timestampsToSearch);
+
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        // Group partitions by broker leader for efficient batch requests
+        var partitionsByBroker = new Dictionary<int, List<TopicPartitionTimestamp>>();
+        foreach (var tpt in timestampsToSearch)
+        {
+            var leader = await _metadataManager.GetPartitionLeaderAsync(tpt.Topic, tpt.Partition, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (leader is null)
+            {
+                _logger?.LogWarning("No leader found for {Topic}-{Partition}", tpt.Topic, tpt.Partition);
+                continue;
+            }
+
+            if (!partitionsByBroker.TryGetValue(leader.NodeId, out var list))
+            {
+                list = [];
+                partitionsByBroker[leader.NodeId] = list;
+            }
+
+            list.Add(tpt);
+        }
+
+        var results = new Dictionary<TopicPartition, long>();
+
+        // Send ListOffsets requests to each broker
+        foreach (var (brokerId, partitions) in partitionsByBroker)
+        {
+            var brokerResults = await GetOffsetsForTimesFromBrokerAsync(brokerId, partitions, cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (var kvp in brokerResults)
+            {
+                results[kvp.Key] = kvp.Value;
+            }
+        }
+
+        return results;
+    }
+
+    private async ValueTask<Dictionary<TopicPartition, long>> GetOffsetsForTimesFromBrokerAsync(
+        int brokerId,
+        List<TopicPartitionTimestamp> partitions,
+        CancellationToken cancellationToken)
+    {
+        var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+
+        var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.ListOffsets,
+            Protocol.Messages.ListOffsetsRequest.LowestSupportedVersion,
+            Protocol.Messages.ListOffsetsRequest.HighestSupportedVersion);
+
+        // Group partitions by topic
+        var topicPartitions = new Dictionary<string, List<Protocol.Messages.ListOffsetsRequestPartition>>();
+        foreach (var tpt in partitions)
+        {
+            if (!topicPartitions.TryGetValue(tpt.Topic, out var list))
+            {
+                list = [];
+                topicPartitions[tpt.Topic] = list;
+            }
+
+            list.Add(new Protocol.Messages.ListOffsetsRequestPartition
+            {
+                PartitionIndex = tpt.Partition,
+                Timestamp = tpt.Timestamp,
+                CurrentLeaderEpoch = -1
+            });
+        }
+
+        // Build topics list
+        var topics = new List<Protocol.Messages.ListOffsetsRequestTopic>(topicPartitions.Count);
+        foreach (var kvp in topicPartitions)
+        {
+            topics.Add(new Protocol.Messages.ListOffsetsRequestTopic
+            {
+                Name = kvp.Key,
+                Partitions = kvp.Value
+            });
+        }
+
+        var request = new Protocol.Messages.ListOffsetsRequest
+        {
+            ReplicaId = -1,
+            IsolationLevel = _options.IsolationLevel,
+            Topics = topics
+        };
+
+        var response = await connection.SendAsync<Protocol.Messages.ListOffsetsRequest, Protocol.Messages.ListOffsetsResponse>(
+            request,
+            listOffsetsVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        var results = new Dictionary<TopicPartition, long>();
+
+        foreach (var topicResponse in response.Topics)
+        {
+            var topicName = topicResponse.Name;
+
+            foreach (var partitionResponse in topicResponse.Partitions)
+            {
+                var tp = new TopicPartition(topicName, partitionResponse.PartitionIndex);
+
+                if (partitionResponse.ErrorCode != ErrorCode.None)
+                {
+                    _logger?.LogWarning(
+                        "ListOffsets error for {Topic}-{Partition}: {Error}",
+                        topicName, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                    results[tp] = -1;
+                    continue;
+                }
+
+                results[tp] = partitionResponse.Offset;
+            }
+        }
+
+        return results;
+    }
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
