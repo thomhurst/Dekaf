@@ -223,7 +223,7 @@ public class RecordAccumulatorTests
         // It ensures that the per-partition lock in PartitionBatch correctly serializes appends.
 
         var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options);
+        var accumulator = new RecordAccumulator(options, _ => { }); // No-op callback for tests
         var topicPartition = new TopicPartition("test-topic", 0);
 
         try
@@ -301,7 +301,7 @@ public class RecordAccumulatorTests
         // Each partition should have its own PartitionBatch with its own lock, ensuring no cross-partition contention.
 
         var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options);
+        var accumulator = new RecordAccumulator(options, _ => { }); // No-op callback for tests
 
         try
         {
@@ -366,7 +366,7 @@ public class RecordAccumulatorTests
         // This verifies that under high contention, no exceptions occur and all operations complete successfully.
 
         var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options);
+        var accumulator = new RecordAccumulator(options, _ => { }); // No-op callback for tests
 
         try
         {
