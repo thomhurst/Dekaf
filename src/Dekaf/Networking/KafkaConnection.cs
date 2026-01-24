@@ -5,6 +5,7 @@ using System.IO.Pipelines;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography.X509Certificates;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
@@ -42,6 +43,10 @@ public sealed class KafkaConnection : IKafkaConnection
     // Certificates loaded from files that we own and must dispose
     private X509Certificate2Collection? _loadedCaCertificates;
     private X509Certificate2? _loadedClientCertificate;
+
+    // Thread-local reusable buffer for request serialization to avoid per-request allocations
+    [ThreadStatic]
+    private static ArrayBufferWriter<byte>? t_requestBuffer;
 
     public int BrokerId { get; private set; } = -1;
     public string Host => _host;
@@ -246,6 +251,22 @@ public sealed class KafkaConnection : IKafkaConnection
         _logger?.LogDebug("Fire-and-forget request sent (correlation {CorrelationId})", correlationId);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ArrayBufferWriter<byte> GetRequestBuffer()
+    {
+        var buffer = t_requestBuffer;
+        if (buffer is null)
+        {
+            buffer = new ArrayBufferWriter<byte>(4096);
+            t_requestBuffer = buffer;
+        }
+        else
+        {
+            buffer.Clear();
+        }
+        return buffer;
+    }
+
     private async ValueTask WriteRequestAsync<TRequest, TResponse>(
         TRequest request,
         int correlationId,
@@ -259,7 +280,7 @@ public sealed class KafkaConnection : IKafkaConnection
             throw new InvalidOperationException("Not connected");
 
         // Build the request body first to calculate size
-        var bodyBuffer = new ArrayBufferWriter<byte>();
+        var bodyBuffer = GetRequestBuffer();
         var bodyWriter = new KafkaProtocolWriter(bodyBuffer);
 
         // Write request header
@@ -756,7 +777,7 @@ public sealed class KafkaConnection : IKafkaConnection
         var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
 
         // Build the request
-        var bodyBuffer = new ArrayBufferWriter<byte>();
+        var bodyBuffer = GetRequestBuffer();
         var bodyWriter = new KafkaProtocolWriter(bodyBuffer);
 
         var header = new RequestHeader
