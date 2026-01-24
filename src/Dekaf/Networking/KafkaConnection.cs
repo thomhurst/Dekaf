@@ -179,10 +179,10 @@ public sealed class KafkaConnection : IKafkaConnection
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(_options.RequestTimeout);
 
-            ReadOnlyMemory<byte> responseData;
+            PooledResponseBuffer pooledBuffer;
             try
             {
-                responseData = await pending.Task.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+                pooledBuffer = await pending.Task.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
@@ -191,12 +191,23 @@ public sealed class KafkaConnection : IKafkaConnection
 
             _logger?.LogDebug("Response received for correlation {CorrelationId}", correlationId);
 
-            var reader = new KafkaProtocolReader(responseData);
-            return (TResponse)TResponse.Read(ref reader, apiVersion);
+            try
+            {
+                var reader = new KafkaProtocolReader(pooledBuffer.Data);
+                return (TResponse)TResponse.Read(ref reader, apiVersion);
+            }
+            finally
+            {
+                // Return buffer to pool after deserialization
+                pooledBuffer.Dispose();
+            }
         }
         finally
         {
-            _pendingRequests.TryRemove(correlationId, out _);
+            if (_pendingRequests.TryRemove(correlationId, out var removed))
+            {
+                removed.Dispose();
+            }
         }
     }
 
@@ -335,7 +346,7 @@ public sealed class KafkaConnection : IKafkaConnection
     private bool TryReadResponse(
         ref ReadOnlySequence<byte> buffer,
         out int correlationId,
-        out ReadOnlyMemory<byte> responseData)
+        out PooledResponseBuffer responseData)
     {
         correlationId = 0;
         responseData = default;
@@ -359,13 +370,25 @@ public sealed class KafkaConnection : IKafkaConnection
         responseBuffer.Slice(0, 4).CopyTo(correlationBuffer);
         correlationId = BinaryPrimitives.ReadInt32BigEndian(correlationBuffer);
 
-        // Copy response data to a byte array
-        // Note: ArrayPool.Shared only pools arrays up to ~1MB. For larger responses
-        // (common with many messages), pooling provides no benefit.
-        // Using a simple allocation is safe and avoids use-after-return bugs.
-        var responseArray = new byte[size];
+        // Use ArrayPool for responses <= 1MB, direct allocation for larger ones
+        // ArrayPool.Shared typically pools arrays up to ~1MB (2^20 bytes)
+        const int maxPooledSize = 1024 * 1024;
+        byte[] responseArray;
+        bool isPooled;
+
+        if (size <= maxPooledSize)
+        {
+            responseArray = ArrayPool<byte>.Shared.Rent(size);
+            isPooled = true;
+        }
+        else
+        {
+            responseArray = new byte[size];
+            isPooled = false;
+        }
+
         responseBuffer.CopyTo(responseArray);
-        responseData = responseArray;
+        responseData = new PooledResponseBuffer(responseArray, size, isPooled);
 
         buffer = buffer.Slice(4 + size);
         return true;
@@ -378,6 +401,7 @@ public sealed class KafkaConnection : IKafkaConnection
             if (_pendingRequests.TryRemove(kvp.Key, out var pending))
             {
                 pending.Fail(ex);
+                pending.Dispose();
             }
         }
     }
@@ -878,50 +902,103 @@ public sealed class KafkaConnection : IKafkaConnection
         FailAllPendingRequests(new ObjectDisposedException(nameof(KafkaConnection)));
     }
 
-    private sealed class PendingRequest
+    private sealed class PendingRequest : IDisposable
     {
-        private readonly TaskCompletionSource<ReadOnlyMemory<byte>> _tcs;
+        private readonly TaskCompletionSource<PooledResponseBuffer> _tcs;
         private readonly short _responseHeaderVersion;
+        private PooledResponseBuffer? _buffer;
+        private bool _completed;
 
         public PendingRequest(short responseHeaderVersion, CancellationToken cancellationToken)
         {
             _responseHeaderVersion = responseHeaderVersion;
-            _tcs = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _tcs = new TaskCompletionSource<PooledResponseBuffer>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            cancellationToken.Register(() => _tcs.TrySetCanceled(cancellationToken));
+            cancellationToken.Register(() =>
+            {
+                if (_tcs.TrySetCanceled(cancellationToken))
+                {
+                    // Request was cancelled before completion - dispose the buffer if we received one
+                    Dispose();
+                }
+            });
         }
 
-        public Task<ReadOnlyMemory<byte>> Task => _tcs.Task;
+        public Task<PooledResponseBuffer> Task => _tcs.Task;
 
-        public void Complete(ReadOnlyMemory<byte> data)
+        public void Complete(PooledResponseBuffer pooledBuffer)
         {
-            // Skip the response header (correlation ID already read, skip tagged fields if flexible)
-            var offset = 4; // Correlation ID already parsed
-            if (_responseHeaderVersion >= 1)
+            lock (this)
             {
-                // Skip tagged fields - read varint count and skip
-                var span = data.Span[offset..];
-                var (tagCount, bytesRead) = ReadUnsignedVarInt(span);
-                offset += bytesRead;
-
-                for (var i = 0; i < tagCount; i++)
+                if (_completed)
                 {
-                    span = data.Span[offset..];
-                    var (_, tagBytesRead) = ReadUnsignedVarInt(span);
-                    offset += tagBytesRead;
+                    // Already completed/failed - dispose the buffer immediately
+                    pooledBuffer.Dispose();
+                    return;
+                }
 
-                    span = data.Span[offset..];
-                    var (size, sizeBytesRead) = ReadUnsignedVarInt(span);
-                    offset += sizeBytesRead + size;
+                _buffer = pooledBuffer;
+
+                // Skip the response header (correlation ID already read, skip tagged fields if flexible)
+                var offset = 4; // Correlation ID already parsed
+                if (_responseHeaderVersion >= 1)
+                {
+                    // Skip tagged fields - read varint count and skip
+                    var span = pooledBuffer.Data.Span[offset..];
+                    var (tagCount, bytesRead) = ReadUnsignedVarInt(span);
+                    offset += bytesRead;
+
+                    for (var i = 0; i < tagCount; i++)
+                    {
+                        span = pooledBuffer.Data.Span[offset..];
+                        var (_, tagBytesRead) = ReadUnsignedVarInt(span);
+                        offset += tagBytesRead;
+
+                        span = pooledBuffer.Data.Span[offset..];
+                        var (size, sizeBytesRead) = ReadUnsignedVarInt(span);
+                        offset += sizeBytesRead + size;
+                    }
+                }
+
+                // Transfer ownership by creating a new buffer with adjusted offset
+                // The caller (TryReadResponse) should not dispose the original buffer
+                var slicedBuffer = pooledBuffer.Slice(offset);
+
+                if (_tcs.TrySetResult(slicedBuffer))
+                {
+                    _completed = true;
+                }
+                else
+                {
+                    // Failed to set result (already cancelled/failed) - dispose buffer
+                    Dispose();
                 }
             }
-
-            _tcs.TrySetResult(data[offset..]);
         }
 
         public void Fail(Exception ex)
         {
-            _tcs.TrySetException(ex);
+            lock (this)
+            {
+                if (_tcs.TrySetException(ex))
+                {
+                    _completed = true;
+                }
+                // Dispose buffer on failure path
+                Dispose();
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (this)
+            {
+                if (_buffer.HasValue && _buffer.Value.IsPooled)
+                {
+                    _buffer.Value.Dispose();
+                    _buffer = null;
+                }
+            }
         }
 
         private static (int value, int bytesRead) ReadUnsignedVarInt(ReadOnlySpan<byte> span)
@@ -1033,5 +1110,46 @@ public sealed class ConnectionOptions
     /// Request timeout.
     /// </summary>
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(30);
+}
+
+/// <summary>
+/// Wrapper for response buffers that may be pooled or allocated.
+/// Ensures proper cleanup when the buffer is no longer needed.
+/// </summary>
+internal readonly struct PooledResponseBuffer : IDisposable
+{
+    private readonly byte[] _buffer;
+    private readonly int _offset;
+
+    public PooledResponseBuffer(byte[] buffer, int length, bool isPooled, int offset = 0)
+    {
+        _buffer = buffer;
+        Length = length;
+        IsPooled = isPooled;
+        _offset = offset;
+    }
+
+    public byte[] Buffer => _buffer;
+    public int Length { get; }
+    public bool IsPooled { get; }
+
+    public ReadOnlyMemory<byte> Data => _buffer.AsMemory(_offset, Length);
+
+    /// <summary>
+    /// Creates a new view of the buffer with an adjusted offset.
+    /// Ownership is transferred - the caller should not dispose the original buffer.
+    /// </summary>
+    public PooledResponseBuffer Slice(int additionalOffset)
+    {
+        return new PooledResponseBuffer(_buffer, Length - additionalOffset, IsPooled, _offset + additionalOffset);
+    }
+
+    public void Dispose()
+    {
+        if (IsPooled && _buffer is not null)
+        {
+            ArrayPool<byte>.Shared.Return(_buffer);
+        }
+    }
 }
 
