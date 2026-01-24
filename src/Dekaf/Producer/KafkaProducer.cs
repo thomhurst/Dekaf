@@ -54,7 +54,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     // Thread-local reusable SerializationContext to avoid per-message allocations
     // Since SerializationContext contains reference types (Topic, Headers), copying it
-    // involves copying those references. Using ThreadLocal avoids repeated struct creation.
+    // involves copying those references. Using ThreadStatic avoids repeated struct creation.
+    //
+    // ThreadStatic initialization: Default struct initialization (all fields = null/default) is safe.
+    // The struct is updated via property setters before each use, so initial null values don't matter.
+    // Reference type fields (string Topic, Headers? Headers) start as null and are explicitly set
+    // before passing to serializers, avoiding any uninitialized state issues.
     [ThreadStatic]
     private static SerializationContext t_serializationContext;
 

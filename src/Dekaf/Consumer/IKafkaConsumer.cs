@@ -221,7 +221,12 @@ public readonly struct ConsumeResult<TKey, TValue>
 {
     // Thread-local reusable SerializationContext to avoid per-deserialization allocations
     // Since SerializationContext contains reference types (Topic, Headers), copying it
-    // involves copying those references. Using ThreadLocal avoids repeated struct creation.
+    // involves copying those references. Using ThreadStatic avoids repeated struct creation.
+    //
+    // ThreadStatic initialization: Default struct initialization (all fields = null/default) is safe.
+    // The struct is updated via property setters before each use, so initial null values don't matter.
+    // Reference type fields (string Topic, Headers? Headers) start as null and are explicitly set
+    // before passing to deserializers, avoiding any uninitialized state issues.
     [ThreadStatic]
     private static SerializationContext t_serializationContext;
 

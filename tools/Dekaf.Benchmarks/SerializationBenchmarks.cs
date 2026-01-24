@@ -204,4 +204,44 @@ public class SerializationBenchmarks
         var context = new SerializationContext { Topic = "test", Component = SerializationComponent.Value };
         return serializer.Deserialize(new ReadOnlySequence<byte>(data), context);
     }
+
+    // ===== SerializationContext Allocation Benchmarks =====
+
+    [ThreadStatic]
+    private static SerializationContext t_reuseContext;
+
+    [Benchmark(Description = "SerializationContext: New Instance (allocates)")]
+    public void SerializationContext_NewInstance()
+    {
+        for (int i = 0; i < 1000; i++)
+        {
+            // Anti-pattern: Creates new struct on each serialization
+            var context = new SerializationContext
+            {
+                Topic = "test-topic",
+                Component = SerializationComponent.Value,
+                Headers = null
+            };
+
+            // Simulate passing to serializer (prevents dead code elimination)
+            Serializers.String.Serialize("test", _buffer, context);
+            _buffer.Clear();
+        }
+    }
+
+    [Benchmark(Description = "SerializationContext: ThreadStatic Reuse (zero-allocation)")]
+    public void SerializationContext_ThreadStaticReuse()
+    {
+        for (int i = 0; i < 1000; i++)
+        {
+            // Optimized pattern: Reuse thread-local struct by updating properties
+            t_reuseContext.Topic = "test-topic";
+            t_reuseContext.Component = SerializationComponent.Value;
+            t_reuseContext.Headers = null;
+
+            // Pass to serializer (struct is copied by value, so safe)
+            Serializers.String.Serialize("test", _buffer, t_reuseContext);
+            _buffer.Clear();
+        }
+    }
 }
