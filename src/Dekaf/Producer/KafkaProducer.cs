@@ -112,13 +112,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _lingerTask = LingerLoopAsync(_senderCts.Token);
 
         // Set up worker pool for thread-safe produce operations
+        // Use unbounded channel to avoid artificial backpressure that can cause deadlocks
+        // Natural backpressure happens when Kafka can't keep up (TCP flow control, slow responses)
+        // This matches Confluent.Kafka's approach (queue.buffering.max.messages = 100,000)
         _workerCount = Environment.ProcessorCount;
-        _workChannel = Channel.CreateBounded<ProduceWorkItem<TKey, TValue>>(
-            new BoundedChannelOptions(_workerCount * 16)
+        _workChannel = Channel.CreateUnbounded<ProduceWorkItem<TKey, TValue>>(
+            new UnboundedChannelOptions
             {
                 SingleReader = false,   // Multiple workers read
-                SingleWriter = false,   // Multiple callers write
-                FullMode = BoundedChannelFullMode.Wait
+                SingleWriter = false    // Multiple callers write
             });
 
         // Start worker tasks
