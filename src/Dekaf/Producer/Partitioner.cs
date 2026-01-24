@@ -16,14 +16,14 @@ public interface IPartitioner
 /// </summary>
 public sealed class DefaultPartitioner : IPartitioner
 {
-    private int _counter;
+    private uint _counter;
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         if (keyIsNull || key.Length == 0)
         {
-            // Round-robin for null keys
-            return Interlocked.Increment(ref _counter) % partitionCount;
+            // Round-robin for null keys - use uint to avoid overflow to negative values
+            return (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount);
         }
 
         // Murmur2 hash for consistent partitioning
@@ -38,7 +38,7 @@ public sealed class StickyPartitioner : IPartitioner
 {
     private readonly Dictionary<string, int> _stickyPartitions = [];
     private readonly object _lock = new();
-    private int _counter;
+    private uint _counter;
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
@@ -48,7 +48,8 @@ public sealed class StickyPartitioner : IPartitioner
             {
                 if (!_stickyPartitions.TryGetValue(topic, out var partition))
                 {
-                    partition = Interlocked.Increment(ref _counter) % partitionCount;
+                    // Use uint to avoid overflow to negative values
+                    partition = (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount);
                     _stickyPartitions[topic] = partition;
                 }
                 return partition;
@@ -65,7 +66,8 @@ public sealed class StickyPartitioner : IPartitioner
     {
         lock (_lock)
         {
-            _stickyPartitions[topic] = Interlocked.Increment(ref _counter) % partitionCount;
+            // Use uint to avoid overflow to negative values
+            _stickyPartitions[topic] = (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount);
         }
     }
 }
@@ -75,11 +77,12 @@ public sealed class StickyPartitioner : IPartitioner
 /// </summary>
 public sealed class RoundRobinPartitioner : IPartitioner
 {
-    private int _counter;
+    private uint _counter;
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
-        return Interlocked.Increment(ref _counter) % partitionCount;
+        // Use uint to avoid overflow to negative values
+        return (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount);
     }
 }
 
