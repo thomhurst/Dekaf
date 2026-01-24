@@ -767,7 +767,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         if (_options.EnableAutoOffsetStore)
         {
             // Auto-store mode: commit all consumed positions
-            offsetCount = _positions.Count;
+            // Snapshot the concurrent dictionary to avoid race conditions during enumeration
+            var positionsSnapshot = _positions.ToArray();
+            offsetCount = positionsSnapshot.Length;
             if (offsetCount == 0)
                 return;
 
@@ -776,7 +778,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             try
             {
                 int index = 0;
-                foreach (var kvp in _positions)
+                foreach (var kvp in positionsSnapshot)
                 {
                     offsetsArray[index++] = new TopicPartitionOffset(kvp.Key.Topic, kvp.Key.Partition, kvp.Value);
                 }
