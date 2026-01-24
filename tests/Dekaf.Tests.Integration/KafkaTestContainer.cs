@@ -127,8 +127,10 @@ public class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
         }
 
         _createdTopics.Add(topicName);
-        // Wait for topic to be fully ready
-        await Task.Delay(500);
+
+        // Wait for topic metadata to propagate
+        // In containerized environments, metadata propagation can be slow
+        await Task.Delay(3000);
         Console.WriteLine($"[KafkaTestContainer] Topic '{topicName}' created");
     }
 
