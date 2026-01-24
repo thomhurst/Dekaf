@@ -86,16 +86,15 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         // Backpressure via channel capacity instead of manual memory tracking
         // MaxQueuedBatches controls how many batches can be in-flight
-        // When channel is full, WriteAsync blocks (backpressure)
+        // When channel is full, we fail fast (like librdkafka's QUEUE_FULL error)
         var maxQueuedBatches = (int)(options.BufferMemory / (ulong)options.BatchSize);
         if (maxQueuedBatches < 100) maxQueuedBatches = 100; // Minimum queue depth
         if (maxQueuedBatches > 10000) maxQueuedBatches = 10000; // Maximum queue depth
 
-        _readyBatches = Channel.CreateBounded<ReadyBatch>(new BoundedChannelOptions(maxQueuedBatches)
+        _readyBatches = Channel.CreateUnbounded<ReadyBatch>(new UnboundedChannelOptions
         {
             SingleReader = true,
-            SingleWriter = false,
-            FullMode = BoundedChannelFullMode.Wait // Built-in backpressure
+            SingleWriter = false
         });
     }
 
