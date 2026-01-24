@@ -8,6 +8,7 @@ using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
+using Dekaf.Statistics;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Producer;
@@ -40,6 +41,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     private volatile short _produceApiVersion = -1;
     private volatile bool _disposed;
+
+    // Statistics collection
+    private readonly ProducerStatisticsCollector _statisticsCollector = new();
+    private readonly StatisticsEmitter<ProducerStatistics>? _statisticsEmitter;
 
     // Thread-local reusable buffers for serialization to avoid per-message allocations
     [ThreadStatic]
@@ -111,6 +116,40 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             _workerTasks[i] = ProcessWorkAsync(_senderCts.Token);
         }
+
+        // Start statistics emitter if configured
+        if (options.StatisticsInterval.HasValue &&
+            options.StatisticsInterval.Value > TimeSpan.Zero &&
+            options.StatisticsHandler is not null)
+        {
+            _statisticsEmitter = new StatisticsEmitter<ProducerStatistics>(
+                options.StatisticsInterval.Value,
+                CollectStatistics,
+                options.StatisticsHandler);
+        }
+    }
+
+    private ProducerStatistics CollectStatistics()
+    {
+        var (messagesProduced, messagesDelivered, messagesFailed, bytesProduced,
+            requestsSent, responsesReceived, retries, avgLatencyMs) = _statisticsCollector.GetGlobalStats();
+
+        return new ProducerStatistics
+        {
+            Timestamp = DateTimeOffset.UtcNow,
+            MessagesProduced = messagesProduced,
+            MessagesDelivered = messagesDelivered,
+            MessagesFailed = messagesFailed,
+            BytesProduced = bytesProduced,
+            QueuedMessages = (int)(messagesProduced - messagesDelivered - messagesFailed),
+            AccumulatorMemoryUsed = _accumulator.UsedMemory,
+            AccumulatorMemoryLimit = _options.BufferMemory,
+            RequestsSent = requestsSent,
+            ResponsesReceived = responsesReceived,
+            Retries = retries,
+            AvgRequestLatencyMs = avgLatencyMs,
+            Topics = _statisticsCollector.GetTopicStatistics()
+        };
     }
 
     public async ValueTask<RecordMetadata> ProduceAsync(
@@ -222,6 +261,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             throw new InvalidOperationException("Failed to append record");
         }
 
+        // Track message produced (key + value bytes)
+        var messageBytes = key.Length + value.Length;
+        _statisticsCollector.RecordMessageProduced(message.Topic, partition, messageBytes);
+
         // No await here - completion will be set by the batch when it's sent
     }
 
@@ -272,6 +315,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             {
                 _logger?.LogError(ex, "Failed to send batch to {Topic}-{Partition}",
                     batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+
+                // Track batch failure (if not already tracked in SendBatchAsync)
+                // This handles cases where the exception occurred before SendBatchAsync could track it
+                _statisticsCollector.RecordBatchFailed(
+                    batch.TopicPartition.Topic,
+                    batch.TopicPartition.Partition,
+                    batch.CompletionSources.Count);
+
                 batch.Fail(ex);
             }
         }
@@ -346,6 +397,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             ]
         };
 
+        var messageCount = batch.CompletionSources.Count;
+        var requestStartTime = DateTimeOffset.UtcNow;
+
+        // Track request sent
+        _statisticsCollector.RecordRequestSent();
+
         // Handle Acks.None (fire-and-forget) - broker doesn't send response
         if (_options.Acks == Acks.None)
         {
@@ -353,6 +410,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 request,
                 _produceApiVersion,
                 cancellationToken).ConfigureAwait(false);
+
+            // Track batch delivered (fire-and-forget assumes success)
+            _statisticsCollector.RecordBatchDelivered(
+                batch.TopicPartition.Topic,
+                batch.TopicPartition.Partition,
+                messageCount);
 
             // Complete with synthetic metadata since we don't get a response
             // Offset is unknown (-1) for fire-and-forget
@@ -365,6 +428,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             _produceApiVersion,
             cancellationToken).ConfigureAwait(false);
 
+        // Track response received with latency
+        var latencyMs = (long)(DateTimeOffset.UtcNow - requestStartTime).TotalMilliseconds;
+        _statisticsCollector.RecordResponseReceived(latencyMs);
+
         // Process response
         var topicResponse = response.Responses.FirstOrDefault(t => t.Name == batch.TopicPartition.Topic);
         var partitionResponse = topicResponse?.PartitionResponses
@@ -372,14 +439,30 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         if (partitionResponse is null)
         {
+            // Track batch failed
+            _statisticsCollector.RecordBatchFailed(
+                batch.TopicPartition.Topic,
+                batch.TopicPartition.Partition,
+                messageCount);
             throw new InvalidOperationException("No response for partition");
         }
 
         if (partitionResponse.ErrorCode != ErrorCode.None)
         {
+            // Track batch failed
+            _statisticsCollector.RecordBatchFailed(
+                batch.TopicPartition.Topic,
+                batch.TopicPartition.Partition,
+                messageCount);
             throw new KafkaException(partitionResponse.ErrorCode,
                 $"Produce failed: {partitionResponse.ErrorCode}");
         }
+
+        // Track batch delivered
+        _statisticsCollector.RecordBatchDelivered(
+            batch.TopicPartition.Topic,
+            batch.TopicPartition.Partition,
+            messageCount);
 
         var timestamp = partitionResponse.LogAppendTimeMs > 0
             ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
@@ -546,6 +629,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
 
         _senderCts.Dispose();
+
+        // Dispose statistics emitter
+        if (_statisticsEmitter is not null)
+        {
+            await _statisticsEmitter.DisposeAsync().ConfigureAwait(false);
+        }
 
         // Dispose accumulator - this will fail any remaining batches if graceful shutdown failed
         await _accumulator.DisposeAsync().ConfigureAwait(false);

@@ -189,13 +189,23 @@ public sealed class ConsumerOptions
     public int QueuedMaxMessagesKbytes { get; init; } = 65536;
 
     /// <summary>
-    /// Enable partition end-of-file (EOF) events.
+/// Enable partition end-of-file (EOF) events.
     /// When enabled, the consumer will emit a special ConsumeResult with IsPartitionEof=true
     /// when it reaches the end of a partition (caught up to the high watermark).
     /// The EOF event fires once per "catch up" - it will fire again after new messages
     /// arrive and are consumed. Default is false.
     /// </summary>
     public bool EnablePartitionEof { get; init; }
+
+    /// <summary>
+    /// Interval at which statistics events are emitted. Set to null or TimeSpan.Zero to disable.
+    /// </summary>
+    public TimeSpan? StatisticsInterval { get; init; }
+
+    /// <summary>
+    /// Handler for statistics events. Called periodically based on StatisticsInterval.
+    /// </summary>
+    public Action<Statistics.ConsumerStatistics>? StatisticsHandler { get; init; }
 }
 
 /// <summary>

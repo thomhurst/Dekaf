@@ -160,6 +160,16 @@ public sealed class ProducerOptions
     /// Socket receive buffer size in bytes. Set to 0 to use system default.
     /// </summary>
     public int SocketReceiveBufferBytes { get; init; }
+
+    /// <summary>
+    /// Interval at which statistics events are emitted. Set to null or TimeSpan.Zero to disable.
+    /// </summary>
+    public TimeSpan? StatisticsInterval { get; init; }
+
+    /// <summary>
+    /// Handler for statistics events. Called periodically based on StatisticsInterval.
+    /// </summary>
+    public Action<Statistics.ProducerStatistics>? StatisticsHandler { get; init; }
 }
 
 /// <summary>

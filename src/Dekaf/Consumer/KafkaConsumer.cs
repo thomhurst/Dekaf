@@ -10,6 +10,7 @@ using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Producer;
 using Dekaf.Serialization;
+using Dekaf.Statistics;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Consumer;
@@ -133,6 +134,10 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private volatile bool _disposed;
     private volatile bool _closed;
 
+    // Statistics collection
+    private readonly ConsumerStatisticsCollector _statisticsCollector = new();
+    private readonly StatisticsEmitter<ConsumerStatistics>? _statisticsEmitter;
+
     public KafkaConsumer(
         ConsumerOptions options,
         IDeserializer<TKey> keyDeserializer,
@@ -186,12 +191,75 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             SingleWriter = true,
             FullMode = BoundedChannelFullMode.Wait
         });
+
+        // Start statistics emitter if configured
+        if (options.StatisticsInterval.HasValue &&
+            options.StatisticsInterval.Value > TimeSpan.Zero &&
+            options.StatisticsHandler is not null)
+        {
+            _statisticsEmitter = new StatisticsEmitter<ConsumerStatistics>(
+                options.StatisticsInterval.Value,
+                CollectStatistics,
+                options.StatisticsHandler);
+        }
     }
 
     public IReadOnlySet<string> Subscription => _subscription;
     public IReadOnlySet<TopicPartition> Assignment => _assignment;
     public string? MemberId => _coordinator?.MemberId;
     public IReadOnlySet<TopicPartition> Paused => _paused;
+
+    private ConsumerStatistics CollectStatistics()
+    {
+        var (messagesConsumed, bytesConsumed, rebalanceCount,
+            fetchRequestsSent, fetchResponsesReceived, avgFetchLatencyMs) = _statisticsCollector.GetGlobalStats();
+
+        // Calculate total lag
+        long? totalLag = null;
+        var topicStats = _statisticsCollector.GetTopicStatistics(GetPartitionInfo);
+        foreach (var topicStat in topicStats.Values)
+        {
+            foreach (var partitionStat in topicStat.Partitions.Values)
+            {
+                if (partitionStat.HighWatermark.HasValue && partitionStat.Position.HasValue)
+                {
+                    var lag = partitionStat.HighWatermark.Value - partitionStat.Position.Value;
+                    totalLag = (totalLag ?? 0) + Math.Max(0, lag);
+                }
+            }
+        }
+
+        return new ConsumerStatistics
+        {
+            Timestamp = DateTimeOffset.UtcNow,
+            MessagesConsumed = messagesConsumed,
+            BytesConsumed = bytesConsumed,
+            RebalanceCount = rebalanceCount,
+            AssignedPartitions = _assignment.Count,
+            PausedPartitions = _paused.Count,
+            TotalLag = totalLag,
+            PrefetchedMessages = _pendingFetches.Count,
+            PrefetchedBytes = Interlocked.Read(ref _prefetchedBytes),
+            FetchRequestsSent = fetchRequestsSent,
+            FetchResponsesReceived = fetchResponsesReceived,
+            AvgFetchLatencyMs = avgFetchLatencyMs,
+            GroupId = _options.GroupId,
+            MemberId = _coordinator?.MemberId,
+            GenerationId = _coordinator?.GenerationId,
+            IsLeader = _coordinator?.IsLeader,
+            Topics = topicStats
+        };
+    }
+
+    private (long? Position, long? CommittedOffset, bool IsPaused) GetPartitionInfo((string Topic, int Partition) key)
+    {
+        var tp = new TopicPartition(key.Topic, key.Partition);
+        return (
+            _positions.GetValueOrDefault(tp, -1) >= 0 ? _positions[tp] : null,
+            _committed.GetValueOrDefault(tp, -1) >= 0 ? _committed[tp] : null,
+            _paused.Contains(tp)
+        );
+    }
 
     /// <summary>
     /// Gets the consumer group metadata for use with transactional producers.
@@ -410,6 +478,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     _positions[tp] = offset + 1;
                     _fetchPositions[tp] = offset + 1;
 
+                    // Track message consumed
+                    var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
+                                       (record.IsValueNull ? 0 : record.Value.Length);
+                    _statisticsCollector.RecordMessageConsumed(pending.Topic, pending.PartitionIndex, messageBytes);
+
                     yield return result;
                 }
 
@@ -527,10 +600,18 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             Topics = topicData
         };
 
+        // Track fetch request sent
+        _statisticsCollector.RecordFetchRequestSent();
+        var requestStartTime = DateTimeOffset.UtcNow;
+
         var response = await connection.SendAsync<FetchRequest, FetchResponse>(
             request,
             _fetchApiVersion,
             cancellationToken).ConfigureAwait(false);
+
+        // Track fetch response received with latency
+        var latencyMs = (long)(DateTimeOffset.UtcNow - requestStartTime).TotalMilliseconds;
+        _statisticsCollector.RecordFetchResponseReceived(latencyMs);
 
         // Write to prefetch channel
         foreach (var topicResponse in response.Responses)
@@ -552,10 +633,19 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     continue;
                 }
 
-                // Update high watermark from response (thread-safe update)
+// Update high watermark from response (thread-safe update)
                 lock (_prefetchLock)
                 {
                     _highWatermarks[tp] = partitionResponse.HighWatermark;
+                }
+
+                // Update high watermark for statistics
+                if (partitionResponse.HighWatermark >= 0)
+                {
+                    _statisticsCollector.UpdatePartitionHighWatermark(
+                        topic,
+                        partitionResponse.PartitionIndex,
+                        partitionResponse.HighWatermark);
                 }
 
                 var hasRecords = partitionResponse.Records is not null && partitionResponse.Records.Count > 0;
@@ -1024,7 +1114,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 }
             }
 
-            // Check for partitions that were removed (for EOF state cleanup)
+// Check for partitions that were removed (for EOF state cleanup)
             var removedPartitions = new List<TopicPartition>();
             foreach (var partition in _assignment)
             {
@@ -1034,6 +1124,10 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 }
             }
 
+            // Track rebalance if assignment changed
+            var assignmentChanged = _assignment.Count != _coordinator.Assignment.Count ||
+                                    newPartitions.Count > 0;
+
             // Update assignment from coordinator
             _assignment.Clear();
             foreach (var partition in _coordinator.Assignment)
@@ -1041,7 +1135,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 _assignment.Add(partition);
             }
 
-            // Clean up EOF state for removed partitions (under lock for thread-safety with prefetch)
+// Clean up EOF state for removed partitions (under lock for thread-safety with prefetch)
             lock (_prefetchLock)
             {
                 foreach (var partition in removedPartitions)
@@ -1049,6 +1143,12 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     _eofEmitted.Remove(partition);
                     _highWatermarks.Remove(partition);
                 }
+            }
+
+            // Track rebalance
+            if (assignmentChanged)
+            {
+                _statisticsCollector.RecordRebalance();
             }
 
             // Initialize positions for new partitions
@@ -1315,10 +1415,18 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             Topics = topicData
         };
 
+        // Track fetch request sent
+        _statisticsCollector.RecordFetchRequestSent();
+        var requestStartTime = DateTimeOffset.UtcNow;
+
         var response = await connection.SendAsync<FetchRequest, FetchResponse>(
             request,
             _fetchApiVersion,
             cancellationToken).ConfigureAwait(false);
+
+        // Track fetch response received with latency
+        var latencyMs = (long)(DateTimeOffset.UtcNow - requestStartTime).TotalMilliseconds;
+        _statisticsCollector.RecordFetchResponseReceived(latencyMs);
 
         // Queue pending fetch data for lazy iteration - don't parse records yet!
         foreach (var topicResponse in response.Responses)
@@ -1340,10 +1448,19 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     continue;
                 }
 
-                // Update high watermark from response (thread-safe update)
+// Update high watermark from response (thread-safe update)
                 lock (_prefetchLock)
                 {
                     _highWatermarks[tp] = partitionResponse.HighWatermark;
+                }
+
+                // Update high watermark for statistics
+                if (partitionResponse.HighWatermark >= 0)
+                {
+                    _statisticsCollector.UpdatePartitionHighWatermark(
+                        topic,
+                        partitionResponse.PartitionIndex,
+                        partitionResponse.HighWatermark);
                 }
 
                 var hasRecords = partitionResponse.Records is not null && partitionResponse.Records.Count > 0;
@@ -1758,6 +1875,12 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         while (_prefetchChannel.Reader.TryRead(out _))
         {
             // Discard
+        }
+
+        // Dispose statistics emitter
+        if (_statisticsEmitter is not null)
+        {
+            await _statisticsEmitter.DisposeAsync().ConfigureAwait(false);
         }
 
         if (_coordinator is not null)
