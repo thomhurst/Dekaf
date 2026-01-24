@@ -28,8 +28,12 @@ internal sealed class CancellationTokenSourcePool
         if (_pool.TryTake(out var cts))
         {
             Interlocked.Decrement(ref _count);
-            cts.TryReset();
-            return cts;
+            if (cts.TryReset())
+            {
+                return cts;
+            }
+            // Reset failed, dispose and create new
+            cts.Dispose();
         }
 
         return new CancellationTokenSource();
@@ -37,15 +41,26 @@ internal sealed class CancellationTokenSourcePool
 
     public void Return(CancellationTokenSource cts)
     {
-        // Only pool if under max size and CTS is in a good state
-        if (cts.IsCancellationRequested || Interlocked.Increment(ref _count) > MaxPoolSize)
+        if (cts.IsCancellationRequested)
         {
-            Interlocked.Decrement(ref _count);
             cts.Dispose();
             return;
         }
 
-        _pool.Add(cts);
+        // Atomic check-and-increment to prevent race condition
+        var currentCount = Volatile.Read(ref _count);
+        while (currentCount < MaxPoolSize)
+        {
+            if (Interlocked.CompareExchange(ref _count, currentCount + 1, currentCount) == currentCount)
+            {
+                _pool.Add(cts);
+                return;
+            }
+            currentCount = Volatile.Read(ref _count);
+        }
+
+        // Pool is full, dispose
+        cts.Dispose();
     }
 
     public void Clear()
@@ -2055,10 +2070,10 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
 
         _autoCommitCts?.Dispose();
-        _wakeupCts?.Dispose();
         _prefetchCts?.Dispose();
 
         // Clear and dispose CancellationTokenSource pool
+        // Note: _wakeupCts is managed by the pool and should not be disposed here
         _ctsPool.Clear();
 
         // Clear any pending fetch data
