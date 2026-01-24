@@ -130,7 +130,7 @@ internal sealed class PooledMemoryStream : Stream
         // Return the old buffer if we own it (we grew it)
         if (_ownsBuffer)
         {
-            ArrayPool<byte>.Shared.Return(_buffer);
+            ArrayPool<byte>.Shared.Return(_buffer, clearArray: true);
         }
 
         _buffer = newBuffer;
@@ -144,7 +144,8 @@ internal sealed class PooledMemoryStream : Stream
 
         if (disposing && _ownsBuffer)
         {
-            ArrayPool<byte>.Shared.Return(_buffer);
+            ArrayPool<byte>.Shared.Return(_buffer, clearArray: true);
+            _buffer = null!;
         }
 
         _disposed = true;

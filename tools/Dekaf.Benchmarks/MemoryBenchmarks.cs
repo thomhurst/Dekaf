@@ -191,12 +191,12 @@ public class MemoryBenchmarks
                     null,
                     null,
                     completion,
-                    CancellationToken.None);
+                    CancellationToken.None).ConfigureAwait(false);
             }
         }
         finally
         {
-            await accumulator.DisposeAsync();
+            await accumulator.DisposeAsync().ConfigureAwait(false);
         }
     }
 }

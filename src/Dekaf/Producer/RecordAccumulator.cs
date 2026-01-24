@@ -62,7 +62,7 @@ public readonly struct PooledMemory
     {
         if (_array is not null)
         {
-            ArrayPool<byte>.Shared.Return(_array);
+            ArrayPool<byte>.Shared.Return(_array, clearArray: true);
         }
     }
 }
@@ -378,7 +378,7 @@ internal sealed class PartitionBatch
         var newSize = array.Length * 2;
         var newArray = pool.Rent(newSize);
         Array.Copy(array, newArray, count);
-        pool.Return(array);
+        pool.Return(array, clearArray: true);
         array = newArray;
     }
 
@@ -453,10 +453,16 @@ internal sealed class PartitionBatch
     private void ReturnBatchArraysToPool()
     {
         // Return the working arrays to pool
-        ArrayPool<Record>.Shared.Return(_records);
-        ArrayPool<TaskCompletionSource<RecordMetadata>>.Shared.Return(_completionSources);
-        ArrayPool<byte[]>.Shared.Return(_pooledArrays);
-        ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays);
+        ArrayPool<Record>.Shared.Return(_records, clearArray: true);
+        ArrayPool<TaskCompletionSource<RecordMetadata>>.Shared.Return(_completionSources, clearArray: true);
+        ArrayPool<byte[]>.Shared.Return(_pooledArrays, clearArray: true);
+        ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: true);
+
+        // Null out references to prevent accidental reuse
+        _records = null!;
+        _completionSources = null!;
+        _pooledArrays = null!;
+        _pooledHeaderArrays = null!;
     }
 
     private static int EstimateRecordSize(int keyLength, int valueLength, IReadOnlyList<RecordHeader>? headers)
@@ -555,13 +561,13 @@ public sealed class ReadyBatch
         // Return pooled byte arrays (key/value data)
         foreach (var array in _pooledArrays)
         {
-            ArrayPool<byte>.Shared.Return(array);
+            ArrayPool<byte>.Shared.Return(array, clearArray: true);
         }
 
         // Return pooled header arrays (large header counts)
         foreach (var array in _pooledHeaderArrays)
         {
-            ArrayPool<RecordHeader>.Shared.Return(array);
+            ArrayPool<RecordHeader>.Shared.Return(array, clearArray: true);
         }
     }
 }
