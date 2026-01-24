@@ -523,7 +523,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                         ? TimestampType.LogAppendTime
                         : TimestampType.CreateTime;
 
-                    // Create result with raw data - deserialization happens lazily on Key/Value access
+                    // Create result - deserialization happens eagerly in the constructor
                     var result = new ConsumeResult<TKey, TValue>(
                         topic: pending.Topic,
                         partition: pending.PartitionIndex,
@@ -838,15 +838,42 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         if (_coordinator is null)
             return;
 
-        List<TopicPartitionOffset> offsets;
+        TopicPartitionOffset[]? offsetsArray = null;
+        int offsetCount;
 
         if (_options.EnableAutoOffsetStore)
         {
             // Auto-store mode: commit all consumed positions
-            offsets = new List<TopicPartitionOffset>(_positions.Count);
-            foreach (var kvp in _positions)
+            // Snapshot the concurrent dictionary to avoid race conditions during enumeration
+            var positionsSnapshot = _positions.ToArray();
+            offsetCount = positionsSnapshot.Length;
+            if (offsetCount == 0)
+                return;
+
+            // Rent array from pool to avoid List allocation
+            offsetsArray = ArrayPool<TopicPartitionOffset>.Shared.Rent(offsetCount);
+            try
             {
-                offsets.Add(new TopicPartitionOffset(kvp.Key.Topic, kvp.Key.Partition, kvp.Value));
+                int index = 0;
+                foreach (var kvp in positionsSnapshot)
+                {
+                    offsetsArray[index++] = new TopicPartitionOffset(kvp.Key.Topic, kvp.Key.Partition, kvp.Value);
+                }
+
+                // Create array segment to pass only the used portion
+                var offsets = new ArraySegment<TopicPartitionOffset>(offsetsArray, 0, offsetCount);
+
+                await _coordinator.CommitOffsetsAsync(offsets, cancellationToken).ConfigureAwait(false);
+
+                // Update committed offsets tracking
+                foreach (var offset in offsets)
+                {
+                    _committed[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+                }
+            }
+            finally
+            {
+                ArrayPool<TopicPartitionOffset>.Shared.Return(offsetsArray);
             }
         }
         else
@@ -855,42 +882,43 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             // Take a snapshot to avoid race condition where offsets stored by another thread
             // between enumeration and removal would be lost
             var snapshot = _storedOffsets.ToArray();
-            offsets = new List<TopicPartitionOffset>(snapshot.Length);
-            foreach (var kvp in snapshot)
-            {
-                offsets.Add(new TopicPartitionOffset(kvp.Key.Topic, kvp.Key.Partition, kvp.Value));
-            }
+            offsetCount = snapshot.Length;
 
-            if (offsets.Count == 0)
+            if (offsetCount == 0)
                 return;
 
-            await _coordinator.CommitOffsetsAsync(offsets, cancellationToken).ConfigureAwait(false);
-
-            // Update committed offsets tracking
-            foreach (var offset in offsets)
+            // Rent array from pool to avoid List allocation
+            offsetsArray = ArrayPool<TopicPartitionOffset>.Shared.Rent(offsetCount);
+            try
             {
-                _committed[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
-            }
+                for (int i = 0; i < offsetCount; i++)
+                {
+                    var kvp = snapshot[i];
+                    offsetsArray[i] = new TopicPartitionOffset(kvp.Key.Topic, kvp.Key.Partition, kvp.Value);
+                }
 
-            // Remove only the offsets we committed from the snapshot, preserving any
-            // new offsets that were stored by other threads during the commit
-            foreach (var kvp in snapshot)
+                // Create array segment to pass only the used portion
+                var offsets = new ArraySegment<TopicPartitionOffset>(offsetsArray, 0, offsetCount);
+
+                await _coordinator.CommitOffsetsAsync(offsets, cancellationToken).ConfigureAwait(false);
+
+                // Update committed offsets tracking
+                foreach (var offset in offsets)
+                {
+                    _committed[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+                }
+
+                // Remove only the offsets we committed from the snapshot, preserving any
+                // new offsets that were stored by other threads during the commit
+                foreach (var kvp in snapshot)
+                {
+                    _storedOffsets.TryRemove(kvp);
+                }
+            }
+            finally
             {
-                _storedOffsets.TryRemove(kvp);
+                ArrayPool<TopicPartitionOffset>.Shared.Return(offsetsArray);
             }
-
-            return;
-        }
-
-        if (offsets.Count == 0)
-            return;
-
-        await _coordinator.CommitOffsetsAsync(offsets, cancellationToken).ConfigureAwait(false);
-
-        // Update committed offsets tracking
-        foreach (var offset in offsets)
-        {
-            _committed[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
         }
     }
 
@@ -1029,22 +1057,22 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         if (removeSet.Count == 0)
             return;
 
-        // We need to rebuild the queue, keeping only data for partitions not being removed
-        var tempQueue = new Queue<PendingFetchData>();
-        while (_pendingFetches.Count > 0)
+        // Filter in-place without allocating a temporary queue
+        // Dequeue all items and re-enqueue only those we want to keep
+        var count = _pendingFetches.Count;
+
+        for (var i = 0; i < count; i++)
         {
             var pending = _pendingFetches.Dequeue();
-            var tp = new TopicPartition(pending.Topic, pending.PartitionIndex);
-            if (!removeSet.Contains(tp))
-            {
-                tempQueue.Enqueue(pending);
-            }
-        }
 
-        // Put back the items we want to keep
-        while (tempQueue.Count > 0)
-        {
-            _pendingFetches.Enqueue(tempQueue.Dequeue());
+            // Check if this partition should be kept
+            // Build TopicPartition inline for the Contains check
+            if (!removeSet.Contains(new TopicPartition(pending.Topic, pending.PartitionIndex)))
+            {
+                // Keep this item by re-enqueueing it
+                _pendingFetches.Enqueue(pending);
+            }
+            // Items in removeSet are simply dropped
         }
     }
 

@@ -29,6 +29,17 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
     private CancellationTokenSource? _heartbeatCts;
     private Task? _heartbeatTask;
 
+    // Pooled dictionaries to avoid allocations in hot paths (protected by _lock or method-local usage)
+    private readonly Dictionary<string, List<OffsetCommitRequestPartition>> _commitTopicGroups = new();
+    private readonly SemaphoreSlim _commitLock = new(1, 1);
+    private readonly Dictionary<string, List<int>> _fetchTopicGroups = new();
+    private readonly SemaphoreSlim _fetchLock = new(1, 1);
+    // These are only used within _lock-protected methods, so no additional synchronization needed:
+    private readonly Dictionary<string, int> _topicPartitionCounts = new();
+    private readonly Dictionary<string, HashSet<string>> _memberSubscriptions = new();
+    private readonly Dictionary<string, List<TopicPartition>> _memberAssignments = new();
+    private readonly Dictionary<string, List<int>> _assignmentByTopic = new();
+
     private volatile CoordinatorState _state = CoordinatorState.Unjoined;
     private volatile bool _disposed;
 
@@ -481,30 +492,35 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
-        var connection = await _connectionPool.GetConnectionAsync(_coordinatorId, cancellationToken)
-            .ConfigureAwait(false);
-
-        // Group offsets by topic without LINQ to avoid allocations
-        Dictionary<string, List<OffsetCommitRequestPartition>>? topicGroups = null;
-        foreach (var offset in offsets)
+        await _commitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            topicGroups ??= new Dictionary<string, List<OffsetCommitRequestPartition>>();
-            if (!topicGroups.TryGetValue(offset.Topic, out var partitions))
+            var connection = await _connectionPool.GetConnectionAsync(_coordinatorId, cancellationToken)
+                .ConfigureAwait(false);
+
+            // Group offsets by topic using pooled dictionary to avoid allocations
+            // Clear existing Lists before clearing the dictionary to reuse List instances
+            foreach (var list in _commitTopicGroups.Values)
             {
-                partitions = new List<OffsetCommitRequestPartition>();
-                topicGroups[offset.Topic] = partitions;
+                list.Clear();
             }
-            partitions.Add(new OffsetCommitRequestPartition
-            {
-                PartitionIndex = offset.Partition,
-                CommittedOffset = offset.Offset
-            });
-        }
 
-        var topicOffsets = new List<OffsetCommitRequestTopic>();
-        if (topicGroups is not null)
-        {
-            foreach (var kvp in topicGroups)
+            foreach (var offset in offsets)
+            {
+                if (!_commitTopicGroups.TryGetValue(offset.Topic, out var partitions))
+                {
+                    partitions = [];
+                    _commitTopicGroups[offset.Topic] = partitions;
+                }
+                partitions.Add(new OffsetCommitRequestPartition
+                {
+                    PartitionIndex = offset.Partition,
+                    CommittedOffset = offset.Offset
+                });
+            }
+
+            var topicOffsets = new List<OffsetCommitRequestTopic>(_commitTopicGroups.Count);
+            foreach (var kvp in _commitTopicGroups)
             {
                 topicOffsets.Add(new OffsetCommitRequestTopic
                 {
@@ -512,42 +528,46 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                     Partitions = kvp.Value
                 });
             }
-        }
 
-        var request = new OffsetCommitRequest
-        {
-            GroupId = _options.GroupId,
-            GenerationIdOrMemberEpoch = _generationId,
-            MemberId = _memberId,
-            GroupInstanceId = _options.GroupInstanceId,
-            Topics = topicOffsets
-        };
-
-        // Use negotiated API version
-        var offsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.OffsetCommit,
-            OffsetCommitRequest.LowestSupportedVersion,
-            OffsetCommitRequest.HighestSupportedVersion);
-
-        var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
-            request,
-            offsetCommitVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        // Check for errors
-        foreach (var topic in response.Topics)
-        {
-            foreach (var partition in topic.Partitions)
+            var request = new OffsetCommitRequest
             {
-                if (partition.ErrorCode != ErrorCode.None)
+                GroupId = _options.GroupId,
+                GenerationIdOrMemberEpoch = _generationId,
+                MemberId = _memberId,
+                GroupInstanceId = _options.GroupInstanceId,
+                Topics = topicOffsets
+            };
+
+            // Use negotiated API version
+            var offsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.OffsetCommit,
+                OffsetCommitRequest.LowestSupportedVersion,
+                OffsetCommitRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                request,
+                offsetCommitVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            // Check for errors
+            foreach (var topic in response.Topics)
+            {
+                foreach (var partition in topic.Partitions)
                 {
-                    throw new Errors.GroupException(partition.ErrorCode,
-                        $"OffsetCommit failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                    if (partition.ErrorCode != ErrorCode.None)
                     {
-                        GroupId = _options.GroupId
-                    };
+                        throw new Errors.GroupException(partition.ErrorCode,
+                            $"OffsetCommit failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                        {
+                            GroupId = _options.GroupId
+                        };
+                    }
                 }
             }
+        }
+        finally
+        {
+            _commitLock.Release();
         }
     }
 
@@ -561,26 +581,31 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return new Dictionary<TopicPartition, long>();
 
-        var connection = await _connectionPool.GetConnectionAsync(_coordinatorId, cancellationToken)
-            .ConfigureAwait(false);
-
-        // Group partitions by topic without LINQ to avoid allocations
-        Dictionary<string, List<int>>? topicGroups = null;
-        foreach (var partition in partitions)
+        await _fetchLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            topicGroups ??= new Dictionary<string, List<int>>();
-            if (!topicGroups.TryGetValue(partition.Topic, out var indexes))
+            var connection = await _connectionPool.GetConnectionAsync(_coordinatorId, cancellationToken)
+                .ConfigureAwait(false);
+
+            // Group partitions by topic using pooled dictionary to avoid allocations
+            // Clear existing Lists before clearing the dictionary to reuse List instances
+            foreach (var list in _fetchTopicGroups.Values)
             {
-                indexes = new List<int>();
-                topicGroups[partition.Topic] = indexes;
+                list.Clear();
             }
-            indexes.Add(partition.Partition);
-        }
 
-        var topicPartitions = new List<OffsetFetchRequestTopic>();
-        if (topicGroups is not null)
-        {
-            foreach (var kvp in topicGroups)
+            foreach (var partition in partitions)
+            {
+                if (!_fetchTopicGroups.TryGetValue(partition.Topic, out var indexes))
+                {
+                    indexes = [];
+                    _fetchTopicGroups[partition.Topic] = indexes;
+                }
+                indexes.Add(partition.Partition);
+            }
+
+            var topicPartitions = new List<OffsetFetchRequestTopic>(_fetchTopicGroups.Count);
+            foreach (var kvp in _fetchTopicGroups)
             {
                 topicPartitions.Add(new OffsetFetchRequestTopic
                 {
@@ -588,51 +613,30 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                     PartitionIndexes = kvp.Value
                 });
             }
-        }
 
-        var request = new OffsetFetchRequest
-        {
-            GroupId = _options.GroupId,
-            Topics = topicPartitions
-        };
-
-        // Use negotiated API version
-        var offsetFetchVersion = _metadataManager.GetNegotiatedApiVersion(
-            ApiKey.OffsetFetch,
-            OffsetFetchRequest.LowestSupportedVersion,
-            OffsetFetchRequest.HighestSupportedVersion);
-
-        var response = await connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
-            request,
-            offsetFetchVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        var result = new Dictionary<TopicPartition, long>();
-
-        // v0-v7: Topics field
-        if (response.Topics is not null)
-        {
-            foreach (var topic in response.Topics)
+            var request = new OffsetFetchRequest
             {
-                foreach (var partition in topic.Partitions)
-                {
-                    if (partition.ErrorCode == ErrorCode.None && partition.CommittedOffset >= 0)
-                    {
-                        result[new TopicPartition(topic.Name, partition.PartitionIndex)] = partition.CommittedOffset;
-                    }
-                }
-            }
-        }
+                GroupId = _options.GroupId,
+                Topics = topicPartitions
+            };
 
-        // v8+: Groups field
-        if (response.Groups is not null)
-        {
-            foreach (var group in response.Groups)
+            // Use negotiated API version
+            var offsetFetchVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.OffsetFetch,
+                OffsetFetchRequest.LowestSupportedVersion,
+                OffsetFetchRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                request,
+                offsetFetchVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            var result = new Dictionary<TopicPartition, long>();
+
+            // v0-v7: Topics field
+            if (response.Topics is not null)
             {
-                if (group.ErrorCode != ErrorCode.None)
-                    continue;
-
-                foreach (var topic in group.Topics)
+                foreach (var topic in response.Topics)
                 {
                     foreach (var partition in topic.Partitions)
                     {
@@ -643,9 +647,34 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                     }
                 }
             }
-        }
 
-        return result;
+            // v8+: Groups field
+            if (response.Groups is not null)
+            {
+                foreach (var group in response.Groups)
+                {
+                    if (group.ErrorCode != ErrorCode.None)
+                        continue;
+
+                    foreach (var topic in group.Topics)
+                    {
+                        foreach (var partition in topic.Partitions)
+                        {
+                            if (partition.ErrorCode == ErrorCode.None && partition.CommittedOffset >= 0)
+                            {
+                                result[new TopicPartition(topic.Name, partition.PartitionIndex)] = partition.CommittedOffset;
+                            }
+                        }
+                    }
+                }
+            }
+
+            return result;
+        }
+        finally
+        {
+            _fetchLock.Release();
+        }
     }
 
     private static byte[] BuildSubscriptionMetadata(IReadOnlySet<string> topics)
@@ -710,40 +739,49 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         IReadOnlyList<JoinGroupResponseMember> members,
         CancellationToken cancellationToken)
     {
-        // Get partition info for all subscribed topics
-        var topicPartitions = new Dictionary<string, int>(); // topic -> partition count
+        // Get partition info for all subscribed topics using pooled dictionary
+        _topicPartitionCounts.Clear();
         foreach (var topic in topics)
         {
             var topicInfo = await _metadataManager.GetTopicMetadataAsync(topic, cancellationToken)
                 .ConfigureAwait(false);
             if (topicInfo is not null && topicInfo.PartitionCount > 0)
             {
-                topicPartitions[topic] = topicInfo.PartitionCount;
+                _topicPartitionCounts[topic] = topicInfo.PartitionCount;
             }
         }
 
-        // Parse each member's subscription
-        var memberSubscriptions = new Dictionary<string, HashSet<string>>(); // memberId -> subscribed topics
+        // Parse each member's subscription using pooled dictionary
+        _memberSubscriptions.Clear();
         foreach (var member in members)
         {
             var subscribedTopics = ParseSubscriptionMetadata(member.Metadata);
-            memberSubscriptions[member.MemberId] = subscribedTopics;
+            _memberSubscriptions[member.MemberId] = subscribedTopics;
         }
 
         // Compute assignments using range assignor (simple per-topic partitioning)
-        var memberAssignments = new Dictionary<string, List<TopicPartition>>();
-        foreach (var member in members)
+        // Clear existing Lists before clearing the dictionary to reuse List instances
+        foreach (var list in _memberAssignments.Values)
         {
-            memberAssignments[member.MemberId] = [];
+            list.Clear();
         }
 
-        foreach (var (topic, partitionCount) in topicPartitions)
+        foreach (var member in members)
+        {
+            if (!_memberAssignments.TryGetValue(member.MemberId, out var assignments))
+            {
+                assignments = [];
+                _memberAssignments[member.MemberId] = assignments;
+            }
+        }
+
+        foreach (var (topic, partitionCount) in _topicPartitionCounts)
         {
             // Get members interested in this topic without LINQ to avoid allocations
             var interestedMembers = new List<string>();
             foreach (var member in members)
             {
-                if (memberSubscriptions[member.MemberId].Contains(topic))
+                if (_memberSubscriptions[member.MemberId].Contains(topic))
                 {
                     interestedMembers.Add(member.MemberId);
                 }
@@ -770,14 +808,14 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
 
                 for (var i = 0; i < assignedCount; i++)
                 {
-                    memberAssignments[memberId].Add(new TopicPartition(topic, partitionIndex++));
+                    _memberAssignments[memberId].Add(new TopicPartition(topic, partitionIndex++));
                 }
             }
         }
 
         // Build SyncGroupRequestAssignment for each member
         var result = new List<SyncGroupRequestAssignment>();
-        foreach (var (memberId, partitions) in memberAssignments)
+        foreach (var (memberId, partitions) in _memberAssignments)
         {
             var assignmentBytes = BuildAssignmentData(partitions);
             result.Add(new SyncGroupRequestAssignment
@@ -813,26 +851,31 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         return result;
     }
 
-    private static byte[] BuildAssignmentData(List<TopicPartition> partitions)
+    private byte[] BuildAssignmentData(List<TopicPartition> partitions)
     {
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new Protocol.KafkaProtocolWriter(buffer);
 
-        // Group partitions by topic without LINQ
-        var byTopic = new Dictionary<string, List<int>>();
+        // Group partitions by topic using pooled dictionary
+        // Clear existing Lists before clearing the dictionary to reuse List instances
+        foreach (var list in _assignmentByTopic.Values)
+        {
+            list.Clear();
+        }
+
         foreach (var p in partitions)
         {
-            if (!byTopic.TryGetValue(p.Topic, out var list))
+            if (!_assignmentByTopic.TryGetValue(p.Topic, out var list))
             {
                 list = new List<int>();
-                byTopic[p.Topic] = list;
+                _assignmentByTopic[p.Topic] = list;
             }
             list.Add(p.Partition);
         }
 
         // Convert to list for the writer
-        var topicAssignments = new List<(string Topic, List<int> Partitions)>(byTopic.Count);
-        foreach (var kvp in byTopic)
+        var topicAssignments = new List<(string Topic, List<int> Partitions)>(_assignmentByTopic.Count);
+        foreach (var kvp in _assignmentByTopic)
         {
             topicAssignments.Add((kvp.Key, kvp.Value));
         }
@@ -992,6 +1035,8 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
 
         _heartbeatCts?.Dispose();
         _lock.Dispose();
+        _commitLock.Dispose();
+        _fetchLock.Dispose();
     }
 }
 
