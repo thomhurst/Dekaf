@@ -18,7 +18,7 @@ public sealed class MetadataManager : IAsyncDisposable
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private readonly List<(string Host, int Port)> _bootstrapEndpoints;
     private List<(string Host, int Port)>? _cachedEndpoints;
-    private int _cachedBrokerCount = -1;
+    private int _cachedBrokerHash;
     private readonly object _endpointCacheLock = new();
 
     private volatile short _metadataApiVersion = -1;
@@ -298,17 +298,27 @@ public sealed class MetadataManager : IAsyncDisposable
         _logger?.LogDebug("Negotiated Metadata API version: {Version}", _metadataApiVersion);
     }
 
-    private List<(string Host, int Port)> GetEndpointsToTry()
+    internal List<(string Host, int Port)> GetEndpointsToTry()
     {
         // Get current brokers - this allocates, but we need it to detect changes
         var currentBrokers = _metadata.GetBrokers();
-        var currentBrokerCount = currentBrokers.Count;
 
         // Thread-safe cache check - avoid rebuilding if brokers haven't changed
         lock (_endpointCacheLock)
         {
-            // Cache is valid if broker count hasn't changed
-            if (_cachedEndpoints is not null && _cachedBrokerCount == currentBrokerCount)
+            // Compute hash of broker data (NodeId, Host, Port) to detect any changes
+            // This detects count changes, membership changes, AND host/port changes
+            var hash = new HashCode();
+            foreach (var broker in currentBrokers)
+            {
+                hash.Add(broker.NodeId);
+                hash.Add(broker.Host);
+                hash.Add(broker.Port);
+            }
+            var currentBrokerHash = hash.ToHashCode();
+
+            // Cache is valid if broker hash hasn't changed
+            if (_cachedEndpoints is not null && _cachedBrokerHash == currentBrokerHash)
             {
                 // Return defensive copy to prevent caller modification
                 return new List<(string Host, int Port)>(_cachedEndpoints);
@@ -316,7 +326,7 @@ public sealed class MetadataManager : IAsyncDisposable
 
             // Build new endpoint list (allocation only when metadata changes)
             var endpoints = new List<(string Host, int Port)>(
-                currentBrokerCount + _bootstrapEndpoints.Count);
+                currentBrokers.Count + _bootstrapEndpoints.Count);
 
             // First try known brokers
             foreach (var broker in currentBrokers)
@@ -330,9 +340,9 @@ public sealed class MetadataManager : IAsyncDisposable
                 endpoints.Add(endpoint);
             }
 
-            // Update cache
+            // Update cache with new hash and endpoints
+            _cachedBrokerHash = currentBrokerHash;
             _cachedEndpoints = endpoints;
-            _cachedBrokerCount = currentBrokerCount;
 
             // Return defensive copy
             return new List<(string Host, int Port)>(endpoints);
