@@ -29,7 +29,7 @@ public class RecordAccumulatorTests
         // returns the same ReadyBatch instance, preventing double-cleanup of resources.
 
         var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options);
+        var accumulator = new RecordAccumulator(options, _ => { }); // No-op callback for tests
         var topicPartition = new TopicPartition("test-topic", 0);
 
         try
@@ -92,7 +92,7 @@ public class RecordAccumulatorTests
         // it only executes once, even if called multiple times.
 
         var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options);
+        var accumulator = new RecordAccumulator(options, _ => { }); // No-op callback for tests
         var topicPartition = new TopicPartition("test-topic", 0);
 
         try
@@ -161,7 +161,7 @@ public class RecordAccumulatorTests
         // This test verifies that calling Complete() followed by Fail() only triggers cleanup once.
 
         var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options);
+        var accumulator = new RecordAccumulator(options, _ => { }); // No-op callback for tests
         var topicPartition = new TopicPartition("test-topic", 0);
 
         try

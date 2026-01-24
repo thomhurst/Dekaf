@@ -46,6 +46,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly ProducerStatisticsCollector _statisticsCollector = new();
     private readonly StatisticsEmitter<ProducerStatistics>? _statisticsEmitter;
 
+    // Pool for TaskCompletionSource to avoid per-message allocations
+    private readonly TaskCompletionSourcePool<RecordMetadata> _tcsPool = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     // Thread-local reusable buffers for serialization to avoid per-message allocations
     [ThreadStatic]
     private static ArrayBufferWriter<byte>? t_keySerializationBuffer;
@@ -104,7 +107,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             options.BootstrapServers,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
-        _accumulator = new RecordAccumulator(options);
+        _accumulator = new RecordAccumulator(options, _tcsPool.Return);
         _compressionCodecs = new CompressionCodecRegistry();
 
         _senderCts = new CancellationTokenSource();
@@ -170,9 +173,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
-        // Create work item with completion source
-        var completion = new TaskCompletionSource<RecordMetadata>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        // Rent completion source from pool to avoid per-message allocation
+        var completion = _tcsPool.Rent();
 
         var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, cancellationToken);
 
@@ -710,6 +712,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         // Dispose accumulator - this will fail any remaining batches if graceful shutdown failed
         await _accumulator.DisposeAsync().ConfigureAwait(false);
+
+        // Dispose TCS pool - prevents resource leaks
+        await _tcsPool.DisposeAsync().ConfigureAwait(false);
 
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
