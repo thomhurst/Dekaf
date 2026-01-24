@@ -716,12 +716,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
 /// <summary>
 /// Work item for the producer worker pool.
+/// Changed from struct to class to avoid multiple copies during channel operations.
+/// As a class, the work item is allocated once and a single reference is passed through the channel,
+/// eliminating struct copy overhead and any potential boxing issues.
 /// </summary>
-internal readonly struct ProduceWorkItem<TKey, TValue>
+internal sealed class ProduceWorkItem<TKey, TValue>
 {
-    public readonly ProducerMessage<TKey, TValue> Message;
-    public readonly TaskCompletionSource<RecordMetadata> Completion;
-    public readonly CancellationToken CancellationToken;
+    public ProducerMessage<TKey, TValue> Message { get; }
+    public TaskCompletionSource<RecordMetadata> Completion { get; }
+    public CancellationToken CancellationToken { get; }
 
     public ProduceWorkItem(
         ProducerMessage<TKey, TValue> message,
