@@ -432,10 +432,29 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         var latencyMs = (long)(DateTimeOffset.UtcNow - requestStartTime).TotalMilliseconds;
         _statisticsCollector.RecordResponseReceived(latencyMs);
 
-        // Process response
-        var topicResponse = response.Responses.FirstOrDefault(t => t.Name == batch.TopicPartition.Topic);
-        var partitionResponse = topicResponse?.PartitionResponses
-            .FirstOrDefault(p => p.Index == batch.TopicPartition.Partition);
+        // Process response - use imperative loops to avoid LINQ allocations
+        ProduceResponseTopicData? topicResponse = null;
+        foreach (var topic in response.Responses)
+        {
+            if (topic.Name == batch.TopicPartition.Topic)
+            {
+                topicResponse = topic;
+                break;
+            }
+        }
+
+        ProduceResponsePartitionData? partitionResponse = null;
+        if (topicResponse is not null)
+        {
+            foreach (var partition in topicResponse.PartitionResponses)
+            {
+                if (partition.Index == batch.TopicPartition.Partition)
+                {
+                    partitionResponse = partition;
+                    break;
+                }
+            }
+        }
 
         if (partitionResponse is null)
         {
