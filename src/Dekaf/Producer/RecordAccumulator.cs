@@ -155,6 +155,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// Wait until there's enough memory available using async signaling.
     /// Uses efficient wait/signal pattern - no polling or delays.
     /// Waiters are woken immediately when memory is released.
+    /// Includes timeout protection to prevent infinite blocking if sender crashes.
     /// </summary>
     private async ValueTask WaitForMemoryAsync(int requiredBytes, CancellationToken cancellationToken)
     {
@@ -164,11 +165,23 @@ public sealed class RecordAccumulator : IAsyncDisposable
             return;
         }
 
-        // Slow path: wait for memory to be released
-        // This loop handles spurious wakeups and race conditions
+        // Slow path: wait for memory to be released with timeout protection
+        var startTime = DateTimeOffset.UtcNow;
+        var timeout = TimeSpan.FromSeconds(60); // 60 second timeout to prevent infinite blocking
+
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            // Check for timeout to prevent infinite blocking
+            var elapsed = DateTimeOffset.UtcNow - startTime;
+            if (elapsed > timeout)
+            {
+                throw new TimeoutException(
+                    $"Timed out after {elapsed.TotalSeconds:F1}s waiting for {requiredBytes} bytes of buffer memory. " +
+                    $"Used: {Interlocked.Read(ref _usedMemory):N0}/{_maxMemory:N0} bytes. " +
+                    $"Consider increasing BufferMemory or reducing message throughput.");
+            }
 
             // Capture the current signal before checking memory
             // This ensures we don't miss a signal between check and wait
@@ -200,7 +213,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// </summary>
     internal void ReleaseMemory(int bytes)
     {
-        Interlocked.Add(ref _usedMemory, -bytes);
+        var newUsed = Interlocked.Add(ref _usedMemory, -bytes);
+
+        // Debug assertion: memory should never go negative
+        System.Diagnostics.Debug.Assert(newUsed >= 0,
+            $"Memory accounting error: used memory went negative ({newUsed}). " +
+            $"Released {bytes} bytes, but this caused underflow.");
 
         // Signal all waiters by completing the current TCS and swapping in a fresh one
         // This is lock-free and wakes all waiters efficiently

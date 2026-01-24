@@ -84,9 +84,12 @@ public class ProducerBenchmarks
     }
 
     [IterationCleanup]
-    public void IterationCleanup()
+    public async Task IterationCleanup()
     {
-        // Flush Confluent producer between iterations to prevent queue buildup
+        // Flush both producers between iterations to prevent queue buildup
+        // and ensure clean state for next iteration
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await _dekafProducer.FlushAsync(cts.Token);
         _confluentProducer.Flush(TimeSpan.FromSeconds(30));
     }
 

@@ -12,6 +12,34 @@ public interface IKafkaProducer<TKey, TValue> : IAsyncDisposable
     /// <summary>
     /// Produces a message to Kafka.
     /// </summary>
+    /// <remarks>
+    /// <para><b>IMPORTANT:</b> This method returns <see cref="ValueTask{TResult}"/> which MUST be awaited
+    /// immediately or converted to <see cref="Task{TResult}"/> via <c>.AsTask()</c>. Do NOT store
+    /// <see cref="ValueTask{TResult}"/> instances in collections or await them later - this violates
+    /// ValueTask semantics and can cause deadlocks or undefined behavior.</para>
+    ///
+    /// <para><b>Correct usage examples:</b></para>
+    /// <code>
+    /// // Single message - await immediately (recommended)
+    /// var metadata = await producer.ProduceAsync(message);
+    ///
+    /// // Multiple messages in parallel - convert to Task (recommended)
+    /// var tasks = new List&lt;Task&lt;RecordMetadata&gt;&gt;();
+    /// for (int i = 0; i &lt; count; i++)
+    ///     tasks.Add(producer.ProduceAsync(message).AsTask());
+    /// await Task.WhenAll(tasks);
+    /// </code>
+    ///
+    /// <para><b>INCORRECT usage - DO NOT DO THIS:</b></para>
+    /// <code>
+    /// // WRONG: Storing ValueTasks in a list
+    /// var valueTasks = new List&lt;ValueTask&lt;RecordMetadata&gt;&gt;();
+    /// for (int i = 0; i &lt; count; i++)
+    ///     valueTasks.Add(producer.ProduceAsync(message));  // DEADLOCK RISK!
+    /// foreach (var vt in valueTasks)
+    ///     await vt;  // Undefined behavior - may deadlock
+    /// </code>
+    /// </remarks>
     ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken = default);
@@ -19,6 +47,10 @@ public interface IKafkaProducer<TKey, TValue> : IAsyncDisposable
     /// <summary>
     /// Produces a message to the specified topic.
     /// </summary>
+    /// <remarks>
+    /// <para>See <see cref="ProduceAsync(ProducerMessage{TKey, TValue}, CancellationToken)"/> for
+    /// important information about <see cref="ValueTask{TResult}"/> usage rules.</para>
+    /// </remarks>
     ValueTask<RecordMetadata> ProduceAsync(
         string topic,
         TKey? key,
