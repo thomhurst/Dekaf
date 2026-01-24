@@ -105,8 +105,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// The completion source will be completed when the batch is sent.
     /// Backpressure is applied through channel capacity when batches are written.
     ///
-    /// Thread-safety: Uses lock-free ConcurrentDictionary operations to ensure only one thread
-    /// modifies a batch at a time. Each partition has its own batch, avoiding cross-partition contention.
+    /// Thread-safety: Uses ConcurrentDictionary to avoid cross-partition contention. Each partition
+    /// has its own batch with its own lock, so concurrent appends to different partitions don't block
+    /// each other. PartitionBatch.TryAppend uses a lock to protect List<T> mutations.
     /// </summary>
     public async ValueTask<RecordAppendResult> AppendAsync(
         TopicPartition topicPartition,
@@ -124,8 +125,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Use a mutable holder to capture result from lambda
         var context = new AppendContext();
 
-        // Lock-free append: Use AddOrUpdate to atomically append to batch
-        // The updateValueFactory ensures only one thread modifies the batch at a time
+        // Use AddOrUpdate to get-or-create batch and append to it.
+        // This avoids cross-partition contention (each partition has its own batch).
+        // PartitionBatch.TryAppend uses a lock internally for thread-safety.
         _batches.AddOrUpdate(
             topicPartition,
             // Add factory: Create new batch and append
@@ -271,9 +273,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
 /// A batch of records for a single partition.
 /// Tracks pooled arrays that are returned when the batch completes.
 ///
-/// Thread-safety: The RecordAccumulator ensures only one thread modifies a batch at a time
-/// by using ConcurrentDictionary.AddOrUpdate atomically. Therefore, PartitionBatch does not
-/// need internal locking for TryAppend operations.
+/// Thread-safety: Multiple threads can call TryAppend concurrently (via ConcurrentDictionary.AddOrUpdate),
+/// so we use a lock to protect List<T> mutations and field updates. The lock is per-partition, so there
+/// is no cross-partition contention. Complete() uses Interlocked for lock-free idempotent completion.
 /// </summary>
 internal sealed class PartitionBatch
 {
@@ -286,6 +288,7 @@ internal sealed class PartitionBatch
     private readonly List<TaskCompletionSource<RecordMetadata>> _completionSources = new(InitialRecordCapacity);
     private readonly List<byte[]> _pooledArrays = new(InitialRecordCapacity * 2); // 2 arrays per record (key + value)
     private readonly List<RecordHeader[]> _pooledHeaderArrays = new(); // Pooled header arrays (for large header counts)
+    private readonly object _lock = new(); // Protects List<T> mutations and field updates
 
     private long _baseTimestamp;
     private int _offsetDelta;
@@ -312,61 +315,66 @@ internal sealed class PartitionBatch
         RecordHeader[]? pooledHeaderArray,
         TaskCompletionSource<RecordMetadata> completion)
     {
-        // No locking needed - RecordAccumulator.AddOrUpdate ensures atomicity
-        if (_records.Count == 0)
+        // Lock required: Multiple threads can call TryAppend concurrently via ConcurrentDictionary.AddOrUpdate.
+        // List<T> is not thread-safe, so we must synchronize access to _records, _completionSources, etc.
+        // This lock is per-partition, so there is no cross-partition contention.
+        lock (_lock)
         {
-            _baseTimestamp = timestamp;
+            if (_records.Count == 0)
+            {
+                _baseTimestamp = timestamp;
+            }
+
+            // Estimate size
+            var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
+            if (_estimatedSize + recordSize > _options.BatchSize && _records.Count > 0)
+            {
+                return new RecordAppendResult(false);
+            }
+
+            // Track pooled arrays for returning to pool later
+            if (key.Array is not null)
+            {
+                _pooledArrays.Add(key.Array);
+            }
+            if (value.Array is not null)
+            {
+                _pooledArrays.Add(value.Array);
+            }
+            if (pooledHeaderArray is not null)
+            {
+                _pooledHeaderArrays.Add(pooledHeaderArray);
+            }
+
+            var timestampDelta = (int)(timestamp - _baseTimestamp);
+            var record = new Record
+            {
+                TimestampDelta = timestampDelta,
+                OffsetDelta = _offsetDelta,
+                Key = key.Memory,
+                IsKeyNull = key.IsNull,
+                Value = value.Memory,
+                IsValueNull = false,
+                Headers = headers
+            };
+
+            _records.Add(record);
+            _estimatedSize += recordSize;
+
+            // Use the passed-in completion source - no allocation here
+            _completionSources.Add(completion);
+
+            _offsetDelta++;
+
+            return new RecordAppendResult(true);
         }
-
-        // Estimate size
-        var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
-        if (_estimatedSize + recordSize > _options.BatchSize && _records.Count > 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        // Track pooled arrays for returning to pool later
-        if (key.Array is not null)
-        {
-            _pooledArrays.Add(key.Array);
-        }
-        if (value.Array is not null)
-        {
-            _pooledArrays.Add(value.Array);
-        }
-        if (pooledHeaderArray is not null)
-        {
-            _pooledHeaderArrays.Add(pooledHeaderArray);
-        }
-
-        var timestampDelta = (int)(timestamp - _baseTimestamp);
-        var record = new Record
-        {
-            TimestampDelta = timestampDelta,
-            OffsetDelta = _offsetDelta,
-            Key = key.Memory,
-            IsKeyNull = key.IsNull,
-            Value = value.Memory,
-            IsValueNull = false,
-            Headers = headers
-        };
-
-        _records.Add(record);
-        _estimatedSize += recordSize;
-
-        // Use the passed-in completion source - no allocation here
-        _completionSources.Add(completion);
-
-        _offsetDelta++;
-
-        return new RecordAppendResult(true);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool ShouldFlush(DateTimeOffset now, int lingerMs)
     {
-        // No lock needed - _records.Count and _createdAt are safe to read
-        // _createdAt is readonly, _records.Count may be stale but that's acceptable
+        // Lock-free read: _createdAt is readonly, _records.Count read is atomic for reference types.
+        // Stale reads are acceptable for linger time checks - worst case we flush slightly late.
         if (_records.Count == 0)
             return false;
 
