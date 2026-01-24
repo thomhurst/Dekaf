@@ -783,7 +783,8 @@ public sealed class KafkaConnection : IKafkaConnection
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(buffer);
+            // Clear buffer to prevent SASL credential leakage (contains passwords, tokens, secrets)
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
         }
 
         // Read response
@@ -834,7 +835,8 @@ public sealed class KafkaConnection : IKafkaConnection
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(responseBuffer);
+                // Clear buffer to prevent SASL credential leakage (may contain auth tokens/session data)
+                ArrayPool<byte>.Shared.Return(responseBuffer, clearArray: true);
             }
         }
         finally
