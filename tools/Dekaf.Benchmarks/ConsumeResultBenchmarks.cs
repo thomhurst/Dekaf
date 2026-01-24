@@ -8,7 +8,7 @@ namespace Dekaf.Benchmarks;
 
 /// <summary>
 /// Benchmarks for ConsumeResult construction to measure allocation patterns.
-/// Tests eager vs lazy deserialization approaches.
+/// Tests eager deserialization approach (current implementation).
 /// </summary>
 [MemoryDiagnoser]
 [SimpleJob(warmupCount: 3, iterationCount: 10)]
@@ -33,8 +33,8 @@ public class ConsumeResultBenchmarks
         _valueData = valueBuffer.WrittenMemory;
     }
 
-    [Benchmark(Description = "Lazy: Create ConsumeResult (current approach)")]
-    public ConsumeResult<string, string> CreateLazyConsumeResult()
+    [Benchmark(Description = "Create ConsumeResult")]
+    public ConsumeResult<string, string> CreateConsumeResult()
     {
         return new ConsumeResult<string, string>(
             topic: "test-topic",
@@ -52,8 +52,8 @@ public class ConsumeResultBenchmarks
             valueDeserializer: _valueDeserializer);
     }
 
-    [Benchmark(Description = "Lazy: Create and access Key/Value")]
-    public (string?, string) CreateAndAccessLazy()
+    [Benchmark(Description = "Create and access Key/Value")]
+    public (string?, string) CreateAndAccessKeyValue()
     {
         var result = new ConsumeResult<string, string>(
             topic: "test-topic",
@@ -73,8 +73,8 @@ public class ConsumeResultBenchmarks
         return (result.Key, result.Value);
     }
 
-    [Benchmark(Description = "Eager: Create 1000 ConsumeResults (new approach)")]
-    public ConsumeResult<string, string>[] Create1000EagerResults()
+    [Benchmark(Description = "Create 1000 ConsumeResults")]
+    public ConsumeResult<string, string>[] Create1000Results()
     {
         var results = new ConsumeResult<string, string>[1000];
         for (int i = 0; i < 1000; i++)
@@ -97,8 +97,8 @@ public class ConsumeResultBenchmarks
         return results;
     }
 
-    [Benchmark(Description = "Eager: Create and access Key/Value (new approach)")]
-    public (string?, string) CreateAndAccessEager()
+    [Benchmark(Description = "Create and access Key/Value (eager baseline)")]
+    public (string?, string) CreateAndAccessEagerBaseline()
     {
         var result = new ConsumeResult<string, string>(
             topic: "test-topic",
