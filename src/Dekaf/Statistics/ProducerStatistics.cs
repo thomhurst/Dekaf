@@ -36,17 +36,8 @@ public sealed class ProducerStatistics
     public int QueuedMessages { get; init; }
 
     /// <summary>
-    /// Current memory used by the record accumulator in bytes.
-    /// </summary>
-    public ulong AccumulatorMemoryUsed { get; init; }
-
-    /// <summary>
-    /// Maximum memory available for the record accumulator in bytes.
-    /// </summary>
-    public ulong AccumulatorMemoryLimit { get; init; }
-
-    /// <summary>
     /// Number of batches currently in the ready queue waiting to be sent.
+    /// Backpressure is applied when this reaches the channel capacity.
     /// </summary>
     public int BatchesInQueue { get; init; }
 
