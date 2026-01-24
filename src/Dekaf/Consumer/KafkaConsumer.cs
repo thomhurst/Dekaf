@@ -147,6 +147,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly ConsumerStatisticsCollector _statisticsCollector = new();
     private readonly StatisticsEmitter<ConsumerStatistics>? _statisticsEmitter;
 
+    // Cached partition grouping by broker to avoid allocations on every fetch
+    // Invalidated whenever _assignment or _paused changes
+    private Dictionary<int, List<TopicPartition>>? _cachedPartitionsByBroker;
+    private int _assignmentVersion;
+
     public KafkaConsumer(
         ConsumerOptions options,
         IDeserializer<TKey> keyDeserializer,
@@ -321,6 +326,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     {
         _subscription.Clear();
         _assignment.Clear();
+        InvalidatePartitionCache();
         return this;
     }
 
@@ -332,12 +338,14 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             _assignment.Add(partition);
         }
+        InvalidatePartitionCache();
         return this;
     }
 
     public IKafkaConsumer<TKey, TValue> Unassign()
     {
         _assignment.Clear();
+        InvalidatePartitionCache();
         return this;
     }
 
@@ -360,6 +368,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             // Otherwise, positions will be initialized lazily based on auto.offset.reset
         }
 
+        InvalidatePartitionCache();
         return this;
     }
 
@@ -377,6 +386,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         // Clear any pending fetch data for the removed partitions
         ClearFetchBufferForPartitions(partitions);
 
+        InvalidatePartitionCache();
         return this;
     }
 
@@ -977,6 +987,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             _paused.Add(partition);
         }
+        InvalidatePartitionCache();
         return this;
     }
 
@@ -986,6 +997,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             _paused.Remove(partition);
         }
+        InvalidatePartitionCache();
         return this;
     }
 
@@ -1177,6 +1189,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             {
                 _assignment.Add(partition);
             }
+            InvalidatePartitionCache();
 
             // Clean up state for removed partitions
             foreach (var partition in removedPartitions)
@@ -1436,8 +1449,25 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
     }
 
+    /// <summary>
+    /// Invalidates the cached partition grouping. Called whenever _assignment or _paused changes.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void InvalidatePartitionCache()
+    {
+        _assignmentVersion++;
+        _cachedPartitionsByBroker = null;
+    }
+
     private async ValueTask<Dictionary<int, List<TopicPartition>>> GroupPartitionsByBrokerAsync(CancellationToken cancellationToken)
     {
+        // Check if we have a valid cache
+        if (_cachedPartitionsByBroker is not null)
+        {
+            return _cachedPartitionsByBroker;
+        }
+
+        // Build the cache - allocate once per assignment change
         var result = new Dictionary<int, List<TopicPartition>>();
 
         foreach (var partition in _assignment)
@@ -1460,6 +1490,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             list.Add(partition);
         }
 
+        // Cache the result - will be reused until assignment/paused changes
+        _cachedPartitionsByBroker = result;
         return result;
     }
 
