@@ -651,6 +651,12 @@ public sealed class KafkaConnection : IKafkaConnection
             _logger?.LogDebug("SASL handshake successful, starting authentication");
 
             // Step 2: Perform authentication exchanges
+            // For OAUTHBEARER, ensure token is fetched before getting initial response
+            if (authenticator is OAuthBearerAuthenticator oauthAuthenticator)
+            {
+                await oauthAuthenticator.GetTokenAsync(cancellationToken).ConfigureAwait(false);
+            }
+
             var authBytes = authenticator.GetInitialResponse();
 
             while (!authenticator.IsComplete)
@@ -698,7 +704,7 @@ public sealed class KafkaConnection : IKafkaConnection
 
         if (_options.OAuthBearerTokenProvider is not null)
         {
-            return new OAuthBearerAuthenticator(_options.OAuthBearerTokenProvider.GetTokenAsync);
+            return new OAuthBearerAuthenticator(_options.OAuthBearerTokenProvider);
         }
 
         if (_options.OAuthBearerConfig is not null)
@@ -987,10 +993,10 @@ public sealed class ConnectionOptions
     public OAuthBearerConfig? OAuthBearerConfig { get; init; }
 
     /// <summary>
-    /// OAuth bearer token provider for OAUTHBEARER authentication.
-    /// The connection does not take ownership of this provider; the caller is responsible for disposal.
+    /// Custom OAuth bearer token provider function for OAUTHBEARER authentication.
+    /// Takes precedence over <see cref="OAuthBearerConfig"/> if both are specified.
     /// </summary>
-    public OAuthBearerTokenProvider? OAuthBearerTokenProvider { get; init; }
+    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
 
     /// <summary>
     /// Static OAuth bearer token for OAUTHBEARER authentication.

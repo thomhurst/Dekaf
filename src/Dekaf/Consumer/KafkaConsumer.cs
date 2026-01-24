@@ -154,6 +154,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 SaslUsername = options.SaslUsername,
                 SaslPassword = options.SaslPassword,
                 GssapiConfig = options.GssapiConfig,
+                OAuthBearerConfig = options.OAuthBearerConfig,
+                OAuthBearerTokenProvider = options.OAuthBearerTokenProvider,
                 SendBufferSize = options.SocketSendBufferBytes,
                 ReceiveBufferSize = options.SocketReceiveBufferBytes
             },
