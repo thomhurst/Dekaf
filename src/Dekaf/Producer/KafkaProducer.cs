@@ -52,6 +52,17 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     [ThreadStatic]
     private static ArrayBufferWriter<byte>? t_valueSerializationBuffer;
 
+    // Thread-local reusable SerializationContext to avoid per-message allocations
+    // Since SerializationContext contains reference types (Topic, Headers), copying it
+    // involves copying those references. Using ThreadStatic avoids repeated struct creation.
+    //
+    // ThreadStatic initialization: Default struct initialization (all fields = null/default) is safe.
+    // The struct is updated via property setters before each use, so initial null values don't matter.
+    // Reference type fields (string Topic, Headers? Headers) start as null and are explicitly set
+    // before passing to serializers, avoiding any uninitialized state issues.
+    [ThreadStatic]
+    private static SerializationContext t_serializationContext;
+
     public KafkaProducer(
         ProducerOptions options,
         ISerializer<TKey> keySerializer,
@@ -534,13 +545,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private PooledMemory SerializeKeyToPooled(TKey key, string topic, Headers? headers)
     {
         var buffer = GetKeySerializationBuffer();
-        var context = new SerializationContext
-        {
-            Topic = topic,
-            Component = SerializationComponent.Key,
-            Headers = headers
-        };
-        _keySerializer.Serialize(key, buffer, context);
+
+        // Reuse thread-local context by updating fields (zero-allocation)
+        t_serializationContext.Topic = topic;
+        t_serializationContext.Component = SerializationComponent.Key;
+        t_serializationContext.Headers = headers;
+        _keySerializer.Serialize(key, buffer, t_serializationContext);
 
         // Rent from pool and copy serialized data
         var length = buffer.WrittenCount;
@@ -555,13 +565,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private PooledMemory SerializeValueToPooled(TValue value, string topic, Headers? headers)
     {
         var buffer = GetValueSerializationBuffer();
-        var context = new SerializationContext
-        {
-            Topic = topic,
-            Component = SerializationComponent.Value,
-            Headers = headers
-        };
-        _valueSerializer.Serialize(value, buffer, context);
+
+        // Reuse thread-local context by updating fields (zero-allocation)
+        t_serializationContext.Topic = topic;
+        t_serializationContext.Component = SerializationComponent.Value;
+        t_serializationContext.Headers = headers;
+        _valueSerializer.Serialize(value, buffer, t_serializationContext);
 
         // Rent from pool and copy serialized data
         var length = buffer.WrittenCount;

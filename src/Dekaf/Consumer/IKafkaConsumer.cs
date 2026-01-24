@@ -219,6 +219,17 @@ public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
 /// <typeparam name="TValue">Value type.</typeparam>
 public readonly struct ConsumeResult<TKey, TValue>
 {
+    // Thread-local reusable SerializationContext to avoid per-deserialization allocations
+    // Since SerializationContext contains reference types (Topic, Headers), copying it
+    // involves copying those references. Using ThreadStatic avoids repeated struct creation.
+    //
+    // ThreadStatic initialization: Default struct initialization (all fields = null/default) is safe.
+    // The struct is updated via property setters before each use, so initial null values don't matter.
+    // Reference type fields (string Topic, Headers? Headers) start as null and are explicitly set
+    // before passing to deserializers, avoiding any uninitialized state issues.
+    [ThreadStatic]
+    private static SerializationContext t_serializationContext;
+
     // Raw data stored for lazy deserialization (zero-copy from network buffer)
     private readonly ReadOnlyMemory<byte> _keyData;
     private readonly ReadOnlyMemory<byte> _valueData;
@@ -320,13 +331,11 @@ public readonly struct ConsumeResult<TKey, TValue>
             if (_isKeyNull)
                 return default;
 
-            var context = new SerializationContext
-            {
-                Topic = Topic,
-                Component = SerializationComponent.Key,
-                Headers = null
-            };
-            return _keyDeserializer!.Deserialize(new System.Buffers.ReadOnlySequence<byte>(_keyData), context);
+            // Reuse thread-local context by updating fields (zero-allocation)
+            t_serializationContext.Topic = Topic;
+            t_serializationContext.Component = SerializationComponent.Key;
+            t_serializationContext.Headers = null;
+            return _keyDeserializer!.Deserialize(new System.Buffers.ReadOnlySequence<byte>(_keyData), t_serializationContext);
         }
     }
 
@@ -339,17 +348,15 @@ public readonly struct ConsumeResult<TKey, TValue>
     {
         get
         {
-            var context = new SerializationContext
-            {
-                Topic = Topic,
-                Component = SerializationComponent.Value,
-                Headers = null
-            };
+            // Reuse thread-local context by updating fields (zero-allocation)
+            t_serializationContext.Topic = Topic;
+            t_serializationContext.Component = SerializationComponent.Value;
+            t_serializationContext.Headers = null;
 
             if (_isValueNull)
-                return _valueDeserializer!.Deserialize(System.Buffers.ReadOnlySequence<byte>.Empty, context);
+                return _valueDeserializer!.Deserialize(System.Buffers.ReadOnlySequence<byte>.Empty, t_serializationContext);
 
-            return _valueDeserializer!.Deserialize(new System.Buffers.ReadOnlySequence<byte>(_valueData), context);
+            return _valueDeserializer!.Deserialize(new System.Buffers.ReadOnlySequence<byte>(_valueData), t_serializationContext);
         }
     }
 
