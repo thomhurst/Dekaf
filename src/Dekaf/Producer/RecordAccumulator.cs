@@ -122,55 +122,27 @@ public sealed class RecordAccumulator : IAsyncDisposable
         if (_disposed)
             throw new ObjectDisposedException(nameof(RecordAccumulator));
 
-        // Use a mutable holder to capture result from lambda
-        var context = new AppendContext();
+        var batch = _batches.GetOrAdd(topicPartition, tp => new PartitionBatch(tp, _options));
 
-        // Use AddOrUpdate to get-or-create batch and append to it.
-        // This avoids cross-partition contention (each partition has its own batch).
-        // PartitionBatch.TryAppend uses a lock internally for thread-safety.
-        _batches.AddOrUpdate(
-            topicPartition,
-            // Add factory: Create new batch and append
-            tp =>
-            {
-                var newBatch = new PartitionBatch(tp, _options);
-                context.Result = newBatch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
-                return newBatch;
-            },
-            // Update factory: Try append to existing batch, replace if full
-            (tp, existingBatch) =>
-            {
-                context.Result = existingBatch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
+        var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
 
-                if (!context.Result.Success)
-                {
-                    // Batch is full, complete it and create new batch
-                    context.ReadyBatch = existingBatch.Complete();
-
-                    var newBatch = new PartitionBatch(tp, _options);
-                    context.Result = newBatch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
-                    return newBatch;
-                }
-
-                return existingBatch;
-            });
-
-        // If batch was completed, send it to ready channel
-        if (context.ReadyBatch is not null)
+        if (!result.Success)
         {
-            await _readyBatches.Writer.WriteAsync(context.ReadyBatch, cancellationToken).ConfigureAwait(false);
+            // Batch is full, need to flush and create new batch
+            var readyBatch = batch.Complete();
+            if (readyBatch is not null)
+            {
+                // Backpressure happens here: WriteAsync blocks when channel is full
+                await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+            }
+
+            // Create new batch and retry
+            batch = new PartitionBatch(topicPartition, _options);
+            _batches[topicPartition] = batch;
+            result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
         }
 
-        return context.Result;
-    }
-
-    /// <summary>
-    /// Mutable context for capturing append results from AddOrUpdate lambda.
-    /// </summary>
-    private sealed class AppendContext
-    {
-        public RecordAppendResult Result;
-        public ReadyBatch? ReadyBatch;
+        return result;
     }
 
 
@@ -184,6 +156,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Checks for batches that have exceeded linger time.
+    /// Uses conditional removal to avoid race conditions where a new batch might be created
+    /// between Complete() and TryRemove() calls.
     /// </summary>
     public async ValueTask ExpireLingerAsync(CancellationToken cancellationToken)
     {
@@ -198,7 +172,13 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 if (readyBatch is not null)
                 {
                     await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-                    _batches.TryRemove(kvp.Key, out _);
+
+                    // Use conditional removal to ensure we only remove the batch we just completed.
+                    // If another thread already replaced this batch with a new one (via AppendAsync),
+                    // we don't want to remove the new batch.
+                    // TryRemove with ICollection<KeyValuePair<K,V>> compares by reference equality,
+                    // so this is safe even if a new batch was created for the same partition.
+                    _batches.TryRemove(kvp);
                 }
             }
         }
