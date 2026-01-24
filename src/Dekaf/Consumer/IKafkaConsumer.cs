@@ -27,6 +27,12 @@ public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
     string? MemberId { get; }
 
     /// <summary>
+    /// Gets the consumer group metadata for use with transactional producers.
+    /// Returns null if not part of a consumer group or if the group has not yet been joined.
+    /// </summary>
+    ConsumerGroupMetadata? ConsumerGroupMetadata { get; }
+
+    /// <summary>
     /// Subscribes to topics.
     /// </summary>
     IKafkaConsumer<TKey, TValue> Subscribe(params string[] topics);
@@ -52,6 +58,24 @@ public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
     IKafkaConsumer<TKey, TValue> Unassign();
 
     /// <summary>
+    /// Incrementally adds partitions to the current assignment.
+    /// Used with cooperative rebalancing (CooperativeSticky assignor).
+    /// Unlike <see cref="Assign"/>, does not replace the entire assignment.
+    /// </summary>
+    /// <param name="partitions">The partitions to add with optional starting offsets.</param>
+    /// <returns>This consumer for method chaining.</returns>
+    IKafkaConsumer<TKey, TValue> IncrementalAssign(IEnumerable<TopicPartitionOffset> partitions);
+
+    /// <summary>
+    /// Incrementally removes partitions from the current assignment.
+    /// Used with cooperative rebalancing (CooperativeSticky assignor).
+    /// Unlike <see cref="Unassign"/>, only removes the specified partitions.
+    /// </summary>
+    /// <param name="partitions">The partitions to remove.</param>
+    /// <returns>This consumer for method chaining.</returns>
+    IKafkaConsumer<TKey, TValue> IncrementalUnassign(IEnumerable<TopicPartition> partitions);
+
+    /// <summary>
     /// Consumes messages as an async enumerable.
     /// </summary>
     IAsyncEnumerable<ConsumeResult<TKey, TValue>> ConsumeAsync(CancellationToken cancellationToken = default);
@@ -62,7 +86,26 @@ public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
     ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneAsync(TimeSpan timeout, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Stores an offset for later commit. Does not commit immediately.
+    /// Use with EnableAutoOffsetStore = false for manual control.
+    /// </summary>
+    /// <param name="offset">The topic-partition-offset to store.</param>
+    /// <returns>The consumer instance for method chaining.</returns>
+    IKafkaConsumer<TKey, TValue> StoreOffset(TopicPartitionOffset offset);
+
+    /// <summary>
+    /// Stores the offset from a consume result for later commit.
+    /// The stored offset is the next offset to consume (result.Offset + 1).
+    /// Use with EnableAutoOffsetStore = false for manual control.
+    /// </summary>
+    /// <param name="result">The consume result whose offset to store.</param>
+    /// <returns>The consumer instance for method chaining.</returns>
+    IKafkaConsumer<TKey, TValue> StoreOffset(ConsumeResult<TKey, TValue> result);
+
+    /// <summary>
     /// Commits consumed offsets.
+    /// When EnableAutoOffsetStore is false, commits the offsets stored via StoreOffset.
+    /// When EnableAutoOffsetStore is true, commits the offsets of all consumed messages.
     /// </summary>
     ValueTask CommitAsync(CancellationToken cancellationToken = default);
 
@@ -115,6 +158,15 @@ public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
     /// Wakes up the consumer if it's blocked on a fetch.
     /// </summary>
     void Wakeup();
+
+    /// <summary>
+    /// Gracefully closes the consumer: commits pending offsets,
+    /// leaves the consumer group, and releases resources.
+    /// This method is idempotent and safe to call multiple times.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task representing the asynchronous close operation.</returns>
+    ValueTask CloseAsync(CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -152,7 +204,8 @@ public readonly struct ConsumeResult<TKey, TValue>
         TimestampType timestampType,
         int? leaderEpoch,
         IDeserializer<TKey>? keyDeserializer,
-        IDeserializer<TValue>? valueDeserializer)
+        IDeserializer<TValue>? valueDeserializer,
+        bool isPartitionEof = false)
     {
         Topic = topic;
         Partition = partition;
@@ -167,6 +220,36 @@ public readonly struct ConsumeResult<TKey, TValue>
         LeaderEpoch = leaderEpoch;
         _keyDeserializer = keyDeserializer;
         _valueDeserializer = valueDeserializer;
+        IsPartitionEof = isPartitionEof;
+    }
+
+    /// <summary>
+    /// Creates a partition EOF result (no message data).
+    /// This is primarily used internally by the consumer when EnablePartitionEof is true.
+    /// </summary>
+    /// <param name="topic">The topic name.</param>
+    /// <param name="partition">The partition index.</param>
+    /// <param name="offset">The current offset position.</param>
+    /// <returns>A ConsumeResult with IsPartitionEof set to true.</returns>
+#pragma warning disable CA1000 // Do not declare static members on generic types - factory method pattern
+    public static ConsumeResult<TKey, TValue> CreatePartitionEof(string topic, int partition, long offset)
+#pragma warning restore CA1000
+    {
+        return new ConsumeResult<TKey, TValue>(
+            topic: topic,
+            partition: partition,
+            offset: offset,
+            keyData: default,
+            isKeyNull: true,
+            valueData: default,
+            isValueNull: true,
+            headers: null,
+            timestamp: default,
+            timestampType: TimestampType.NotAvailable,
+            leaderEpoch: null,
+            keyDeserializer: null,
+            valueDeserializer: null,
+            isPartitionEof: true);
     }
 
     /// <summary>
@@ -249,6 +332,13 @@ public readonly struct ConsumeResult<TKey, TValue>
     /// The leader epoch.
     /// </summary>
     public int? LeaderEpoch { get; }
+
+    /// <summary>
+    /// Indicates whether this result represents a partition end-of-file (EOF) event.
+    /// When true, the consumer has reached the end of the partition (caught up to the high watermark).
+    /// Key and Value will be default when this is true.
+    /// </summary>
+    public bool IsPartitionEof { get; }
 
     /// <summary>
     /// Gets the topic-partition-offset.

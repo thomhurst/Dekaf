@@ -26,7 +26,13 @@ public enum SaslMechanism
     /// SASL SCRAM-SHA-512 mechanism. Challenge-response authentication
     /// using SHA-512 hashing. More secure than SCRAM-SHA-256.
     /// </summary>
-    ScramSha512
+    ScramSha512,
+
+    /// <summary>
+    /// SASL GSSAPI mechanism. Kerberos authentication using GSSAPI.
+    /// Provides strong mutual authentication and optional encryption.
+    /// </summary>
+    Gssapi
 }
 
 /// <summary>
@@ -42,6 +48,7 @@ public static class SaslMechanismExtensions
         SaslMechanism.Plain => "PLAIN",
         SaslMechanism.ScramSha256 => "SCRAM-SHA-256",
         SaslMechanism.ScramSha512 => "SCRAM-SHA-512",
+        SaslMechanism.Gssapi => "GSSAPI",
         _ => throw new ArgumentOutOfRangeException(nameof(mechanism), mechanism, "Unsupported SASL mechanism")
     };
 }

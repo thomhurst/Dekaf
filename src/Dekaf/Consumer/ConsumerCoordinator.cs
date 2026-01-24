@@ -831,6 +831,119 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         return buffer.WrittenSpan.ToArray();
     }
 
+    /// <summary>
+    /// Leaves the consumer group gracefully.
+    /// </summary>
+    /// <param name="reason">Optional reason for leaving the group.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public async ValueTask LeaveGroupAsync(string? reason = null, CancellationToken cancellationToken = default)
+    {
+        if (_disposed)
+            return;
+
+        // Only leave if we're part of a group
+        if (string.IsNullOrEmpty(_options.GroupId) || string.IsNullOrEmpty(_memberId))
+            return;
+
+        // If coordinator is unknown, we can't send LeaveGroup
+        if (_coordinatorId < 0)
+            return;
+
+        try
+        {
+            var connection = await _connectionPool.GetConnectionAsync(_coordinatorId, cancellationToken)
+                .ConfigureAwait(false);
+
+            // Get negotiated API version
+            var leaveGroupVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.LeaveGroup,
+                LeaveGroupRequest.LowestSupportedVersion,
+                LeaveGroupRequest.HighestSupportedVersion);
+
+            LeaveGroupRequest request;
+
+            if (leaveGroupVersion >= 3)
+            {
+                // v3+: use members array
+                request = new LeaveGroupRequest
+                {
+                    GroupId = _options.GroupId,
+                    Members =
+                    [
+                        new LeaveGroupRequestMember
+                        {
+                            MemberId = _memberId,
+                            GroupInstanceId = _options.GroupInstanceId,
+                            Reason = reason
+                        }
+                    ]
+                };
+            }
+            else
+            {
+                // v0-v2: use single member ID
+                request = new LeaveGroupRequest
+                {
+                    GroupId = _options.GroupId,
+                    MemberId = _memberId
+                };
+            }
+
+            var response = await connection.SendAsync<LeaveGroupRequest, LeaveGroupResponse>(
+                request,
+                leaveGroupVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != ErrorCode.None)
+            {
+                _logger?.LogWarning("LeaveGroup failed with error: {ErrorCode}", response.ErrorCode);
+            }
+            else
+            {
+                _logger?.LogDebug("Successfully left group {GroupId}", _options.GroupId);
+            }
+
+            // Reset state after leaving
+            _memberId = null;
+            _generationId = -1;
+            _assignedPartitions = [];
+            _state = CoordinatorState.Unjoined;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to send LeaveGroup request");
+            // Still reset state even if the request failed
+            _memberId = null;
+            _generationId = -1;
+            _assignedPartitions = [];
+            _state = CoordinatorState.Unjoined;
+        }
+    }
+
+    /// <summary>
+    /// Stops the heartbeat background task.
+    /// </summary>
+    public async ValueTask StopHeartbeatAsync()
+    {
+        _heartbeatCts?.Cancel();
+
+        if (_heartbeatTask is not null)
+        {
+            try
+            {
+                await _heartbeatTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore cancellation exceptions
+            }
+        }
+
+        _heartbeatCts?.Dispose();
+        _heartbeatCts = null;
+        _heartbeatTask = null;
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed)

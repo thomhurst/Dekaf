@@ -5,8 +5,10 @@ using System.IO.Pipelines;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Microsoft.Extensions.Logging;
 
@@ -35,6 +37,10 @@ public sealed class KafkaConnection : IKafkaConnection
     private Task? _receiveTask;
     private CancellationTokenSource? _receiveCts;
     private volatile bool _disposed;
+
+    // Certificates loaded from files that we own and must dispose
+    private X509Certificate2Collection? _loadedCaCertificates;
+    private X509Certificate2? _loadedClientCertificate;
 
     public int BrokerId { get; private set; } = -1;
     public string Host => _host;
@@ -92,14 +98,11 @@ public sealed class KafkaConnection : IKafkaConnection
 
         Stream networkStream = new NetworkStream(_socket, ownsSocket: false);
 
-        if (_options.UseTls)
+        if (_options.UseTls || _options.TlsConfig is not null)
         {
             var sslStream = new SslStream(networkStream, leaveInnerStreamOpen: false);
-            await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
-            {
-                TargetHost = _host,
-                RemoteCertificateValidationCallback = _options.RemoteCertificateValidationCallback
-            }, cancellationToken).ConfigureAwait(false);
+            var sslOptions = BuildSslClientAuthenticationOptions();
+            await sslStream.AuthenticateAsClientAsync(sslOptions, cancellationToken).ConfigureAwait(false);
             networkStream = sslStream;
         }
 
@@ -378,6 +381,229 @@ public sealed class KafkaConnection : IKafkaConnection
         }
     }
 
+    private SslClientAuthenticationOptions BuildSslClientAuthenticationOptions()
+    {
+        var tlsConfig = _options.TlsConfig;
+        var options = new SslClientAuthenticationOptions
+        {
+            TargetHost = tlsConfig?.TargetHost ?? _host,
+            RemoteCertificateValidationCallback = _options.RemoteCertificateValidationCallback
+        };
+
+        // Configure enabled SSL protocols if specified
+        if (tlsConfig?.EnabledSslProtocols is not null)
+        {
+            options.EnabledSslProtocols = tlsConfig.EnabledSslProtocols.Value;
+        }
+
+        // Configure certificate revocation checking
+        if (tlsConfig is not null)
+        {
+            options.CertificateRevocationCheckMode = tlsConfig.CheckCertificateRevocation
+                ? X509RevocationMode.Online
+                : X509RevocationMode.NoCheck;
+        }
+
+        // Configure server certificate validation
+        if (tlsConfig is not null && !tlsConfig.ValidateServerCertificate)
+        {
+            // Disable server certificate validation (not recommended for production)
+            // This is intentional when user explicitly sets ValidateServerCertificate = false
+#pragma warning disable CA5359 // Do not disable certificate validation
+            options.RemoteCertificateValidationCallback = (_, _, _, _) => true;
+#pragma warning restore CA5359
+        }
+        else if (options.RemoteCertificateValidationCallback is null && HasCustomCaCertificate(tlsConfig))
+        {
+            // Custom CA certificate validation
+            var caCertificates = LoadCaCertificatesWithOwnership(tlsConfig!);
+            options.RemoteCertificateValidationCallback = (_, certificate, chain, sslPolicyErrors) =>
+                ValidateServerCertificate(certificate, chain, sslPolicyErrors, caCertificates);
+        }
+
+        // Configure client certificate for mTLS
+        if (tlsConfig is not null)
+        {
+            var clientCert = LoadClientCertificateWithOwnership(tlsConfig);
+            if (clientCert is not null)
+            {
+                options.ClientCertificates = [clientCert];
+            }
+        }
+
+        return options;
+    }
+
+    private static bool HasCustomCaCertificate(TlsConfig? tlsConfig)
+    {
+        if (tlsConfig is null)
+            return false;
+
+        return tlsConfig.CaCertificatePath is not null ||
+               tlsConfig.CaCertificateObject is not null ||
+               tlsConfig.CaCertificateCollection is not null;
+    }
+
+    /// <summary>
+    /// Loads CA certificates and tracks ownership for disposal.
+    /// Certificates loaded from files are owned by this instance and will be disposed.
+    /// Certificates provided directly via TlsConfig are NOT owned.
+    /// </summary>
+    private X509Certificate2Collection LoadCaCertificatesWithOwnership(TlsConfig tlsConfig)
+    {
+        if (tlsConfig.CaCertificateCollection is not null)
+        {
+            // Not owned - provided by caller
+            return tlsConfig.CaCertificateCollection;
+        }
+
+        if (tlsConfig.CaCertificateObject is not null)
+        {
+            // Not owned - provided by caller
+            return [tlsConfig.CaCertificateObject];
+        }
+
+        if (tlsConfig.CaCertificatePath is not null)
+        {
+            // Owned - loaded from file, must dispose
+            var collection = LoadCertificatesFromFile(tlsConfig.CaCertificatePath);
+            _loadedCaCertificates = collection;
+            return collection;
+        }
+
+        return [];
+    }
+
+    private static X509Certificate2Collection LoadCertificatesFromFile(string path)
+    {
+        var collection = new X509Certificate2Collection();
+        var extension = Path.GetExtension(path).ToLowerInvariant();
+
+        if (extension is ".pfx" or ".p12")
+        {
+            // Load PFX/PKCS12 file using modern API
+            collection.Add(X509CertificateLoader.LoadPkcs12FromFile(path, password: null));
+        }
+        else
+        {
+            // Assume PEM format - can contain multiple certificates
+            collection.ImportFromPemFile(path);
+        }
+
+        return collection;
+    }
+
+    /// <summary>
+    /// Loads client certificate and tracks ownership for disposal.
+    /// Certificates loaded from files are owned by this instance and will be disposed.
+    /// Certificates provided directly via TlsConfig are NOT owned.
+    /// </summary>
+    private X509Certificate2? LoadClientCertificateWithOwnership(TlsConfig tlsConfig)
+    {
+        // If an in-memory certificate is provided, use it directly (not owned)
+        if (tlsConfig.ClientCertificate is not null)
+        {
+            return tlsConfig.ClientCertificate;
+        }
+
+        // If certificate path is provided, load from file (owned - must dispose)
+        if (tlsConfig.ClientCertificatePath is not null)
+        {
+            var certPath = tlsConfig.ClientCertificatePath;
+            var extension = Path.GetExtension(certPath).ToLowerInvariant();
+
+            X509Certificate2 cert;
+            if (extension is ".pfx" or ".p12")
+            {
+                // Load PFX/PKCS12 file (contains both certificate and private key) using modern API
+                cert = X509CertificateLoader.LoadPkcs12FromFile(
+                    certPath,
+                    string.IsNullOrEmpty(tlsConfig.ClientKeyPassword) ? null : tlsConfig.ClientKeyPassword);
+            }
+            else
+            {
+                // PEM format - need separate key file
+                if (tlsConfig.ClientKeyPath is null)
+                {
+                    throw new InvalidOperationException(
+                        "Client key path is required when using PEM certificate format");
+                }
+
+                cert = string.IsNullOrEmpty(tlsConfig.ClientKeyPassword)
+                    ? X509Certificate2.CreateFromPemFile(certPath, tlsConfig.ClientKeyPath)
+                    : X509Certificate2.CreateFromEncryptedPemFile(certPath, tlsConfig.ClientKeyPassword, tlsConfig.ClientKeyPath);
+            }
+
+            _loadedClientCertificate = cert;
+            return cert;
+        }
+
+        return null;
+    }
+
+    private static bool ValidateServerCertificate(
+        X509Certificate? certificate,
+        X509Chain? chain,
+        SslPolicyErrors sslPolicyErrors,
+        X509Certificate2Collection trustedCaCertificates)
+    {
+        if (certificate is null)
+            return false;
+
+        // If there are no policy errors, the certificate is valid
+        if (sslPolicyErrors == SslPolicyErrors.None)
+            return true;
+
+        // If the only error is an untrusted root, validate against our custom CA
+        if (sslPolicyErrors == SslPolicyErrors.RemoteCertificateChainErrors && chain is not null)
+        {
+            // Track if we created a new certificate to dispose it later
+            X509Certificate2? ownedCert = null;
+            try
+            {
+                var cert2 = certificate as X509Certificate2 ?? (ownedCert = new X509Certificate2(certificate));
+
+                // Build a new chain with our custom trust store
+                using var customChain = new X509Chain();
+                customChain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                customChain.ChainPolicy.VerificationFlags = X509VerificationFlags.AllowUnknownCertificateAuthority;
+                customChain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+
+                foreach (var caCert in trustedCaCertificates)
+                {
+                    customChain.ChainPolicy.CustomTrustStore.Add(caCert);
+                }
+
+                if (customChain.Build(cert2))
+                {
+                    // Check chain status for errors other than UntrustedRoot
+                    foreach (var status in customChain.ChainStatus)
+                    {
+                        if (status.Status != X509ChainStatusFlags.UntrustedRoot &&
+                            status.Status != X509ChainStatusFlags.NoError)
+                        {
+                            return false;
+                        }
+                    }
+
+                    // Verify the chain ends with one of our trusted CAs
+                    var rootCert = customChain.ChainElements[^1].Certificate;
+                    foreach (var caCert in trustedCaCertificates)
+                    {
+                        if (rootCert.Thumbprint == caCert.Thumbprint)
+                            return true;
+                    }
+                }
+            }
+            finally
+            {
+                ownedCert?.Dispose();
+            }
+        }
+
+        return false;
+    }
+
     private async ValueTask PerformSaslAuthenticationAsync(CancellationToken cancellationToken)
     {
         if (_stream is null)
@@ -399,54 +625,65 @@ public sealed class KafkaConnection : IKafkaConnection
                 SaslMechanism.ScramSha512,
                 _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
                 _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
+            SaslMechanism.Gssapi => new GssapiAuthenticator(
+                _options.GssapiConfig ?? throw new InvalidOperationException("GSSAPI configuration not provided"),
+                _host),
             _ => throw new InvalidOperationException($"Unsupported SASL mechanism: {_options.SaslMechanism}")
         };
 
-        // Step 1: Send SaslHandshake to negotiate mechanism
-        var handshakeResponse = await SendSaslMessageAsync<SaslHandshakeRequest, SaslHandshakeResponse>(
-            new SaslHandshakeRequest { Mechanism = authenticator.MechanismName },
-            1, // Use v1 for SaslHandshake
-            cancellationToken).ConfigureAwait(false);
-
-        if (handshakeResponse.ErrorCode != ErrorCode.None)
+        try
         {
-            throw new AuthenticationException(
-                $"SASL handshake failed: {handshakeResponse.ErrorCode}. " +
-                $"Supported mechanisms: {string.Join(", ", handshakeResponse.Mechanisms)}");
-        }
-
-        _logger?.LogDebug("SASL handshake successful, starting authentication");
-
-        // Step 2: Perform authentication exchanges
-        var authBytes = authenticator.GetInitialResponse();
-
-        while (!authenticator.IsComplete)
-        {
-            var authResponse = await SendSaslMessageAsync<SaslAuthenticateRequest, SaslAuthenticateResponse>(
-                new SaslAuthenticateRequest { AuthBytes = authBytes },
-                2, // Use v2 for SaslAuthenticate (flexible version)
+            // Step 1: Send SaslHandshake to negotiate mechanism
+            var handshakeResponse = await SendSaslMessageAsync<SaslHandshakeRequest, SaslHandshakeResponse>(
+                new SaslHandshakeRequest { Mechanism = authenticator.MechanismName },
+                1, // Use v1 for SaslHandshake
                 cancellationToken).ConfigureAwait(false);
 
-            if (authResponse.ErrorCode != ErrorCode.None)
+            if (handshakeResponse.ErrorCode != ErrorCode.None)
             {
                 throw new AuthenticationException(
-                    $"SASL authentication failed: {authResponse.ErrorCode}" +
-                    (authResponse.ErrorMessage is not null ? $" - {authResponse.ErrorMessage}" : ""));
+                    $"SASL handshake failed: {handshakeResponse.ErrorCode}. " +
+                    $"Supported mechanisms: {string.Join(", ", handshakeResponse.Mechanisms)}");
             }
 
-            if (authenticator.IsComplete)
-                break;
+            _logger?.LogDebug("SASL handshake successful, starting authentication");
 
-            var challenge = authResponse.AuthBytes;
-            var response = authenticator.EvaluateChallenge(challenge);
+            // Step 2: Perform authentication exchanges
+            var authBytes = authenticator.GetInitialResponse();
 
-            if (response is null)
-                break;
+            while (!authenticator.IsComplete)
+            {
+                var authResponse = await SendSaslMessageAsync<SaslAuthenticateRequest, SaslAuthenticateResponse>(
+                    new SaslAuthenticateRequest { AuthBytes = authBytes },
+                    2, // Use v2 for SaslAuthenticate (flexible version)
+                    cancellationToken).ConfigureAwait(false);
 
-            authBytes = response;
+                if (authResponse.ErrorCode != ErrorCode.None)
+                {
+                    throw new AuthenticationException(
+                        $"SASL authentication failed: {authResponse.ErrorCode}" +
+                        (authResponse.ErrorMessage is not null ? $" - {authResponse.ErrorMessage}" : ""));
+                }
+
+                if (authenticator.IsComplete)
+                    break;
+
+                var challenge = authResponse.AuthBytes;
+                var response = authenticator.EvaluateChallenge(challenge);
+
+                if (response is null)
+                    break;
+
+                authBytes = response;
+            }
+
+            _logger?.LogInformation("SASL authentication successful with mechanism {Mechanism}", _options.SaslMechanism);
         }
-
-        _logger?.LogInformation("SASL authentication successful with mechanism {Mechanism}", _options.SaslMechanism);
+        finally
+        {
+            // Dispose the authenticator if it implements IDisposable (e.g., GssapiAuthenticator)
+            (authenticator as IDisposable)?.Dispose();
+        }
     }
 
     private async ValueTask<TResponse> SendSaslMessageAsync<TRequest, TResponse>(
@@ -595,6 +832,16 @@ public sealed class KafkaConnection : IKafkaConnection
 
         _writeLock.Dispose();
 
+        // Dispose certificates loaded from files
+        if (_loadedCaCertificates is not null)
+        {
+            foreach (var cert in _loadedCaCertificates)
+            {
+                cert.Dispose();
+            }
+        }
+        _loadedClientCertificate?.Dispose();
+
         FailAllPendingRequests(new ObjectDisposedException(nameof(KafkaConnection)));
     }
 
@@ -677,6 +924,12 @@ public sealed class ConnectionOptions
     public bool UseTls { get; init; }
 
     /// <summary>
+    /// TLS configuration for SSL/mTLS connections.
+    /// When set, <see cref="UseTls"/> is automatically treated as true.
+    /// </summary>
+    public TlsConfig? TlsConfig { get; init; }
+
+    /// <summary>
     /// Custom certificate validation callback.
     /// </summary>
     public RemoteCertificateValidationCallback? RemoteCertificateValidationCallback { get; init; }
@@ -695,6 +948,11 @@ public sealed class ConnectionOptions
     /// SASL password for PLAIN and SCRAM authentication.
     /// </summary>
     public string? SaslPassword { get; init; }
+
+    /// <summary>
+    /// GSSAPI (Kerberos) configuration. Required when SaslMechanism is Gssapi.
+    /// </summary>
+    public GssapiConfig? GssapiConfig { get; init; }
 
     /// <summary>
     /// Send buffer size in bytes.

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Dekaf.Compression;
@@ -105,6 +106,15 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly Dictionary<TopicPartition, long> _fetchPositions = []; // Fetch position (what to fetch next)
     private readonly Dictionary<TopicPartition, long> _committed = [];
 
+    // Stored offsets for manual offset storage (when EnableAutoOffsetStore = false)
+    // Uses ConcurrentDictionary for thread-safety as StoreOffset may be called from different threads
+    private readonly ConcurrentDictionary<TopicPartition, long> _storedOffsets = new();
+
+    // Partition EOF tracking
+    private readonly Dictionary<TopicPartition, long> _highWatermarks = [];  // High watermark per partition
+    private readonly HashSet<TopicPartition> _eofEmitted = [];               // Partitions where EOF has been emitted
+    private readonly ConcurrentQueue<(TopicPartition Partition, long Offset)> _pendingEofEvents = new(); // Pending EOF events to yield (thread-safe for prefetch thread)
+
     // Pending fetch responses for lazy record iteration
     private readonly Queue<PendingFetchData> _pendingFetches = new();
 
@@ -120,6 +130,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private Task? _autoCommitTask;
     private volatile short _fetchApiVersion = -1;
     private volatile bool _disposed;
+    private volatile bool _closed;
 
     public KafkaConsumer(
         ConsumerOptions options,
@@ -137,10 +148,12 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             new ConnectionOptions
             {
                 UseTls = options.UseTls,
+                TlsConfig = options.TlsConfig,
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
                 SaslPassword = options.SaslPassword,
+                GssapiConfig = options.GssapiConfig,
                 SendBufferSize = options.SocketSendBufferBytes,
                 ReceiveBufferSize = options.SocketReceiveBufferBytes
             },
@@ -176,6 +189,36 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     public IReadOnlySet<TopicPartition> Assignment => _assignment;
     public string? MemberId => _coordinator?.MemberId;
     public IReadOnlySet<TopicPartition> Paused => _paused;
+
+    /// <summary>
+    /// Gets the consumer group metadata for use with transactional producers.
+    /// Returns null if not part of a consumer group or if the group has not yet been joined.
+    /// </summary>
+    public ConsumerGroupMetadata? ConsumerGroupMetadata
+    {
+        get
+        {
+            // Return null if not part of a consumer group
+            if (_coordinator is null || string.IsNullOrEmpty(_options.GroupId))
+                return null;
+
+            // Return null if not yet joined (no member ID assigned)
+            if (string.IsNullOrEmpty(_coordinator.MemberId))
+                return null;
+
+            // Return null if generation ID is invalid (not yet in a stable group)
+            if (_coordinator.GenerationId < 0)
+                return null;
+
+            return new ConsumerGroupMetadata
+            {
+                GroupId = _options.GroupId,
+                GenerationId = _coordinator.GenerationId,
+                MemberId = _coordinator.MemberId,
+                GroupInstanceId = _options.GroupInstanceId
+            };
+        }
+    }
 
     public IKafkaConsumer<TKey, TValue> Subscribe(params string[] topics)
     {
@@ -215,6 +258,45 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     public IKafkaConsumer<TKey, TValue> Unassign()
     {
         _assignment.Clear();
+        return this;
+    }
+
+    public IKafkaConsumer<TKey, TValue> IncrementalAssign(IEnumerable<TopicPartitionOffset> partitions)
+    {
+        // Clear subscription since we're doing manual assignment
+        _subscription.Clear();
+
+        foreach (var tpo in partitions)
+        {
+            var tp = new TopicPartition(tpo.Topic, tpo.Partition);
+            _assignment.Add(tp);
+
+            // If an offset is specified (>= 0), set the position
+            if (tpo.Offset >= 0)
+            {
+                _positions[tp] = tpo.Offset;
+                _fetchPositions[tp] = tpo.Offset;
+            }
+            // Otherwise, positions will be initialized lazily based on auto.offset.reset
+        }
+
+        return this;
+    }
+
+    public IKafkaConsumer<TKey, TValue> IncrementalUnassign(IEnumerable<TopicPartition> partitions)
+    {
+        foreach (var partition in partitions)
+        {
+            _assignment.Remove(partition);
+            _paused.Remove(partition);
+            _positions.Remove(partition);
+            _fetchPositions.Remove(partition);
+            _committed.Remove(partition);
+        }
+
+        // Clear any pending fetch data for the removed partitions
+        ClearFetchBufferForPartitions(partitions);
+
         return this;
     }
 
@@ -331,6 +413,15 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 // This pending fetch is exhausted, remove it
                 _pendingFetches.Dequeue();
             }
+
+            // Yield any pending EOF events (thread-safe with ConcurrentQueue)
+            while (_pendingEofEvents.TryDequeue(out var eofEvent))
+            {
+                yield return ConsumeResult<TKey, TValue>.CreatePartitionEof(
+                    eofEvent.Partition.Topic,
+                    eofEvent.Partition.Partition,
+                    eofEvent.Offset);
+            }
         }
     }
 
@@ -445,6 +536,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             foreach (var partitionResponse in topicResponse.Partitions)
             {
+                var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
+
                 if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
                     _logger?.LogWarning(
@@ -453,21 +546,51 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     continue;
                 }
 
-                if (partitionResponse.Records is null || partitionResponse.Records.Count == 0)
-                    continue;
+                // Update high watermark from response (thread-safe update)
+                lock (_prefetchLock)
+                {
+                    _highWatermarks[tp] = partitionResponse.HighWatermark;
+                }
 
-                var pending = new PendingFetchData(
-                    topic,
-                    partitionResponse.PartitionIndex,
-                    partitionResponse.Records);
+                var hasRecords = partitionResponse.Records is not null && partitionResponse.Records.Count > 0;
 
-                // Track memory before adding to channel
-                TrackPrefetchedBytes(pending, release: false);
+                if (hasRecords)
+                {
+                    // We have new records - reset EOF state for this partition
+                    lock (_prefetchLock)
+                    {
+                        _eofEmitted.Remove(tp);
+                    }
 
-                // Update fetch positions for next prefetch
-                UpdateFetchPositionsFromPrefetch(pending);
+                    var pending = new PendingFetchData(
+                        topic,
+                        partitionResponse.PartitionIndex,
+                        partitionResponse.Records!);
 
-                await _prefetchChannel.Writer.WriteAsync(pending, cancellationToken).ConfigureAwait(false);
+                    // Track memory before adding to channel
+                    TrackPrefetchedBytes(pending, release: false);
+
+                    // Update fetch positions for next prefetch
+                    UpdateFetchPositionsFromPrefetch(pending);
+
+                    await _prefetchChannel.Writer.WriteAsync(pending, cancellationToken).ConfigureAwait(false);
+                }
+                else if (_options.EnablePartitionEof)
+                {
+                    // No records returned - check if we're at EOF
+                    lock (_prefetchLock)
+                    {
+                        var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
+
+                        // EOF condition: position >= high watermark and we haven't emitted EOF yet
+                        if (fetchPosition >= partitionResponse.HighWatermark && !_eofEmitted.Contains(tp))
+                        {
+                            // Queue EOF event and mark as emitted
+                            _pendingEofEvents.Enqueue((tp, fetchPosition));
+                            _eofEmitted.Add(tp);
+                        }
+                    }
+                }
             }
         }
     }
@@ -539,18 +662,59 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         if (_coordinator is null)
             return;
 
-        // Build offsets list without LINQ to avoid enumerator allocations
-        var offsets = new List<TopicPartitionOffset>(_positions.Count);
-        foreach (var kvp in _positions)
+        List<TopicPartitionOffset> offsets;
+
+        if (_options.EnableAutoOffsetStore)
         {
-            offsets.Add(new TopicPartitionOffset(kvp.Key.Topic, kvp.Key.Partition, kvp.Value));
+            // Auto-store mode: commit all consumed positions
+            offsets = new List<TopicPartitionOffset>(_positions.Count);
+            foreach (var kvp in _positions)
+            {
+                offsets.Add(new TopicPartitionOffset(kvp.Key.Topic, kvp.Key.Partition, kvp.Value));
+            }
         }
+        else
+        {
+            // Manual store mode: commit only explicitly stored offsets
+            // Take a snapshot to avoid race condition where offsets stored by another thread
+            // between enumeration and removal would be lost
+            var snapshot = _storedOffsets.ToArray();
+            offsets = new List<TopicPartitionOffset>(snapshot.Length);
+            foreach (var kvp in snapshot)
+            {
+                offsets.Add(new TopicPartitionOffset(kvp.Key.Topic, kvp.Key.Partition, kvp.Value));
+            }
+
+            if (offsets.Count == 0)
+                return;
+
+            await _coordinator.CommitOffsetsAsync(offsets, cancellationToken).ConfigureAwait(false);
+
+            // Update committed offsets tracking
+            foreach (var offset in offsets)
+            {
+                _committed[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
+            }
+
+            // Remove only the offsets we committed from the snapshot, preserving any
+            // new offsets that were stored by other threads during the commit
+            foreach (var kvp in snapshot)
+            {
+                _storedOffsets.TryRemove(kvp);
+            }
+
+            return;
+        }
+
+        if (offsets.Count == 0)
+            return;
 
         await _coordinator.CommitOffsetsAsync(offsets, cancellationToken).ConfigureAwait(false);
 
-        foreach (var kvp in _positions)
+        // Update committed offsets tracking
+        foreach (var offset in offsets)
         {
-            _committed[kvp.Key] = kvp.Value;
+            _committed[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
         }
     }
 
@@ -587,24 +751,34 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     public long? GetPosition(TopicPartition partition)
     {
-        return _positions.GetValueOrDefault(partition);
+        return _positions.TryGetValue(partition, out var position) ? position : null;
     }
 
     public IKafkaConsumer<TKey, TValue> Seek(TopicPartitionOffset offset)
     {
         var tp = new TopicPartition(offset.Topic, offset.Partition);
-        _positions[tp] = offset.Offset;
-        _fetchPositions[tp] = offset.Offset;
+        lock (_prefetchLock)
+        {
+            _positions[tp] = offset.Offset;
+            _fetchPositions[tp] = offset.Offset;
+            // Reset EOF state for this partition so it can fire again
+            _eofEmitted.Remove(tp);
+        }
         ClearFetchBuffer();
         return this;
     }
 
     public IKafkaConsumer<TKey, TValue> SeekToBeginning(params TopicPartition[] partitions)
     {
-        foreach (var partition in partitions)
+        lock (_prefetchLock)
         {
-            _positions[partition] = 0;
-            _fetchPositions[partition] = 0;
+            foreach (var partition in partitions)
+            {
+                _positions[partition] = 0;
+                _fetchPositions[partition] = 0;
+                // Reset EOF state for this partition so it can fire again
+                _eofEmitted.Remove(partition);
+            }
         }
         ClearFetchBuffer();
         return this;
@@ -612,12 +786,40 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     public IKafkaConsumer<TKey, TValue> SeekToEnd(params TopicPartition[] partitions)
     {
-        foreach (var partition in partitions)
+        lock (_prefetchLock)
         {
-            _positions[partition] = -1; // Special value meaning end
-            _fetchPositions[partition] = -1; // Special value meaning end
+            foreach (var partition in partitions)
+            {
+                _positions[partition] = -1; // Special value meaning end
+                _fetchPositions[partition] = -1; // Special value meaning end
+                // Reset EOF state for this partition so it can fire again
+                _eofEmitted.Remove(partition);
+            }
         }
         ClearFetchBuffer();
+        return this;
+    }
+
+    /// <summary>
+    /// Stores an offset for later commit. Does not commit immediately.
+    /// Use with EnableAutoOffsetStore = false for manual control.
+    /// </summary>
+    public IKafkaConsumer<TKey, TValue> StoreOffset(TopicPartitionOffset offset)
+    {
+        var tp = new TopicPartition(offset.Topic, offset.Partition);
+        _storedOffsets[tp] = offset.Offset;
+        return this;
+    }
+
+    /// <summary>
+    /// Stores the offset from a consume result for later commit.
+    /// The stored offset is the next offset to consume (result.Offset + 1).
+    /// </summary>
+    public IKafkaConsumer<TKey, TValue> StoreOffset(ConsumeResult<TKey, TValue> result)
+    {
+        var tp = new TopicPartition(result.Topic, result.Partition);
+        // Store the next offset to consume (current offset + 1)
+        _storedOffsets[tp] = result.Offset + 1;
         return this;
     }
 
@@ -625,6 +827,37 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     {
         // Clear pending fetches to discard stale records
         _pendingFetches.Clear();
+        // Clear pending EOF events as they are stale after buffer clear
+        _pendingEofEvents.Clear();
+    }
+
+    private void ClearFetchBufferForPartitions(IEnumerable<TopicPartition> partitionsToRemove)
+    {
+        // Create a set for efficient lookup
+        var removeSet = partitionsToRemove is HashSet<TopicPartition> set
+            ? set
+            : new HashSet<TopicPartition>(partitionsToRemove);
+
+        if (removeSet.Count == 0)
+            return;
+
+        // We need to rebuild the queue, keeping only data for partitions not being removed
+        var tempQueue = new Queue<PendingFetchData>();
+        while (_pendingFetches.Count > 0)
+        {
+            var pending = _pendingFetches.Dequeue();
+            var tp = new TopicPartition(pending.Topic, pending.PartitionIndex);
+            if (!removeSet.Contains(tp))
+            {
+                tempQueue.Enqueue(pending);
+            }
+        }
+
+        // Put back the items we want to keep
+        while (tempQueue.Count > 0)
+        {
+            _pendingFetches.Enqueue(tempQueue.Dequeue());
+        }
     }
 
     public IKafkaConsumer<TKey, TValue> Pause(params TopicPartition[] partitions)
@@ -674,11 +907,31 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 }
             }
 
+            // Check for partitions that were removed (for EOF state cleanup)
+            var removedPartitions = new List<TopicPartition>();
+            foreach (var partition in _assignment)
+            {
+                if (!_coordinator.Assignment.Contains(partition))
+                {
+                    removedPartitions.Add(partition);
+                }
+            }
+
             // Update assignment from coordinator
             _assignment.Clear();
             foreach (var partition in _coordinator.Assignment)
             {
                 _assignment.Add(partition);
+            }
+
+            // Clean up EOF state for removed partitions (under lock for thread-safety with prefetch)
+            lock (_prefetchLock)
+            {
+                foreach (var partition in removedPartitions)
+                {
+                    _eofEmitted.Remove(partition);
+                    _highWatermarks.Remove(partition);
+                }
             }
 
             // Initialize positions for new partitions
@@ -957,6 +1210,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             foreach (var partitionResponse in topicResponse.Partitions)
             {
+                var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
+
                 if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
                     _logger?.LogWarning(
@@ -965,14 +1220,44 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     continue;
                 }
 
-                if (partitionResponse.Records is null || partitionResponse.Records.Count == 0)
-                    continue;
+                // Update high watermark from response (thread-safe update)
+                lock (_prefetchLock)
+                {
+                    _highWatermarks[tp] = partitionResponse.HighWatermark;
+                }
 
-                // Queue the pending fetch data for lazy record iteration
-                _pendingFetches.Enqueue(new PendingFetchData(
-                    topic,
-                    partitionResponse.PartitionIndex,
-                    partitionResponse.Records));
+                var hasRecords = partitionResponse.Records is not null && partitionResponse.Records.Count > 0;
+
+                if (hasRecords)
+                {
+                    // We have new records - reset EOF state for this partition
+                    lock (_prefetchLock)
+                    {
+                        _eofEmitted.Remove(tp);
+                    }
+
+                    // Queue the pending fetch data for lazy record iteration
+                    _pendingFetches.Enqueue(new PendingFetchData(
+                        topic,
+                        partitionResponse.PartitionIndex,
+                        partitionResponse.Records!));
+                }
+                else if (_options.EnablePartitionEof)
+                {
+                    // No records returned - check if we're at EOF
+                    lock (_prefetchLock)
+                    {
+                        var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
+
+                        // EOF condition: position >= high watermark and we haven't emitted EOF yet
+                        if (fetchPosition >= partitionResponse.HighWatermark && !_eofEmitted.Contains(tp))
+                        {
+                            // Queue EOF event and mark as emitted
+                            _pendingEofEvents.Enqueue((tp, fetchPosition));
+                            _eofEmitted.Add(tp);
+                        }
+                    }
+                }
             }
         }
     }
@@ -1061,12 +1346,112 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
     }
 
+    /// <inheritdoc />
+    public async ValueTask CloseAsync(CancellationToken cancellationToken = default)
+    {
+        // Idempotent - return early if already closed/disposed
+        if (_closed || _disposed)
+            return;
+
+        _closed = true;
+
+        _logger?.LogDebug("Closing consumer gracefully");
+
+        // Step 1: Stop heartbeat background task
+        if (_coordinator is not null)
+        {
+            await _coordinator.StopHeartbeatAsync().ConfigureAwait(false);
+        }
+
+        // Step 2: Stop auto-commit task
+        _autoCommitCts?.Cancel();
+        if (_autoCommitTask is not null)
+        {
+            try
+            {
+                await _autoCommitTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore cancellation exceptions
+            }
+        }
+
+        // Step 3: Stop prefetch task
+        _prefetchCts?.Cancel();
+        if (_prefetchTask is not null)
+        {
+            try
+            {
+                await _prefetchTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore cancellation exceptions
+            }
+        }
+
+        // Step 4: Commit pending offsets (if auto-commit enabled and we have a coordinator)
+        if (_options.EnableAutoCommit && _coordinator is not null && _positions.Count > 0)
+        {
+            try
+            {
+                await CommitAsync(cancellationToken).ConfigureAwait(false);
+                _logger?.LogDebug("Committed pending offsets during close");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to commit offsets during close");
+            }
+        }
+
+        // Step 5: Send LeaveGroup request to coordinator
+        if (_coordinator is not null)
+        {
+            try
+            {
+                await _coordinator.LeaveGroupAsync("Consumer closing gracefully", cancellationToken).ConfigureAwait(false);
+                _logger?.LogDebug("Left consumer group during close");
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to leave group during close");
+            }
+        }
+
+        // Step 6: Wake up any blocked operations
+        _wakeupCts?.Cancel();
+
+        // Step 7: Clear pending fetch data
+        _pendingFetches.Clear();
+        while (_prefetchChannel.Reader.TryRead(out _))
+        {
+            // Discard prefetched data
+        }
+
+        _logger?.LogInformation("Consumer closed gracefully");
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
             return;
 
         _disposed = true;
+
+        // If not already closed, perform graceful close first (but with a short timeout)
+        if (!_closed)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await CloseAsync(cts.Token).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore errors during dispose
+            }
+        }
 
         _wakeupCts?.Cancel();
         _autoCommitCts?.Cancel();

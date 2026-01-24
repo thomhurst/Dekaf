@@ -1,5 +1,6 @@
 using Dekaf.Compression;
 using Dekaf.Protocol.Records;
+using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Dekaf.Serialization;
 
@@ -113,6 +114,12 @@ public sealed class ProducerOptions
     public bool UseTls { get; init; }
 
     /// <summary>
+    /// TLS configuration for SSL/mTLS connections.
+    /// When set, <see cref="UseTls"/> is automatically enabled.
+    /// </summary>
+    public TlsConfig? TlsConfig { get; init; }
+
+    /// <summary>
     /// SASL authentication mechanism.
     /// </summary>
     public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
@@ -126,6 +133,11 @@ public sealed class ProducerOptions
     /// SASL password for PLAIN and SCRAM authentication.
     /// </summary>
     public string? SaslPassword { get; init; }
+
+    /// <summary>
+    /// GSSAPI (Kerberos) configuration. Required when SaslMechanism is Gssapi.
+    /// </summary>
+    public GssapiConfig? GssapiConfig { get; init; }
 
     /// <summary>
     /// Socket send buffer size in bytes. Set to 0 to use system default.

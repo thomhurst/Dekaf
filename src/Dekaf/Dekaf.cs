@@ -1,5 +1,7 @@
+using System.Security.Cryptography.X509Certificates;
 using Dekaf.Consumer;
 using Dekaf.Producer;
+using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Dekaf.Serialization;
 
@@ -44,9 +46,11 @@ public sealed class ProducerBuilder<TKey, TValue>
     private Protocol.Records.CompressionType _compressionType = Protocol.Records.CompressionType.None;
     private PartitionerType _partitionerType = PartitionerType.Default;
     private bool _useTls;
+    private TlsConfig? _tlsConfig;
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
+    private GssapiConfig? _gssapiConfig;
     private ISerializer<TKey>? _keySerializer;
     private ISerializer<TValue>? _valueSerializer;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
@@ -138,9 +142,55 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Enables TLS for secure connections.
+    /// </summary>
     public ProducerBuilder<TKey, TValue> UseTls()
     {
         _useTls = true;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures TLS with custom settings.
+    /// </summary>
+    /// <param name="config">The TLS configuration.</param>
+    public ProducerBuilder<TKey, TValue> UseTls(TlsConfig config)
+    {
+        _useTls = true;
+        _tlsConfig = config;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures mutual TLS (mTLS) authentication using certificate files.
+    /// </summary>
+    /// <param name="caCertPath">Path to the CA certificate file (PEM format).</param>
+    /// <param name="clientCertPath">Path to the client certificate file (PEM format).</param>
+    /// <param name="clientKeyPath">Path to the client private key file (PEM format).</param>
+    /// <param name="keyPassword">Optional password for the private key.</param>
+    public ProducerBuilder<TKey, TValue> UseMutualTls(
+        string caCertPath,
+        string clientCertPath,
+        string clientKeyPath,
+        string? keyPassword = null)
+    {
+        _useTls = true;
+        _tlsConfig = TlsConfig.CreateMutualTls(caCertPath, clientCertPath, clientKeyPath, keyPassword);
+        return this;
+    }
+
+    /// <summary>
+    /// Configures mutual TLS (mTLS) authentication using in-memory certificates.
+    /// </summary>
+    /// <param name="clientCertificate">The client certificate with private key.</param>
+    /// <param name="caCertificate">Optional CA certificate for server validation.</param>
+    public ProducerBuilder<TKey, TValue> UseMutualTls(
+        X509Certificate2 clientCertificate,
+        X509Certificate2? caCertificate = null)
+    {
+        _useTls = true;
+        _tlsConfig = TlsConfig.CreateMutualTls(clientCertificate, caCertificate);
         return this;
     }
 
@@ -165,6 +215,18 @@ public sealed class ProducerBuilder<TKey, TValue>
         _saslMechanism = SaslMechanism.ScramSha512;
         _saslUsername = username;
         _saslPassword = password;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures GSSAPI (Kerberos) authentication.
+    /// </summary>
+    /// <param name="config">The GSSAPI configuration.</param>
+    /// <returns>This builder for chaining.</returns>
+    public ProducerBuilder<TKey, TValue> WithGssapi(GssapiConfig config)
+    {
+        _saslMechanism = SaslMechanism.Gssapi;
+        _gssapiConfig = config ?? throw new ArgumentNullException(nameof(config));
         return this;
     }
 
@@ -206,9 +268,11 @@ public sealed class ProducerBuilder<TKey, TValue>
             CompressionType = _compressionType,
             Partitioner = _partitionerType,
             UseTls = _useTls,
+            TlsConfig = _tlsConfig,
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
-            SaslPassword = _saslPassword
+            SaslPassword = _saslPassword,
+            GssapiConfig = _gssapiConfig
         };
 
         return new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory);
@@ -246,17 +310,21 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private string? _groupInstanceId;
     private bool _enableAutoCommit = true;
     private int _autoCommitIntervalMs = 5000;
+    private bool _enableAutoOffsetStore = true;
     private AutoOffsetReset _autoOffsetReset = AutoOffsetReset.Latest;
     private int _maxPollRecords = 500;
     private int _sessionTimeoutMs = 45000;
     private bool _useTls;
+    private TlsConfig? _tlsConfig;
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
+    private GssapiConfig? _gssapiConfig;
     private IDeserializer<TKey>? _keyDeserializer;
     private IDeserializer<TValue>? _valueDeserializer;
     private IRebalanceListener? _rebalanceListener;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
+    private bool _enablePartitionEof;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -308,6 +376,19 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Configures automatic offset storage. When enabled (default), offsets are automatically
+    /// stored when messages are consumed. When disabled, offsets must be explicitly stored
+    /// using StoreOffset before they can be committed.
+    /// </summary>
+    /// <param name="enabled">True to enable automatic offset storage, false for manual control.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> WithAutoOffsetStore(bool enabled)
+    {
+        _enableAutoOffsetStore = enabled;
+        return this;
+    }
+
     public ConsumerBuilder<TKey, TValue> WithAutoOffsetReset(AutoOffsetReset autoOffsetReset)
     {
         _autoOffsetReset = autoOffsetReset;
@@ -326,9 +407,55 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Enables TLS for secure connections.
+    /// </summary>
     public ConsumerBuilder<TKey, TValue> UseTls()
     {
         _useTls = true;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures TLS with custom settings.
+    /// </summary>
+    /// <param name="config">The TLS configuration.</param>
+    public ConsumerBuilder<TKey, TValue> UseTls(TlsConfig config)
+    {
+        _useTls = true;
+        _tlsConfig = config;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures mutual TLS (mTLS) authentication using certificate files.
+    /// </summary>
+    /// <param name="caCertPath">Path to the CA certificate file (PEM format).</param>
+    /// <param name="clientCertPath">Path to the client certificate file (PEM format).</param>
+    /// <param name="clientKeyPath">Path to the client private key file (PEM format).</param>
+    /// <param name="keyPassword">Optional password for the private key.</param>
+    public ConsumerBuilder<TKey, TValue> UseMutualTls(
+        string caCertPath,
+        string clientCertPath,
+        string clientKeyPath,
+        string? keyPassword = null)
+    {
+        _useTls = true;
+        _tlsConfig = TlsConfig.CreateMutualTls(caCertPath, clientCertPath, clientKeyPath, keyPassword);
+        return this;
+    }
+
+    /// <summary>
+    /// Configures mutual TLS (mTLS) authentication using in-memory certificates.
+    /// </summary>
+    /// <param name="clientCertificate">The client certificate with private key.</param>
+    /// <param name="caCertificate">Optional CA certificate for server validation.</param>
+    public ConsumerBuilder<TKey, TValue> UseMutualTls(
+        X509Certificate2 clientCertificate,
+        X509Certificate2? caCertificate = null)
+    {
+        _useTls = true;
+        _tlsConfig = TlsConfig.CreateMutualTls(clientCertificate, caCertificate);
         return this;
     }
 
@@ -356,6 +483,18 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Configures GSSAPI (Kerberos) authentication.
+    /// </summary>
+    /// <param name="config">The GSSAPI configuration.</param>
+    /// <returns>This builder for chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> WithGssapi(GssapiConfig config)
+    {
+        _saslMechanism = SaslMechanism.Gssapi;
+        _gssapiConfig = config ?? throw new ArgumentNullException(nameof(config));
+        return this;
+    }
+
     public ConsumerBuilder<TKey, TValue> WithKeyDeserializer(IDeserializer<TKey> deserializer)
     {
         _keyDeserializer = deserializer;
@@ -380,6 +519,18 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Enables partition end-of-file (EOF) events.
+    /// When enabled, the consumer will emit a special ConsumeResult with IsPartitionEof=true
+    /// when it reaches the end of a partition (caught up to the high watermark).
+    /// </summary>
+    /// <param name="enabled">Whether to enable partition EOF events. Default is true.</param>
+    public ConsumerBuilder<TKey, TValue> WithPartitionEof(bool enabled = true)
+    {
+        _enablePartitionEof = enabled;
+        return this;
+    }
+
     public IKafkaConsumer<TKey, TValue> Build()
     {
         if (_bootstrapServers.Count == 0)
@@ -396,14 +547,18 @@ public sealed class ConsumerBuilder<TKey, TValue>
             GroupInstanceId = _groupInstanceId,
             EnableAutoCommit = _enableAutoCommit,
             AutoCommitIntervalMs = _autoCommitIntervalMs,
+            EnableAutoOffsetStore = _enableAutoOffsetStore,
             AutoOffsetReset = _autoOffsetReset,
             MaxPollRecords = _maxPollRecords,
             SessionTimeoutMs = _sessionTimeoutMs,
             UseTls = _useTls,
+            TlsConfig = _tlsConfig,
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
-            RebalanceListener = _rebalanceListener
+            GssapiConfig = _gssapiConfig,
+            RebalanceListener = _rebalanceListener,
+            EnablePartitionEof = _enablePartitionEof
         };
 
         return new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory);

@@ -1,4 +1,5 @@
 using Dekaf.Protocol.Messages;
+using Dekaf.Security;
 using Dekaf.Security.Sasl;
 
 namespace Dekaf.Consumer;
@@ -37,6 +38,13 @@ public sealed class ConsumerOptions
     /// Auto-commit interval in milliseconds.
     /// </summary>
     public int AutoCommitIntervalMs { get; init; } = 5000;
+
+    /// <summary>
+    /// Enable automatic offset storage. When true, offsets are automatically stored
+    /// when messages are consumed. When false, offsets must be explicitly stored
+    /// using StoreOffset before they can be committed. Default is true.
+    /// </summary>
+    public bool EnableAutoOffsetStore { get; init; } = true;
 
     /// <summary>
     /// Auto offset reset behavior.
@@ -115,6 +123,12 @@ public sealed class ConsumerOptions
     public bool UseTls { get; init; }
 
     /// <summary>
+    /// TLS configuration for SSL/mTLS connections.
+    /// When set, <see cref="UseTls"/> is automatically enabled.
+    /// </summary>
+    public TlsConfig? TlsConfig { get; init; }
+
+    /// <summary>
     /// SASL authentication mechanism.
     /// </summary>
     public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
@@ -128,6 +142,11 @@ public sealed class ConsumerOptions
     /// SASL password for PLAIN and SCRAM authentication.
     /// </summary>
     public string? SaslPassword { get; init; }
+
+    /// <summary>
+    /// GSSAPI (Kerberos) configuration. Required when SaslMechanism is Gssapi.
+    /// </summary>
+    public Security.Sasl.GssapiConfig? GssapiConfig { get; init; }
 
     /// <summary>
     /// Rebalance listener.
@@ -157,6 +176,15 @@ public sealed class ConsumerOptions
     /// Limits memory usage when prefetching is enabled. Default is 65536 KB (64 MB).
     /// </summary>
     public int QueuedMaxMessagesKbytes { get; init; } = 65536;
+
+    /// <summary>
+    /// Enable partition end-of-file (EOF) events.
+    /// When enabled, the consumer will emit a special ConsumeResult with IsPartitionEof=true
+    /// when it reaches the end of a partition (caught up to the high watermark).
+    /// The EOF event fires once per "catch up" - it will fire again after new messages
+    /// arrive and are consumed. Default is false.
+    /// </summary>
+    public bool EnablePartitionEof { get; init; }
 }
 
 /// <summary>
