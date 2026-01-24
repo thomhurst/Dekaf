@@ -251,6 +251,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         if (!result.Success)
         {
+            // Return pooled array before throwing to avoid resource leak
+            if (pooledHeaderArray is not null)
+            {
+                ArrayPool<RecordHeader>.Shared.Return(pooledHeaderArray);
+            }
             throw new InvalidOperationException("Failed to append record");
         }
 
@@ -795,13 +800,33 @@ internal readonly struct HeaderListWrapper : IReadOnlyList<RecordHeader>
 
     public int Count => _count;
 
-    public IEnumerator<RecordHeader> GetEnumerator()
-    {
-        for (var i = 0; i < _count; i++)
-        {
-            yield return _array[i];
-        }
-    }
+    public Enumerator GetEnumerator() => new(_array, _count);
+
+    IEnumerator<RecordHeader> IEnumerable<RecordHeader>.GetEnumerator() => GetEnumerator();
 
     System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+    public struct Enumerator : IEnumerator<RecordHeader>
+    {
+        private readonly RecordHeader[] _array;
+        private readonly int _count;
+        private int _index;
+
+        public Enumerator(RecordHeader[] array, int count)
+        {
+            _array = array;
+            _count = count;
+            _index = -1;
+        }
+
+        public RecordHeader Current => _array[_index];
+
+        object System.Collections.IEnumerator.Current => Current;
+
+        public bool MoveNext() => ++_index < _count;
+
+        public void Reset() => _index = -1;
+
+        public void Dispose() { }
+    }
 }
