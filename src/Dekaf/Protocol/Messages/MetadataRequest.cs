@@ -91,6 +91,15 @@ public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
         {
             Topics = topicNames.Select(n => new MetadataRequestTopic { Name = n }).ToList()
         };
+
+    /// <summary>
+    /// Creates a request to fetch metadata for specific topics.
+    /// </summary>
+    public static MetadataRequest ForTopics(IEnumerable<string> topicNames) =>
+        new()
+        {
+            Topics = topicNames.Select(n => new MetadataRequestTopic { Name = n }).ToList()
+        };
 }
 
 /// <summary>

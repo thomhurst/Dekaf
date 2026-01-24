@@ -213,7 +213,7 @@ public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
 /// <summary>
 /// Result of consuming a message.
 /// This is a struct to avoid heap allocations in the hot path.
-/// Key and Value are deserialized lazily on first access to minimize allocations.
+/// Key and Value are deserialized eagerly during construction to avoid storing deserializer references.
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
@@ -230,18 +230,9 @@ public readonly struct ConsumeResult<TKey, TValue>
     [ThreadStatic]
     private static SerializationContext t_serializationContext;
 
-    // Raw data stored for lazy deserialization (zero-copy from network buffer)
-    private readonly ReadOnlyMemory<byte> _keyData;
-    private readonly ReadOnlyMemory<byte> _valueData;
-    private readonly bool _isKeyNull;
-    private readonly bool _isValueNull;
-
-    // Deserializers for lazy access
-    private readonly IDeserializer<TKey>? _keyDeserializer;
-    private readonly IDeserializer<TValue>? _valueDeserializer;
-
     /// <summary>
-    /// Creates a new ConsumeResult with lazy deserialization.
+    /// Creates a new ConsumeResult with eager deserialization.
+    /// Deserializes key and value immediately to avoid storing deserializer references in the struct.
     /// </summary>
     public ConsumeResult(
         string topic,
@@ -262,17 +253,54 @@ public readonly struct ConsumeResult<TKey, TValue>
         Topic = topic;
         Partition = partition;
         Offset = offset;
-        _keyData = keyData;
-        _isKeyNull = isKeyNull;
-        _valueData = valueData;
-        _isValueNull = isValueNull;
         Headers = headers;
         Timestamp = timestamp;
         TimestampType = timestampType;
         LeaderEpoch = leaderEpoch;
-        _keyDeserializer = keyDeserializer;
-        _valueDeserializer = valueDeserializer;
         IsPartitionEof = isPartitionEof;
+
+        // Eagerly deserialize key and value to avoid storing deserializer references
+        // This eliminates 16 bytes per ConsumeResult (two interface references on 64-bit)
+        // and prevents potential closure allocations
+        if (isPartitionEof || keyDeserializer is null)
+        {
+            // Partition EOF or test scenario without deserializer
+            Key = default;
+        }
+        else if (isKeyNull)
+        {
+            Key = default;
+        }
+        else
+        {
+            // Reuse thread-local context by updating fields (zero-allocation)
+            t_serializationContext.Topic = topic;
+            t_serializationContext.Component = SerializationComponent.Key;
+            t_serializationContext.Headers = null;
+            Key = keyDeserializer.Deserialize(new System.Buffers.ReadOnlySequence<byte>(keyData), t_serializationContext);
+        }
+
+        if (isPartitionEof || valueDeserializer is null)
+        {
+            // Partition EOF or test scenario without deserializer
+            Value = default!;
+        }
+        else
+        {
+            // Reuse thread-local context by updating fields (zero-allocation)
+            t_serializationContext.Topic = topic;
+            t_serializationContext.Component = SerializationComponent.Value;
+            t_serializationContext.Headers = null;
+
+            if (isValueNull)
+            {
+                Value = valueDeserializer.Deserialize(System.Buffers.ReadOnlySequence<byte>.Empty, t_serializationContext);
+            }
+            else
+            {
+                Value = valueDeserializer.Deserialize(new System.Buffers.ReadOnlySequence<byte>(valueData), t_serializationContext);
+            }
+        }
     }
 
     /// <summary>
@@ -320,45 +348,14 @@ public readonly struct ConsumeResult<TKey, TValue>
     public long Offset { get; }
 
     /// <summary>
-    /// The deserialized key. Deserialized lazily on first access.
-    /// Note: Accessing this property multiple times will deserialize each time.
-    /// Cache the result if you need to access it multiple times.
+    /// The deserialized key.
     /// </summary>
-    public TKey? Key
-    {
-        get
-        {
-            if (_isKeyNull)
-                return default;
-
-            // Reuse thread-local context by updating fields (zero-allocation)
-            t_serializationContext.Topic = Topic;
-            t_serializationContext.Component = SerializationComponent.Key;
-            t_serializationContext.Headers = null;
-            return _keyDeserializer!.Deserialize(new System.Buffers.ReadOnlySequence<byte>(_keyData), t_serializationContext);
-        }
-    }
+    public TKey? Key { get; }
 
     /// <summary>
-    /// The deserialized value. Deserialized lazily on first access.
-    /// Note: Accessing this property multiple times will deserialize each time.
-    /// Cache the result if you need to access it multiple times.
+    /// The deserialized value.
     /// </summary>
-    public TValue Value
-    {
-        get
-        {
-            // Reuse thread-local context by updating fields (zero-allocation)
-            t_serializationContext.Topic = Topic;
-            t_serializationContext.Component = SerializationComponent.Value;
-            t_serializationContext.Headers = null;
-
-            if (_isValueNull)
-                return _valueDeserializer!.Deserialize(System.Buffers.ReadOnlySequence<byte>.Empty, t_serializationContext);
-
-            return _valueDeserializer!.Deserialize(new System.Buffers.ReadOnlySequence<byte>(_valueData), t_serializationContext);
-        }
-    }
+    public TValue Value { get; }
 
     /// <summary>
     /// The message headers. Returns null if no headers.
