@@ -62,7 +62,7 @@ public readonly struct PooledMemory
     {
         if (_array is not null)
         {
-            ArrayPool<byte>.Shared.Return(_array);
+            ArrayPool<byte>.Shared.Return(_array, clearArray: true);
         }
     }
 }
@@ -254,24 +254,35 @@ public sealed class RecordAccumulator : IAsyncDisposable
 /// <summary>
 /// A batch of records for a single partition.
 /// Tracks pooled arrays that are returned when the batch completes.
+/// Uses ArrayPool-backed arrays instead of List to eliminate allocations.
 ///
 /// Thread-safety: Multiple threads can call TryAppend concurrently (via ConcurrentDictionary.AddOrUpdate),
-/// so we use a lock to protect List<T> mutations and field updates. The lock is per-partition, so there
+/// so we use a lock to protect array mutations and field updates. The lock is per-partition, so there
 /// is no cross-partition contention. Complete() uses Interlocked for lock-free idempotent completion.
 /// </summary>
 internal sealed class PartitionBatch
 {
-    // Initial capacity based on typical batch sizes - avoids list resizing allocations
+    // Initial capacity based on typical batch sizes - avoids array resizing
     private const int InitialRecordCapacity = 64;
 
     private readonly TopicPartition _topicPartition;
     private readonly ProducerOptions _options;
     private readonly Action<TaskCompletionSource<RecordMetadata>> _returnTcsToPool;
-    private readonly List<Record> _records = new(InitialRecordCapacity);
-    private readonly List<TaskCompletionSource<RecordMetadata>> _completionSources = new(InitialRecordCapacity);
-    private readonly List<byte[]> _pooledArrays = new(InitialRecordCapacity * 2); // 2 arrays per record (key + value)
-    private readonly List<RecordHeader[]> _pooledHeaderArrays = new(); // Pooled header arrays (for large header counts)
-    private readonly object _lock = new(); // Protects List<T> mutations and field updates
+
+    // Zero-allocation array management: use pooled arrays instead of List<T>
+    private Record[] _records;
+    private int _recordCount;
+
+    private TaskCompletionSource<RecordMetadata>[] _completionSources;
+    private int _completionSourceCount;
+
+    private byte[][] _pooledArrays;
+    private int _pooledArrayCount;
+
+    private RecordHeader[][] _pooledHeaderArrays;
+    private int _pooledHeaderArrayCount;
+
+    private readonly object _lock = new(); // Protects array mutations and field updates
 
     private long _baseTimestamp;
     private int _offsetDelta;
@@ -286,9 +297,22 @@ internal sealed class PartitionBatch
         _options = options;
         _returnTcsToPool = returnTcsToPool;
         _createdAt = DateTimeOffset.UtcNow;
+
+        // Rent arrays from pool - eliminates List allocations
+        _records = ArrayPool<Record>.Shared.Rent(InitialRecordCapacity);
+        _recordCount = 0;
+
+        _completionSources = ArrayPool<TaskCompletionSource<RecordMetadata>>.Shared.Rent(InitialRecordCapacity);
+        _completionSourceCount = 0;
+
+        _pooledArrays = ArrayPool<byte[]>.Shared.Rent(InitialRecordCapacity * 2);
+        _pooledArrayCount = 0;
+
+        _pooledHeaderArrays = ArrayPool<RecordHeader[]>.Shared.Rent(8); // Headers less common
+        _pooledHeaderArrayCount = 0;
     }
 
-    public int RecordCount => _records.Count;
+    public int RecordCount => _recordCount;
     public int EstimatedSize => _estimatedSize;
 
     public RecordAppendResult TryAppend(
@@ -304,30 +328,48 @@ internal sealed class PartitionBatch
         // This lock is per-partition, so there is no cross-partition contention.
         lock (_lock)
         {
-            if (_records.Count == 0)
+            if (_recordCount == 0)
             {
                 _baseTimestamp = timestamp;
             }
 
             // Estimate size
             var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
-            if (_estimatedSize + recordSize > _options.BatchSize && _records.Count > 0)
+            if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
             {
                 return new RecordAppendResult(false);
+            }
+
+            // Grow arrays if needed (rare - only happens if batch fills beyond initial capacity)
+            if (_recordCount >= _records.Length)
+            {
+                GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
+            }
+            if (_completionSourceCount >= _completionSources.Length)
+            {
+                GrowArray(ref _completionSources, ref _completionSourceCount, ArrayPool<TaskCompletionSource<RecordMetadata>>.Shared);
+            }
+            if (_pooledArrayCount + 2 >= _pooledArrays.Length) // +2 for key and value
+            {
+                GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
+            }
+            if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
+            {
+                GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
             }
 
             // Track pooled arrays for returning to pool later
             if (key.Array is not null)
             {
-                _pooledArrays.Add(key.Array);
+                _pooledArrays[_pooledArrayCount++] = key.Array;
             }
             if (value.Array is not null)
             {
-                _pooledArrays.Add(value.Array);
+                _pooledArrays[_pooledArrayCount++] = value.Array;
             }
             if (pooledHeaderArray is not null)
             {
-                _pooledHeaderArrays.Add(pooledHeaderArray);
+                _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
             }
 
             var timestampDelta = (int)(timestamp - _baseTimestamp);
@@ -342,11 +384,11 @@ internal sealed class PartitionBatch
                 Headers = headers
             };
 
-            _records.Add(record);
+            _records[_recordCount++] = record;
             _estimatedSize += recordSize;
 
             // Use the passed-in completion source - no allocation here
-            _completionSources.Add(completion);
+            _completionSources[_completionSourceCount++] = completion;
 
             _offsetDelta++;
 
@@ -355,14 +397,25 @@ internal sealed class PartitionBatch
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void GrowArray<T>(ref T[] array, ref int count, ArrayPool<T> pool)
+    {
+        var newSize = array.Length * 2;
+        var newArray = pool.Rent(newSize);
+        Array.Copy(array, newArray, count);
+        pool.Return(array, clearArray: true);
+        array = newArray;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool ShouldFlush(DateTimeOffset now, int lingerMs)
     {
-        // Lock-free read: _createdAt is readonly, _records.Count read is atomic for reference types.
-        // Stale reads are acceptable for linger time checks - worst case we flush slightly late.
-        if (_records.Count == 0)
-            return false;
+        lock (_lock)
+        {
+            if (_recordCount == 0)
+                return false;
 
-        return (now - _createdAt).TotalMilliseconds >= lingerMs;
+            return (now - _createdAt).TotalMilliseconds >= lingerMs;
+        }
     }
 
     public ReadyBatch? Complete()
@@ -370,35 +423,71 @@ internal sealed class PartitionBatch
         // Atomically mark as completed - only first caller proceeds
         if (Interlocked.Exchange(ref _isCompleted, 1) != 0)
         {
-            // Already completed by another thread - return cached batch
+            // Idempotency: If already completed, return the cached batch
+            // This prevents creating multiple ReadyBatch objects with duplicate pooled arrays.
             return _completedBatch;
         }
 
-        if (_records.Count == 0)
+        if (_recordCount == 0)
+        {
+            // Empty batch - return arrays to pool immediately
+            ReturnBatchArraysToPool();
             return null;
+        }
+
+        // Create a copy of records array with exact size for RecordBatch
+        // RecordBatch needs IReadOnlyList<Record> but we need to return our pooled array
+        var recordsCopy = new Record[_recordCount];
+        Array.Copy(_records, recordsCopy, _recordCount);
+
+        // Create copies of completion sources and pooled arrays with exact sizes
+        // ReadyBatch will own these and manage their lifecycle
+        var completionSourcesCopy = new TaskCompletionSource<RecordMetadata>[_completionSourceCount];
+        Array.Copy(_completionSources, completionSourcesCopy, _completionSourceCount);
+
+        var pooledArraysCopy = new byte[_pooledArrayCount][];
+        Array.Copy(_pooledArrays, pooledArraysCopy, _pooledArrayCount);
+
+        var pooledHeaderArraysCopy = new RecordHeader[_pooledHeaderArrayCount][];
+        Array.Copy(_pooledHeaderArrays, pooledHeaderArraysCopy, _pooledHeaderArrayCount);
+
+        // Return our working arrays to pool - we've copied the data we need
+        ReturnBatchArraysToPool();
 
         var batch = new RecordBatch
         {
             BaseOffset = 0,
             BaseTimestamp = _baseTimestamp,
-            MaxTimestamp = _baseTimestamp + (_records.Count > 0 ? _records[^1].TimestampDelta : 0),
-            LastOffsetDelta = _records.Count - 1,
-            // Pass the list directly - PartitionBatch is discarded after Complete()
-            // so no defensive copy needed
-            Records = _records
+            MaxTimestamp = _baseTimestamp + (_recordCount > 0 ? recordsCopy[_recordCount - 1].TimestampDelta : 0),
+            LastOffsetDelta = _recordCount - 1,
+            Records = recordsCopy
         };
 
-        // Pass lists directly - PartitionBatch is discarded after Complete()
-        // Also pass pooled arrays (both byte[] and RecordHeader[]) so they can be returned when the batch is done
+        // Pass the copied arrays - ReadyBatch now owns them
         _completedBatch = new ReadyBatch(
             _topicPartition,
             batch,
-            _completionSources,
-            _pooledArrays,
-            _pooledHeaderArrays,
+            completionSourcesCopy,
+            pooledArraysCopy,
+            pooledHeaderArraysCopy,
             _returnTcsToPool);
 
         return _completedBatch;
+    }
+
+    private void ReturnBatchArraysToPool()
+    {
+        // Return the working arrays to pool
+        ArrayPool<Record>.Shared.Return(_records, clearArray: true);
+        ArrayPool<TaskCompletionSource<RecordMetadata>>.Shared.Return(_completionSources, clearArray: true);
+        ArrayPool<byte[]>.Shared.Return(_pooledArrays, clearArray: true);
+        ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: true);
+
+        // Null out references to prevent accidental reuse
+        _records = null!;
+        _completionSources = null!;
+        _pooledArrays = null!;
+        _pooledHeaderArrays = null!;
     }
 
     private static int EstimateRecordSize(int keyLength, int valueLength, IReadOnlyList<RecordHeader>? headers)
@@ -507,13 +596,13 @@ public sealed class ReadyBatch
         // Return pooled byte arrays (key/value data)
         foreach (var array in _pooledArrays)
         {
-            ArrayPool<byte>.Shared.Return(array);
+            ArrayPool<byte>.Shared.Return(array, clearArray: true);
         }
 
         // Return pooled header arrays (large header counts)
         foreach (var array in _pooledHeaderArrays)
         {
-            ArrayPool<RecordHeader>.Shared.Return(array);
+            ArrayPool<RecordHeader>.Shared.Return(array, clearArray: true);
         }
     }
 }

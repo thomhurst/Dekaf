@@ -1,5 +1,6 @@
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
+using Dekaf.Producer;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 
@@ -157,5 +158,45 @@ public class MemoryBenchmarks
             sum += reader.ReadVarInt();
         }
         return sum;
+    }
+
+    [Benchmark(Description = "PartitionBatch: Create and append 50 records")]
+    public async Task PartitionBatchAppendRecords()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "benchmark",
+            BatchSize = 16384,
+            BufferMemory = 1000000,
+            LingerMs = 100
+        };
+
+        var accumulator = new RecordAccumulator(options, _ => { });
+        var topicPartition = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            for (var i = 0; i < 50; i++)
+            {
+                var completion = new TaskCompletionSource<RecordMetadata>();
+                var pooledKey = new PooledMemory(null, 0, isNull: true);
+                var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+                await accumulator.AppendAsync(
+                    topicPartition,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey,
+                    pooledValue,
+                    null,
+                    null,
+                    completion,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            await accumulator.DisposeAsync().ConfigureAwait(false);
+        }
     }
 }
