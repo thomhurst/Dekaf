@@ -69,47 +69,42 @@ public readonly struct PooledMemory
 
 /// <summary>
 /// Accumulates records into batches for efficient sending.
-/// Enforces memory limits to provide backpressure when the producer is overwhelmed.
-/// Uses async signaling for efficient waiting (no polling).
+/// Provides backpressure through bounded channel capacity (similar to librdkafka's queue.buffering.max.messages).
+/// Simple, reliable, and uses modern C# primitives.
 /// </summary>
 public sealed class RecordAccumulator : IAsyncDisposable
 {
     private readonly ProducerOptions _options;
     private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
     private readonly Channel<ReadyBatch> _readyBatches;
-    private readonly ulong _maxMemory;
-    private ulong _usedMemory;
     private volatile bool _disposed;
     private volatile bool _closed;
-
-    // Async signaling for memory backpressure - waiters await this TCS
-    // When memory is released, we complete it and swap in a fresh one
-    private TaskCompletionSource _memoryReleasedSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public RecordAccumulator(ProducerOptions options)
     {
         _options = options;
-        _maxMemory = options.BufferMemory;
 
-        _readyBatches = Channel.CreateBounded<ReadyBatch>(new BoundedChannelOptions(1000)
+        // Backpressure via channel capacity instead of manual memory tracking
+        // MaxQueuedBatches controls how many batches can be in-flight
+        // When channel is full, WriteAsync blocks (backpressure)
+        var maxQueuedBatches = (int)(options.BufferMemory / (ulong)options.BatchSize);
+        if (maxQueuedBatches < 100) maxQueuedBatches = 100; // Minimum queue depth
+        if (maxQueuedBatches > 10000) maxQueuedBatches = 10000; // Maximum queue depth
+
+        _readyBatches = Channel.CreateBounded<ReadyBatch>(new BoundedChannelOptions(maxQueuedBatches)
         {
             SingleReader = true,
             SingleWriter = false,
-            FullMode = BoundedChannelFullMode.Wait
+            FullMode = BoundedChannelFullMode.Wait // Built-in backpressure
         });
     }
-
-    /// <summary>
-    /// Current memory usage in bytes.
-    /// </summary>
-    public ulong UsedMemory => Interlocked.Read(ref _usedMemory);
 
     /// <summary>
     /// Appends a record to the appropriate batch.
     /// Key and value data are pooled - the batch will return them to the pool when complete.
     /// Header array may also be pooled (if large) and will be returned to pool when batch completes.
     /// The completion source will be completed when the batch is sent.
-    /// Blocks if the buffer memory limit is exceeded (backpressure).
+    /// Backpressure is applied through channel capacity when batches are written.
     /// </summary>
     public async ValueTask<RecordAppendResult> AppendAsync(
         TopicPartition topicPartition,
@@ -124,15 +119,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         if (_disposed)
             throw new ObjectDisposedException(nameof(RecordAccumulator));
 
-        // Calculate memory required for this record
-        var recordMemory = EstimateRecordMemory(key.Length, value.Length, headers);
+        var batch = _batches.GetOrAdd(topicPartition, tp => new PartitionBatch(tp, _options));
 
-        // Wait for memory to be available (backpressure)
-        await WaitForMemoryAsync(recordMemory, cancellationToken).ConfigureAwait(false);
-
-        var batch = _batches.GetOrAdd(topicPartition, tp => new PartitionBatch(tp, _options, this));
-
-        var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion, recordMemory);
+        var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
 
         if (!result.Success)
         {
@@ -140,128 +129,19 @@ public sealed class RecordAccumulator : IAsyncDisposable
             var readyBatch = batch.Complete();
             if (readyBatch is not null)
             {
+                // Backpressure happens here: WriteAsync blocks when channel is full
                 await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
             }
 
             // Create new batch and retry
-            batch = new PartitionBatch(topicPartition, _options, this);
+            batch = new PartitionBatch(topicPartition, _options);
             _batches[topicPartition] = batch;
-            result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion, recordMemory);
+            result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
         }
 
         return result;
     }
 
-    /// <summary>
-    /// Wait until there's enough memory available using async signaling.
-    /// Uses efficient wait/signal pattern - no polling or delays.
-    /// Waiters are woken immediately when memory is released.
-    /// Includes timeout protection to prevent infinite blocking if sender crashes.
-    /// </summary>
-    private async ValueTask WaitForMemoryAsync(uint requiredBytes, CancellationToken cancellationToken)
-    {
-        // Fast path: enough memory available (most common case)
-        if (Interlocked.Read(ref _usedMemory) + requiredBytes <= _maxMemory)
-        {
-            return;
-        }
-
-        // Slow path: wait for memory to be released with timeout protection
-        var startTime = DateTimeOffset.UtcNow;
-        var timeout = TimeSpan.FromSeconds(60); // 60 second timeout to prevent infinite blocking
-
-        while (true)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            // Check for timeout to prevent infinite blocking
-            var elapsed = DateTimeOffset.UtcNow - startTime;
-            if (elapsed > timeout)
-            {
-                throw new TimeoutException(
-                    $"Timed out after {elapsed.TotalSeconds:F1}s waiting for {requiredBytes} bytes of buffer memory. " +
-                    $"Used: {Interlocked.Read(ref _usedMemory):N0}/{_maxMemory:N0} bytes. " +
-                    $"Consider increasing BufferMemory or reducing message throughput.");
-            }
-
-            // Capture the current signal before checking memory
-            // This ensures we don't miss a signal between check and wait
-            var signal = Volatile.Read(ref _memoryReleasedSignal);
-
-            // Check if memory is now available
-            if (Interlocked.Read(ref _usedMemory) + requiredBytes <= _maxMemory)
-            {
-                return;
-            }
-
-            // Wait for signal that memory was released
-            // ReleaseMemory() completes this TCS when batches finish
-            await signal.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    /// <summary>
-    /// Allocates memory from the buffer pool. Called by PartitionBatch.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void AllocateMemory(uint bytes)
-    {
-        Interlocked.Add(ref _usedMemory, bytes);
-    }
-
-    /// <summary>
-    /// Releases memory back to the buffer pool. Called when batches complete.
-    /// Signals any waiting producers that memory is now available.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void ReleaseMemory(uint bytes)
-    {
-        // Atomic subtraction using CompareExchange loop (standard pattern for ulong)
-        ulong current, newValue;
-        do
-        {
-            current = Interlocked.Read(ref _usedMemory);
-
-            // CRITICAL: Prevent underflow in both debug AND release builds.
-            // Silent underflow causes unsigned wrap-around to ~2^64, making all producers
-            // wait forever because available memory appears to be zero.
-            // This indicates a double-release bug or incorrect memory tracking.
-            if (bytes > current)
-            {
-                throw new InvalidOperationException(
-                    $"Memory accounting bug: attempting to release {bytes} bytes " +
-                    $"but only {current} bytes are currently allocated. " +
-                    $"This indicates double-cleanup of a ReadyBatch or incorrect memory tracking. " +
-                    $"Please report this issue with reproduction steps.");
-            }
-
-            newValue = current - bytes;
-        } while (Interlocked.CompareExchange(ref _usedMemory, newValue, current) != current);
-
-        // Signal all waiters by completing the current TCS and swapping in a fresh one
-        // This is lock-free and wakes all waiters efficiently
-        var oldSignal = Interlocked.Exchange(
-            ref _memoryReleasedSignal,
-            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
-        oldSignal.TrySetResult();
-    }
-
-    private static uint EstimateRecordMemory(int keyLength, int valueLength, IReadOnlyList<RecordHeader>? headers)
-    {
-        uint size = 64; // Base overhead for record struct, list entries, etc.
-        size += (uint)keyLength;
-        size += (uint)valueLength;
-
-        if (headers is not null)
-        {
-            foreach (var header in headers)
-            {
-                size += (uint)(header.Key.Length + (header.IsValueNull ? 0 : header.Value.Length) + 32);
-            }
-        }
-
-        return size;
-    }
 
     /// <summary>
     /// Gets batches that are ready to send.
@@ -369,7 +249,6 @@ internal sealed class PartitionBatch
 
     private readonly TopicPartition _topicPartition;
     private readonly ProducerOptions _options;
-    private readonly RecordAccumulator? _accumulator;
     private readonly List<Record> _records = new(InitialRecordCapacity);
     private readonly List<TaskCompletionSource<RecordMetadata>> _completionSources = new(InitialRecordCapacity);
     private readonly List<byte[]> _pooledArrays = new(InitialRecordCapacity * 2); // 2 arrays per record (key + value)
@@ -379,15 +258,13 @@ internal sealed class PartitionBatch
     private long _baseTimestamp;
     private int _offsetDelta;
     private int _estimatedSize;
-    private uint _trackedMemory; // Memory tracked for backpressure
     private DateTimeOffset _createdAt;
     private ReadyBatch? _completedBatch; // Cached result to ensure Complete() is idempotent
 
-    public PartitionBatch(TopicPartition topicPartition, ProducerOptions options, RecordAccumulator? accumulator = null)
+    public PartitionBatch(TopicPartition topicPartition, ProducerOptions options)
     {
         _topicPartition = topicPartition;
         _options = options;
-        _accumulator = accumulator;
         _createdAt = DateTimeOffset.UtcNow;
     }
 
@@ -400,8 +277,7 @@ internal sealed class PartitionBatch
         PooledMemory value,
         IReadOnlyList<RecordHeader>? headers,
         RecordHeader[]? pooledHeaderArray,
-        TaskCompletionSource<RecordMetadata> completion,
-        uint recordMemory = 0)
+        TaskCompletionSource<RecordMetadata> completion)
     {
         lock (_lock)
         {
@@ -446,13 +322,6 @@ internal sealed class PartitionBatch
             _records.Add(record);
             _estimatedSize += recordSize;
 
-            // Track memory for backpressure
-            if (recordMemory > 0)
-            {
-                _trackedMemory += recordMemory;
-                _accumulator?.AllocateMemory(recordMemory);
-            }
-
             // Use the passed-in completion source - no allocation here
             _completionSources.Add(completion);
 
@@ -479,8 +348,7 @@ internal sealed class PartitionBatch
         lock (_lock)
         {
             // Idempotency: If already completed, return the cached batch
-            // This prevents creating multiple ReadyBatch objects with duplicate resources
-            // which would cause double-cleanup and memory accounting bugs.
+            // This prevents creating multiple ReadyBatch objects with duplicate pooled arrays.
             if (_completedBatch is not null)
                 return _completedBatch;
 
@@ -498,16 +366,14 @@ internal sealed class PartitionBatch
                 Records = _records
             };
 
-            // Pass list directly - PartitionBatch is discarded after Complete()
+            // Pass lists directly - PartitionBatch is discarded after Complete()
             // Also pass pooled arrays (both byte[] and RecordHeader[]) so they can be returned when the batch is done
             _completedBatch = new ReadyBatch(
                 _topicPartition,
                 batch,
                 _completionSources,
                 _pooledArrays,
-                _pooledHeaderArrays,
-                _trackedMemory,
-                _accumulator);
+                _pooledHeaderArrays);
 
             return _completedBatch;
         }
@@ -539,7 +405,6 @@ public readonly record struct RecordAppendResult(bool Success);
 /// <summary>
 /// A batch ready to be sent.
 /// Returns pooled arrays to ArrayPool when complete.
-/// Releases tracked memory for backpressure.
 /// </summary>
 public sealed class ReadyBatch
 {
@@ -548,8 +413,6 @@ public sealed class ReadyBatch
     public IReadOnlyList<TaskCompletionSource<RecordMetadata>> CompletionSources { get; }
     private readonly IReadOnlyList<byte[]> _pooledArrays;
     private readonly IReadOnlyList<RecordHeader[]> _pooledHeaderArrays;
-    private readonly uint _trackedMemory;
-    private readonly RecordAccumulator? _accumulator;
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
 
     public ReadyBatch(
@@ -557,17 +420,13 @@ public sealed class ReadyBatch
         RecordBatch recordBatch,
         IReadOnlyList<TaskCompletionSource<RecordMetadata>> completionSources,
         IReadOnlyList<byte[]> pooledArrays,
-        IReadOnlyList<RecordHeader[]> pooledHeaderArrays,
-        uint trackedMemory = 0,
-        RecordAccumulator? accumulator = null)
+        IReadOnlyList<RecordHeader[]> pooledHeaderArrays)
     {
         TopicPartition = topicPartition;
         RecordBatch = recordBatch;
         CompletionSources = completionSources;
         _pooledArrays = pooledArrays;
         _pooledHeaderArrays = pooledHeaderArrays;
-        _trackedMemory = trackedMemory;
-        _accumulator = accumulator;
     }
 
     public void Complete(long baseOffset, DateTimeOffset timestamp)
@@ -609,8 +468,7 @@ public sealed class ReadyBatch
     private void Cleanup()
     {
         // Guard against double-cleanup: If cleanup has already been performed, return immediately.
-        // This prevents double-return of pooled arrays and double-release of memory,
-        // which would cause ArrayPool corruption and memory accounting underflow.
+        // This prevents double-return of pooled arrays which would corrupt ArrayPool.
         if (Interlocked.Exchange(ref _cleanedUp, 1) != 0)
             return;
 
@@ -624,12 +482,6 @@ public sealed class ReadyBatch
         foreach (var array in _pooledHeaderArrays)
         {
             ArrayPool<RecordHeader>.Shared.Return(array);
-        }
-
-        // Release tracked memory for backpressure
-        if (_trackedMemory > 0)
-        {
-            _accumulator?.ReleaseMemory(_trackedMemory);
         }
     }
 }

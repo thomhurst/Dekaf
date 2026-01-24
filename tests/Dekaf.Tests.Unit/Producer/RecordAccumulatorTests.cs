@@ -5,8 +5,8 @@ using Dekaf.Protocol.Records;
 namespace Dekaf.Tests.Unit.Producer;
 
 /// <summary>
-/// Tests for RecordAccumulator focusing on memory accounting and cleanup correctness.
-/// These tests verify that the double-cleanup bug (GitHub issue) is fixed and doesn't regress.
+/// Tests for RecordAccumulator focusing on cleanup correctness.
+/// These tests verify that the double-cleanup bug is fixed and doesn't regress.
 /// </summary>
 public class RecordAccumulatorTests
 {
@@ -156,50 +156,6 @@ public class RecordAccumulatorTests
     }
 
     [Test]
-    public async Task ReleaseMemory_ReleasingMoreThanAllocated_ThrowsException()
-    {
-        // This test verifies that ReleaseMemory throws an exception instead of silently
-        // causing underflow when trying to release more memory than allocated.
-
-        var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options);
-
-        try
-        {
-            // Use reflection to call AllocateMemory and ReleaseMemory directly
-            var allocateMethod = typeof(RecordAccumulator).GetMethod("AllocateMemory",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var releaseMethod = typeof(RecordAccumulator).GetMethod("ReleaseMemory",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-            // Allocate 100 bytes
-            allocateMethod!.Invoke(accumulator, new object[] { 100u });
-
-            // Try to release 200 bytes - should throw InvalidOperationException
-            var exception = await Assert.That(() =>
-            {
-                try
-                {
-                    releaseMethod!.Invoke(accumulator, new object[] { 200u });
-                    return Task.CompletedTask;
-                }
-                catch (System.Reflection.TargetInvocationException tie)
-                {
-                    // Unwrap reflection exception
-                    throw tie.InnerException ?? tie;
-                }
-            }).ThrowsException();
-
-            await Assert.That(exception).IsTypeOf<InvalidOperationException>();
-            await Assert.That(exception!.Message).Contains("Memory accounting bug");
-        }
-        finally
-        {
-            await accumulator.DisposeAsync();
-        }
-    }
-
-    [Test]
     public async Task ReadyBatch_CompleteThenFail_OnlyCleanupOnce()
     {
         // This test verifies that calling Complete() followed by Fail() only triggers cleanup once.
@@ -253,43 +209,6 @@ public class RecordAccumulatorTests
             // Cleanup flag should still be 1
             var afterFail = (int)cleanedUpField.GetValue(readyBatch)!;
             await Assert.That(afterFail).IsEqualTo(1);
-        }
-        finally
-        {
-            await accumulator.DisposeAsync();
-        }
-    }
-
-    [Test]
-    public async Task RecordAccumulator_AllocateAndRelease_CorrectAccounting()
-    {
-        // Verify basic memory accounting works correctly
-
-        var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options);
-
-        try
-        {
-            var usedMemoryField = typeof(RecordAccumulator).GetField("_usedMemory",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var allocateMethod = typeof(RecordAccumulator).GetMethod("AllocateMemory",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var releaseMethod = typeof(RecordAccumulator).GetMethod("ReleaseMemory",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-            // Initial memory should be 0
-            var initial = (ulong)usedMemoryField!.GetValue(accumulator)!;
-            await Assert.That(initial).IsEqualTo(0UL);
-
-            // Allocate 500 bytes
-            allocateMethod!.Invoke(accumulator, new object[] { 500u });
-            var afterAlloc = (ulong)usedMemoryField.GetValue(accumulator)!;
-            await Assert.That(afterAlloc).IsEqualTo(500UL);
-
-            // Release 500 bytes
-            releaseMethod!.Invoke(accumulator, new object[] { 500u });
-            var afterRelease = (ulong)usedMemoryField.GetValue(accumulator)!;
-            await Assert.That(afterRelease).IsEqualTo(0UL);
         }
         finally
         {

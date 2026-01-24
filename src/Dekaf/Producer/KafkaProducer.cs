@@ -153,7 +153,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             MessagesFailed = messagesFailed,
             BytesProduced = bytesProduced,
             QueuedMessages = (int)(messagesProduced - messagesDelivered - messagesFailed),
-            AccumulatorMemoryUsed = _accumulator.UsedMemory,
+            AccumulatorMemoryUsed = 0, // No longer tracked with channel-based backpressure
             AccumulatorMemoryLimit = _options.BufferMemory,
             RequestsSent = requestsSent,
             ResponsesReceived = responsesReceived,
