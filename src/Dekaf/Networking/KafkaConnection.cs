@@ -204,7 +204,10 @@ public sealed class KafkaConnection : IKafkaConnection
         }
         finally
         {
-            _pendingRequests.TryRemove(correlationId, out _);
+            if (_pendingRequests.TryRemove(correlationId, out var removed))
+            {
+                removed.Dispose();
+            }
         }
     }
 
@@ -398,6 +401,7 @@ public sealed class KafkaConnection : IKafkaConnection
             if (_pendingRequests.TryRemove(kvp.Key, out var pending))
             {
                 pending.Fail(ex);
+                pending.Dispose();
             }
         }
     }
@@ -898,54 +902,103 @@ public sealed class KafkaConnection : IKafkaConnection
         FailAllPendingRequests(new ObjectDisposedException(nameof(KafkaConnection)));
     }
 
-    private sealed class PendingRequest
+    private sealed class PendingRequest : IDisposable
     {
         private readonly TaskCompletionSource<PooledResponseBuffer> _tcs;
         private readonly short _responseHeaderVersion;
+        private PooledResponseBuffer? _buffer;
+        private bool _completed;
 
         public PendingRequest(short responseHeaderVersion, CancellationToken cancellationToken)
         {
             _responseHeaderVersion = responseHeaderVersion;
             _tcs = new TaskCompletionSource<PooledResponseBuffer>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            cancellationToken.Register(() => _tcs.TrySetCanceled(cancellationToken));
+            cancellationToken.Register(() =>
+            {
+                if (_tcs.TrySetCanceled(cancellationToken))
+                {
+                    // Request was cancelled before completion - dispose the buffer if we received one
+                    Dispose();
+                }
+            });
         }
 
         public Task<PooledResponseBuffer> Task => _tcs.Task;
 
         public void Complete(PooledResponseBuffer pooledBuffer)
         {
-            // Skip the response header (correlation ID already read, skip tagged fields if flexible)
-            var offset = 4; // Correlation ID already parsed
-            if (_responseHeaderVersion >= 1)
+            lock (this)
             {
-                // Skip tagged fields - read varint count and skip
-                var span = pooledBuffer.Data.Span[offset..];
-                var (tagCount, bytesRead) = ReadUnsignedVarInt(span);
-                offset += bytesRead;
-
-                for (var i = 0; i < tagCount; i++)
+                if (_completed)
                 {
-                    span = pooledBuffer.Data.Span[offset..];
-                    var (_, tagBytesRead) = ReadUnsignedVarInt(span);
-                    offset += tagBytesRead;
+                    // Already completed/failed - dispose the buffer immediately
+                    pooledBuffer.Dispose();
+                    return;
+                }
 
-                    span = pooledBuffer.Data.Span[offset..];
-                    var (size, sizeBytesRead) = ReadUnsignedVarInt(span);
-                    offset += sizeBytesRead + size;
+                _buffer = pooledBuffer;
+
+                // Skip the response header (correlation ID already read, skip tagged fields if flexible)
+                var offset = 4; // Correlation ID already parsed
+                if (_responseHeaderVersion >= 1)
+                {
+                    // Skip tagged fields - read varint count and skip
+                    var span = pooledBuffer.Data.Span[offset..];
+                    var (tagCount, bytesRead) = ReadUnsignedVarInt(span);
+                    offset += bytesRead;
+
+                    for (var i = 0; i < tagCount; i++)
+                    {
+                        span = pooledBuffer.Data.Span[offset..];
+                        var (_, tagBytesRead) = ReadUnsignedVarInt(span);
+                        offset += tagBytesRead;
+
+                        span = pooledBuffer.Data.Span[offset..];
+                        var (size, sizeBytesRead) = ReadUnsignedVarInt(span);
+                        offset += sizeBytesRead + size;
+                    }
+                }
+
+                // Transfer ownership by creating a new buffer with adjusted offset
+                // The caller (TryReadResponse) should not dispose the original buffer
+                var slicedBuffer = pooledBuffer.Slice(offset);
+
+                if (_tcs.TrySetResult(slicedBuffer))
+                {
+                    _completed = true;
+                }
+                else
+                {
+                    // Failed to set result (already cancelled/failed) - dispose buffer
+                    Dispose();
                 }
             }
-
-            // Transfer ownership by creating a new buffer with adjusted offset
-            // The caller (TryReadResponse) should not dispose the original buffer
-            var slicedBuffer = pooledBuffer.Slice(offset);
-
-            _tcs.TrySetResult(slicedBuffer);
         }
 
         public void Fail(Exception ex)
         {
-            _tcs.TrySetException(ex);
+            lock (this)
+            {
+                if (_tcs.TrySetException(ex))
+                {
+                    _completed = true;
+                }
+                // Dispose buffer on failure path
+                Dispose();
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (this)
+            {
+                if (_buffer.HasValue && _buffer.Value.IsPooled)
+                {
+                    _buffer.Value.Dispose();
+                    _buffer = null;
+                }
+            }
         }
 
         private static (int value, int bytesRead) ReadUnsignedVarInt(ReadOnlySpan<byte> span)
