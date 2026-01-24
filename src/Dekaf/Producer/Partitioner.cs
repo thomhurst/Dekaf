@@ -36,7 +36,7 @@ public sealed class DefaultPartitioner : IPartitioner
 /// </summary>
 public sealed class StickyPartitioner : IPartitioner
 {
-    private readonly Dictionary<string, int> _stickyPartitions = [];
+    private readonly Dictionary<string, int> _stickyPartitions = new(capacity: 16);
     private readonly object _lock = new();
     private int _counter;
 
