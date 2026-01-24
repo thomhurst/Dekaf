@@ -218,7 +218,7 @@ public sealed class MetadataManager : IAsyncDisposable
                 // Build metadata request
                 var request = topics is null
                     ? MetadataRequest.ForAllTopics()
-                    : MetadataRequest.ForTopics(topics.ToArray());
+                    : MetadataRequest.ForTopics(topics);
 
                 var response = await connection.SendAsync<MetadataRequest, MetadataResponse>(
                     request,
