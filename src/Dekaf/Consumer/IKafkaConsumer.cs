@@ -326,13 +326,10 @@ public readonly struct ConsumeResult<TKey, TValue>
             if (_isKeyNull)
                 return default;
 
-            // Reuse thread-local context to avoid allocation
-            t_serializationContext = new SerializationContext
-            {
-                Topic = Topic,
-                Component = SerializationComponent.Key,
-                Headers = null
-            };
+            // Reuse thread-local context by updating fields (zero-allocation)
+            t_serializationContext.Topic = Topic;
+            t_serializationContext.Component = SerializationComponent.Key;
+            t_serializationContext.Headers = null;
             return _keyDeserializer!.Deserialize(new System.Buffers.ReadOnlySequence<byte>(_keyData), t_serializationContext);
         }
     }
@@ -346,13 +343,10 @@ public readonly struct ConsumeResult<TKey, TValue>
     {
         get
         {
-            // Reuse thread-local context to avoid allocation
-            t_serializationContext = new SerializationContext
-            {
-                Topic = Topic,
-                Component = SerializationComponent.Value,
-                Headers = null
-            };
+            // Reuse thread-local context by updating fields (zero-allocation)
+            t_serializationContext.Topic = Topic;
+            t_serializationContext.Component = SerializationComponent.Value;
+            t_serializationContext.Headers = null;
 
             if (_isValueNull)
                 return _valueDeserializer!.Deserialize(System.Buffers.ReadOnlySequence<byte>.Empty, t_serializationContext);

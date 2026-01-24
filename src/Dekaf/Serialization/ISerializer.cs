@@ -35,23 +35,24 @@ public interface ISerde<T> : ISerializer<T>, IDeserializer<T>;
 /// <summary>
 /// Context for serialization/deserialization operations.
 /// This is a struct to avoid heap allocations in the hot path.
+/// Mutable to allow thread-local reuse without allocations.
 /// </summary>
-public readonly struct SerializationContext
+public struct SerializationContext
 {
     /// <summary>
     /// The topic the data is for.
     /// </summary>
-    public string Topic { get; init; }
+    public string Topic { get; set; }
 
     /// <summary>
     /// Whether this is key or value data.
     /// </summary>
-    public SerializationComponent Component { get; init; }
+    public SerializationComponent Component { get; set; }
 
     /// <summary>
     /// Headers associated with the record.
     /// </summary>
-    public Headers? Headers { get; init; }
+    public Headers? Headers { get; set; }
 }
 
 /// <summary>

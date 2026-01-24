@@ -541,13 +541,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     {
         var buffer = GetKeySerializationBuffer();
 
-        // Reuse thread-local context to avoid allocation
-        t_serializationContext = new SerializationContext
-        {
-            Topic = topic,
-            Component = SerializationComponent.Key,
-            Headers = headers
-        };
+        // Reuse thread-local context by updating fields (zero-allocation)
+        t_serializationContext.Topic = topic;
+        t_serializationContext.Component = SerializationComponent.Key;
+        t_serializationContext.Headers = headers;
         _keySerializer.Serialize(key, buffer, t_serializationContext);
 
         // Rent from pool and copy serialized data
@@ -564,13 +561,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     {
         var buffer = GetValueSerializationBuffer();
 
-        // Reuse thread-local context to avoid allocation
-        t_serializationContext = new SerializationContext
-        {
-            Topic = topic,
-            Component = SerializationComponent.Value,
-            Headers = headers
-        };
+        // Reuse thread-local context by updating fields (zero-allocation)
+        t_serializationContext.Topic = topic;
+        t_serializationContext.Component = SerializationComponent.Value;
+        t_serializationContext.Headers = headers;
         _valueSerializer.Serialize(value, buffer, t_serializationContext);
 
         // Rent from pool and copy serialized data
