@@ -36,6 +36,7 @@ public sealed class KafkaConnection : IKafkaConnection
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private Task? _receiveTask;
     private CancellationTokenSource? _receiveCts;
+    private OAuthBearerTokenProvider? _ownedTokenProvider;
     private volatile bool _disposed;
 
     // Certificates loaded from files that we own and must dispose
@@ -628,6 +629,7 @@ public sealed class KafkaConnection : IKafkaConnection
             SaslMechanism.Gssapi => new GssapiAuthenticator(
                 _options.GssapiConfig ?? throw new InvalidOperationException("GSSAPI configuration not provided"),
                 _host),
+            SaslMechanism.OAuthBearer => CreateOAuthBearerAuthenticator(),
             _ => throw new InvalidOperationException($"Unsupported SASL mechanism: {_options.SaslMechanism}")
         };
 
@@ -649,6 +651,12 @@ public sealed class KafkaConnection : IKafkaConnection
             _logger?.LogDebug("SASL handshake successful, starting authentication");
 
             // Step 2: Perform authentication exchanges
+            // For OAUTHBEARER, ensure token is fetched before getting initial response
+            if (authenticator is OAuthBearerAuthenticator oauthAuthenticator)
+            {
+                await oauthAuthenticator.GetTokenAsync(cancellationToken).ConfigureAwait(false);
+            }
+
             var authBytes = authenticator.GetInitialResponse();
 
             while (!authenticator.IsComplete)
@@ -684,6 +692,30 @@ public sealed class KafkaConnection : IKafkaConnection
             // Dispose the authenticator if it implements IDisposable (e.g., GssapiAuthenticator)
             (authenticator as IDisposable)?.Dispose();
         }
+    }
+
+    private OAuthBearerAuthenticator CreateOAuthBearerAuthenticator()
+    {
+        // Priority: static token > token provider > config-based provider
+        if (_options.OAuthBearerToken is not null)
+        {
+            return new OAuthBearerAuthenticator(_options.OAuthBearerToken);
+        }
+
+        if (_options.OAuthBearerTokenProvider is not null)
+        {
+            return new OAuthBearerAuthenticator(_options.OAuthBearerTokenProvider);
+        }
+
+        if (_options.OAuthBearerConfig is not null)
+        {
+            // Create and track the provider for disposal
+            _ownedTokenProvider = new OAuthBearerTokenProvider(_options.OAuthBearerConfig);
+            return new OAuthBearerAuthenticator(_ownedTokenProvider.GetTokenAsync);
+        }
+
+        throw new InvalidOperationException(
+            "OAUTHBEARER authentication requires either OAuthBearerToken, OAuthBearerTokenProvider, or OAuthBearerConfig to be configured");
     }
 
     private async ValueTask<TResponse> SendSaslMessageAsync<TRequest, TResponse>(
@@ -831,6 +863,7 @@ public sealed class KafkaConnection : IKafkaConnection
         _socket?.Dispose();
 
         _writeLock.Dispose();
+        _ownedTokenProvider?.Dispose();
 
         // Dispose certificates loaded from files
         if (_loadedCaCertificates is not null)
@@ -953,6 +986,23 @@ public sealed class ConnectionOptions
     /// GSSAPI (Kerberos) configuration. Required when SaslMechanism is Gssapi.
     /// </summary>
     public GssapiConfig? GssapiConfig { get; init; }
+
+    /// <summary>
+    /// OAuth bearer configuration for OAUTHBEARER authentication.
+    /// </summary>
+    public OAuthBearerConfig? OAuthBearerConfig { get; init; }
+
+    /// <summary>
+    /// Custom OAuth bearer token provider function for OAUTHBEARER authentication.
+    /// Takes precedence over <see cref="OAuthBearerConfig"/> if both are specified.
+    /// </summary>
+    public Func<CancellationToken, ValueTask<OAuthBearerToken>>? OAuthBearerTokenProvider { get; init; }
+
+    /// <summary>
+    /// Static OAuth bearer token for OAUTHBEARER authentication.
+    /// Use this for pre-obtained tokens; for dynamic token retrieval, use OAuthBearerTokenProvider instead.
+    /// </summary>
+    public OAuthBearerToken? OAuthBearerToken { get; init; }
 
     /// <summary>
     /// Send buffer size in bytes.

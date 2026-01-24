@@ -51,6 +51,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     private string? _saslUsername;
     private string? _saslPassword;
     private GssapiConfig? _gssapiConfig;
+    private OAuthBearerConfig? _oauthConfig;
+    private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
     private ISerializer<TKey>? _keySerializer;
     private ISerializer<TValue>? _valueSerializer;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
@@ -230,6 +232,30 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Configures OAUTHBEARER authentication using OAuth 2.0 client credentials flow.
+    /// </summary>
+    /// <param name="config">The OAuth bearer configuration.</param>
+    public ProducerBuilder<TKey, TValue> WithOAuthBearer(OAuthBearerConfig config)
+    {
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = config ?? throw new ArgumentNullException(nameof(config));
+        _oauthTokenProvider = null;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures OAUTHBEARER authentication using a custom token provider.
+    /// </summary>
+    /// <param name="tokenProvider">A function that provides OAuth tokens on demand.</param>
+    public ProducerBuilder<TKey, TValue> WithOAuthBearer(Func<CancellationToken, ValueTask<OAuthBearerToken>> tokenProvider)
+    {
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthTokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
+        _oauthConfig = null;
+        return this;
+    }
+
     public ProducerBuilder<TKey, TValue> WithKeySerializer(ISerializer<TKey> serializer)
     {
         _keySerializer = serializer;
@@ -272,7 +298,9 @@ public sealed class ProducerBuilder<TKey, TValue>
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
-            GssapiConfig = _gssapiConfig
+            GssapiConfig = _gssapiConfig,
+            OAuthBearerConfig = _oauthConfig,
+            OAuthBearerTokenProvider = _oauthTokenProvider
         };
 
         return new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory);
@@ -320,6 +348,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private string? _saslUsername;
     private string? _saslPassword;
     private GssapiConfig? _gssapiConfig;
+    private OAuthBearerConfig? _oauthConfig;
+    private Func<CancellationToken, ValueTask<OAuthBearerToken>>? _oauthTokenProvider;
     private IDeserializer<TKey>? _keyDeserializer;
     private IDeserializer<TValue>? _valueDeserializer;
     private IRebalanceListener? _rebalanceListener;
@@ -495,6 +525,30 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Configures OAUTHBEARER authentication using OAuth 2.0 client credentials flow.
+    /// </summary>
+    /// <param name="config">The OAuth bearer configuration.</param>
+    public ConsumerBuilder<TKey, TValue> WithOAuthBearer(OAuthBearerConfig config)
+    {
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthConfig = config ?? throw new ArgumentNullException(nameof(config));
+        _oauthTokenProvider = null;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures OAUTHBEARER authentication using a custom token provider.
+    /// </summary>
+    /// <param name="tokenProvider">A function that provides OAuth tokens on demand.</param>
+    public ConsumerBuilder<TKey, TValue> WithOAuthBearer(Func<CancellationToken, ValueTask<OAuthBearerToken>> tokenProvider)
+    {
+        _saslMechanism = SaslMechanism.OAuthBearer;
+        _oauthTokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
+        _oauthConfig = null;
+        return this;
+    }
+
     public ConsumerBuilder<TKey, TValue> WithKeyDeserializer(IDeserializer<TKey> deserializer)
     {
         _keyDeserializer = deserializer;
@@ -557,6 +611,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
             GssapiConfig = _gssapiConfig,
+            OAuthBearerConfig = _oauthConfig,
+            OAuthBearerTokenProvider = _oauthTokenProvider,
             RebalanceListener = _rebalanceListener,
             EnablePartitionEof = _enablePartitionEof
         };
