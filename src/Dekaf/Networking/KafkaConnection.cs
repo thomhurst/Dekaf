@@ -772,62 +772,85 @@ public sealed class KafkaConnection : IKafkaConnection
 
         // Write to stream directly (no pipe yet)
         var totalSize = bodyBuffer.WrittenCount;
-        var buffer = new byte[4 + totalSize];
-        BinaryPrimitives.WriteInt32BigEndian(buffer, totalSize);
-        bodyBuffer.WrittenSpan.CopyTo(buffer.AsSpan(4));
+        var buffer = ArrayPool<byte>.Shared.Rent(4 + totalSize);
+        try
+        {
+            BinaryPrimitives.WriteInt32BigEndian(buffer, totalSize);
+            bodyBuffer.WrittenSpan.CopyTo(buffer.AsSpan(4));
 
-        await _stream.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
-        await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            await _stream.WriteAsync(buffer.AsMemory(0, 4 + totalSize), cancellationToken).ConfigureAwait(false);
+            await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Clear buffer to prevent SASL credential leakage (contains passwords, tokens, secrets)
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+        }
 
         // Read response
-        var sizeBuffer = new byte[4];
-        await ReadExactlyAsync(_stream, sizeBuffer, cancellationToken).ConfigureAwait(false);
-        var responseSize = BinaryPrimitives.ReadInt32BigEndian(sizeBuffer);
-
-        var responseBuffer = new byte[responseSize];
-        await ReadExactlyAsync(_stream, responseBuffer, cancellationToken).ConfigureAwait(false);
-
-        // Parse response header
-        var responseCorrelationId = BinaryPrimitives.ReadInt32BigEndian(responseBuffer);
-        if (responseCorrelationId != correlationId)
+        var sizeBuffer = ArrayPool<byte>.Shared.Rent(4);
+        try
         {
-            throw new InvalidOperationException(
-                $"Correlation ID mismatch: expected {correlationId}, got {responseCorrelationId}");
-        }
+            await ReadExactlyAsync(_stream, sizeBuffer.AsMemory(0, 4), cancellationToken).ConfigureAwait(false);
+            var responseSize = BinaryPrimitives.ReadInt32BigEndian(sizeBuffer);
 
-        // Skip response header and parse body
-        var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
-        var offset = 4; // Correlation ID
-
-        if (responseHeaderVersion >= 1)
-        {
-            // Skip tagged fields
-            var span = responseBuffer.AsSpan(offset);
-            var (tagCount, bytesRead) = ReadUnsignedVarInt(span);
-            offset += bytesRead;
-
-            for (var i = 0; i < tagCount; i++)
+            var responseBuffer = ArrayPool<byte>.Shared.Rent(responseSize);
+            try
             {
-                span = responseBuffer.AsSpan(offset);
-                var (_, tagBytesRead) = ReadUnsignedVarInt(span);
-                offset += tagBytesRead;
+                await ReadExactlyAsync(_stream, responseBuffer.AsMemory(0, responseSize), cancellationToken).ConfigureAwait(false);
 
-                span = responseBuffer.AsSpan(offset);
-                var (size, sizeBytesRead) = ReadUnsignedVarInt(span);
-                offset += sizeBytesRead + size;
+                // Parse response header
+                var responseCorrelationId = BinaryPrimitives.ReadInt32BigEndian(responseBuffer);
+                if (responseCorrelationId != correlationId)
+                {
+                    throw new InvalidOperationException(
+                        $"Correlation ID mismatch: expected {correlationId}, got {responseCorrelationId}");
+                }
+
+                // Skip response header and parse body
+                var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
+                var offset = 4; // Correlation ID
+
+                if (responseHeaderVersion >= 1)
+                {
+                    // Skip tagged fields
+                    var span = responseBuffer.AsSpan(offset);
+                    var (tagCount, bytesRead) = ReadUnsignedVarInt(span);
+                    offset += bytesRead;
+
+                    for (var i = 0; i < tagCount; i++)
+                    {
+                        span = responseBuffer.AsSpan(offset);
+                        var (_, tagBytesRead) = ReadUnsignedVarInt(span);
+                        offset += tagBytesRead;
+
+                        span = responseBuffer.AsSpan(offset);
+                        var (size, sizeBytesRead) = ReadUnsignedVarInt(span);
+                        offset += sizeBytesRead + size;
+                    }
+                }
+
+                var reader = new KafkaProtocolReader(responseBuffer.AsMemory(offset, responseSize - offset));
+                return (TResponse)TResponse.Read(ref reader, apiVersion);
+            }
+            finally
+            {
+                // Clear buffer to prevent SASL credential leakage (may contain auth tokens/session data)
+                ArrayPool<byte>.Shared.Return(responseBuffer, clearArray: true);
             }
         }
-
-        var reader = new KafkaProtocolReader(responseBuffer.AsMemory(offset));
-        return (TResponse)TResponse.Read(ref reader, apiVersion);
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(sizeBuffer);
+        }
     }
 
-    private static async ValueTask ReadExactlyAsync(Stream stream, byte[] buffer, CancellationToken cancellationToken)
+    private static async ValueTask ReadExactlyAsync(Stream stream, Memory<byte> buffer, CancellationToken cancellationToken)
     {
         var totalRead = 0;
         while (totalRead < buffer.Length)
         {
-            var read = await stream.ReadAsync(buffer.AsMemory(totalRead), cancellationToken).ConfigureAwait(false);
+            var read = await stream.ReadAsync(buffer[totalRead..], cancellationToken).ConfigureAwait(false);
             if (read == 0)
                 throw new IOException("Connection closed unexpectedly");
             totalRead += read;
