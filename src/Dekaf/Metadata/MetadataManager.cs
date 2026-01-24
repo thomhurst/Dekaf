@@ -252,15 +252,20 @@ public sealed class MetadataManager : IAsyncDisposable
         _brokerApiVersions.Clear();
         _negotiatedVersionCache.Clear();
 
-        // Store all API versions for later use
+        // Store all API versions and find metadata API in one pass (zero-allocation)
+        ApiVersion? metadataApi = null;
         foreach (var apiKey in response.ApiKeys)
         {
             _brokerApiVersions[apiKey.ApiKey] = (apiKey.MinVersion, apiKey.MaxVersion);
+
+            if (apiKey.ApiKey == ApiKey.Metadata)
+            {
+                metadataApi = apiKey;
+            }
         }
 
-        // Find metadata API version
-        var metadataApi = response.ApiKeys.FirstOrDefault(a => a.ApiKey == ApiKey.Metadata);
-        _metadataApiVersion = Math.Min(metadataApi.MaxVersion, MetadataRequest.HighestSupportedVersion);
+        // Set metadata API version
+        _metadataApiVersion = Math.Min(metadataApi?.MaxVersion ?? 0, MetadataRequest.HighestSupportedVersion);
         if (_metadataApiVersion < MetadataRequest.LowestSupportedVersion)
         {
             _metadataApiVersion = MetadataRequest.LowestSupportedVersion;
