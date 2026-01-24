@@ -76,8 +76,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private readonly ProducerOptions _options;
     private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
     private readonly Channel<ReadyBatch> _readyBatches;
-    private readonly long _maxMemory;
-    private long _usedMemory;
+    private readonly ulong _maxMemory;
+    private ulong _usedMemory;
     private volatile bool _disposed;
     private volatile bool _closed;
 
@@ -101,7 +101,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Current memory usage in bytes.
     /// </summary>
-    public long UsedMemory => Interlocked.Read(ref _usedMemory);
+    public ulong UsedMemory => Interlocked.Read(ref _usedMemory);
 
     /// <summary>
     /// Appends a record to the appropriate batch.
@@ -157,7 +157,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// Waiters are woken immediately when memory is released.
     /// Includes timeout protection to prevent infinite blocking if sender crashes.
     /// </summary>
-    private async ValueTask WaitForMemoryAsync(int requiredBytes, CancellationToken cancellationToken)
+    private async ValueTask WaitForMemoryAsync(uint requiredBytes, CancellationToken cancellationToken)
     {
         // Fast path: enough memory available (most common case)
         if (Interlocked.Read(ref _usedMemory) + requiredBytes <= _maxMemory)
@@ -202,7 +202,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Allocates memory from the buffer pool. Called by PartitionBatch.
     /// </summary>
-    internal void AllocateMemory(int bytes)
+    internal void AllocateMemory(uint bytes)
     {
         Interlocked.Add(ref _usedMemory, bytes);
     }
@@ -211,14 +211,19 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// Releases memory back to the buffer pool. Called when batches complete.
     /// Signals any waiting producers that memory is now available.
     /// </summary>
-    internal void ReleaseMemory(int bytes)
+    internal void ReleaseMemory(uint bytes)
     {
-        var newUsed = Interlocked.Add(ref _usedMemory, -bytes);
+        // Atomic subtraction using CompareExchange loop (standard pattern for ulong)
+        ulong current, newValue;
+        do
+        {
+            current = Interlocked.Read(ref _usedMemory);
+            newValue = current - bytes;
 
-        // Debug assertion: memory should never go negative
-        System.Diagnostics.Debug.Assert(newUsed >= 0,
-            $"Memory accounting error: used memory went negative ({newUsed}). " +
-            $"Released {bytes} bytes, but this caused underflow.");
+            // Debug assertion: memory should never underflow
+            System.Diagnostics.Debug.Assert(newValue <= current,
+                $"Memory accounting error: releasing {bytes} bytes would cause underflow (current: {current}).");
+        } while (Interlocked.CompareExchange(ref _usedMemory, newValue, current) != current);
 
         // Signal all waiters by completing the current TCS and swapping in a fresh one
         // This is lock-free and wakes all waiters efficiently
@@ -228,17 +233,17 @@ public sealed class RecordAccumulator : IAsyncDisposable
         oldSignal.TrySetResult();
     }
 
-    private static int EstimateRecordMemory(int keyLength, int valueLength, IReadOnlyList<RecordHeader>? headers)
+    private static uint EstimateRecordMemory(int keyLength, int valueLength, IReadOnlyList<RecordHeader>? headers)
     {
-        var size = 64; // Base overhead for record struct, list entries, etc.
-        size += keyLength;
-        size += valueLength;
+        uint size = 64; // Base overhead for record struct, list entries, etc.
+        size += (uint)keyLength;
+        size += (uint)valueLength;
 
         if (headers is not null)
         {
             foreach (var header in headers)
             {
-                size += header.Key.Length + (header.IsValueNull ? 0 : header.Value.Length) + 32;
+                size += (uint)(header.Key.Length + (header.IsValueNull ? 0 : header.Value.Length) + 32);
             }
         }
 
@@ -361,7 +366,7 @@ internal sealed class PartitionBatch
     private long _baseTimestamp;
     private int _offsetDelta;
     private int _estimatedSize;
-    private int _trackedMemory; // Memory tracked for backpressure
+    private uint _trackedMemory; // Memory tracked for backpressure
     private DateTimeOffset _createdAt;
 
     public PartitionBatch(TopicPartition topicPartition, ProducerOptions options, RecordAccumulator? accumulator = null)
@@ -382,7 +387,7 @@ internal sealed class PartitionBatch
         IReadOnlyList<RecordHeader>? headers,
         RecordHeader[]? pooledHeaderArray,
         TaskCompletionSource<RecordMetadata> completion,
-        int recordMemory = 0)
+        uint recordMemory = 0)
     {
         lock (_lock)
         {
@@ -520,7 +525,7 @@ public sealed class ReadyBatch
     public IReadOnlyList<TaskCompletionSource<RecordMetadata>> CompletionSources { get; }
     private readonly IReadOnlyList<byte[]> _pooledArrays;
     private readonly IReadOnlyList<RecordHeader[]> _pooledHeaderArrays;
-    private readonly int _trackedMemory;
+    private readonly uint _trackedMemory;
     private readonly RecordAccumulator? _accumulator;
 
     public ReadyBatch(
@@ -529,7 +534,7 @@ public sealed class ReadyBatch
         IReadOnlyList<TaskCompletionSource<RecordMetadata>> completionSources,
         IReadOnlyList<byte[]> pooledArrays,
         IReadOnlyList<RecordHeader[]> pooledHeaderArrays,
-        int trackedMemory = 0,
+        uint trackedMemory = 0,
         RecordAccumulator? accumulator = null)
     {
         TopicPartition = topicPartition;

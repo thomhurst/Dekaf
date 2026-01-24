@@ -44,7 +44,7 @@ public sealed class ProducerOptions
     /// <summary>
     /// Total memory buffer size in bytes.
     /// </summary>
-    public long BufferMemory { get; init; } = 33554432;
+    public ulong BufferMemory { get; init; } = 33554432;
 
     /// <summary>
     /// Compression type.

@@ -38,12 +38,12 @@ public sealed class ProducerStatistics
     /// <summary>
     /// Current memory used by the record accumulator in bytes.
     /// </summary>
-    public long AccumulatorMemoryUsed { get; init; }
+    public ulong AccumulatorMemoryUsed { get; init; }
 
     /// <summary>
     /// Maximum memory available for the record accumulator in bytes.
     /// </summary>
-    public long AccumulatorMemoryLimit { get; init; }
+    public ulong AccumulatorMemoryLimit { get; init; }
 
     /// <summary>
     /// Number of batches currently in the ready queue waiting to be sent.
