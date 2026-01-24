@@ -14,7 +14,7 @@ public sealed class ConnectionPool : IConnectionPool
     private readonly ILogger<ConnectionPool>? _logger;
 
     private readonly ConcurrentDictionary<int, BrokerInfo> _brokers = new();
-    private readonly ConcurrentDictionary<string, IKafkaConnection> _connectionsByEndpoint = new();
+    private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();
     private readonly ConcurrentDictionary<int, IKafkaConnection> _connectionsById = new();
     private readonly SemaphoreSlim _connectionLock = new(1, 1);
     private volatile bool _disposed;
@@ -62,7 +62,7 @@ public sealed class ConnectionPool : IConnectionPool
         if (_disposed)
             throw new ObjectDisposedException(nameof(ConnectionPool));
 
-        var endpoint = $"{host}:{port}";
+        var endpoint = new EndpointKey(host, port);
 
         // Try to get existing connection
         if (_connectionsByEndpoint.TryGetValue(endpoint, out var existing) && existing.IsConnected)
@@ -79,7 +79,7 @@ public sealed class ConnectionPool : IConnectionPool
         int port,
         CancellationToken cancellationToken)
     {
-        var endpoint = $"{host}:{port}";
+        var endpoint = new EndpointKey(host, port);
 
         await _connectionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -130,7 +130,7 @@ public sealed class ConnectionPool : IConnectionPool
     {
         if (_connectionsById.TryRemove(brokerId, out var connection))
         {
-            var endpoint = $"{connection.Host}:{connection.Port}";
+            var endpoint = new EndpointKey(connection.Host, connection.Port);
             _connectionsByEndpoint.TryRemove(endpoint, out _);
             await connection.DisposeAsync().ConfigureAwait(false);
             _logger?.LogDebug("Removed connection to broker {BrokerId}", brokerId);
@@ -180,5 +180,6 @@ public sealed class ConnectionPool : IConnectionPool
         _connectionLock.Dispose();
     }
 
+    private readonly record struct EndpointKey(string Host, int Port);
     private readonly record struct BrokerInfo(int BrokerId, string Host, int Port);
 }
