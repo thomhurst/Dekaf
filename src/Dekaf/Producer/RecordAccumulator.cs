@@ -260,6 +260,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         }
         _batches.Clear();
 
+        // Clear the TopicPartition cache to release memory
+        _topicPartitionCache.Clear();
+
         // Complete the channel if not already closed by CloseAsync
         if (!_closed)
         {
