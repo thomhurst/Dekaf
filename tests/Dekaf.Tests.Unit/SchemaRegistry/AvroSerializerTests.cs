@@ -260,4 +260,79 @@ public class AvroSerializerTests
         var config = new AvroSerializerConfig();
         await Assert.That(config.UseLatestVersion).IsFalse();
     }
+
+    [Test]
+    public async Task Serializer_WarmupAsync_PreCachesSchemaId()
+    {
+        // Arrange
+        var schemaRegistry = new MockSchemaRegistryClient();
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+
+        var schema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
+        var record = new GenericRecord(schema!);
+        record.Add("id", 1);
+        record.Add("name", "warmup");
+
+        // Act - warm up the cache
+        var warmupSchemaId = await serializer.WarmupAsync("warmup-topic", record, isKey: false);
+
+        // Serialize using the warmed-up cache
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext("warmup-topic");
+        serializer.Serialize(record, buffer, context);
+
+        // Assert - the schema ID from warmup should match the one used in serialization
+        var serializedSchemaId = BinaryPrimitives.ReadInt32BigEndian(buffer.WrittenSpan.Slice(1, 4));
+        await Assert.That(serializedSchemaId).IsEqualTo(warmupSchemaId);
+    }
+
+    [Test]
+    public async Task Deserializer_WarmupAsync_PreCachesSchema()
+    {
+        // Arrange
+        var schemaRegistry = new MockSchemaRegistryClient();
+
+        // Pre-register schema
+        var schemaObj = new RegistrySchema
+        {
+            SchemaType = SchemaType.Avro,
+            SchemaString = SimpleRecordSchema
+        };
+        var schemaId = await schemaRegistry.RegisterSchemaAsync("test-topic-value", schemaObj);
+
+        await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(schemaRegistry);
+
+        // Act - warm up the cache
+        var warmedSchema = await deserializer.WarmupAsync(schemaId);
+
+        // Assert - schema was fetched and cached
+        await Assert.That(warmedSchema).IsNotNull();
+        await Assert.That(warmedSchema.Fullname).IsEqualTo("test.SimpleRecord");
+
+        // Create wire format message to verify deserialization works with cached schema
+        var avroSchema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
+        var originalRecord = new GenericRecord(avroSchema!);
+        originalRecord.Add("id", 99);
+        originalRecord.Add("name", "cached");
+
+        using var ms = new MemoryStream();
+        var encoder = new BinaryEncoder(ms);
+        var writer = new GenericDatumWriter<GenericRecord>(avroSchema!);
+        writer.Write(originalRecord, encoder);
+        encoder.Flush();
+        var avroPayload = ms.ToArray();
+
+        var wireFormat = new byte[1 + 4 + avroPayload.Length];
+        wireFormat[0] = 0x00;
+        BinaryPrimitives.WriteInt32BigEndian(wireFormat.AsSpan(1, 4), schemaId);
+        avroPayload.CopyTo(wireFormat.AsSpan(5));
+
+        var context = CreateContext();
+
+        // Deserialize using the warmed-up cache
+        var result = deserializer.Deserialize(new ReadOnlySequence<byte>(wireFormat), context);
+
+        await Assert.That((int)result["id"]!).IsEqualTo(99);
+        await Assert.That((string)result["name"]!).IsEqualTo("cached");
+    }
 }

@@ -14,6 +14,23 @@ namespace Dekaf.SchemaRegistry.Avro;
 /// Avro deserializer that integrates with Confluent Schema Registry.
 /// Handles the wire format: [magic byte (0x00)] [4-byte schema ID] [Avro binary payload].
 /// </summary>
+/// <remarks>
+/// <para>
+/// This deserializer uses lazy caching for writer schemas. The first time a schema ID is
+/// encountered, an async call to the Schema Registry is made. This call is wrapped in
+/// <see cref="Lazy{T}"/> to ensure thread-safety: only one thread performs the fetch while
+/// others wait for the result.
+/// </para>
+/// <para>
+/// After the first fetch, subsequent deserialization calls for the same schema ID use the
+/// cached schema without any blocking or async overhead.
+/// </para>
+/// <para>
+/// For high-throughput scenarios where you know the schema IDs in advance, use
+/// <see cref="WarmupAsync"/> to pre-warm the cache before starting consumption. This ensures
+/// the synchronous <see cref="Deserialize"/> method never blocks on Schema Registry calls.
+/// </para>
+/// </remarks>
 /// <typeparam name="T">The type to deserialize. Must be either an Avro ISpecificRecord or GenericRecord.</typeparam>
 public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisposable
 {
@@ -22,7 +39,7 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly AvroDeserializerConfig _config;
     private readonly bool _ownsClient;
-    private readonly ConcurrentDictionary<int, AvroSchema> _schemaCache = new();
+    private readonly ConcurrentDictionary<int, Lazy<Task<AvroSchema>>> _schemaCache = new();
     private readonly AvroSchema? _readerSchema;
 
     /// <summary>
@@ -45,9 +62,31 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
     }
 
     /// <summary>
+    /// Pre-warms the schema cache for a specific schema ID.
+    /// </summary>
+    /// <remarks>
+    /// Call this method before starting consumption if you know the schema IDs in advance.
+    /// This ensures that the synchronous <see cref="Deserialize"/> method never blocks on
+    /// Schema Registry calls for the specified schema ID.
+    /// </remarks>
+    /// <param name="schemaId">The schema ID to warm up.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The parsed Avro schema.</returns>
+    public async Task<AvroSchema> WarmupAsync(int schemaId, CancellationToken cancellationToken = default)
+    {
+        return await GetOrFetchWriterSchemaAsync(schemaId, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Deserializes data from the input buffer using Avro binary decoding
     /// with Schema Registry wire format.
     /// </summary>
+    /// <remarks>
+    /// This method uses cached schemas when available. If the schema is not yet cached,
+    /// the first call will block while fetching from the Schema Registry. Subsequent calls
+    /// for the same schema ID will use the cached value without blocking.
+    /// For best performance, use <see cref="WarmupAsync"/> before starting consumption.
+    /// </remarks>
     public T Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
     {
         if (data.Length < 5)
@@ -62,8 +101,8 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
 
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(header.Slice(1, 4));
 
-        // Get writer schema from registry (cached)
-        var writerSchema = GetWriterSchema(schemaId);
+        // Get writer schema from registry (cached with lazy initialization)
+        var writerSchema = GetWriterSchemaCached(schemaId);
 
         // Extract Avro payload using pooled buffer to avoid allocation
         var payloadLength = (int)(data.Length - 5);
@@ -104,22 +143,50 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
             $"Type {typeof(T)} is not supported. Must be ISpecificRecord or GenericRecord.");
     }
 
-    private AvroSchema GetWriterSchema(int schemaId)
+    private AvroSchema GetWriterSchemaCached(int schemaId)
     {
-        if (_schemaCache.TryGetValue(schemaId, out var cachedSchema))
-            return cachedSchema;
+        // Use Lazy<Task<T>> pattern for thread-safe lazy initialization.
+        // GetOrAdd ensures only one Lazy instance is created per schema ID.
+        // The Lazy ensures only one thread executes the factory (fetches the schema).
+        var lazyTask = _schemaCache.GetOrAdd(
+            schemaId,
+            id => new Lazy<Task<AvroSchema>>(() => FetchWriterSchemaAsync(id)));
 
-        var registrySchema = _schemaRegistry.GetSchemaAsync(schemaId)
-            .ConfigureAwait(false).GetAwaiter().GetResult();
+        // If the task is already completed, this returns immediately without blocking.
+        // If this is the first access, it will block waiting for the schema fetch.
+        // The Lazy ensures that only ONE thread ever blocks for a given schema ID.
+        var task = lazyTask.Value;
+
+        if (task.IsCompletedSuccessfully)
+        {
+            // Fast path: schema already cached, no blocking
+            return task.Result;
+        }
+
+        // Slow path: first fetch or concurrent access during first fetch.
+        // This blocks the calling thread, but only happens once per schema ID.
+        return task.ConfigureAwait(false).GetAwaiter().GetResult();
+    }
+
+    private async Task<AvroSchema> GetOrFetchWriterSchemaAsync(int schemaId, CancellationToken cancellationToken = default)
+    {
+        var lazyTask = _schemaCache.GetOrAdd(
+            schemaId,
+            id => new Lazy<Task<AvroSchema>>(() => FetchWriterSchemaAsync(id, cancellationToken)));
+
+        return await lazyTask.Value.ConfigureAwait(false);
+    }
+
+    private async Task<AvroSchema> FetchWriterSchemaAsync(int schemaId, CancellationToken cancellationToken = default)
+    {
+        var registrySchema = await _schemaRegistry.GetSchemaAsync(schemaId, cancellationToken)
+            .ConfigureAwait(false);
 
         if (registrySchema.SchemaType != SchemaType.Avro)
             throw new InvalidOperationException(
                 $"Schema with ID {schemaId} is not an Avro schema. Type: {registrySchema.SchemaType}");
 
-        var avroSchema = AvroSchema.Parse(registrySchema.SchemaString);
-        _schemaCache.TryAdd(schemaId, avroSchema);
-
-        return avroSchema;
+        return AvroSchema.Parse(registrySchema.SchemaString);
     }
 
     private AvroSchema? GetReaderSchema()
