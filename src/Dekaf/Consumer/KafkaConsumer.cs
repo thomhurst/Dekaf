@@ -952,22 +952,22 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         if (removeSet.Count == 0)
             return;
 
-        // We need to rebuild the queue, keeping only data for partitions not being removed
-        var tempQueue = new Queue<PendingFetchData>();
-        while (_pendingFetches.Count > 0)
+        // Filter in-place without allocating a temporary queue
+        // Dequeue all items and re-enqueue only those we want to keep
+        var count = _pendingFetches.Count;
+
+        for (var i = 0; i < count; i++)
         {
             var pending = _pendingFetches.Dequeue();
-            var tp = new TopicPartition(pending.Topic, pending.PartitionIndex);
-            if (!removeSet.Contains(tp))
-            {
-                tempQueue.Enqueue(pending);
-            }
-        }
 
-        // Put back the items we want to keep
-        while (tempQueue.Count > 0)
-        {
-            _pendingFetches.Enqueue(tempQueue.Dequeue());
+            // Check if this partition should be kept
+            // Build TopicPartition inline for the Contains check
+            if (!removeSet.Contains(new TopicPartition(pending.Topic, pending.PartitionIndex)))
+            {
+                // Keep this item by re-enqueueing it
+                _pendingFetches.Enqueue(pending);
+            }
+            // Items in removeSet are simply dropped
         }
     }
 
