@@ -78,13 +78,22 @@ public sealed class ConnectionPool : IConnectionPool
         int brokerId,
         string host,
         int port,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int retryCount = 0)
     {
+        const int MaxRetries = 3;
+
+        if (retryCount >= MaxRetries)
+        {
+            throw new InvalidOperationException($"Failed to create connection after {MaxRetries} retries");
+        }
+
         var endpoint = new EndpointKey(host, port);
 
         // Lock-free pattern: Use GetOrAdd with Lazy to ensure only one connection creation per endpoint
+        // Note: CancellationToken.None is used to avoid capturing the caller's token in the Lazy delegate
         var lazyConnection = _connectionCreationTasks.GetOrAdd(endpoint,
-            _ => new Lazy<ValueTask<IKafkaConnection>>(() => CreateConnectionAsync(brokerId, host, port, cancellationToken)));
+            _ => new Lazy<ValueTask<IKafkaConnection>>(() => CreateConnectionAsync(brokerId, host, port, CancellationToken.None)));
 
         try
         {
@@ -100,8 +109,11 @@ public sealed class ConnectionPool : IConnectionPool
                     _connectionsById.TryRemove(brokerId, out _);
 
                 // Recursive retry (will create new Lazy)
-                return await GetOrCreateConnectionAsync(brokerId, host, port, cancellationToken).ConfigureAwait(false);
+                return await GetOrCreateConnectionAsync(brokerId, host, port, cancellationToken, retryCount + 1).ConfigureAwait(false);
             }
+
+            // Success: Remove the task to prevent memory leak
+            _connectionCreationTasks.TryRemove(endpoint, out _);
 
             return connection;
         }
