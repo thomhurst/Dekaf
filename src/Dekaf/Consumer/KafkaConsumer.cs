@@ -103,6 +103,15 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly HashSet<string> _subscription = [];
     private readonly HashSet<TopicPartition> _assignment = [];
     private readonly HashSet<TopicPartition> _paused = [];
+
+    // Thread-safety notes:
+    // - _positions and _fetchPositions use ConcurrentDictionary for thread-safe reads/writes
+    // - Individual operations (e.g., dict[key] = value) are atomic, but sequences like:
+    //     _positions[tp] = offset;
+    //     _fetchPositions[tp] = offset;
+    //   are NOT atomic across both dictionaries. This is a benign race - the worst case is
+    //   a single fetch using a stale position before being updated by the next operation.
+    //   Adding locks would defeat the purpose of lock-free consumption.
     private readonly ConcurrentDictionary<TopicPartition, long> _positions = new();      // Consumed position (what app has seen)
     private readonly ConcurrentDictionary<TopicPartition, long> _fetchPositions = new(); // Fetch position (what to fetch next)
     private readonly Dictionary<TopicPartition, long> _committed = [];
@@ -255,7 +264,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     {
         var tp = new TopicPartition(key.Topic, key.Partition);
         return (
-            _positions.GetValueOrDefault(tp, -1) >= 0 ? _positions[tp] : null,
+            _positions.TryGetValue(tp, out var pos) && pos >= 0 ? pos : null,
             _committed.GetValueOrDefault(tp, -1) >= 0 ? _committed[tp] : null,
             _paused.Contains(tp)
         );
