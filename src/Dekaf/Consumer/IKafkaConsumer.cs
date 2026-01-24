@@ -188,6 +188,26 @@ public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
     ValueTask<IReadOnlyDictionary<TopicPartition, long>> GetOffsetsForTimesAsync(
         IEnumerable<TopicPartitionTimestamp> timestampsToSearch,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the cached watermark offsets (low and high) for a partition.
+    /// The watermarks are updated from fetch responses as records are consumed.
+    /// Returns null if no watermark data is cached for the partition.
+    /// </summary>
+    /// <param name="topicPartition">The topic partition to get watermarks for.</param>
+    /// <returns>The cached watermark offsets, or null if not available.</returns>
+    WatermarkOffsets? GetWatermarkOffsets(TopicPartition topicPartition);
+
+    /// <summary>
+    /// Queries the cluster for current watermark offsets (low and high) for a partition.
+    /// This makes network requests to fetch the latest offsets from the broker.
+    /// </summary>
+    /// <param name="topicPartition">The topic partition to query watermarks for.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The current watermark offsets from the cluster.</returns>
+    ValueTask<WatermarkOffsets> QueryWatermarkOffsetsAsync(
+        TopicPartition topicPartition,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
