@@ -221,11 +221,21 @@ public sealed class RecordAccumulator : IAsyncDisposable
         do
         {
             current = Interlocked.Read(ref _usedMemory);
-            newValue = current - bytes;
 
-            // Debug assertion: memory should never underflow
-            System.Diagnostics.Debug.Assert(newValue <= current,
-                $"Memory accounting error: releasing {bytes} bytes would cause underflow (current: {current}).");
+            // CRITICAL: Prevent underflow in both debug AND release builds.
+            // Silent underflow causes unsigned wrap-around to ~2^64, making all producers
+            // wait forever because available memory appears to be zero.
+            // This indicates a double-release bug or incorrect memory tracking.
+            if (bytes > current)
+            {
+                throw new InvalidOperationException(
+                    $"Memory accounting bug: attempting to release {bytes} bytes " +
+                    $"but only {current} bytes are currently allocated. " +
+                    $"This indicates double-cleanup of a ReadyBatch or incorrect memory tracking. " +
+                    $"Please report this issue with reproduction steps.");
+            }
+
+            newValue = current - bytes;
         } while (Interlocked.CompareExchange(ref _usedMemory, newValue, current) != current);
 
         // Signal all waiters by completing the current TCS and swapping in a fresh one
@@ -371,6 +381,7 @@ internal sealed class PartitionBatch
     private int _estimatedSize;
     private uint _trackedMemory; // Memory tracked for backpressure
     private DateTimeOffset _createdAt;
+    private ReadyBatch? _completedBatch; // Cached result to ensure Complete() is idempotent
 
     public PartitionBatch(TopicPartition topicPartition, ProducerOptions options, RecordAccumulator? accumulator = null)
     {
@@ -467,6 +478,12 @@ internal sealed class PartitionBatch
     {
         lock (_lock)
         {
+            // Idempotency: If already completed, return the cached batch
+            // This prevents creating multiple ReadyBatch objects with duplicate resources
+            // which would cause double-cleanup and memory accounting bugs.
+            if (_completedBatch is not null)
+                return _completedBatch;
+
             if (_records.Count == 0)
                 return null;
 
@@ -483,7 +500,7 @@ internal sealed class PartitionBatch
 
             // Pass list directly - PartitionBatch is discarded after Complete()
             // Also pass pooled arrays (both byte[] and RecordHeader[]) so they can be returned when the batch is done
-            return new ReadyBatch(
+            _completedBatch = new ReadyBatch(
                 _topicPartition,
                 batch,
                 _completionSources,
@@ -491,6 +508,8 @@ internal sealed class PartitionBatch
                 _pooledHeaderArrays,
                 _trackedMemory,
                 _accumulator);
+
+            return _completedBatch;
         }
     }
 
@@ -531,6 +550,7 @@ public sealed class ReadyBatch
     private readonly IReadOnlyList<RecordHeader[]> _pooledHeaderArrays;
     private readonly uint _trackedMemory;
     private readonly RecordAccumulator? _accumulator;
+    private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
 
     public ReadyBatch(
         TopicPartition topicPartition,
@@ -588,6 +608,12 @@ public sealed class ReadyBatch
 
     private void Cleanup()
     {
+        // Guard against double-cleanup: If cleanup has already been performed, return immediately.
+        // This prevents double-return of pooled arrays and double-release of memory,
+        // which would cause ArrayPool corruption and memory accounting underflow.
+        if (Interlocked.Exchange(ref _cleanedUp, 1) != 0)
+            return;
+
         // Return pooled byte arrays (key/value data)
         foreach (var array in _pooledArrays)
         {
