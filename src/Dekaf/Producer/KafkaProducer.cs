@@ -46,6 +46,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly ProducerStatisticsCollector _statisticsCollector = new();
     private readonly StatisticsEmitter<ProducerStatistics>? _statisticsEmitter;
 
+    // Pool for TaskCompletionSource to avoid per-message allocations
+    private readonly TaskCompletionSourcePool<RecordMetadata> _tcsPool = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     // Thread-local reusable buffers for serialization to avoid per-message allocations
     [ThreadStatic]
     private static ArrayBufferWriter<byte>? t_keySerializationBuffer;
@@ -104,7 +107,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             options.BootstrapServers,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
-        _accumulator = new RecordAccumulator(options);
+        _accumulator = new RecordAccumulator(options, _tcsPool.Return);
         _compressionCodecs = new CompressionCodecRegistry();
 
         _senderCts = new CancellationTokenSource();
@@ -112,13 +115,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _lingerTask = LingerLoopAsync(_senderCts.Token);
 
         // Set up worker pool for thread-safe produce operations
+        // Use unbounded channel to avoid artificial backpressure that can cause deadlocks
+        // Natural backpressure happens when Kafka can't keep up (TCP flow control, slow responses)
+        // This matches Confluent.Kafka's approach (queue.buffering.max.messages = 100,000)
         _workerCount = Environment.ProcessorCount;
-        _workChannel = Channel.CreateBounded<ProduceWorkItem<TKey, TValue>>(
-            new BoundedChannelOptions(_workerCount * 16)
+        _workChannel = Channel.CreateUnbounded<ProduceWorkItem<TKey, TValue>>(
+            new UnboundedChannelOptions
             {
                 SingleReader = false,   // Multiple workers read
-                SingleWriter = false,   // Multiple callers write
-                FullMode = BoundedChannelFullMode.Wait
+                SingleWriter = false    // Multiple callers write
             });
 
         // Start worker tasks
@@ -168,9 +173,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
-        // Create work item with completion source
-        var completion = new TaskCompletionSource<RecordMetadata>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
+        // Rent completion source from pool to avoid per-message allocation
+        var completion = _tcsPool.Rent();
 
         var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, cancellationToken);
 
@@ -709,6 +713,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Dispose accumulator - this will fail any remaining batches if graceful shutdown failed
         await _accumulator.DisposeAsync().ConfigureAwait(false);
 
+        // Dispose TCS pool - prevents resource leaks
+        await _tcsPool.DisposeAsync().ConfigureAwait(false);
+
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
     }
@@ -716,12 +723,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
 /// <summary>
 /// Work item for the producer worker pool.
+/// Changed from struct to class to avoid multiple copies during channel operations.
+/// As a class, the work item is allocated once and a single reference is passed through the channel,
+/// eliminating struct copy overhead and any potential boxing issues.
 /// </summary>
-internal readonly struct ProduceWorkItem<TKey, TValue>
+internal sealed class ProduceWorkItem<TKey, TValue>
 {
-    public readonly ProducerMessage<TKey, TValue> Message;
-    public readonly TaskCompletionSource<RecordMetadata> Completion;
-    public readonly CancellationToken CancellationToken;
+    public ProducerMessage<TKey, TValue> Message { get; }
+    public TaskCompletionSource<RecordMetadata> Completion { get; }
+    public CancellationToken CancellationToken { get; }
 
     public ProduceWorkItem(
         ProducerMessage<TKey, TValue> message,

@@ -172,7 +172,7 @@ public class MemoryBenchmarks
             LingerMs = 100
         };
 
-        var accumulator = new RecordAccumulator(options);
+        var accumulator = new RecordAccumulator(options, _ => { });
         var topicPartition = new TopicPartition("test-topic", 0);
 
         try
