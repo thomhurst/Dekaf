@@ -143,6 +143,10 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private volatile bool _disposed;
     private volatile bool _closed;
 
+    // Reusable CancellationTokenSource instances to avoid allocations in hot paths
+    private readonly CancellationTokenSource _reusableTimeoutCts = new();
+    private readonly CancellationTokenSource _reusableWakeupCts = new();
+
     // Statistics collection
     private readonly ConsumerStatisticsCollector _statisticsCollector = new();
     private readonly StatisticsEmitter<ConsumerStatistics>? _statisticsEmitter;
@@ -425,15 +429,17 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     else
                     {
                         // Wait for prefetch with timeout, then try direct fetch
-                        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(_options.FetchMaxWaitMs));
-                        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+                        // Reuse CTS to avoid allocation
+                        _reusableTimeoutCts.TryReset();
+                        _reusableTimeoutCts.CancelAfter(TimeSpan.FromMilliseconds(_options.FetchMaxWaitMs));
+                        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _reusableTimeoutCts.Token);
                         try
                         {
                             var fetched = await _prefetchChannel.Reader.ReadAsync(linkedCts.Token).ConfigureAwait(false);
                             _pendingFetches.Enqueue(fetched);
                             TrackPrefetchedBytes(fetched, release: true);
                         }
-                        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+                        catch (OperationCanceledException) when (_reusableTimeoutCts.IsCancellationRequested)
                         {
                             // Prefetch not ready, continue loop
                             continue;
@@ -559,7 +565,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     private async ValueTask PrefetchRecordsAsync(CancellationToken cancellationToken)
     {
-        _wakeupCts = new CancellationTokenSource();
+        // Reuse wakeup CTS to avoid allocation
+        _reusableWakeupCts.TryReset();
+        _wakeupCts = _reusableWakeupCts;
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _wakeupCts.Token);
 
         var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
@@ -745,8 +753,10 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         TimeSpan timeout,
         CancellationToken cancellationToken = default)
     {
-        using var timeoutCts = new CancellationTokenSource(timeout);
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        // Reuse CTS to avoid allocation
+        _reusableTimeoutCts.TryReset();
+        _reusableTimeoutCts.CancelAfter(timeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _reusableTimeoutCts.Token);
 
         await foreach (var result in ConsumeAsync(linkedCts.Token).ConfigureAwait(false))
         {
@@ -1414,7 +1424,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     private async ValueTask FetchRecordsAsync(CancellationToken cancellationToken)
     {
-        _wakeupCts = new CancellationTokenSource();
+        // Reuse wakeup CTS to avoid allocation
+        _reusableWakeupCts.TryReset();
+        _wakeupCts = _reusableWakeupCts;
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _wakeupCts.Token);
 
         var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
@@ -1941,6 +1953,10 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         _autoCommitCts?.Dispose();
         _wakeupCts?.Dispose();
         _prefetchCts?.Dispose();
+
+        // Dispose reusable CancellationTokenSource instances
+        _reusableTimeoutCts.Dispose();
+        _reusableWakeupCts.Dispose();
 
         // Clear any pending fetch data
         _pendingFetches.Clear();
