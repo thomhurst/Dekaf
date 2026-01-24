@@ -103,8 +103,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly HashSet<string> _subscription = [];
     private readonly HashSet<TopicPartition> _assignment = [];
     private readonly HashSet<TopicPartition> _paused = [];
-    private readonly Dictionary<TopicPartition, long> _positions = [];      // Consumed position (what app has seen)
-    private readonly Dictionary<TopicPartition, long> _fetchPositions = []; // Fetch position (what to fetch next)
+    private readonly ConcurrentDictionary<TopicPartition, long> _positions = new();      // Consumed position (what app has seen)
+    private readonly ConcurrentDictionary<TopicPartition, long> _fetchPositions = new(); // Fetch position (what to fetch next)
     private readonly Dictionary<TopicPartition, long> _committed = [];
     private readonly ConcurrentDictionary<TopicPartition, WatermarkOffsets> _watermarks = new(); // Cached watermark offsets from fetch responses
 
@@ -113,8 +113,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly ConcurrentDictionary<TopicPartition, long> _storedOffsets = new();
 
     // Partition EOF tracking
-    private readonly Dictionary<TopicPartition, long> _highWatermarks = [];  // High watermark per partition
-    private readonly HashSet<TopicPartition> _eofEmitted = [];               // Partitions where EOF has been emitted
+    private readonly ConcurrentDictionary<TopicPartition, long> _highWatermarks = new();  // High watermark per partition (thread-safe for prefetch)
+    private readonly HashSet<TopicPartition> _eofEmitted = [];               // Partitions where EOF has been emitted (still needs lock)
     private readonly ConcurrentQueue<(TopicPartition Partition, long Offset)> _pendingEofEvents = new(); // Pending EOF events to yield (thread-safe for prefetch thread)
 
     // Pending fetch responses for lazy record iteration
@@ -360,8 +360,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             _assignment.Remove(partition);
             _paused.Remove(partition);
-            _positions.Remove(partition);
-            _fetchPositions.Remove(partition);
+            _positions.TryRemove(partition, out _);
+            _fetchPositions.TryRemove(partition, out _);
             _committed.Remove(partition);
         }
 
@@ -473,7 +473,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                         keyDeserializer: _keyDeserializer,
                         valueDeserializer: _valueDeserializer);
 
-                    // Update positions
+                    // Update positions (thread-safe with ConcurrentDictionary)
                     var tp = new TopicPartition(pending.Topic, pending.PartitionIndex);
                     _positions[tp] = offset + 1;
                     _fetchPositions[tp] = offset + 1;
@@ -633,11 +633,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     continue;
                 }
 
-// Update high watermark from response (thread-safe update)
-                lock (_prefetchLock)
-                {
-                    _highWatermarks[tp] = partitionResponse.HighWatermark;
-                }
+                // Update high watermark from response (thread-safe with ConcurrentDictionary)
+                _highWatermarks[tp] = partitionResponse.HighWatermark;
 
                 // Update high watermark for statistics
                 if (partitionResponse.HighWatermark >= 0)
@@ -702,14 +699,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         var lastOffset = lastBatch.BaseOffset + lastBatch.LastOffsetDelta;
         var tp = new TopicPartition(pending.Topic, pending.PartitionIndex);
 
-        lock (_prefetchLock)
-        {
-            var currentPos = _fetchPositions.GetValueOrDefault(tp, 0);
-            if (lastOffset + 1 > currentPos)
-            {
-                _fetchPositions[tp] = lastOffset + 1;
-            }
-        }
+        // Thread-safe update using ConcurrentDictionary
+        _fetchPositions.AddOrUpdate(
+            tp,
+            lastOffset + 1,
+            (_, currentPos) => Math.Max(currentPos, lastOffset + 1));
     }
 
     private void TrackPrefetchedBytes(PendingFetchData pending, bool release)
@@ -853,11 +847,13 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     public IKafkaConsumer<TKey, TValue> Seek(TopicPartitionOffset offset)
     {
         var tp = new TopicPartition(offset.Topic, offset.Partition);
+        // Update positions (thread-safe with ConcurrentDictionary)
+        _positions[tp] = offset.Offset;
+        _fetchPositions[tp] = offset.Offset;
+
+        // Reset EOF state for this partition so it can fire again (still needs lock)
         lock (_prefetchLock)
         {
-            _positions[tp] = offset.Offset;
-            _fetchPositions[tp] = offset.Offset;
-            // Reset EOF state for this partition so it can fire again
             _eofEmitted.Remove(tp);
         }
         ClearFetchBuffer();
@@ -866,13 +862,18 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     public IKafkaConsumer<TKey, TValue> SeekToBeginning(params TopicPartition[] partitions)
     {
+        // Update positions (thread-safe with ConcurrentDictionary)
+        foreach (var partition in partitions)
+        {
+            _positions[partition] = 0;
+            _fetchPositions[partition] = 0;
+        }
+
+        // Reset EOF state (still needs lock)
         lock (_prefetchLock)
         {
             foreach (var partition in partitions)
             {
-                _positions[partition] = 0;
-                _fetchPositions[partition] = 0;
-                // Reset EOF state for this partition so it can fire again
                 _eofEmitted.Remove(partition);
             }
         }
@@ -882,13 +883,18 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     public IKafkaConsumer<TKey, TValue> SeekToEnd(params TopicPartition[] partitions)
     {
+        // Update positions (thread-safe with ConcurrentDictionary)
+        foreach (var partition in partitions)
+        {
+            _positions[partition] = -1; // Special value meaning end
+            _fetchPositions[partition] = -1; // Special value meaning end
+        }
+
+        // Reset EOF state (still needs lock)
         lock (_prefetchLock)
         {
             foreach (var partition in partitions)
             {
-                _positions[partition] = -1; // Special value meaning end
-                _fetchPositions[partition] = -1; // Special value meaning end
-                // Reset EOF state for this partition so it can fire again
                 _eofEmitted.Remove(partition);
             }
         }
@@ -1135,13 +1141,18 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 _assignment.Add(partition);
             }
 
-// Clean up EOF state for removed partitions (under lock for thread-safety with prefetch)
+            // Clean up state for removed partitions
+            foreach (var partition in removedPartitions)
+            {
+                _highWatermarks.TryRemove(partition, out _);
+            }
+
+            // Clean up EOF state (still needs lock)
             lock (_prefetchLock)
             {
                 foreach (var partition in removedPartitions)
                 {
                     _eofEmitted.Remove(partition);
-                    _highWatermarks.Remove(partition);
                 }
             }
 
@@ -1448,11 +1459,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     continue;
                 }
 
-// Update high watermark from response (thread-safe update)
-                lock (_prefetchLock)
-                {
-                    _highWatermarks[tp] = partitionResponse.HighWatermark;
-                }
+                // Update high watermark from response (thread-safe with ConcurrentDictionary)
+                _highWatermarks[tp] = partitionResponse.HighWatermark;
 
                 // Update high watermark for statistics
                 if (partitionResponse.HighWatermark >= 0)
@@ -1647,7 +1655,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
 
         // Step 4: Commit pending offsets (if auto-commit enabled and we have a coordinator)
-        if (_options.EnableAutoCommit && _coordinator is not null && _positions.Count > 0)
+        if (_options.EnableAutoCommit && _coordinator is not null && !_positions.IsEmpty)
         {
             try
             {
