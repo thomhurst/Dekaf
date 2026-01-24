@@ -363,15 +363,31 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         // Notify listener
         if (_rebalanceListener is not null)
         {
-            var revoked = oldAssignment.Except(_assignedPartitions);
-            var assigned = _assignedPartitions.Except(oldAssignment);
+            // Compute revoked and assigned partitions without LINQ to avoid allocations
+            var revoked = new List<TopicPartition>();
+            foreach (var partition in oldAssignment)
+            {
+                if (!_assignedPartitions.Contains(partition))
+                {
+                    revoked.Add(partition);
+                }
+            }
 
-            if (revoked.Any())
+            var assigned = new List<TopicPartition>();
+            foreach (var partition in _assignedPartitions)
+            {
+                if (!oldAssignment.Contains(partition))
+                {
+                    assigned.Add(partition);
+                }
+            }
+
+            if (revoked.Count > 0)
             {
                 await _rebalanceListener.OnPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
             }
 
-            if (assigned.Any())
+            if (assigned.Count > 0)
             {
                 await _rebalanceListener.OnPartitionsAssignedAsync(assigned, cancellationToken).ConfigureAwait(false);
             }
@@ -723,12 +739,21 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
 
         foreach (var (topic, partitionCount) in topicPartitions)
         {
-            // Get members interested in this topic
-            var interestedMembers = members
-                .Where(m => memberSubscriptions[m.MemberId].Contains(topic))
-                .Select(m => m.MemberId)
-                .OrderBy(id => id) // Sort for deterministic assignment
-                .ToList();
+            // Get members interested in this topic without LINQ to avoid allocations
+            var interestedMembers = new List<string>();
+            foreach (var member in members)
+            {
+                if (memberSubscriptions[member.MemberId].Contains(topic))
+                {
+                    interestedMembers.Add(member.MemberId);
+                }
+            }
+
+            // Sort for deterministic assignment
+            if (interestedMembers.Count > 1)
+            {
+                interestedMembers.Sort(StringComparer.Ordinal);
+            }
 
             if (interestedMembers.Count == 0)
                 continue;
