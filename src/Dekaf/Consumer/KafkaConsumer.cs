@@ -149,8 +149,10 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     // Cached partition grouping by broker to avoid allocations on every fetch
     // Invalidated whenever _assignment or _paused changes
+    // Access to _cachedPartitionsByBroker must be synchronized via _partitionCacheLock
     private Dictionary<int, List<TopicPartition>>? _cachedPartitionsByBroker;
     private int _assignmentVersion;
+    private readonly object _partitionCacheLock = new();
 
     public KafkaConsumer(
         ConsumerOptions options,
@@ -1455,16 +1457,22 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void InvalidatePartitionCache()
     {
-        _assignmentVersion++;
-        _cachedPartitionsByBroker = null;
+        lock (_partitionCacheLock)
+        {
+            _assignmentVersion++;
+            _cachedPartitionsByBroker = null;
+        }
     }
 
     private async ValueTask<Dictionary<int, List<TopicPartition>>> GroupPartitionsByBrokerAsync(CancellationToken cancellationToken)
     {
-        // Check if we have a valid cache
-        if (_cachedPartitionsByBroker is not null)
+        // Check if we have a valid cache (synchronized read)
+        lock (_partitionCacheLock)
         {
-            return _cachedPartitionsByBroker;
+            if (_cachedPartitionsByBroker is not null)
+            {
+                return _cachedPartitionsByBroker;
+            }
         }
 
         // Build the cache - allocate once per assignment change
@@ -1490,9 +1498,12 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             list.Add(partition);
         }
 
-        // Cache the result - will be reused until assignment/paused changes
-        _cachedPartitionsByBroker = result;
-        return result;
+        // Cache the result - will be reused until assignment/paused changes (synchronized write)
+        lock (_partitionCacheLock)
+        {
+            _cachedPartitionsByBroker = result;
+            return result;
+        }
     }
 
     private async ValueTask FetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
