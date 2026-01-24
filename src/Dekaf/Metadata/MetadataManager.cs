@@ -16,7 +16,10 @@ public sealed class MetadataManager : IAsyncDisposable
     private readonly ILogger<MetadataManager>? _logger;
     private readonly ClusterMetadata _metadata = new();
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
-    private readonly List<string> _bootstrapServers;
+    private readonly List<(string Host, int Port)> _bootstrapEndpoints;
+    private List<(string Host, int Port)>? _cachedEndpoints;
+    private int _cachedBrokerHash;
+    private readonly object _endpointCacheLock = new();
 
     private volatile short _metadataApiVersion = -1;
     private readonly ConcurrentDictionary<ApiKey, (short MinVersion, short MaxVersion)> _brokerApiVersions = new();
@@ -32,9 +35,24 @@ public sealed class MetadataManager : IAsyncDisposable
         ILogger<MetadataManager>? logger = null)
     {
         _connectionPool = connectionPool;
-        _bootstrapServers = bootstrapServers.ToList();
         _options = options ?? new MetadataOptions();
         _logger = logger;
+
+        // Pre-parse bootstrap servers to avoid allocation in hot path
+        _bootstrapEndpoints = new List<(string Host, int Port)>();
+        foreach (var server in bootstrapServers)
+        {
+            var colonIndex = server.IndexOf(':');
+            if (colonIndex > 0 && colonIndex < server.Length - 1)
+            {
+                var host = server.Substring(0, colonIndex);
+                var portStr = server.Substring(colonIndex + 1);
+                if (int.TryParse(portStr, out var port))
+                {
+                    _bootstrapEndpoints.Add((host, port));
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -264,9 +282,15 @@ public sealed class MetadataManager : IAsyncDisposable
             }
         }
 
-        // Set metadata API version
-        _metadataApiVersion = Math.Min(metadataApi?.MaxVersion ?? 0, MetadataRequest.HighestSupportedVersion);
-        if (_metadataApiVersion < MetadataRequest.LowestSupportedVersion)
+        if (metadataApi is not null)
+        {
+            _metadataApiVersion = Math.Min(metadataApi.Value.MaxVersion, MetadataRequest.HighestSupportedVersion);
+            if (_metadataApiVersion < MetadataRequest.LowestSupportedVersion)
+            {
+                _metadataApiVersion = MetadataRequest.LowestSupportedVersion;
+            }
+        }
+        else
         {
             _metadataApiVersion = MetadataRequest.LowestSupportedVersion;
         }
@@ -274,22 +298,54 @@ public sealed class MetadataManager : IAsyncDisposable
         _logger?.LogDebug("Negotiated Metadata API version: {Version}", _metadataApiVersion);
     }
 
-    private IEnumerable<(string Host, int Port)> GetEndpointsToTry()
+    internal List<(string Host, int Port)> GetEndpointsToTry()
     {
-        // First try known brokers
-        foreach (var broker in _metadata.GetBrokers())
-        {
-            yield return (broker.Host, broker.Port);
-        }
+        // Get current brokers - this allocates, but we need it to detect changes
+        var currentBrokers = _metadata.GetBrokers();
 
-        // Then bootstrap servers
-        foreach (var server in _bootstrapServers)
+        // Thread-safe cache check - avoid rebuilding if brokers haven't changed
+        lock (_endpointCacheLock)
         {
-            var parts = server.Split(':');
-            if (parts.Length == 2 && int.TryParse(parts[1], out var port))
+            // Compute hash of broker data (NodeId, Host, Port) to detect any changes
+            // This detects count changes, membership changes, AND host/port changes
+            var hash = new HashCode();
+            foreach (var broker in currentBrokers)
             {
-                yield return (parts[0], port);
+                hash.Add(broker.NodeId);
+                hash.Add(broker.Host);
+                hash.Add(broker.Port);
             }
+            var currentBrokerHash = hash.ToHashCode();
+
+            // Cache is valid if broker hash hasn't changed
+            if (_cachedEndpoints is not null && _cachedBrokerHash == currentBrokerHash)
+            {
+                // Return defensive copy to prevent caller modification
+                return new List<(string Host, int Port)>(_cachedEndpoints);
+            }
+
+            // Build new endpoint list (allocation only when metadata changes)
+            var endpoints = new List<(string Host, int Port)>(
+                currentBrokers.Count + _bootstrapEndpoints.Count);
+
+            // First try known brokers
+            foreach (var broker in currentBrokers)
+            {
+                endpoints.Add((broker.Host, broker.Port));
+            }
+
+            // Then bootstrap servers
+            foreach (var endpoint in _bootstrapEndpoints)
+            {
+                endpoints.Add(endpoint);
+            }
+
+            // Update cache with new hash and endpoints
+            _cachedBrokerHash = currentBrokerHash;
+            _cachedEndpoints = endpoints;
+
+            // Return defensive copy
+            return new List<(string Host, int Port)>(endpoints);
         }
     }
 
