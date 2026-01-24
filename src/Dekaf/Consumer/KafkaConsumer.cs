@@ -151,7 +151,6 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     // Invalidated whenever _assignment or _paused changes
     // Access to _cachedPartitionsByBroker must be synchronized via _partitionCacheLock
     private Dictionary<int, List<TopicPartition>>? _cachedPartitionsByBroker;
-    private int _assignmentVersion;
     private readonly object _partitionCacheLock = new();
 
     public KafkaConsumer(
@@ -1459,28 +1458,35 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     {
         lock (_partitionCacheLock)
         {
-            _assignmentVersion++;
             _cachedPartitionsByBroker = null;
         }
     }
 
     private async ValueTask<Dictionary<int, List<TopicPartition>>> GroupPartitionsByBrokerAsync(CancellationToken cancellationToken)
     {
-        // Check if we have a valid cache (synchronized read)
+        // Check cache and take snapshot of assignment/paused while holding lock
+        HashSet<TopicPartition> assignmentSnapshot;
+        HashSet<TopicPartition> pausedSnapshot;
+
         lock (_partitionCacheLock)
         {
             if (_cachedPartitionsByBroker is not null)
             {
                 return _cachedPartitionsByBroker;
             }
+
+            // Take snapshot of assignment and paused sets to avoid race conditions
+            // during iteration (these are regular HashSets, not thread-safe)
+            assignmentSnapshot = new HashSet<TopicPartition>(_assignment);
+            pausedSnapshot = new HashSet<TopicPartition>(_paused);
         }
 
-        // Build the cache - allocate once per assignment change
+        // Build the cache outside the lock - allocate once per assignment change
         var result = new Dictionary<int, List<TopicPartition>>();
 
-        foreach (var partition in _assignment)
+        foreach (var partition in assignmentSnapshot)
         {
-            if (_paused.Contains(partition))
+            if (pausedSnapshot.Contains(partition))
                 continue;
 
             var leader = await _metadataManager.GetPartitionLeaderAsync(partition.Topic, partition.Partition, cancellationToken)
