@@ -1032,8 +1032,22 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             listOffsetsVersion,
             cancellationToken).ConfigureAwait(false);
 
-        var earliestTopicResponse = earliestResponse.Topics.FirstOrDefault(t => t.Name == topicPartition.Topic);
-        var earliestPartitionResponse = earliestTopicResponse?.Partitions.FirstOrDefault(p => p.PartitionIndex == topicPartition.Partition);
+        Protocol.Messages.ListOffsetsResponsePartition? earliestPartitionResponse = null;
+        foreach (var topic in earliestResponse.Topics)
+        {
+            if (topic.Name == topicPartition.Topic)
+            {
+                foreach (var partition in topic.Partitions)
+                {
+                    if (partition.PartitionIndex == topicPartition.Partition)
+                    {
+                        earliestPartitionResponse = partition;
+                        break;
+                    }
+                }
+                break;
+            }
+        }
 
         if (earliestPartitionResponse?.ErrorCode != ErrorCode.None)
         {
@@ -1071,8 +1085,22 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             listOffsetsVersion,
             cancellationToken).ConfigureAwait(false);
 
-        var latestTopicResponse = latestResponse.Topics.FirstOrDefault(t => t.Name == topicPartition.Topic);
-        var latestPartitionResponse = latestTopicResponse?.Partitions.FirstOrDefault(p => p.PartitionIndex == topicPartition.Partition);
+        Protocol.Messages.ListOffsetsResponsePartition? latestPartitionResponse = null;
+        foreach (var topic in latestResponse.Topics)
+        {
+            if (topic.Name == topicPartition.Topic)
+            {
+                foreach (var partition in topic.Partitions)
+                {
+                    if (partition.PartitionIndex == topicPartition.Partition)
+                    {
+                        latestPartitionResponse = partition;
+                        break;
+                    }
+                }
+                break;
+            }
+        }
 
         if (latestPartitionResponse?.ErrorCode != ErrorCode.None)
         {
@@ -1258,8 +1286,22 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             listOffsetsVersion,
             cancellationToken).ConfigureAwait(false);
 
-        var topicResponse = response.Topics.FirstOrDefault(t => t.Name == partition.Topic);
-        var partitionResponse = topicResponse?.Partitions.FirstOrDefault(p => p.PartitionIndex == partition.Partition);
+        Protocol.Messages.ListOffsetsResponsePartition? partitionResponse = null;
+        foreach (var topic in response.Topics)
+        {
+            if (topic.Name == partition.Topic)
+            {
+                foreach (var p in topic.Partitions)
+                {
+                    if (p.PartitionIndex == partition.Partition)
+                    {
+                        partitionResponse = p;
+                        break;
+                    }
+                }
+                break;
+            }
+        }
 
         return partitionResponse?.Offset ?? 0;
     }
@@ -1319,8 +1361,22 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             listOffsetsVersion,
             cancellationToken).ConfigureAwait(false);
 
-        var topicResponse = response.Topics.FirstOrDefault(t => t.Name == partition.Topic);
-        var partitionResponse = topicResponse?.Partitions.FirstOrDefault(p => p.PartitionIndex == partition.Partition);
+        Protocol.Messages.ListOffsetsResponsePartition? partitionResponse = null;
+        foreach (var topic in response.Topics)
+        {
+            if (topic.Name == partition.Topic)
+            {
+                foreach (var p in topic.Partitions)
+                {
+                    if (p.PartitionIndex == partition.Partition)
+                    {
+                        partitionResponse = p;
+                        break;
+                    }
+                }
+                break;
+            }
+        }
 
         return partitionResponse?.Offset ?? 0;
     }
