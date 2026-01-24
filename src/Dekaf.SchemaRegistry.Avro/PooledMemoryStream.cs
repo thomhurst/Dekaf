@@ -18,6 +18,18 @@ internal sealed class PooledMemoryStream : Stream
     /// Creates a new PooledMemoryStream with an initial rented buffer for writing.
     /// </summary>
     /// <param name="initialBuffer">The initial buffer (should be rented from ArrayPool).</param>
+    /// <remarks>
+    /// <para>
+    /// <b>Buffer Ownership:</b> The caller retains ownership of the initial buffer and is
+    /// responsible for returning it to the ArrayPool after disposing the stream.
+    /// </para>
+    /// <para>
+    /// If the stream needs to grow beyond the initial buffer's capacity, it will rent a new
+    /// buffer from the ArrayPool. In this case, the stream takes ownership of the new buffer
+    /// and will return it to the pool on disposal. The original buffer remains the caller's
+    /// responsibility.
+    /// </para>
+    /// </remarks>
     public PooledMemoryStream(byte[] initialBuffer)
     {
         _buffer = initialBuffer;
@@ -29,6 +41,17 @@ internal sealed class PooledMemoryStream : Stream
     /// </summary>
     /// <param name="buffer">The buffer containing data (should be rented from ArrayPool).</param>
     /// <param name="length">The number of valid bytes in the buffer.</param>
+    /// <remarks>
+    /// <para>
+    /// <b>Buffer Ownership:</b> The caller retains ownership of the buffer and is responsible
+    /// for returning it to the ArrayPool after disposing the stream. The stream will not
+    /// return the buffer to the pool on disposal.
+    /// </para>
+    /// <para>
+    /// This constructor is typically used for read operations where the caller has already
+    /// rented a buffer, copied data into it, and needs to read that data through a Stream API.
+    /// </para>
+    /// </remarks>
     public PooledMemoryStream(byte[] buffer, int length)
     {
         _buffer = buffer;

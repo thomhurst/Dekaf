@@ -99,8 +99,9 @@ public sealed class AvroSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         var subject = GetSubjectName(context.Topic, context.Component == SerializationComponent.Key);
         var schemaId = GetSchemaIdCached(subject, value);
 
-        // Use a pooled buffer for Avro serialization
-        // Initial estimate: 1KB should handle most messages, will grow if needed
+        // Rent initial buffer - 1024 bytes covers most Avro messages.
+        // ArrayPool rounds up to power-of-2 buckets, so smaller values provide little benefit.
+        // For very large messages, the PooledMemoryStream will grow automatically.
         var rentedBuffer = ArrayPool<byte>.Shared.Rent(1024);
         try
         {
