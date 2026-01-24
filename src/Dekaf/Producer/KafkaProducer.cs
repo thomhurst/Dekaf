@@ -52,6 +52,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     [ThreadStatic]
     private static ArrayBufferWriter<byte>? t_valueSerializationBuffer;
 
+    // Thread-local reusable SerializationContext to avoid per-message allocations
+    // Since SerializationContext contains reference types (Topic, Headers), copying it
+    // involves copying those references. Using ThreadLocal avoids repeated struct creation.
+    [ThreadStatic]
+    private static SerializationContext t_serializationContext;
+
     public KafkaProducer(
         ProducerOptions options,
         ISerializer<TKey> keySerializer,
@@ -534,13 +540,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private PooledMemory SerializeKeyToPooled(TKey key, string topic, Headers? headers)
     {
         var buffer = GetKeySerializationBuffer();
-        var context = new SerializationContext
+
+        // Reuse thread-local context to avoid allocation
+        t_serializationContext = new SerializationContext
         {
             Topic = topic,
             Component = SerializationComponent.Key,
             Headers = headers
         };
-        _keySerializer.Serialize(key, buffer, context);
+        _keySerializer.Serialize(key, buffer, t_serializationContext);
 
         // Rent from pool and copy serialized data
         var length = buffer.WrittenCount;
@@ -555,13 +563,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private PooledMemory SerializeValueToPooled(TValue value, string topic, Headers? headers)
     {
         var buffer = GetValueSerializationBuffer();
-        var context = new SerializationContext
+
+        // Reuse thread-local context to avoid allocation
+        t_serializationContext = new SerializationContext
         {
             Topic = topic,
             Component = SerializationComponent.Value,
             Headers = headers
         };
-        _valueSerializer.Serialize(value, buffer, context);
+        _valueSerializer.Serialize(value, buffer, t_serializationContext);
 
         // Rent from pool and copy serialized data
         var length = buffer.WrittenCount;
