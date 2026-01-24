@@ -1575,6 +1575,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     /// <summary>
     /// Returns headers directly without conversion. Returns null if empty.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static IReadOnlyList<RecordHeader>? GetHeaders(IReadOnlyList<RecordHeader>? recordHeaders)
     {
         // Return null for empty to avoid exposing empty lists
