@@ -264,9 +264,15 @@ public sealed class MetadataManager : IAsyncDisposable
             }
         }
 
-        // Set metadata API version
-        _metadataApiVersion = Math.Min(metadataApi?.MaxVersion ?? 0, MetadataRequest.HighestSupportedVersion);
-        if (_metadataApiVersion < MetadataRequest.LowestSupportedVersion)
+        if (metadataApi is not null)
+        {
+            _metadataApiVersion = Math.Min(metadataApi.Value.MaxVersion, MetadataRequest.HighestSupportedVersion);
+            if (_metadataApiVersion < MetadataRequest.LowestSupportedVersion)
+            {
+                _metadataApiVersion = MetadataRequest.LowestSupportedVersion;
+            }
+        }
+        else
         {
             _metadataApiVersion = MetadataRequest.LowestSupportedVersion;
         }
