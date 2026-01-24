@@ -8,17 +8,27 @@ public class StatisticsEmitterTests
     public async Task Emitter_CallsHandler_AtInterval()
     {
         var callCount = 0;
+        var callEvent = new ManualResetEventSlim(false);
         var emitter = new StatisticsEmitter<int>(
             TimeSpan.FromMilliseconds(50),
             () => 42,
-            _ => Interlocked.Increment(ref callCount));
+            _ =>
+            {
+                Interlocked.Increment(ref callCount);
+                callEvent.Set();
+            });
 
-        // Wait for a few emissions
-        await Task.Delay(180);
+        // Wait for at least one emission with timeout
+        var signaled = callEvent.Wait(TimeSpan.FromSeconds(2));
+        await Assert.That(signaled).IsTrue();
+
+        // Wait for more emissions (enough time for multiple intervals)
+        await Task.Delay(300);
 
         await emitter.DisposeAsync().ConfigureAwait(false);
 
-        // Should have been called at least 2-3 times (50ms interval, 180ms wait)
+        // Should have been called at least 2 times (50ms interval, 300ms+ wait)
+        // Using relaxed expectation for CI environments
         await Assert.That(callCount).IsGreaterThanOrEqualTo(2);
     }
 
@@ -27,12 +37,25 @@ public class StatisticsEmitterTests
     {
         var receivedValues = new List<string>();
         var counter = 0;
+        var tcs = new TaskCompletionSource<bool>();
         var emitter = new StatisticsEmitter<string>(
-            TimeSpan.FromMilliseconds(30),
+            TimeSpan.FromMilliseconds(50),
             () => $"stats-{Interlocked.Increment(ref counter)}",
-            value => { lock (receivedValues) { receivedValues.Add(value); } });
+            value =>
+            {
+                lock (receivedValues)
+                {
+                    receivedValues.Add(value);
+                    if (receivedValues.Count >= 2)
+                    {
+                        tcs.TrySetResult(true);
+                    }
+                }
+            });
 
-        await Task.Delay(100);
+        // Wait for at least 2 emissions with timeout
+        var completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(3))) == tcs.Task;
+        await Assert.That(completed).IsTrue();
 
         await emitter.DisposeAsync().ConfigureAwait(false);
 
@@ -65,13 +88,23 @@ public class StatisticsEmitterTests
     public async Task Emitter_SwallowsExceptions_InHandler()
     {
         var successCount = 0;
+        var countEvent = new ManualResetEventSlim(false);
         var emitter = new StatisticsEmitter<int>(
-            TimeSpan.FromMilliseconds(20),
-            () => Interlocked.Increment(ref successCount),
+            TimeSpan.FromMilliseconds(50),
+            () =>
+            {
+                var count = Interlocked.Increment(ref successCount);
+                if (count >= 2)
+                {
+                    countEvent.Set();
+                }
+                return count;
+            },
             _ => throw new InvalidOperationException("Test exception"));
 
-        // Should not throw and continue emitting
-        await Task.Delay(100);
+        // Wait for at least 2 collector calls with timeout
+        var signaled = countEvent.Wait(TimeSpan.FromSeconds(3));
+        await Assert.That(signaled).IsTrue();
 
         await emitter.DisposeAsync().ConfigureAwait(false);
 
@@ -84,11 +117,16 @@ public class StatisticsEmitterTests
     {
         var handlerCallCount = 0;
         var collectorCallCount = 0;
+        var countEvent = new ManualResetEventSlim(false);
         var emitter = new StatisticsEmitter<int>(
-            TimeSpan.FromMilliseconds(20),
+            TimeSpan.FromMilliseconds(50),
             () =>
             {
                 var count = Interlocked.Increment(ref collectorCallCount);
+                if (count >= 3)
+                {
+                    countEvent.Set();
+                }
                 if (count % 2 == 0)
                 {
                     throw new InvalidOperationException("Test exception on even calls");
@@ -97,7 +135,9 @@ public class StatisticsEmitterTests
             },
             _ => Interlocked.Increment(ref handlerCallCount));
 
-        await Task.Delay(100);
+        // Wait for at least 3 collector calls with timeout
+        var signaled = countEvent.Wait(TimeSpan.FromSeconds(3));
+        await Assert.That(signaled).IsTrue();
 
         await emitter.DisposeAsync().ConfigureAwait(false);
 
