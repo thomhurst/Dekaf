@@ -466,7 +466,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                         ? TimestampType.LogAppendTime
                         : TimestampType.CreateTime;
 
-                    // Create result with raw data - deserialization happens lazily on Key/Value access
+                    // Create result - deserialization happens eagerly in the constructor
                     var result = new ConsumeResult<TKey, TValue>(
                         topic: pending.Topic,
                         partition: pending.PartitionIndex,
