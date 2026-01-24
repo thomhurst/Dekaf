@@ -229,20 +229,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         var timestamp = message.Timestamp ?? DateTimeOffset.UtcNow;
         var timestampMs = timestamp.ToUnixTimeMilliseconds();
 
-        // Convert headers without LINQ to avoid enumerator allocations
+        // Convert headers with minimal allocations
         IReadOnlyList<RecordHeader>? recordHeaders = null;
+        RecordHeader[]? pooledHeaderArray = null;
         if (message.Headers is not null && message.Headers.Count > 0)
         {
-            var headers = new List<RecordHeader>(message.Headers.Count);
-            foreach (var h in message.Headers)
-            {
-                headers.Add(new RecordHeader
-                {
-                    Key = h.Key,
-                    Value = h.Value
-                });
-            }
-            recordHeaders = headers;
+            recordHeaders = ConvertHeaders(message.Headers, out pooledHeaderArray);
         }
 
         // Append to accumulator - passes completion through to batch
@@ -253,6 +245,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             key,
             value,
             recordHeaders,
+            pooledHeaderArray,
             completion,
             cancellationToken).ConfigureAwait(false);
 
@@ -553,6 +546,52 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         return new PooledMemory(array, length);
     }
 
+    /// <summary>
+    /// Converts Headers to RecordHeaders with minimal allocations.
+    /// Allocates an array directly instead of using List to avoid the List wrapper allocation.
+    /// For small header counts (<=16), allocates a small array on the heap.
+    /// For larger counts (>16), uses ArrayPool to avoid allocating large arrays that could pressure GC.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static IReadOnlyList<RecordHeader> ConvertHeaders(Headers headers, out RecordHeader[]? pooledArray)
+    {
+        const int PoolingThreshold = 16;
+        var count = headers.Count;
+        pooledArray = null;
+
+        RecordHeader[] result;
+        if (count <= PoolingThreshold)
+        {
+            // Small header count: allocate array directly (one allocation vs List's two allocations)
+            result = new RecordHeader[count];
+        }
+        else
+        {
+            // Large header count: rent from pool to avoid large array allocations
+            result = ArrayPool<RecordHeader>.Shared.Rent(count);
+            pooledArray = result; // Track for returning to pool later
+        }
+
+        var index = 0;
+        foreach (var h in headers)
+        {
+            result[index++] = new RecordHeader
+            {
+                Key = h.Key,
+                Value = h.Value,
+                IsValueNull = h.IsValueNull
+            };
+        }
+
+        // If pooled, wrap in HeaderListWrapper to expose only the valid portion
+        if (pooledArray is not null)
+        {
+            return new HeaderListWrapper(result, count);
+        }
+
+        return result;
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
@@ -726,4 +765,43 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         }
         return ValueTask.CompletedTask;
     }
+}
+
+/// <summary>
+/// Zero-allocation wrapper around a pooled array that implements IReadOnlyList.
+/// The array is returned to the pool when the wrapper is no longer needed.
+/// This struct is used to avoid List allocations in the producer hot path.
+/// </summary>
+internal readonly struct HeaderListWrapper : IReadOnlyList<RecordHeader>
+{
+    private readonly RecordHeader[] _array;
+    private readonly int _count;
+
+    public HeaderListWrapper(RecordHeader[] array, int count)
+    {
+        _array = array;
+        _count = count;
+    }
+
+    public RecordHeader this[int index]
+    {
+        get
+        {
+            if (index < 0 || index >= _count)
+                throw new ArgumentOutOfRangeException(nameof(index));
+            return _array[index];
+        }
+    }
+
+    public int Count => _count;
+
+    public IEnumerator<RecordHeader> GetEnumerator()
+    {
+        for (var i = 0; i < _count; i++)
+        {
+            yield return _array[i];
+        }
+    }
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 }

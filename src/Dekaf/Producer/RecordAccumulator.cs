@@ -106,6 +106,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Appends a record to the appropriate batch.
     /// Key and value data are pooled - the batch will return them to the pool when complete.
+    /// Header array may also be pooled (if large) and will be returned to pool when batch completes.
     /// The completion source will be completed when the batch is sent.
     /// Blocks if the buffer memory limit is exceeded (backpressure).
     /// </summary>
@@ -115,6 +116,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
         PooledMemory key,
         PooledMemory value,
         IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
         TaskCompletionSource<RecordMetadata> completion,
         CancellationToken cancellationToken)
     {
@@ -129,7 +131,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         var batch = _batches.GetOrAdd(topicPartition, tp => new PartitionBatch(tp, _options, this));
 
-        var result = batch.TryAppend(timestamp, key, value, headers, completion, recordMemory);
+        var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion, recordMemory);
 
         if (!result.Success)
         {
@@ -143,7 +145,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Create new batch and retry
             batch = new PartitionBatch(topicPartition, _options, this);
             _batches[topicPartition] = batch;
-            result = batch.TryAppend(timestamp, key, value, headers, completion, recordMemory);
+            result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion, recordMemory);
         }
 
         return result;
@@ -335,6 +337,7 @@ internal sealed class PartitionBatch
     private readonly List<Record> _records = new(InitialRecordCapacity);
     private readonly List<TaskCompletionSource<RecordMetadata>> _completionSources = new(InitialRecordCapacity);
     private readonly List<byte[]> _pooledArrays = new(InitialRecordCapacity * 2); // 2 arrays per record (key + value)
+    private readonly List<RecordHeader[]> _pooledHeaderArrays = new(); // Pooled header arrays (for large header counts)
     private readonly object _lock = new();
 
     private long _baseTimestamp;
@@ -359,6 +362,7 @@ internal sealed class PartitionBatch
         PooledMemory key,
         PooledMemory value,
         IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
         TaskCompletionSource<RecordMetadata> completion,
         int recordMemory = 0)
     {
@@ -384,6 +388,10 @@ internal sealed class PartitionBatch
             if (value.Array is not null)
             {
                 _pooledArrays.Add(value.Array);
+            }
+            if (pooledHeaderArray is not null)
+            {
+                _pooledHeaderArrays.Add(pooledHeaderArray);
             }
 
             var timestampDelta = (int)(timestamp - _baseTimestamp);
@@ -447,12 +455,13 @@ internal sealed class PartitionBatch
             };
 
             // Pass list directly - PartitionBatch is discarded after Complete()
-            // Also pass pooled arrays so they can be returned when the batch is done
+            // Also pass pooled arrays (both byte[] and RecordHeader[]) so they can be returned when the batch is done
             return new ReadyBatch(
                 _topicPartition,
                 batch,
                 _completionSources,
                 _pooledArrays,
+                _pooledHeaderArrays,
                 _trackedMemory,
                 _accumulator);
         }
@@ -492,6 +501,7 @@ public sealed class ReadyBatch
     public RecordBatch RecordBatch { get; }
     public IReadOnlyList<TaskCompletionSource<RecordMetadata>> CompletionSources { get; }
     private readonly IReadOnlyList<byte[]> _pooledArrays;
+    private readonly IReadOnlyList<RecordHeader[]> _pooledHeaderArrays;
     private readonly int _trackedMemory;
     private readonly RecordAccumulator? _accumulator;
 
@@ -500,6 +510,7 @@ public sealed class ReadyBatch
         RecordBatch recordBatch,
         IReadOnlyList<TaskCompletionSource<RecordMetadata>> completionSources,
         IReadOnlyList<byte[]> pooledArrays,
+        IReadOnlyList<RecordHeader[]> pooledHeaderArrays,
         int trackedMemory = 0,
         RecordAccumulator? accumulator = null)
     {
@@ -507,6 +518,7 @@ public sealed class ReadyBatch
         RecordBatch = recordBatch;
         CompletionSources = completionSources;
         _pooledArrays = pooledArrays;
+        _pooledHeaderArrays = pooledHeaderArrays;
         _trackedMemory = trackedMemory;
         _accumulator = accumulator;
     }
@@ -549,10 +561,16 @@ public sealed class ReadyBatch
 
     private void Cleanup()
     {
-        // Return pooled arrays
+        // Return pooled byte arrays (key/value data)
         foreach (var array in _pooledArrays)
         {
             ArrayPool<byte>.Shared.Return(array);
+        }
+
+        // Return pooled header arrays (large header counts)
+        foreach (var array in _pooledHeaderArrays)
+        {
+            ArrayPool<RecordHeader>.Shared.Return(array);
         }
 
         // Release tracked memory for backpressure
