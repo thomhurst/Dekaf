@@ -18,6 +18,8 @@ public sealed class MetadataManager : IAsyncDisposable
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private readonly List<(string Host, int Port)> _bootstrapEndpoints;
     private List<(string Host, int Port)>? _cachedEndpoints;
+    private int _cachedBrokerCount = -1;
+    private readonly object _endpointCacheLock = new();
 
     private volatile short _metadataApiVersion = -1;
     private readonly ConcurrentDictionary<ApiKey, (short MinVersion, short MaxVersion)> _brokerApiVersions = new();
@@ -298,34 +300,43 @@ public sealed class MetadataManager : IAsyncDisposable
 
     private List<(string Host, int Port)> GetEndpointsToTry()
     {
-        // Check if we have a cached list and brokers haven't changed
+        // Get current brokers - this allocates, but we need it to detect changes
         var currentBrokers = _metadata.GetBrokers();
+        var currentBrokerCount = currentBrokers.Count;
 
-        // If we have cached endpoints and no brokers yet, return cache
-        if (_cachedEndpoints is not null && currentBrokers.Count == 0)
+        // Thread-safe cache check - avoid rebuilding if brokers haven't changed
+        lock (_endpointCacheLock)
         {
-            return _cachedEndpoints;
+            // Cache is valid if broker count hasn't changed
+            if (_cachedEndpoints is not null && _cachedBrokerCount == currentBrokerCount)
+            {
+                // Return defensive copy to prevent caller modification
+                return new List<(string Host, int Port)>(_cachedEndpoints);
+            }
+
+            // Build new endpoint list (allocation only when metadata changes)
+            var endpoints = new List<(string Host, int Port)>(
+                currentBrokerCount + _bootstrapEndpoints.Count);
+
+            // First try known brokers
+            foreach (var broker in currentBrokers)
+            {
+                endpoints.Add((broker.Host, broker.Port));
+            }
+
+            // Then bootstrap servers
+            foreach (var endpoint in _bootstrapEndpoints)
+            {
+                endpoints.Add(endpoint);
+            }
+
+            // Update cache
+            _cachedEndpoints = endpoints;
+            _cachedBrokerCount = currentBrokerCount;
+
+            // Return defensive copy
+            return new List<(string Host, int Port)>(endpoints);
         }
-
-        // Build new endpoint list (allocation only when metadata changes)
-        var endpoints = new List<(string Host, int Port)>(
-            currentBrokers.Count + _bootstrapEndpoints.Count);
-
-        // First try known brokers
-        foreach (var broker in currentBrokers)
-        {
-            endpoints.Add((broker.Host, broker.Port));
-        }
-
-        // Then bootstrap servers
-        foreach (var endpoint in _bootstrapEndpoints)
-        {
-            endpoints.Add(endpoint);
-        }
-
-        // Cache for next call
-        _cachedEndpoints = endpoints;
-        return endpoints;
     }
 
     private void StartBackgroundRefresh()
