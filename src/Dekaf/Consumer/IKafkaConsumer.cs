@@ -204,7 +204,8 @@ public readonly struct ConsumeResult<TKey, TValue>
         TimestampType timestampType,
         int? leaderEpoch,
         IDeserializer<TKey>? keyDeserializer,
-        IDeserializer<TValue>? valueDeserializer)
+        IDeserializer<TValue>? valueDeserializer,
+        bool isPartitionEof = false)
     {
         Topic = topic;
         Partition = partition;
@@ -219,6 +220,36 @@ public readonly struct ConsumeResult<TKey, TValue>
         LeaderEpoch = leaderEpoch;
         _keyDeserializer = keyDeserializer;
         _valueDeserializer = valueDeserializer;
+        IsPartitionEof = isPartitionEof;
+    }
+
+    /// <summary>
+    /// Creates a partition EOF result (no message data).
+    /// This is primarily used internally by the consumer when EnablePartitionEof is true.
+    /// </summary>
+    /// <param name="topic">The topic name.</param>
+    /// <param name="partition">The partition index.</param>
+    /// <param name="offset">The current offset position.</param>
+    /// <returns>A ConsumeResult with IsPartitionEof set to true.</returns>
+#pragma warning disable CA1000 // Do not declare static members on generic types - factory method pattern
+    public static ConsumeResult<TKey, TValue> CreatePartitionEof(string topic, int partition, long offset)
+#pragma warning restore CA1000
+    {
+        return new ConsumeResult<TKey, TValue>(
+            topic: topic,
+            partition: partition,
+            offset: offset,
+            keyData: default,
+            isKeyNull: true,
+            valueData: default,
+            isValueNull: true,
+            headers: null,
+            timestamp: default,
+            timestampType: TimestampType.NotAvailable,
+            leaderEpoch: null,
+            keyDeserializer: null,
+            valueDeserializer: null,
+            isPartitionEof: true);
     }
 
     /// <summary>
@@ -301,6 +332,13 @@ public readonly struct ConsumeResult<TKey, TValue>
     /// The leader epoch.
     /// </summary>
     public int? LeaderEpoch { get; }
+
+    /// <summary>
+    /// Indicates whether this result represents a partition end-of-file (EOF) event.
+    /// When true, the consumer has reached the end of the partition (caught up to the high watermark).
+    /// Key and Value will be default when this is true.
+    /// </summary>
+    public bool IsPartitionEof { get; }
 
     /// <summary>
     /// Gets the topic-partition-offset.

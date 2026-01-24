@@ -110,6 +110,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     // Uses ConcurrentDictionary for thread-safety as StoreOffset may be called from different threads
     private readonly ConcurrentDictionary<TopicPartition, long> _storedOffsets = new();
 
+    // Partition EOF tracking
+    private readonly Dictionary<TopicPartition, long> _highWatermarks = [];  // High watermark per partition
+    private readonly HashSet<TopicPartition> _eofEmitted = [];               // Partitions where EOF has been emitted
+    private readonly ConcurrentQueue<(TopicPartition Partition, long Offset)> _pendingEofEvents = new(); // Pending EOF events to yield (thread-safe for prefetch thread)
+
     // Pending fetch responses for lazy record iteration
     private readonly Queue<PendingFetchData> _pendingFetches = new();
 
@@ -408,6 +413,15 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 // This pending fetch is exhausted, remove it
                 _pendingFetches.Dequeue();
             }
+
+            // Yield any pending EOF events (thread-safe with ConcurrentQueue)
+            while (_pendingEofEvents.TryDequeue(out var eofEvent))
+            {
+                yield return ConsumeResult<TKey, TValue>.CreatePartitionEof(
+                    eofEvent.Partition.Topic,
+                    eofEvent.Partition.Partition,
+                    eofEvent.Offset);
+            }
         }
     }
 
@@ -522,6 +536,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             foreach (var partitionResponse in topicResponse.Partitions)
             {
+                var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
+
                 if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
                     _logger?.LogWarning(
@@ -530,21 +546,51 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     continue;
                 }
 
-                if (partitionResponse.Records is null || partitionResponse.Records.Count == 0)
-                    continue;
+                // Update high watermark from response (thread-safe update)
+                lock (_prefetchLock)
+                {
+                    _highWatermarks[tp] = partitionResponse.HighWatermark;
+                }
 
-                var pending = new PendingFetchData(
-                    topic,
-                    partitionResponse.PartitionIndex,
-                    partitionResponse.Records);
+                var hasRecords = partitionResponse.Records is not null && partitionResponse.Records.Count > 0;
 
-                // Track memory before adding to channel
-                TrackPrefetchedBytes(pending, release: false);
+                if (hasRecords)
+                {
+                    // We have new records - reset EOF state for this partition
+                    lock (_prefetchLock)
+                    {
+                        _eofEmitted.Remove(tp);
+                    }
 
-                // Update fetch positions for next prefetch
-                UpdateFetchPositionsFromPrefetch(pending);
+                    var pending = new PendingFetchData(
+                        topic,
+                        partitionResponse.PartitionIndex,
+                        partitionResponse.Records!);
 
-                await _prefetchChannel.Writer.WriteAsync(pending, cancellationToken).ConfigureAwait(false);
+                    // Track memory before adding to channel
+                    TrackPrefetchedBytes(pending, release: false);
+
+                    // Update fetch positions for next prefetch
+                    UpdateFetchPositionsFromPrefetch(pending);
+
+                    await _prefetchChannel.Writer.WriteAsync(pending, cancellationToken).ConfigureAwait(false);
+                }
+                else if (_options.EnablePartitionEof)
+                {
+                    // No records returned - check if we're at EOF
+                    lock (_prefetchLock)
+                    {
+                        var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
+
+                        // EOF condition: position >= high watermark and we haven't emitted EOF yet
+                        if (fetchPosition >= partitionResponse.HighWatermark && !_eofEmitted.Contains(tp))
+                        {
+                            // Queue EOF event and mark as emitted
+                            _pendingEofEvents.Enqueue((tp, fetchPosition));
+                            _eofEmitted.Add(tp);
+                        }
+                    }
+                }
             }
         }
     }
@@ -711,18 +757,28 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     public IKafkaConsumer<TKey, TValue> Seek(TopicPartitionOffset offset)
     {
         var tp = new TopicPartition(offset.Topic, offset.Partition);
-        _positions[tp] = offset.Offset;
-        _fetchPositions[tp] = offset.Offset;
+        lock (_prefetchLock)
+        {
+            _positions[tp] = offset.Offset;
+            _fetchPositions[tp] = offset.Offset;
+            // Reset EOF state for this partition so it can fire again
+            _eofEmitted.Remove(tp);
+        }
         ClearFetchBuffer();
         return this;
     }
 
     public IKafkaConsumer<TKey, TValue> SeekToBeginning(params TopicPartition[] partitions)
     {
-        foreach (var partition in partitions)
+        lock (_prefetchLock)
         {
-            _positions[partition] = 0;
-            _fetchPositions[partition] = 0;
+            foreach (var partition in partitions)
+            {
+                _positions[partition] = 0;
+                _fetchPositions[partition] = 0;
+                // Reset EOF state for this partition so it can fire again
+                _eofEmitted.Remove(partition);
+            }
         }
         ClearFetchBuffer();
         return this;
@@ -730,10 +786,15 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     public IKafkaConsumer<TKey, TValue> SeekToEnd(params TopicPartition[] partitions)
     {
-        foreach (var partition in partitions)
+        lock (_prefetchLock)
         {
-            _positions[partition] = -1; // Special value meaning end
-            _fetchPositions[partition] = -1; // Special value meaning end
+            foreach (var partition in partitions)
+            {
+                _positions[partition] = -1; // Special value meaning end
+                _fetchPositions[partition] = -1; // Special value meaning end
+                // Reset EOF state for this partition so it can fire again
+                _eofEmitted.Remove(partition);
+            }
         }
         ClearFetchBuffer();
         return this;
@@ -766,6 +827,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     {
         // Clear pending fetches to discard stale records
         _pendingFetches.Clear();
+        // Clear pending EOF events as they are stale after buffer clear
+        _pendingEofEvents.Clear();
     }
 
     private void ClearFetchBufferForPartitions(IEnumerable<TopicPartition> partitionsToRemove)
@@ -844,11 +907,31 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 }
             }
 
+            // Check for partitions that were removed (for EOF state cleanup)
+            var removedPartitions = new List<TopicPartition>();
+            foreach (var partition in _assignment)
+            {
+                if (!_coordinator.Assignment.Contains(partition))
+                {
+                    removedPartitions.Add(partition);
+                }
+            }
+
             // Update assignment from coordinator
             _assignment.Clear();
             foreach (var partition in _coordinator.Assignment)
             {
                 _assignment.Add(partition);
+            }
+
+            // Clean up EOF state for removed partitions (under lock for thread-safety with prefetch)
+            lock (_prefetchLock)
+            {
+                foreach (var partition in removedPartitions)
+                {
+                    _eofEmitted.Remove(partition);
+                    _highWatermarks.Remove(partition);
+                }
             }
 
             // Initialize positions for new partitions
@@ -1127,6 +1210,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             foreach (var partitionResponse in topicResponse.Partitions)
             {
+                var tp = new TopicPartition(topic, partitionResponse.PartitionIndex);
+
                 if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
                     _logger?.LogWarning(
@@ -1135,14 +1220,44 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     continue;
                 }
 
-                if (partitionResponse.Records is null || partitionResponse.Records.Count == 0)
-                    continue;
+                // Update high watermark from response (thread-safe update)
+                lock (_prefetchLock)
+                {
+                    _highWatermarks[tp] = partitionResponse.HighWatermark;
+                }
 
-                // Queue the pending fetch data for lazy record iteration
-                _pendingFetches.Enqueue(new PendingFetchData(
-                    topic,
-                    partitionResponse.PartitionIndex,
-                    partitionResponse.Records));
+                var hasRecords = partitionResponse.Records is not null && partitionResponse.Records.Count > 0;
+
+                if (hasRecords)
+                {
+                    // We have new records - reset EOF state for this partition
+                    lock (_prefetchLock)
+                    {
+                        _eofEmitted.Remove(tp);
+                    }
+
+                    // Queue the pending fetch data for lazy record iteration
+                    _pendingFetches.Enqueue(new PendingFetchData(
+                        topic,
+                        partitionResponse.PartitionIndex,
+                        partitionResponse.Records!));
+                }
+                else if (_options.EnablePartitionEof)
+                {
+                    // No records returned - check if we're at EOF
+                    lock (_prefetchLock)
+                    {
+                        var fetchPosition = _fetchPositions.GetValueOrDefault(tp, 0);
+
+                        // EOF condition: position >= high watermark and we haven't emitted EOF yet
+                        if (fetchPosition >= partitionResponse.HighWatermark && !_eofEmitted.Contains(tp))
+                        {
+                            // Queue EOF event and mark as emitted
+                            _pendingEofEvents.Enqueue((tp, fetchPosition));
+                            _eofEmitted.Add(tp);
+                        }
+                    }
+                }
             }
         }
     }
