@@ -77,12 +77,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private readonly ProducerOptions _options;
     private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
     private readonly Channel<ReadyBatch> _readyBatches;
+    private readonly Action<TaskCompletionSource<RecordMetadata>>? _returnTcsToPool;
     private volatile bool _disposed;
     private volatile bool _closed;
 
-    public RecordAccumulator(ProducerOptions options)
+    public RecordAccumulator(ProducerOptions options, Action<TaskCompletionSource<RecordMetadata>>? returnTcsToPool = null)
     {
         _options = options;
+        _returnTcsToPool = returnTcsToPool;
 
         // Backpressure via channel capacity instead of manual memory tracking
         // MaxQueuedBatches controls how many batches can be in-flight
@@ -118,7 +120,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
         if (_disposed)
             throw new ObjectDisposedException(nameof(RecordAccumulator));
 
-        var batch = _batches.GetOrAdd(topicPartition, tp => new PartitionBatch(tp, _options));
+        var batch = _batches.GetOrAdd(topicPartition, tp => new PartitionBatch(tp, _options, _returnTcsToPool));
 
         var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
 
@@ -248,6 +250,7 @@ internal sealed class PartitionBatch
 
     private readonly TopicPartition _topicPartition;
     private readonly ProducerOptions _options;
+    private readonly Action<TaskCompletionSource<RecordMetadata>>? _returnTcsToPool;
     private readonly List<Record> _records = new(InitialRecordCapacity);
     private readonly List<TaskCompletionSource<RecordMetadata>> _completionSources = new(InitialRecordCapacity);
     private readonly List<byte[]> _pooledArrays = new(InitialRecordCapacity * 2); // 2 arrays per record (key + value)
@@ -260,10 +263,11 @@ internal sealed class PartitionBatch
     private DateTimeOffset _createdAt;
     private ReadyBatch? _completedBatch; // Cached result to ensure Complete() is idempotent
 
-    public PartitionBatch(TopicPartition topicPartition, ProducerOptions options)
+    public PartitionBatch(TopicPartition topicPartition, ProducerOptions options, Action<TaskCompletionSource<RecordMetadata>>? returnTcsToPool = null)
     {
         _topicPartition = topicPartition;
         _options = options;
+        _returnTcsToPool = returnTcsToPool;
         _createdAt = DateTimeOffset.UtcNow;
     }
 
@@ -372,7 +376,8 @@ internal sealed class PartitionBatch
                 batch,
                 _completionSources,
                 _pooledArrays,
-                _pooledHeaderArrays);
+                _pooledHeaderArrays,
+                _returnTcsToPool);
 
             return _completedBatch;
         }
@@ -412,6 +417,7 @@ public sealed class ReadyBatch
     public IReadOnlyList<TaskCompletionSource<RecordMetadata>> CompletionSources { get; }
     private readonly IReadOnlyList<byte[]> _pooledArrays;
     private readonly IReadOnlyList<RecordHeader[]> _pooledHeaderArrays;
+    private readonly Action<TaskCompletionSource<RecordMetadata>>? _returnTcsToPool;
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
 
     public ReadyBatch(
@@ -419,13 +425,15 @@ public sealed class ReadyBatch
         RecordBatch recordBatch,
         IReadOnlyList<TaskCompletionSource<RecordMetadata>> completionSources,
         IReadOnlyList<byte[]> pooledArrays,
-        IReadOnlyList<RecordHeader[]> pooledHeaderArrays)
+        IReadOnlyList<RecordHeader[]> pooledHeaderArrays,
+        Action<TaskCompletionSource<RecordMetadata>>? returnTcsToPool = null)
     {
         TopicPartition = topicPartition;
         RecordBatch = recordBatch;
         CompletionSources = completionSources;
         _pooledArrays = pooledArrays;
         _pooledHeaderArrays = pooledHeaderArrays;
+        _returnTcsToPool = returnTcsToPool;
     }
 
     public void Complete(long baseOffset, DateTimeOffset timestamp)
@@ -434,13 +442,17 @@ public sealed class ReadyBatch
         {
             for (var i = 0; i < CompletionSources.Count; i++)
             {
-                CompletionSources[i].TrySetResult(new RecordMetadata
+                var tcs = CompletionSources[i];
+                tcs.TrySetResult(new RecordMetadata
                 {
                     Topic = TopicPartition.Topic,
                     Partition = TopicPartition.Partition,
                     Offset = baseOffset + i,
                     Timestamp = timestamp
                 });
+
+                // Return TCS to pool after completion
+                _returnTcsToPool?.Invoke(tcs);
             }
         }
         finally
@@ -456,6 +468,9 @@ public sealed class ReadyBatch
             foreach (var tcs in CompletionSources)
             {
                 tcs.TrySetException(exception);
+
+                // Return TCS to pool after failure
+                _returnTcsToPool?.Invoke(tcs);
             }
         }
         finally
