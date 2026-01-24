@@ -78,6 +78,8 @@ public class ProducerBenchmarks
             });
         }
 
+        // Flush both producers after warmup
+        await _dekafProducer.FlushAsync();
         _confluentProducer.Flush(TimeSpan.FromSeconds(5));
     }
 
@@ -120,7 +122,8 @@ public class ProducerBenchmarks
     [Benchmark(Description = "Dekaf: Batch Produce")]
     public async Task DekafBatchProduce()
     {
-        var tasks = new List<ValueTask<DekafProducer.RecordMetadata>>(BatchSize);
+        // Convert ValueTasks to Tasks immediately - ValueTasks must not be stored
+        var tasks = new List<Task<DekafProducer.RecordMetadata>>(BatchSize);
 
         for (var i = 0; i < BatchSize; i++)
         {
@@ -129,13 +132,10 @@ public class ProducerBenchmarks
                 Topic = Topic,
                 Key = $"key-{i}",
                 Value = _messageValue
-            }));
+            }).AsTask());  // Convert ValueTask to Task immediately
         }
 
-        foreach (var task in tasks)
-        {
-            await task;
-        }
+        await Task.WhenAll(tasks);
     }
 
     [Benchmark(Description = "Confluent: Batch Produce")]
