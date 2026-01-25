@@ -1,3 +1,4 @@
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
@@ -33,6 +34,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.Compression.Lz4", "src\Dekaf.Compression.Lz4\Dekaf.Compression.Lz4.csproj", "{D4294249-1660-4F97-9E8F-ABB90469EB11}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.SchemaRegistry.Avro", "src\Dekaf.SchemaRegistry.Avro\Dekaf.SchemaRegistry.Avro.csproj", "{74B6A7F4-8E98-40F6-9BB3-2CCB2F097592}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.Pipeline", "tools\Dekaf.Pipeline\Dekaf.Pipeline.csproj", "{B7A23778-2EAD-43F8-8603-B14423F868E7}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -188,6 +191,18 @@ Global
 		{74B6A7F4-8E98-40F6-9BB3-2CCB2F097592}.Release|x64.Build.0 = Release|Any CPU
 		{74B6A7F4-8E98-40F6-9BB3-2CCB2F097592}.Release|x86.ActiveCfg = Release|Any CPU
 		{74B6A7F4-8E98-40F6-9BB3-2CCB2F097592}.Release|x86.Build.0 = Release|Any CPU
+		{B7A23778-2EAD-43F8-8603-B14423F868E7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B7A23778-2EAD-43F8-8603-B14423F868E7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B7A23778-2EAD-43F8-8603-B14423F868E7}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{B7A23778-2EAD-43F8-8603-B14423F868E7}.Debug|x64.Build.0 = Debug|Any CPU
+		{B7A23778-2EAD-43F8-8603-B14423F868E7}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{B7A23778-2EAD-43F8-8603-B14423F868E7}.Debug|x86.Build.0 = Debug|Any CPU
+		{B7A23778-2EAD-43F8-8603-B14423F868E7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B7A23778-2EAD-43F8-8603-B14423F868E7}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B7A23778-2EAD-43F8-8603-B14423F868E7}.Release|x64.ActiveCfg = Release|Any CPU
+		{B7A23778-2EAD-43F8-8603-B14423F868E7}.Release|x64.Build.0 = Release|Any CPU
+		{B7A23778-2EAD-43F8-8603-B14423F868E7}.Release|x86.ActiveCfg = Release|Any CPU
+		{B7A23778-2EAD-43F8-8603-B14423F868E7}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -205,5 +220,6 @@ Global
 		{231964F6-569F-4E34-86DF-BDAA21D27468} = {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
 		{D4294249-1660-4F97-9E8F-ABB90469EB11} = {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
 		{74B6A7F4-8E98-40F6-9BB3-2CCB2F097592} = {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+		{B7A23778-2EAD-43F8-8603-B14423F868E7} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 	EndGlobalSection
 EndGlobal
