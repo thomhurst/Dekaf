@@ -444,4 +444,217 @@ public class PooledPendingRequestTests
 
         pool.Return(request);
     }
+
+    [Test]
+    public async Task RapidReuseAfterCompletion_WorksCorrectly()
+    {
+        // This test verifies the fix for the race condition where:
+        // 1. Request completes
+        // 2. Continuation runs synchronously, returns request to pool
+        // 3. New request reuses the same instance
+        // 4. Old completion's state update must not interfere
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+
+        // First request
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+        var testData1 = new byte[] { 0, 0, 0, 1, 10 };
+        var buffer1 = new PooledResponseBuffer(testData1, testData1.Length, isPooled: false);
+        request.TryComplete(buffer1);
+        await request.AsValueTask().ConfigureAwait(false);
+        pool.Return(request);
+
+        // Immediately reuse for second request
+        var request2 = pool.Rent();
+        await Assert.That(request2).IsSameReferenceAs(request);
+
+        request2.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+        var testData2 = new byte[] { 0, 0, 0, 2, 20 };
+        var buffer2 = new PooledResponseBuffer(testData2, testData2.Length, isPooled: false);
+        request2.TryComplete(buffer2);
+        var result = await request2.AsValueTask().ConfigureAwait(false);
+
+        await Assert.That(result.Data.Span[0]).IsEqualTo((byte)20);
+
+        pool.Return(request2);
+    }
+
+    [Test]
+    public async Task StateIsCompletedBeforeContinuationRuns()
+    {
+        // This test verifies that state is set to completed (2) before
+        // the continuation is invoked, not after
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+
+        var stateWhenContinuationRan = -1;
+        var continuationRan = new TaskCompletionSource<bool>();
+
+        // Start a task that will await and capture the state
+        var task = Task.Run(async () =>
+        {
+            await request.AsValueTask().ConfigureAwait(false);
+            // When we get here, the state should already be 2
+            stateWhenContinuationRan = ((IValueTaskSource<PooledResponseBuffer>)request).GetStatus(request.Version) == ValueTaskSourceStatus.Succeeded ? 2 : -1;
+            continuationRan.SetResult(true);
+        });
+
+        // Small delay to ensure task is awaiting
+        await Task.Delay(50).ConfigureAwait(false);
+
+        // Complete the request
+        var testData = new byte[] { 0, 0, 0, 1, 10 };
+        var buffer = new PooledResponseBuffer(testData, testData.Length, isPooled: false);
+        request.TryComplete(buffer);
+
+        await continuationRan.Task.ConfigureAwait(false);
+
+        // State should have been 2 (completed) when continuation ran
+        await Assert.That(stateWhenContinuationRan).IsEqualTo(2);
+
+        pool.Return(request);
+    }
+
+    [Test]
+    public async Task HighVolumeRapidReuse_NoStateCorruption()
+    {
+        // Stress test: rapidly reuse the same request many times
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+
+        for (int i = 0; i < 100; i++)
+        {
+            request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+            var testData = new byte[] { 0, 0, 0, (byte)i, (byte)(i + 1) };
+            var buffer = new PooledResponseBuffer(testData, testData.Length, isPooled: false);
+
+            var completed = request.TryComplete(buffer);
+            await Assert.That(completed).IsTrue();
+
+            var result = await request.AsValueTask().ConfigureAwait(false);
+            await Assert.That(result.Data.Span[0]).IsEqualTo((byte)(i + 1));
+
+            pool.Return(request);
+            request = pool.Rent();
+        }
+
+        pool.Return(request);
+    }
+
+    [Test]
+    public async Task ConcurrentCompleteAndReuse_OnlyOneSucceeds()
+    {
+        // Test that concurrent completion attempts are properly serialized
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+
+        var barrier = new Barrier(3);
+        var successCount = 0;
+
+        var tasks = new List<Task>();
+
+        // Two threads try TryComplete
+        for (int i = 0; i < 2; i++)
+        {
+            var value = (byte)(i + 10);
+            tasks.Add(Task.Run(() =>
+            {
+                barrier.SignalAndWait();
+                var testData = new byte[] { 0, 0, 0, 1, value };
+                var buffer = new PooledResponseBuffer(testData, testData.Length, isPooled: false);
+                if (request.TryComplete(buffer))
+                    Interlocked.Increment(ref successCount);
+            }));
+        }
+
+        // One thread tries TrySetCanceled
+        tasks.Add(Task.Run(() =>
+        {
+            barrier.SignalAndWait();
+            if (request.TrySetCanceled())
+                Interlocked.Increment(ref successCount);
+        }));
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        // Exactly one should succeed
+        await Assert.That(successCount).IsEqualTo(1);
+
+        pool.Return(request);
+    }
+
+    [Test]
+    public async Task CompletionAfterTimeoutRegistration_ClearsRegistration()
+    {
+        // Test that completion properly clears cancellation registration
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+
+        var cts = new CancellationTokenSource();
+        request.RegisterCancellation(cts.Token);
+
+        // Complete before timeout
+        var testData = new byte[] { 0, 0, 0, 1, 10 };
+        var buffer = new PooledResponseBuffer(testData, testData.Length, isPooled: false);
+        request.TryComplete(buffer);
+        await request.AsValueTask().ConfigureAwait(false);
+
+        // Dispose registration (as SendAsync does)
+        request.DisposeRegistration();
+
+        // Cancel after completion - should not affect anything
+        cts.Cancel();
+
+        // Should still be able to return to pool
+        pool.Return(request);
+
+        // Reuse should work
+        var request2 = pool.Rent();
+        request2.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+
+        var testData2 = new byte[] { 0, 0, 0, 2, 20 };
+        var buffer2 = new PooledResponseBuffer(testData2, testData2.Length, isPooled: false);
+        request2.TryComplete(buffer2);
+        var result = await request2.AsValueTask().ConfigureAwait(false);
+
+        await Assert.That(result.Data.Span[0]).IsEqualTo((byte)20);
+
+        pool.Return(request2);
+    }
+
+    [Test]
+    public async Task VersionIncrements_OnReset()
+    {
+        // Test that version increments on reset, preventing stale awaiters
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+
+        var version1 = request.Version;
+
+        var testData = new byte[] { 0, 0, 0, 1, 10 };
+        var buffer = new PooledResponseBuffer(testData, testData.Length, isPooled: false);
+        request.TryComplete(buffer);
+        await request.AsValueTask().ConfigureAwait(false);
+
+        pool.Return(request);
+
+        var request2 = pool.Rent();
+        var version2 = request2.Version;
+
+        // Version should have incremented
+        await Assert.That(version2).IsNotEqualTo(version1);
+
+        // Initialize for next use
+        request2.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+        var testData2 = new byte[] { 0, 0, 0, 2, 20 };
+        var buffer2 = new PooledResponseBuffer(testData2, testData2.Length, isPooled: false);
+        request2.TryComplete(buffer2);
+        await request2.AsValueTask().ConfigureAwait(false);
+
+        pool.Return(request2);
+    }
 }
