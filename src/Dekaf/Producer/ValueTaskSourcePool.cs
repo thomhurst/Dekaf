@@ -8,14 +8,22 @@ namespace Dekaf.Producer;
 /// Uses lock-free operations via <see cref="ConcurrentStack{T}"/> for high throughput.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Unlike TaskCompletionSource which cannot be reset or reused, this pool actually
 /// reuses instances because <see cref="PooledValueTaskSource{T}"/> wraps a resettable
 /// <see cref="System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore{T}"/>.
-///
+/// </para>
+/// <para>
 /// The pool has a configurable maximum size. When the pool is empty, new instances are created.
 /// When returning an instance to a full pool, the instance is discarded (let GC handle it).
 /// This bounded approach prevents unbounded memory growth while still reducing allocations
 /// in typical workloads.
+/// </para>
+/// <para>
+/// Note: The pool count is approximate due to lock-free operations. Under high contention,
+/// the pool may temporarily contain slightly more or fewer items than <see cref="MaxPoolSize"/>.
+/// This is intentional to avoid locks in the hot path and has no correctness impact.
+/// </para>
 /// </remarks>
 /// <typeparam name="T">The result type of the value task sources.</typeparam>
 public sealed class ValueTaskSourcePool<T> : IAsyncDisposable

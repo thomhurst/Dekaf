@@ -19,7 +19,7 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
 {
     private ManualResetValueTaskSourceCore<T> _core;
     private ValueTaskSourcePool<T>? _pool;
-    private Action<RecordMetadata?, Exception?>? _deliveryHandler;
+    private Action<T?, Exception?>? _deliveryHandler;
     private int _hasCompleted; // 0 = not completed, 1 = completed
 
     /// <summary>
@@ -42,9 +42,11 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
 
     /// <summary>
     /// Sets a delivery handler to be invoked when the operation completes.
+    /// The handler receives the result (or default) and any exception that occurred.
     /// The handler is cleared after invocation.
     /// </summary>
-    internal void SetDeliveryHandler(Action<RecordMetadata?, Exception?>? handler)
+    /// <param name="handler">The handler to invoke on completion.</param>
+    public void SetDeliveryHandler(Action<T?, Exception?>? handler)
     {
         _deliveryHandler = handler;
     }
@@ -143,17 +145,14 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
             var result = _core.GetResult(token);
 
             // Invoke delivery handler if set (for fire-and-forget with callback)
-            if (handler is not null && result is RecordMetadata metadata)
-            {
-                handler(metadata, null);
-            }
+            handler?.Invoke(result, null);
 
             return result;
         }
         catch (Exception ex)
         {
             // Invoke delivery handler with exception
-            handler?.Invoke(null, ex);
+            handler?.Invoke(default, ex);
             throw;
         }
         finally

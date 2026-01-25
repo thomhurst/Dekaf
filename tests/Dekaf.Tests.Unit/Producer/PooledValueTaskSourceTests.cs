@@ -230,7 +230,6 @@ public class PooledValueTaskSourceTests
     [Test]
     public async Task DeliveryHandler_ClearedAfterInvocation()
     {
-        // Note: Delivery handler is only invoked for RecordMetadata type
         var pool = new ValueTaskSourcePool<RecordMetadata>(maxPoolSize: 1);
         var invocationCount = 0;
 
@@ -462,6 +461,62 @@ public class PooledValueTaskSourceTests
         {
             await source.Task.ConfigureAwait(false);
         });
+    }
+
+    [Test]
+    public async Task DeliveryHandler_WorksWithNonRecordMetadataType()
+    {
+        // Test that generic delivery handler works with any type (not just RecordMetadata)
+        var pool = new ValueTaskSourcePool<int>();
+        var source = pool.Rent();
+
+        int? receivedValue = null;
+        Exception? receivedException = null;
+
+        source.SetDeliveryHandler((value, ex) =>
+        {
+            receivedValue = value;
+            receivedException = ex;
+        });
+
+        source.SetResult(42);
+        var result = await source.Task.ConfigureAwait(false);
+
+        await Assert.That(result).IsEqualTo(42);
+        await Assert.That(receivedValue).IsEqualTo(42);
+        await Assert.That(receivedException).IsNull();
+    }
+
+    [Test]
+    public async Task DeliveryHandler_WorksWithNonRecordMetadataType_OnException()
+    {
+        // Test that generic delivery handler works with any type on exception
+        var pool = new ValueTaskSourcePool<string>();
+        var source = pool.Rent();
+
+        string? receivedValue = null;
+        Exception? receivedException = null;
+
+        source.SetDeliveryHandler((value, ex) =>
+        {
+            receivedValue = value;
+            receivedException = ex;
+        });
+
+        var expectedException = new InvalidOperationException("Test error");
+        source.SetException(expectedException);
+
+        try
+        {
+            await source.Task.ConfigureAwait(false);
+        }
+        catch (InvalidOperationException)
+        {
+            // Expected
+        }
+
+        await Assert.That(receivedValue).IsNull();
+        await Assert.That(receivedException).IsSameReferenceAs(expectedException);
     }
 
     [Test]
