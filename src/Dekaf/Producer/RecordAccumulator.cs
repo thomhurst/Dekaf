@@ -146,14 +146,22 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // This is cached, so subsequent calls with same topic/partition reuse the struct.
         var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
 
-        // Get existing batch or create new one
-        var batch = _batches.GetOrAdd(topicPartition, tp => new PartitionBatch(tp, _options, _returnTcsToPool));
-
-        var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
-
-        if (!result.Success)
+        // Loop until we successfully append the record.
+        // This handles the race condition where multiple threads try to replace a full batch:
+        // - GetOrAdd gets existing batch or creates a new one
+        // - If append fails (batch full), complete it and atomically remove it
+        // - TryRemove(KeyValuePair) only removes if value matches, preventing orphaned batches
+        // - Loop retries with the new batch (created by us or another thread)
+        while (true)
         {
-            // Batch is full, need to flush and create new batch
+            var batch = _batches.GetOrAdd(topicPartition, tp => new PartitionBatch(tp, _options, _returnTcsToPool));
+
+            var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
+
+            if (result.Success)
+                return result;
+
+            // Batch is full, complete it and queue for sending
             var readyBatch = batch.Complete();
             if (readyBatch is not null)
             {
@@ -161,13 +169,15 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
             }
 
-            // Create new batch and retry - topicPartition is already cached, so we can reuse it
-            batch = new PartitionBatch(topicPartition, _options, _returnTcsToPool);
-            _batches[topicPartition] = batch;
-            result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
-        }
+            // Atomically remove the completed batch only if it's still the same instance.
+            // If another thread already replaced it, this is a no-op and we'll use their new batch.
+            // This prevents the race where two threads both create new batches and one gets orphaned.
+            _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch));
 
-        return result;
+            // Loop will call GetOrAdd again, which will either:
+            // 1. Create a new batch (if we successfully removed the old one)
+            // 2. Return the batch another thread already created (if they won the race)
+        }
     }
 
 
@@ -197,13 +207,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 if (readyBatch is not null)
                 {
                     await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-
-                    // Use conditional removal to ensure we only remove the batch we just completed.
-                    // If another thread already replaced this batch with a new one (via AppendAsync),
-                    // we don't want to remove the new batch.
-                    // TryRemove with ICollection<KeyValuePair<K,V>> compares by reference equality,
-                    // so this is safe even if a new batch was created for the same partition.
-                    _batches.TryRemove(kvp);
+                    // Only remove if the batch is still the same instance.
+                    // If AppendAsync already replaced it with a new batch, don't remove the new one.
+                    _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch));
                 }
             }
         }
@@ -216,13 +222,16 @@ public sealed class RecordAccumulator : IAsyncDisposable
     {
         foreach (var kvp in _batches)
         {
-            var readyBatch = kvp.Value.Complete();
+            var batch = kvp.Value;
+            var readyBatch = batch.Complete();
             if (readyBatch is not null)
             {
                 await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                // Only remove if the batch is still the same instance.
+                // If AppendAsync already replaced it with a new batch, don't remove the new one.
+                _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch));
             }
         }
-        _batches.Clear();
     }
 
     /// <summary>
