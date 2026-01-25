@@ -29,7 +29,7 @@ public class TopicPartitionCacheBenchmarks
     {
         _options = new ProducerOptions
         {
-            BootstrapServers = "localhost:9092",
+            BootstrapServers = ["localhost:9092"],
             ClientId = "benchmark",
             BatchSize = 16384,
             LingerMs = 5,
