@@ -44,6 +44,11 @@ jobs:
         with:
           versionSpec: '6.x'
 
+      - name: Determine Version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v3
+        continue-on-error: true  # Don't fail if GitVersion has issues on PR branches
+
       - name: Run Pipeline
         env:
           NuGet__ShouldPublish: ${{ inputs.publish_nuget == true && 'true' || 'false' }}
