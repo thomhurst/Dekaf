@@ -31,7 +31,7 @@ public sealed class Headers : IEnumerable<Header>
     /// </summary>
     public Headers(IEnumerable<Header> headers)
     {
-        _headers = [..headers];
+        _headers = [.. headers];
     }
 
     /// <summary>

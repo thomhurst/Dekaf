@@ -366,7 +366,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,
             GssapiConfig = _gssapiConfig,
-OAuthBearerConfig = _oauthConfig,
+            OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
             StatisticsInterval = _statisticsInterval,
             StatisticsHandler = _statisticsHandler
@@ -423,7 +423,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private IDeserializer<TValue>? _valueDeserializer;
     private IRebalanceListener? _rebalanceListener;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
-private bool _enablePartitionEof;
+    private bool _enablePartitionEof;
     private TimeSpan? _statisticsInterval;
     private Action<Statistics.ConsumerStatistics>? _statisticsHandler;
     private readonly List<string> _topicsToSubscribe = [];

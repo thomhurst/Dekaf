@@ -46,7 +46,7 @@ jobs:
 
       - name: Run Pipeline
         env:
-          NuGet__ShouldPublish: ${{ inputs.publish_nuget }}
+          NuGet__ShouldPublish: ${{ inputs.publish_nuget == true && 'true' || 'false' }}
           NuGet__ApiKey: ${{ secrets.NUGET__APIKEY }}
         run: dotnet run --project tools/Dekaf.Pipeline
 

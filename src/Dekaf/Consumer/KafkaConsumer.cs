@@ -1341,7 +1341,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 }
             }
 
-// Check for partitions that were removed (for EOF state cleanup)
+            // Check for partitions that were removed (for EOF state cleanup)
             var removedPartitions = new List<TopicPartition>();
             foreach (var partition in _assignment)
             {

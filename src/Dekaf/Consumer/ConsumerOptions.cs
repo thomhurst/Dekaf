@@ -189,7 +189,7 @@ public sealed class ConsumerOptions
     public int QueuedMaxMessagesKbytes { get; init; } = 65536;
 
     /// <summary>
-/// Enable partition end-of-file (EOF) events.
+    /// Enable partition end-of-file (EOF) events.
     /// When enabled, the consumer will emit a special ConsumeResult with IsPartitionEof=true
     /// when it reaches the end of a partition (caught up to the high watermark).
     /// The EOF event fires once per "catch up" - it will fire again after new messages
