@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Dekaf.Compression;
+using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -14,66 +15,6 @@ using Dekaf.Statistics;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Consumer;
-/// <summary>
-/// Thread-safe pool for CancellationTokenSource instances to avoid allocations in hot paths.
-/// </summary>
-internal sealed class CancellationTokenSourcePool
-{
-    private readonly ConcurrentBag<CancellationTokenSource> _pool = new();
-    private const int MaxPoolSize = 16; // Limit pool size to prevent unbounded growth
-    private int _count;
-
-    public CancellationTokenSource Rent()
-    {
-        if (_pool.TryTake(out var cts))
-        {
-            Interlocked.Decrement(ref _count);
-            if (cts.TryReset())
-            {
-                return cts;
-            }
-            // Reset failed, dispose and create new
-            cts.Dispose();
-        }
-
-        return new CancellationTokenSource();
-    }
-
-    public void Return(CancellationTokenSource cts)
-    {
-        if (cts.IsCancellationRequested)
-        {
-            cts.Dispose();
-            return;
-        }
-
-        // Atomic check-and-increment to prevent race condition
-        var currentCount = Volatile.Read(ref _count);
-        while (currentCount < MaxPoolSize)
-        {
-            if (Interlocked.CompareExchange(ref _count, currentCount + 1, currentCount) == currentCount)
-            {
-                _pool.Add(cts);
-                return;
-            }
-            currentCount = Volatile.Read(ref _count);
-        }
-
-        // Pool is full, dispose
-        cts.Dispose();
-    }
-
-    public void Clear()
-    {
-        while (_pool.TryTake(out var cts))
-        {
-            cts.Dispose();
-        }
-        _count = 0;
-    }
-}
-
-
 
 /// <summary>
 /// Holds pending fetch data for lazy record iteration.
@@ -889,7 +830,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         var lastBatch = batches[^1];
         var lastOffset = lastBatch.BaseOffset + lastBatch.LastOffsetDelta;
-        var tp = new TopicPartition(pending.Topic, pending.PartitionIndex);
+        var tp = pending.TopicPartition;
 
         // Thread-safe update using ConcurrentDictionary
         _fetchPositions.AddOrUpdate(
@@ -1197,7 +1138,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             // Check if this partition should be kept
             // Build TopicPartition inline for the Contains check
-            if (!removeSet.Contains(new TopicPartition(pending.Topic, pending.PartitionIndex)))
+            if (!removeSet.Contains(pending.TopicPartition))
             {
                 // Keep this item by re-enqueueing it
                 _pendingFetches.Enqueue(pending);

@@ -7,6 +7,8 @@ using System.Net.Security;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading.Tasks.Sources;
+using Dekaf.Internal;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Security;
@@ -38,7 +40,9 @@ public sealed class KafkaConnection : IKafkaConnection
     // correlation ID, it could be incorrectly matched to the wrong pending request.
     // Using globally unique correlation IDs prevents this issue.
     private static int s_globalCorrelationId;
-    private readonly ConcurrentDictionary<int, PendingRequest> _pendingRequests = new();
+    private readonly ConcurrentDictionary<int, PooledPendingRequest> _pendingRequests = new();
+    private readonly PendingRequestPool _pendingRequestPool = new();
+    private readonly CancellationTokenSourcePool _timeoutCtsPool = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private static int s_connectionCounter;
     private readonly int _connectionInstanceId = Interlocked.Increment(ref s_connectionCounter);
@@ -171,7 +175,8 @@ public sealed class KafkaConnection : IKafkaConnection
         var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
         var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
 
-        var pending = new PendingRequest(responseHeaderVersion, cancellationToken);
+        var pending = _pendingRequestPool.Rent();
+        pending.Initialize(responseHeaderVersion, cancellationToken);
         _pendingRequests[correlationId] = pending;
 
         try
@@ -192,18 +197,46 @@ public sealed class KafkaConnection : IKafkaConnection
 
             _logger?.LogDebug("Request sent, waiting for response (correlation {CorrelationId})", correlationId);
 
-            // Apply request timeout
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(_options.RequestTimeout);
-
+            // Apply request timeout with fast-path pooling when no user cancellation token
             PooledResponseBuffer pooledBuffer;
-            try
+            if (!cancellationToken.CanBeCanceled)
             {
-                pooledBuffer = await pending.Task.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+                // Fast path: pool CTS for timeout only (no linked source needed)
+                var timeoutCts = _timeoutCtsPool.Rent();
+                try
+                {
+                    timeoutCts.CancelAfter(_options.RequestTimeout);
+                    pending.RegisterCancellation(timeoutCts.Token);
+
+                    try
+                    {
+                        pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+                    {
+                        throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
+                    }
+                }
+                finally
+                {
+                    _timeoutCtsPool.Return(timeoutCts);
+                }
             }
-            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            else
             {
-                throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
+                // Slow path: must use linked source (can't pool)
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeoutCts.CancelAfter(_options.RequestTimeout);
+                pending.RegisterCancellation(timeoutCts.Token);
+
+                try
+                {
+                    pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
+                }
             }
 
             _logger?.LogDebug("Response received for correlation {CorrelationId}", correlationId);
@@ -269,7 +302,8 @@ public sealed class KafkaConnection : IKafkaConnection
         {
             if (_pendingRequests.TryRemove(correlationId, out var removed))
             {
-                removed.Dispose();
+                // Return pending request to pool (handles cleanup and reset)
+                _pendingRequestPool.Return(removed);
             }
         }
     }
@@ -394,11 +428,17 @@ public sealed class KafkaConnection : IKafkaConnection
 
                     if (_pendingRequests.TryGetValue(correlationId, out var pending))
                     {
-                        pending.Complete(responseData);
+                        if (!pending.TryComplete(responseData))
+                        {
+                            // Request was already cancelled/failed - dispose the buffer
+                            responseData.Dispose();
+                        }
                     }
                     else
                     {
                         _logger?.LogWarning("Received response for unknown correlation ID {CorrelationId}", correlationId);
+                        // No pending request - dispose the buffer
+                        responseData.Dispose();
                     }
                 }
 
@@ -479,8 +519,8 @@ public sealed class KafkaConnection : IKafkaConnection
         {
             if (_pendingRequests.TryRemove(kvp.Key, out var pending))
             {
-                pending.Fail(ex);
-                pending.Dispose();
+                pending.TrySetException(ex);
+                _pendingRequestPool.Return(pending);
             }
         }
     }
@@ -1003,200 +1043,6 @@ public sealed class KafkaConnection : IKafkaConnection
 
         FailAllPendingRequests(new ObjectDisposedException(nameof(KafkaConnection)));
     }
-
-    private sealed class PendingRequest : IDisposable
-    {
-        private readonly TaskCompletionSource<PooledResponseBuffer> _tcs;
-        private readonly short _responseHeaderVersion;
-        private PooledResponseBuffer? _buffer;
-        private bool _completed;
-
-        public PendingRequest(short responseHeaderVersion, CancellationToken cancellationToken)
-        {
-            _responseHeaderVersion = responseHeaderVersion;
-            _tcs = new TaskCompletionSource<PooledResponseBuffer>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-            cancellationToken.Register(() =>
-            {
-                if (_tcs.TrySetCanceled(cancellationToken))
-                {
-                    // Request was cancelled before completion - dispose the buffer if we received one
-                    Dispose();
-                }
-            });
-        }
-
-        public Task<PooledResponseBuffer> Task => _tcs.Task;
-
-        public void Complete(PooledResponseBuffer pooledBuffer)
-        {
-            lock (this)
-            {
-                if (_completed)
-                {
-                    // Already completed/failed - dispose the buffer immediately
-                    pooledBuffer.Dispose();
-                    return;
-                }
-
-                _buffer = pooledBuffer;
-
-                // Skip the response header (correlation ID already read, skip tagged fields if flexible)
-                var offset = 4; // Correlation ID already parsed
-                var bufferLength = pooledBuffer.Length;
-
-                // Bounds check: ensure we have at least the correlation ID
-                if (offset > bufferLength)
-                {
-                    _tcs.TrySetException(new InvalidOperationException(
-                        $"Response buffer too small: {bufferLength} bytes, expected at least {offset}"));
-                    _completed = true;
-                    Dispose();
-                    return;
-                }
-
-                if (_responseHeaderVersion >= 1)
-                {
-                    // Skip tagged fields - read varint count and skip
-                    if (offset >= bufferLength)
-                    {
-                        _tcs.TrySetException(new InvalidOperationException(
-                            $"Response buffer too small for tagged fields: {bufferLength} bytes at offset {offset}"));
-                        _completed = true;
-                        Dispose();
-                        return;
-                    }
-
-                    var span = pooledBuffer.Data.Span[offset..];
-                    var (tagCount, bytesRead) = ReadUnsignedVarInt(span);
-                    offset += bytesRead;
-
-                    // Sanity check: tag count should be reasonable (< 1000)
-                    if (tagCount > 1000)
-                    {
-                        _tcs.TrySetException(new InvalidOperationException(
-                            $"Unreasonable tag count in response header: {tagCount}. Possible protocol version mismatch."));
-                        _completed = true;
-                        Dispose();
-                        return;
-                    }
-
-                    for (var i = 0; i < tagCount; i++)
-                    {
-                        if (offset >= bufferLength)
-                        {
-                            _tcs.TrySetException(new InvalidOperationException(
-                                $"Response buffer truncated while parsing tagged fields at tag {i}"));
-                            _completed = true;
-                            Dispose();
-                            return;
-                        }
-
-                        span = pooledBuffer.Data.Span[offset..];
-                        var (_, tagBytesRead) = ReadUnsignedVarInt(span);
-                        offset += tagBytesRead;
-
-                        if (offset >= bufferLength)
-                        {
-                            _tcs.TrySetException(new InvalidOperationException(
-                                $"Response buffer truncated while parsing tag size at tag {i}"));
-                            _completed = true;
-                            Dispose();
-                            return;
-                        }
-
-                        span = pooledBuffer.Data.Span[offset..];
-                        var (size, sizeBytesRead) = ReadUnsignedVarInt(span);
-                        offset += sizeBytesRead + size;
-
-                        if (offset > bufferLength)
-                        {
-                            _tcs.TrySetException(new InvalidOperationException(
-                                $"Response buffer truncated: tag {i} extends past buffer end"));
-                            _completed = true;
-                            Dispose();
-                            return;
-                        }
-                    }
-                }
-
-                // Final bounds check
-                if (offset > bufferLength)
-                {
-                    _tcs.TrySetException(new InvalidOperationException(
-                        $"Response header parsing exceeded buffer: offset {offset}, length {bufferLength}"));
-                    _completed = true;
-                    Dispose();
-                    return;
-                }
-
-                // Transfer ownership by creating a new buffer with adjusted offset
-                // The caller owns the buffer now - clear _buffer so Dispose() doesn't double-return it to the pool
-                var slicedBuffer = pooledBuffer.Slice(offset);
-
-                if (_tcs.TrySetResult(slicedBuffer))
-                {
-                    _completed = true;
-                    // CRITICAL: Clear _buffer to prevent double-dispose.
-                    // The caller now owns the buffer via slicedBuffer and will dispose it.
-                    // If we don't clear _buffer, PendingRequest.Dispose() will return
-                    // the same array to the pool again, potentially causing it to be
-                    // handed to another request while still in use.
-                    _buffer = null;
-                }
-                else
-                {
-                    // Failed to set result (already cancelled/failed) - dispose buffer
-                    Dispose();
-                }
-            }
-        }
-
-        public void Fail(Exception ex)
-        {
-            lock (this)
-            {
-                if (_tcs.TrySetException(ex))
-                {
-                    _completed = true;
-                }
-                // Dispose buffer on failure path
-                Dispose();
-            }
-        }
-
-        public void Dispose()
-        {
-            lock (this)
-            {
-                if (_buffer.HasValue && _buffer.Value.IsPooled)
-                {
-                    _buffer.Value.Dispose();
-                    _buffer = null;
-                }
-            }
-        }
-
-        private static (int value, int bytesRead) ReadUnsignedVarInt(ReadOnlySpan<byte> span)
-        {
-            var result = 0;
-            var shift = 0;
-            var bytesRead = 0;
-
-            while (bytesRead < span.Length && shift < 35)
-            {
-                var b = span[bytesRead++];
-                result |= (b & 0x7F) << shift;
-
-                if ((b & 0x80) == 0)
-                    return (result, bytesRead);
-
-                shift += 7;
-            }
-
-            return (result, bytesRead);
-        }
-    }
 }
 
 /// <summary>
@@ -1369,6 +1215,319 @@ internal sealed class PooledResponseMemory : Protocol.IPooledMemory
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
+    }
+}
+
+/// <summary>
+/// Thread-safe bounded pool for <see cref="PooledPendingRequest"/> instances.
+/// Uses lock-free operations via <see cref="ConcurrentStack{T}"/> for high throughput.
+/// </summary>
+internal sealed class PendingRequestPool
+{
+    private const int MaxPoolSize = 256;
+    private readonly ConcurrentStack<PooledPendingRequest> _pool = new();
+    private int _poolCount;
+
+    /// <summary>
+    /// Gets a <see cref="PooledPendingRequest"/> from the pool, or creates a new one if empty.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public PooledPendingRequest Rent()
+    {
+        if (_pool.TryPop(out var request))
+        {
+            Interlocked.Decrement(ref _poolCount);
+            return request;
+        }
+
+        return new PooledPendingRequest();
+    }
+
+    /// <summary>
+    /// Returns a <see cref="PooledPendingRequest"/> to the pool for reuse.
+    /// If the pool is full, the instance is discarded.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Return(PooledPendingRequest request)
+    {
+        // Reset the request for reuse
+        request.Reset();
+
+        // Check if pool is full
+        var count = Interlocked.Increment(ref _poolCount);
+        if (count <= MaxPoolSize)
+        {
+            _pool.Push(request);
+        }
+        else
+        {
+            // Pool is full - decrement count and let GC handle the instance
+            Interlocked.Decrement(ref _poolCount);
+        }
+    }
+}
+
+/// <summary>
+/// A poolable pending request that implements <see cref="IValueTaskSource{T}"/> for zero-allocation
+/// async completion. Uses <see cref="ManualResetValueTaskSourceCore{T}"/> internally.
+/// </summary>
+internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuffer>
+{
+    private ManualResetValueTaskSourceCore<PooledResponseBuffer> _core;
+    private short _responseHeaderVersion;
+    private CancellationTokenRegistration _cancellationRegistration;
+    private int _state; // 0 = pending, 1 = completing, 2 = completed
+    private PooledResponseBuffer? _pendingBuffer; // Buffer received but not yet processed
+
+    /// <summary>
+    /// Initializes the request for a new operation.
+    /// </summary>
+    public void Initialize(short responseHeaderVersion, CancellationToken cancellationToken)
+    {
+        _responseHeaderVersion = responseHeaderVersion;
+        _state = 0;
+        _pendingBuffer = null;
+
+        // Register for cancellation if the token can be cancelled
+        if (cancellationToken.CanBeCanceled)
+        {
+            _cancellationRegistration = cancellationToken.Register(
+                static state => ((PooledPendingRequest)state!).OnCancelled(),
+                this);
+        }
+    }
+
+    /// <summary>
+    /// Registers an additional cancellation token (e.g., for timeout).
+    /// </summary>
+    public void RegisterCancellation(CancellationToken cancellationToken)
+    {
+        if (cancellationToken.CanBeCanceled)
+        {
+            var newRegistration = cancellationToken.Register(
+                static state => ((PooledPendingRequest)state!).OnCancelled(),
+                this);
+
+            // Combine with existing registration
+            var oldRegistration = _cancellationRegistration;
+            _cancellationRegistration = new CancellationTokenRegistration();
+
+            // Create a combined cleanup
+            oldRegistration.Dispose();
+            _cancellationRegistration = newRegistration;
+        }
+    }
+
+    private void OnCancelled()
+    {
+        TrySetCanceled();
+    }
+
+    /// <summary>
+    /// Gets a <see cref="ValueTask{T}"/> bound to this source.
+    /// </summary>
+    public ValueTask<PooledResponseBuffer> AsValueTask() => new(this, _core.Version);
+
+    /// <summary>
+    /// Gets the current version token.
+    /// </summary>
+    public short Version => _core.Version;
+
+    /// <summary>
+    /// Attempts to complete the request with response data.
+    /// Returns false if already completed (cancelled or failed).
+    /// </summary>
+    public bool TryComplete(PooledResponseBuffer pooledBuffer)
+    {
+        // Atomically claim the completing state
+        if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+        {
+            return false; // Already completing or completed
+        }
+
+        try
+        {
+            // Parse response header to get the actual data offset
+            var result = ParseAndSliceResponse(pooledBuffer);
+
+            if (result.HasValue)
+            {
+                _core.SetResult(result.Value);
+            }
+            else
+            {
+                // Parsing failed - dispose buffer and set exception
+                pooledBuffer.Dispose();
+                _core.SetException(new InvalidOperationException("Failed to parse response header"));
+            }
+        }
+        catch (Exception ex)
+        {
+            pooledBuffer.Dispose();
+            _core.SetException(ex);
+        }
+        finally
+        {
+            Volatile.Write(ref _state, 2); // Mark as completed
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Attempts to complete the request with an exception.
+    /// Returns false if already completed.
+    /// </summary>
+    public bool TrySetException(Exception exception)
+    {
+        if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+        {
+            return false;
+        }
+
+        _core.SetException(exception);
+        Volatile.Write(ref _state, 2);
+        return true;
+    }
+
+    /// <summary>
+    /// Attempts to cancel the request.
+    /// Returns false if already completed.
+    /// </summary>
+    public bool TrySetCanceled()
+    {
+        if (Interlocked.CompareExchange(ref _state, 1, 0) != 0)
+        {
+            return false;
+        }
+
+        _core.SetException(new OperationCanceledException());
+        Volatile.Write(ref _state, 2);
+        return true;
+    }
+
+    private PooledResponseBuffer? ParseAndSliceResponse(PooledResponseBuffer pooledBuffer)
+    {
+        // Skip the response header (correlation ID already read, skip tagged fields if flexible)
+        var offset = 4; // Correlation ID already parsed
+        var bufferLength = pooledBuffer.Length;
+
+        // Bounds check: ensure we have at least the correlation ID
+        if (offset > bufferLength)
+        {
+            return null;
+        }
+
+        if (_responseHeaderVersion >= 1)
+        {
+            // Skip tagged fields - read varint count and skip
+            if (offset >= bufferLength)
+            {
+                return null;
+            }
+
+            var span = pooledBuffer.Data.Span[offset..];
+            var (tagCount, bytesRead) = ReadUnsignedVarInt(span);
+            offset += bytesRead;
+
+            // Sanity check: tag count should be reasonable (< 1000)
+            if (tagCount > 1000)
+            {
+                return null;
+            }
+
+            for (var i = 0; i < tagCount; i++)
+            {
+                if (offset >= bufferLength)
+                {
+                    return null;
+                }
+
+                span = pooledBuffer.Data.Span[offset..];
+                var (_, tagBytesRead) = ReadUnsignedVarInt(span);
+                offset += tagBytesRead;
+
+                if (offset >= bufferLength)
+                {
+                    return null;
+                }
+
+                span = pooledBuffer.Data.Span[offset..];
+                var (size, sizeBytesRead) = ReadUnsignedVarInt(span);
+                offset += sizeBytesRead + size;
+
+                if (offset > bufferLength)
+                {
+                    return null;
+                }
+            }
+        }
+
+        // Final bounds check
+        if (offset > bufferLength)
+        {
+            return null;
+        }
+
+        return pooledBuffer.Slice(offset);
+    }
+
+    private static (int value, int bytesRead) ReadUnsignedVarInt(ReadOnlySpan<byte> span)
+    {
+        var result = 0;
+        var shift = 0;
+        var bytesRead = 0;
+
+        while (bytesRead < span.Length && shift < 35)
+        {
+            var b = span[bytesRead++];
+            result |= (b & 0x7F) << shift;
+
+            if ((b & 0x80) == 0)
+                return (result, bytesRead);
+
+            shift += 7;
+        }
+
+        return (result, bytesRead);
+    }
+
+    /// <summary>
+    /// Resets the request for reuse. Called when returning to pool.
+    /// </summary>
+    public void Reset()
+    {
+        // Dispose any pending buffer
+        _pendingBuffer?.Dispose();
+        _pendingBuffer = null;
+
+        // Dispose cancellation registration
+        _cancellationRegistration.Dispose();
+        _cancellationRegistration = default;
+
+        // Reset the core for reuse
+        _core.Reset();
+        _state = 0;
+    }
+
+    // IValueTaskSource implementation
+    PooledResponseBuffer IValueTaskSource<PooledResponseBuffer>.GetResult(short token)
+    {
+        return _core.GetResult(token);
+    }
+
+    ValueTaskSourceStatus IValueTaskSource<PooledResponseBuffer>.GetStatus(short token)
+    {
+        return _core.GetStatus(token);
+    }
+
+    void IValueTaskSource<PooledResponseBuffer>.OnCompleted(
+        Action<object?> continuation,
+        object? state,
+        short token,
+        ValueTaskSourceOnCompletedFlags flags)
+    {
+        _core.OnCompleted(continuation, state, token, flags);
     }
 }
 
