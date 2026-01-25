@@ -164,7 +164,7 @@ public class ProducerBenchmarks
     {
         for (var i = 0; i < BatchSize; i++)
         {
-            _ = _dekafProducer.ProduceAsync(new DekafProducer.ProducerMessage<string, string>
+            _dekafProducer.Produce(new DekafProducer.ProducerMessage<string, string>
             {
                 Topic = Topic,
                 Key = $"key-{i}",

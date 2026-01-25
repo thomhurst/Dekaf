@@ -200,15 +200,9 @@ public sealed class ConsumerServiceBuilder<TKey, TValue>
         return this;
     }
 
-    public ConsumerServiceBuilder<TKey, TValue> EnableAutoCommit(bool enable = true)
+    public ConsumerServiceBuilder<TKey, TValue> WithAutoCommit(bool enable = true)
     {
-        _builder.EnableAutoCommit(enable);
-        return this;
-    }
-
-    public ConsumerServiceBuilder<TKey, TValue> DisableAutoCommit()
-    {
-        _builder.DisableAutoCommit();
+        _builder.WithAutoCommit(enable);
         return this;
     }
 

@@ -476,19 +476,10 @@ internal sealed class PartitionBatch
         var recordsCopy = new Record[_recordCount];
         Array.Copy(_records, recordsCopy, _recordCount);
 
-        // Create copies of completion sources and pooled arrays with exact sizes
-        // ReadyBatch will own these and manage their lifecycle
-        var completionSourcesCopy = new TaskCompletionSource<RecordMetadata>[_completionSourceCount];
-        Array.Copy(_completionSources, completionSourcesCopy, _completionSourceCount);
-
-        var pooledArraysCopy = new byte[_pooledArrayCount][];
-        Array.Copy(_pooledArrays, pooledArraysCopy, _pooledArrayCount);
-
-        var pooledHeaderArraysCopy = new RecordHeader[_pooledHeaderArrayCount][];
-        Array.Copy(_pooledHeaderArrays, pooledHeaderArraysCopy, _pooledHeaderArrayCount);
-
-        // Return our working arrays to pool - we've copied the data we need
-        ReturnBatchArraysToPool();
+        // Return only the records array to pool - we've copied it
+        // Other arrays are passed directly to ReadyBatch which will return them to pool
+        ArrayPool<Record>.Shared.Return(_records, clearArray: true);
+        _records = null!;
 
         var batch = new RecordBatch
         {
@@ -499,25 +490,38 @@ internal sealed class PartitionBatch
             Records = recordsCopy
         };
 
-        // Pass the copied arrays - ReadyBatch now owns them
+        // Pass pooled arrays directly to ReadyBatch - no copying needed
+        // ReadyBatch will return them to pool when done
         _completedBatch = new ReadyBatch(
             _topicPartition,
             batch,
-            completionSourcesCopy,
-            pooledArraysCopy,
-            pooledHeaderArraysCopy,
+            _completionSources,
+            _completionSourceCount,
+            _pooledArrays,
+            _pooledArrayCount,
+            _pooledHeaderArrays,
+            _pooledHeaderArrayCount,
             _returnTcsToPool);
+
+        // Null out references - ownership transferred to ReadyBatch
+        _completionSources = null!;
+        _pooledArrays = null!;
+        _pooledHeaderArrays = null!;
 
         return _completedBatch;
     }
 
     private void ReturnBatchArraysToPool()
     {
-        // Return the working arrays to pool
-        ArrayPool<Record>.Shared.Return(_records, clearArray: true);
-        ArrayPool<TaskCompletionSource<RecordMetadata>>.Shared.Return(_completionSources, clearArray: true);
-        ArrayPool<byte[]>.Shared.Return(_pooledArrays, clearArray: true);
-        ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: true);
+        // Return all working arrays to pool (with null checks since they may have been transferred)
+        if (_records is not null)
+            ArrayPool<Record>.Shared.Return(_records, clearArray: true);
+        if (_completionSources is not null)
+            ArrayPool<TaskCompletionSource<RecordMetadata>>.Shared.Return(_completionSources, clearArray: true);
+        if (_pooledArrays is not null)
+            ArrayPool<byte[]>.Shared.Return(_pooledArrays, clearArray: true);
+        if (_pooledHeaderArrays is not null)
+            ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: true);
 
         // Null out references to prevent accidental reuse
         _records = null!;
@@ -557,35 +561,56 @@ public sealed class ReadyBatch
 {
     public TopicPartition TopicPartition { get; }
     public RecordBatch RecordBatch { get; }
-    public IReadOnlyList<TaskCompletionSource<RecordMetadata>> CompletionSources { get; }
-    private readonly IReadOnlyList<byte[]> _pooledArrays;
-    private readonly IReadOnlyList<RecordHeader[]> _pooledHeaderArrays;
+
+    /// <summary>
+    /// Number of completion sources (messages) in this batch.
+    /// </summary>
+    public int CompletionSourcesCount => _completionSourcesCount;
+
+    // Working arrays from accumulator (pooled)
+    private readonly TaskCompletionSource<RecordMetadata>[] _completionSourcesArray;
+    private readonly int _completionSourcesCount;
+    private readonly byte[][] _pooledDataArrays;
+    private readonly int _pooledDataArraysCount;
+    private readonly RecordHeader[][] _pooledHeaderArrays;
+    private readonly int _pooledHeaderArraysCount;
+
     private readonly Action<TaskCompletionSource<RecordMetadata>> _returnTcsToPool;
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
 
     public ReadyBatch(
         TopicPartition topicPartition,
         RecordBatch recordBatch,
-        IReadOnlyList<TaskCompletionSource<RecordMetadata>> completionSources,
-        IReadOnlyList<byte[]> pooledArrays,
-        IReadOnlyList<RecordHeader[]> pooledHeaderArrays,
+        TaskCompletionSource<RecordMetadata>[] completionSourcesArray,
+        int completionSourcesCount,
+        byte[][] pooledDataArrays,
+        int pooledDataArraysCount,
+        RecordHeader[][] pooledHeaderArrays,
+        int pooledHeaderArraysCount,
         Action<TaskCompletionSource<RecordMetadata>> returnTcsToPool)
     {
         TopicPartition = topicPartition;
         RecordBatch = recordBatch;
-        CompletionSources = completionSources;
-        _pooledArrays = pooledArrays;
+        _completionSourcesArray = completionSourcesArray;
+        _completionSourcesCount = completionSourcesCount;
+        _pooledDataArrays = pooledDataArrays;
+        _pooledDataArraysCount = pooledDataArraysCount;
         _pooledHeaderArrays = pooledHeaderArrays;
+        _pooledHeaderArraysCount = pooledHeaderArraysCount;
         _returnTcsToPool = returnTcsToPool;
     }
 
     public void Complete(long baseOffset, DateTimeOffset timestamp)
     {
+        // Guard against calling Complete after Cleanup has been performed
+        if (Volatile.Read(ref _cleanedUp) != 0)
+            return;
+
         try
         {
-            for (var i = 0; i < CompletionSources.Count; i++)
+            for (var i = 0; i < _completionSourcesCount; i++)
             {
-                var tcs = CompletionSources[i];
+                var tcs = _completionSourcesArray[i];
                 tcs.TrySetResult(new RecordMetadata
                 {
                     Topic = TopicPartition.Topic,
@@ -606,10 +631,15 @@ public sealed class ReadyBatch
 
     public void Fail(Exception exception)
     {
+        // Guard against calling Fail after Cleanup has been performed
+        if (Volatile.Read(ref _cleanedUp) != 0)
+            return;
+
         try
         {
-            foreach (var tcs in CompletionSources)
+            for (var i = 0; i < _completionSourcesCount; i++)
             {
+                var tcs = _completionSourcesArray[i];
                 tcs.TrySetException(exception);
 
                 // Return TCS to pool after failure
@@ -630,15 +660,20 @@ public sealed class ReadyBatch
             return;
 
         // Return pooled byte arrays (key/value data)
-        foreach (var array in _pooledArrays)
+        for (var i = 0; i < _pooledDataArraysCount; i++)
         {
-            ArrayPool<byte>.Shared.Return(array, clearArray: true);
+            ArrayPool<byte>.Shared.Return(_pooledDataArrays[i], clearArray: true);
         }
 
         // Return pooled header arrays (large header counts)
-        foreach (var array in _pooledHeaderArrays)
+        for (var i = 0; i < _pooledHeaderArraysCount; i++)
         {
-            ArrayPool<RecordHeader>.Shared.Return(array, clearArray: true);
+            ArrayPool<RecordHeader>.Shared.Return(_pooledHeaderArrays[i], clearArray: true);
         }
+
+        // Return the working arrays to pool
+        ArrayPool<TaskCompletionSource<RecordMetadata>>.Shared.Return(_completionSourcesArray, clearArray: true);
+        ArrayPool<byte[]>.Shared.Return(_pooledDataArrays, clearArray: true);
+        ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: true);
     }
 }
