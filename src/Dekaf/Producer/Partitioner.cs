@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace Dekaf.Producer;
 
 /// <summary>
@@ -37,7 +39,7 @@ public sealed class DefaultPartitioner : IPartitioner
 /// </summary>
 public sealed class StickyPartitioner : IPartitioner
 {
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _stickyPartitions = new();
+    private readonly ConcurrentDictionary<string, int> _stickyPartitions = new();
     private uint _counter;
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
@@ -65,8 +67,12 @@ public sealed class StickyPartitioner : IPartitioner
     /// </summary>
     public void OnBatchComplete(string topic, int partitionCount)
     {
-        // Use uint to avoid overflow to negative values
-        _stickyPartitions[topic] = (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount);
+        // Use AddOrUpdate for thread-safe update that doesn't race with concurrent TryGetValue.
+        // Use uint to avoid overflow to negative values.
+        _stickyPartitions.AddOrUpdate(
+            topic,
+            _ => (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount),
+            (_, _) => (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount));
     }
 }
 

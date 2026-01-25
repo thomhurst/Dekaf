@@ -82,17 +82,17 @@ public sealed class Headers : IEnumerable<Header>
 
     /// <summary>
     /// Gets all headers with the specified key.
+    /// Uses yield return for deferred execution without list allocation.
     /// </summary>
     public IEnumerable<Header> GetAll(string key)
     {
-        // Manual loop to avoid closure allocation from LINQ Where predicate
-        var results = new List<Header>();
+        // Use iterator method for zero-allocation deferred execution.
+        // The state machine is only allocated when the caller enumerates.
         foreach (var header in _headers)
         {
             if (header.Key == key)
-                results.Add(header);
+                yield return header;
         }
-        return results;
     }
 
     /// <summary>
