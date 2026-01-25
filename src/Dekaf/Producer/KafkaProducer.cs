@@ -192,19 +192,109 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
-        // Rent completion source from pool - it will auto-return when batch completes and is awaited
-        var completion = _valueTaskSourcePool.Rent();
+        // Fast path: Try synchronous produce if metadata is initialized and cached
+        // This bypasses channel overhead for fire-and-forget operations
+        if (TryProduceSync(message))
+        {
+            return;
+        }
 
+        // Slow path: Fall back to channel-based async processing
+        // This handles the case where metadata isn't initialized or cached
+        var completion = _valueTaskSourcePool.Rent();
         var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None);
 
-        // Use TryWrite for fire-and-forget - if channel is full, this becomes blocking
-        // but unbounded channels should never block on write
         if (!_workChannel.Writer.TryWrite(workItem))
         {
-            // Channel is completed, producer is being disposed
-            // For fire-and-forget, we need to complete the source so it returns to pool
             completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
+    }
+
+    /// <summary>
+    /// Attempts synchronous produce when metadata is initialized and cached.
+    /// Returns true if successful, false if async path is needed.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryProduceSync(ProducerMessage<TKey, TValue> message)
+    {
+        // Check if metadata is initialized (sync check)
+        if (_metadataManager.Metadata.LastRefreshed == default)
+        {
+            return false; // Need async initialization
+        }
+
+        // Try to get topic metadata from cache
+        if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out var topicInfo) || topicInfo is null)
+        {
+            return false; // Cache miss, need async refresh
+        }
+
+        if (topicInfo.PartitionCount == 0)
+        {
+            return false; // Invalid topic state, let async path handle error
+        }
+
+        // All checks passed - we can proceed synchronously
+        // Rent completion source from pool
+        var completion = _valueTaskSourcePool.Rent();
+
+        try
+        {
+            // Serialize key and value
+            var keyIsNull = message.Key is null;
+            var key = keyIsNull ? PooledMemory.Null : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
+            var value = SerializeValueToPooled(message.Value, message.Topic, message.Headers);
+
+            // Determine partition
+            var partition = message.Partition
+                ?? _partitioner.Partition(message.Topic, key.Span, keyIsNull, topicInfo.PartitionCount);
+
+            // Get timestamp
+            var timestamp = message.Timestamp ?? DateTimeOffset.UtcNow;
+            var timestampMs = timestamp.ToUnixTimeMilliseconds();
+
+            // Convert headers
+            IReadOnlyList<RecordHeader>? recordHeaders = null;
+            RecordHeader[]? pooledHeaderArray = null;
+            if (message.Headers is not null && message.Headers.Count > 0)
+            {
+                recordHeaders = ConvertHeaders(message.Headers, out pooledHeaderArray);
+            }
+
+            // Append to accumulator synchronously
+            if (!_accumulator.TryAppendSync(
+                message.Topic,
+                partition,
+                timestampMs,
+                key,
+                value,
+                recordHeaders,
+                pooledHeaderArray,
+                completion))
+            {
+                // Accumulator is disposed, return arrays and throw
+                key.Return();
+                value.Return();
+                if (pooledHeaderArray is not null)
+                {
+                    ArrayPool<RecordHeader>.Shared.Return(pooledHeaderArray);
+                }
+                completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
+                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+            }
+
+            // Track message produced
+            var messageBytes = key.Length + value.Length;
+            _statisticsCollector.RecordMessageProduced(message.Topic, partition, messageBytes);
+
+            return true;
+        }
+        catch
+        {
+            // On any exception, ensure completion source is returned to pool
+            completion.TrySetException(new InvalidOperationException("Synchronous produce failed"));
+            throw;
         }
     }
 
@@ -216,23 +306,103 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         ArgumentNullException.ThrowIfNull(deliveryHandler);
 
-        // Rent completion source from pool - it will auto-return when GetResult() is called
+        // Fast path: Try synchronous produce if metadata is initialized and cached
+        if (TryProduceSyncWithHandler(message, deliveryHandler))
+        {
+            return;
+        }
+
+        // Slow path: Fall back to channel-based async processing
         var completion = _valueTaskSourcePool.Rent();
-
-        // Set the delivery handler - it will be invoked when GetResult() is called
         completion.SetDeliveryHandler(deliveryHandler);
-
-        // Schedule async helper to await the result and trigger the handler
         _ = AwaitDeliveryAsync(completion);
 
         var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None);
 
-        // Use TryWrite for fire-and-forget
         if (!_workChannel.Writer.TryWrite(workItem))
         {
-            // Channel is completed, producer is being disposed
             completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
+    }
+
+    /// <summary>
+    /// Attempts synchronous produce with delivery handler when metadata is initialized and cached.
+    /// Returns true if successful, false if async path is needed.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryProduceSyncWithHandler(ProducerMessage<TKey, TValue> message, Action<RecordMetadata?, Exception?> deliveryHandler)
+    {
+        // Check if metadata is initialized
+        if (_metadataManager.Metadata.LastRefreshed == default)
+        {
+            return false;
+        }
+
+        // Try to get topic metadata from cache
+        if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out var topicInfo) || topicInfo is null)
+        {
+            return false;
+        }
+
+        if (topicInfo.PartitionCount == 0)
+        {
+            return false;
+        }
+
+        // All checks passed - proceed synchronously
+        var completion = _valueTaskSourcePool.Rent();
+        completion.SetDeliveryHandler(deliveryHandler);
+        _ = AwaitDeliveryAsync(completion);
+
+        try
+        {
+            var keyIsNull = message.Key is null;
+            var key = keyIsNull ? PooledMemory.Null : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
+            var value = SerializeValueToPooled(message.Value, message.Topic, message.Headers);
+
+            var partition = message.Partition
+                ?? _partitioner.Partition(message.Topic, key.Span, keyIsNull, topicInfo.PartitionCount);
+
+            var timestamp = message.Timestamp ?? DateTimeOffset.UtcNow;
+            var timestampMs = timestamp.ToUnixTimeMilliseconds();
+
+            IReadOnlyList<RecordHeader>? recordHeaders = null;
+            RecordHeader[]? pooledHeaderArray = null;
+            if (message.Headers is not null && message.Headers.Count > 0)
+            {
+                recordHeaders = ConvertHeaders(message.Headers, out pooledHeaderArray);
+            }
+
+            if (!_accumulator.TryAppendSync(
+                message.Topic,
+                partition,
+                timestampMs,
+                key,
+                value,
+                recordHeaders,
+                pooledHeaderArray,
+                completion))
+            {
+                key.Return();
+                value.Return();
+                if (pooledHeaderArray is not null)
+                {
+                    ArrayPool<RecordHeader>.Shared.Return(pooledHeaderArray);
+                }
+                completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
+                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+            }
+
+            var messageBytes = key.Length + value.Length;
+            _statisticsCollector.RecordMessageProduced(message.Topic, partition, messageBytes);
+
+            return true;
+        }
+        catch
+        {
+            completion.TrySetException(new InvalidOperationException("Synchronous produce failed"));
+            throw;
         }
     }
 
@@ -282,9 +452,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Ensure metadata is initialized
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        // Get topic metadata
-        var topicInfo = await _metadataManager.GetTopicMetadataAsync(message.Topic, cancellationToken)
-            .ConfigureAwait(false);
+        // Fast path: try to get topic metadata from cache synchronously
+        // This avoids async state machine overhead for 99%+ of calls
+        TopicInfo? topicInfo;
+        if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo))
+        {
+            // Slow path: cache miss, need async refresh
+            topicInfo = await _metadataManager.GetTopicMetadataAsync(message.Topic, cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         if (topicInfo is null)
         {
@@ -618,12 +794,21 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         batch.Complete(partitionResponse.BaseOffset, timestamp);
     }
 
-    private async ValueTask EnsureInitializedAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Ensures metadata is initialized. Uses inline check to avoid async state machine
+    /// overhead when metadata is already initialized (which is 99%+ of calls).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private ValueTask EnsureInitializedAsync(CancellationToken cancellationToken)
     {
-        if (_metadataManager.Metadata.LastRefreshed == default)
+        // Fast path: metadata already initialized - return completed ValueTask (no allocation)
+        if (_metadataManager.Metadata.LastRefreshed != default)
         {
-            await _metadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            return ValueTask.CompletedTask;
         }
+
+        // Slow path: need to initialize metadata
+        return _metadataManager.InitializeAsync(cancellationToken);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

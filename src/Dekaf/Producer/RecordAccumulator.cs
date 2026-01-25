@@ -185,6 +185,62 @@ public sealed class RecordAccumulator : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Synchronous version of Append for fire-and-forget produce operations.
+    /// Bypasses async overhead when no backpressure is needed.
+    /// Returns true if appended successfully, false if the accumulator is disposed.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryAppendSync(
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
+        PooledValueTaskSource<RecordMetadata> completion)
+    {
+        if (_disposed)
+            return false;
+
+        // OPTIMIZATION: Use a nested cache to get/create TopicPartition without allocating on hot path.
+        var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
+        var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
+
+        // Loop until we successfully append the record.
+        while (true)
+        {
+            // Hot path optimization: TryGetValue first to avoid lambda invocation when batch exists.
+            if (!_batches.TryGetValue(topicPartition, out var batch))
+            {
+                batch = _batches.GetOrAdd(topicPartition, static (tp, options) => new PartitionBatch(tp, options), _options);
+            }
+
+            var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
+
+            if (result.Success)
+                return true;
+
+            // Batch is full, complete it and queue for sending
+            var readyBatch = batch.Complete();
+            if (readyBatch is not null)
+            {
+                // Non-blocking write to unbounded channel - should always succeed
+                // If it fails (channel completed), the producer is being disposed
+                if (!_readyBatches.Writer.TryWrite(readyBatch))
+                {
+                    // Channel is closed, fail the batch and return false
+                    readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                    return false;
+                }
+            }
+
+            // Atomically remove the completed batch only if it's still the same instance.
+            _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch));
+        }
+    }
+
 
     /// <summary>
     /// Gets batches that are ready to send.
@@ -297,8 +353,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
 /// Uses ArrayPool-backed arrays instead of List to eliminate allocations.
 ///
 /// Thread-safety: Multiple threads can call TryAppend concurrently (via ConcurrentDictionary.AddOrUpdate),
-/// so we use a lock to protect array mutations and field updates. The lock is per-partition, so there
-/// is no cross-partition contention. Complete() uses Interlocked for lock-free idempotent completion.
+/// so we use a SpinLock to protect array mutations and field updates. SpinLock is ideal here because:
+/// - Critical sections are very short (<100ns)
+/// - Lock is per-partition, so no cross-partition contention
+/// - Avoids the ~20ns overhead of Monitor for short-held locks
+/// Complete() uses Interlocked for lock-free idempotent completion.
 /// </summary>
 internal sealed class PartitionBatch
 {
@@ -321,7 +380,9 @@ internal sealed class PartitionBatch
     private RecordHeader[][] _pooledHeaderArrays;
     private int _pooledHeaderArrayCount;
 
-    private readonly object _lock = new(); // Protects array mutations and field updates
+    // SpinLock for short critical sections - lower overhead than Monitor for <100ns holds
+    // IMPORTANT: SpinLock is a struct, must never be copied. Access via ref only.
+    private SpinLock _spinLock = new(enableThreadOwnerTracking: false);
 
     private long _baseTimestamp;
     private int _offsetDelta;
@@ -354,6 +415,7 @@ internal sealed class PartitionBatch
     public int RecordCount => _recordCount;
     public int EstimatedSize => _estimatedSize;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public RecordAppendResult TryAppend(
         long timestamp,
         PooledMemory key,
@@ -362,11 +424,14 @@ internal sealed class PartitionBatch
         RecordHeader[]? pooledHeaderArray,
         PooledValueTaskSource<RecordMetadata> completion)
     {
-        // Lock required: Multiple threads can call TryAppend concurrently via ConcurrentDictionary.AddOrUpdate.
-        // List<T> is not thread-safe, so we must synchronize access to _records, _completionSources, etc.
+        // SpinLock for short critical section - lower overhead than Monitor for <100ns holds.
+        // Multiple threads can call TryAppend concurrently via ConcurrentDictionary.AddOrUpdate.
         // This lock is per-partition, so there is no cross-partition contention.
-        lock (_lock)
+        var lockTaken = false;
+        try
         {
+            _spinLock.Enter(ref lockTaken);
+
             if (_recordCount == 0)
             {
                 _baseTimestamp = timestamp;
@@ -433,6 +498,10 @@ internal sealed class PartitionBatch
 
             return new RecordAppendResult(true);
         }
+        finally
+        {
+            if (lockTaken) _spinLock.Exit(useMemoryBarrier: false);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -448,12 +517,19 @@ internal sealed class PartitionBatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool ShouldFlush(DateTimeOffset now, int lingerMs)
     {
-        lock (_lock)
+        var lockTaken = false;
+        try
         {
+            _spinLock.Enter(ref lockTaken);
+
             if (_recordCount == 0)
                 return false;
 
             return (now - _createdAt).TotalMilliseconds >= lingerMs;
+        }
+        finally
+        {
+            if (lockTaken) _spinLock.Exit(useMemoryBarrier: false);
         }
     }
 
