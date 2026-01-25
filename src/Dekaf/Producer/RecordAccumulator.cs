@@ -339,7 +339,7 @@ internal sealed class PartitionBatch
     }
 
     public TopicPartition TopicPartition => _topicPartition;
-    public int RecordCount => _records.Count;
+    public int RecordCount => _recordCount;
     public int EstimatedSize => _estimatedSize;
 
     public RecordAppendResult TryAppend(
