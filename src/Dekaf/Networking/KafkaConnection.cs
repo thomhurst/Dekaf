@@ -1363,30 +1363,41 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
             return false; // Already completing or completed
         }
 
+        // CRITICAL: Parse the response BEFORE setting state to completed.
+        // SetResult/SetException invokes the continuation synchronously, which may
+        // return this request to the pool. We must not access any mutable state after
+        // calling SetResult/SetException.
+        PooledResponseBuffer? result = null;
+        Exception? parseException = null;
+
         try
         {
-            // Parse response header to get the actual data offset
-            var result = ParseAndSliceResponse(pooledBuffer);
-
-            if (result.HasValue)
+            result = ParseAndSliceResponse(pooledBuffer);
+            if (!result.HasValue)
             {
-                _core.SetResult(result.Value);
-            }
-            else
-            {
-                // Parsing failed - dispose buffer and set exception
                 pooledBuffer.Dispose();
-                _core.SetException(new InvalidOperationException("Failed to parse response header"));
+                parseException = new InvalidOperationException("Failed to parse response header");
             }
         }
         catch (Exception ex)
         {
             pooledBuffer.Dispose();
-            _core.SetException(ex);
+            parseException = ex;
         }
-        finally
+
+        // Mark as completed BEFORE invoking continuation.
+        // The continuation may return this instance to the pool, and we must not
+        // access mutable state after that point.
+        Volatile.Write(ref _state, 2);
+
+        // Now invoke the continuation (this may synchronously return to caller)
+        if (parseException is not null)
         {
-            Volatile.Write(ref _state, 2); // Mark as completed
+            _core.SetException(parseException);
+        }
+        else
+        {
+            _core.SetResult(result!.Value);
         }
 
         return true;
@@ -1403,8 +1414,11 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
             return false;
         }
 
-        _core.SetException(exception);
+        // Mark as completed BEFORE invoking continuation.
+        // SetException invokes the continuation synchronously, which may return
+        // this instance to the pool.
         Volatile.Write(ref _state, 2);
+        _core.SetException(exception);
         return true;
     }
 
@@ -1419,8 +1433,11 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
             return false;
         }
 
-        _core.SetException(new OperationCanceledException());
+        // Mark as completed BEFORE invoking continuation.
+        // SetException invokes the continuation synchronously, which may return
+        // this instance to the pool.
         Volatile.Write(ref _state, 2);
+        _core.SetException(new OperationCanceledException());
         return true;
     }
 
