@@ -8,26 +8,99 @@ namespace Dekaf.Protocol;
 /// <summary>
 /// Zero-allocation binary decoder for Kafka protocol messages.
 /// This is a ref struct to ensure stack-only allocation and no GC pressure.
+///
+/// Optimized for contiguous memory (99%+ of cases) by using direct span operations
+/// with a simple position index, avoiding SequenceReader overhead entirely.
+/// Falls back to SequenceReader only for multi-segment sequences.
 /// </summary>
 public ref struct KafkaProtocolReader
 {
-    private SequenceReader<byte> _reader;
+    // Fast path: Direct span access for contiguous memory (99%+ of cases)
+    private readonly ReadOnlySpan<byte> _span;
+    private int _position;
 
+    // Slow path: SequenceReader for multi-segment sequences (rare)
+    // This is only allocated/used when data spans multiple segments
+    private SequenceReader<byte> _reader;
+    private readonly bool _isContiguous;
+
+    /// <summary>
+    /// Creates a reader from a byte array. This is the most common case.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public KafkaProtocolReader(byte[] buffer)
+    {
+        _span = buffer;
+        _position = 0;
+        _isContiguous = true;
+        _reader = default;
+    }
+
+    /// <summary>
+    /// Creates a reader from contiguous memory. This is the fast path used for most protocol parsing.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public KafkaProtocolReader(ReadOnlySpan<byte> buffer)
+    {
+        _span = buffer;
+        _position = 0;
+        _isContiguous = true;
+        _reader = default;
+    }
+
+    /// <summary>
+    /// Creates a reader from a ReadOnlySequence. Uses fast path if data is in a single segment.
+    /// </summary>
     public KafkaProtocolReader(ReadOnlySequence<byte> buffer)
     {
-        _reader = new SequenceReader<byte>(buffer);
+        if (buffer.IsSingleSegment)
+        {
+            // Fast path: Single segment - use direct span access
+            _span = buffer.FirstSpan;
+            _position = 0;
+            _isContiguous = true;
+            _reader = default;
+        }
+        else
+        {
+            // Slow path: Multi-segment - use SequenceReader
+            _span = default;
+            _position = 0;
+            _isContiguous = false;
+            _reader = new SequenceReader<byte>(buffer);
+        }
     }
 
-    public KafkaProtocolReader(ReadOnlyMemory<byte> buffer) : this(new ReadOnlySequence<byte>(buffer))
+    /// <summary>
+    /// Creates a reader from ReadOnlyMemory. Always uses fast path since Memory is contiguous.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public KafkaProtocolReader(ReadOnlyMemory<byte> buffer)
     {
+        _span = buffer.Span;
+        _position = 0;
+        _isContiguous = true;
+        _reader = default;
     }
 
-    public readonly long Consumed => _reader.Consumed;
-    public readonly long Remaining => _reader.Remaining;
-    public readonly bool End => _reader.End;
+    public readonly long Consumed => _isContiguous ? _position : _reader.Consumed;
+    public readonly long Remaining => _isContiguous ? _span.Length - _position : _reader.Remaining;
+    public readonly bool End => _isContiguous ? _position >= _span.Length : _reader.End;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public sbyte ReadInt8()
+    {
+        if (_isContiguous)
+        {
+            if (_position >= _span.Length)
+                ThrowInsufficientData();
+            return (sbyte)_span[_position++];
+        }
+        return ReadInt8Slow();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private sbyte ReadInt8Slow()
     {
         if (!_reader.TryRead(out var value))
             ThrowInsufficientData();
@@ -37,6 +110,18 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public byte ReadUInt8()
     {
+        if (_isContiguous)
+        {
+            if (_position >= _span.Length)
+                ThrowInsufficientData();
+            return _span[_position++];
+        }
+        return ReadUInt8Slow();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private byte ReadUInt8Slow()
+    {
         if (!_reader.TryRead(out var value))
             ThrowInsufficientData();
         return value;
@@ -45,11 +130,12 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public short ReadInt16()
     {
-        // Fast path: data is in a single contiguous segment (99% of cases)
-        if (_reader.UnreadSpan.Length >= 2)
+        if (_isContiguous)
         {
-            var result = BinaryPrimitives.ReadInt16BigEndian(_reader.UnreadSpan);
-            _reader.Advance(2);
+            if (_position + 2 > _span.Length)
+                ThrowInsufficientData();
+            var result = BinaryPrimitives.ReadInt16BigEndian(_span.Slice(_position));
+            _position += 2;
             return result;
         }
         return ReadInt16Slow();
@@ -58,6 +144,12 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.NoInlining)]
     private short ReadInt16Slow()
     {
+        if (_reader.UnreadSpan.Length >= 2)
+        {
+            var result = BinaryPrimitives.ReadInt16BigEndian(_reader.UnreadSpan);
+            _reader.Advance(2);
+            return result;
+        }
         Span<byte> buffer = stackalloc byte[2];
         if (!_reader.TryCopyTo(buffer))
             ThrowInsufficientData();
@@ -68,11 +160,12 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public int ReadInt32()
     {
-        // Fast path: data is in a single contiguous segment (99% of cases)
-        if (_reader.UnreadSpan.Length >= 4)
+        if (_isContiguous)
         {
-            var result = BinaryPrimitives.ReadInt32BigEndian(_reader.UnreadSpan);
-            _reader.Advance(4);
+            if (_position + 4 > _span.Length)
+                ThrowInsufficientData();
+            var result = BinaryPrimitives.ReadInt32BigEndian(_span.Slice(_position));
+            _position += 4;
             return result;
         }
         return ReadInt32Slow();
@@ -81,6 +174,12 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.NoInlining)]
     private int ReadInt32Slow()
     {
+        if (_reader.UnreadSpan.Length >= 4)
+        {
+            var result = BinaryPrimitives.ReadInt32BigEndian(_reader.UnreadSpan);
+            _reader.Advance(4);
+            return result;
+        }
         Span<byte> buffer = stackalloc byte[4];
         if (!_reader.TryCopyTo(buffer))
             ThrowInsufficientData();
@@ -91,11 +190,12 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public long ReadInt64()
     {
-        // Fast path: data is in a single contiguous segment (99% of cases)
-        if (_reader.UnreadSpan.Length >= 8)
+        if (_isContiguous)
         {
-            var result = BinaryPrimitives.ReadInt64BigEndian(_reader.UnreadSpan);
-            _reader.Advance(8);
+            if (_position + 8 > _span.Length)
+                ThrowInsufficientData();
+            var result = BinaryPrimitives.ReadInt64BigEndian(_span.Slice(_position));
+            _position += 8;
             return result;
         }
         return ReadInt64Slow();
@@ -104,6 +204,12 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.NoInlining)]
     private long ReadInt64Slow()
     {
+        if (_reader.UnreadSpan.Length >= 8)
+        {
+            var result = BinaryPrimitives.ReadInt64BigEndian(_reader.UnreadSpan);
+            _reader.Advance(8);
+            return result;
+        }
         Span<byte> buffer = stackalloc byte[8];
         if (!_reader.TryCopyTo(buffer))
             ThrowInsufficientData();
@@ -114,11 +220,12 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public ushort ReadUInt16()
     {
-        // Fast path: data is in a single contiguous segment (99% of cases)
-        if (_reader.UnreadSpan.Length >= 2)
+        if (_isContiguous)
         {
-            var result = BinaryPrimitives.ReadUInt16BigEndian(_reader.UnreadSpan);
-            _reader.Advance(2);
+            if (_position + 2 > _span.Length)
+                ThrowInsufficientData();
+            var result = BinaryPrimitives.ReadUInt16BigEndian(_span.Slice(_position));
+            _position += 2;
             return result;
         }
         return ReadUInt16Slow();
@@ -127,6 +234,12 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.NoInlining)]
     private ushort ReadUInt16Slow()
     {
+        if (_reader.UnreadSpan.Length >= 2)
+        {
+            var result = BinaryPrimitives.ReadUInt16BigEndian(_reader.UnreadSpan);
+            _reader.Advance(2);
+            return result;
+        }
         Span<byte> buffer = stackalloc byte[2];
         if (!_reader.TryCopyTo(buffer))
             ThrowInsufficientData();
@@ -137,11 +250,12 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public uint ReadUInt32()
     {
-        // Fast path: data is in a single contiguous segment (99% of cases)
-        if (_reader.UnreadSpan.Length >= 4)
+        if (_isContiguous)
         {
-            var result = BinaryPrimitives.ReadUInt32BigEndian(_reader.UnreadSpan);
-            _reader.Advance(4);
+            if (_position + 4 > _span.Length)
+                ThrowInsufficientData();
+            var result = BinaryPrimitives.ReadUInt32BigEndian(_span.Slice(_position));
+            _position += 4;
             return result;
         }
         return ReadUInt32Slow();
@@ -150,6 +264,12 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.NoInlining)]
     private uint ReadUInt32Slow()
     {
+        if (_reader.UnreadSpan.Length >= 4)
+        {
+            var result = BinaryPrimitives.ReadUInt32BigEndian(_reader.UnreadSpan);
+            _reader.Advance(4);
+            return result;
+        }
         Span<byte> buffer = stackalloc byte[4];
         if (!_reader.TryCopyTo(buffer))
             ThrowInsufficientData();
@@ -160,11 +280,12 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public Guid ReadUuid()
     {
-        // Fast path: data is in a single contiguous segment (99% of cases)
-        if (_reader.UnreadSpan.Length >= 16)
+        if (_isContiguous)
         {
-            var result = new Guid(_reader.UnreadSpan[..16], bigEndian: true);
-            _reader.Advance(16);
+            if (_position + 16 > _span.Length)
+                ThrowInsufficientData();
+            var result = new Guid(_span.Slice(_position, 16), bigEndian: true);
+            _position += 16;
             return result;
         }
         return ReadUuidSlow();
@@ -173,6 +294,12 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.NoInlining)]
     private Guid ReadUuidSlow()
     {
+        if (_reader.UnreadSpan.Length >= 16)
+        {
+            var result = new Guid(_reader.UnreadSpan[..16], bigEndian: true);
+            _reader.Advance(16);
+            return result;
+        }
         Span<byte> buffer = stackalloc byte[16];
         if (!_reader.TryCopyTo(buffer))
             ThrowInsufficientData();
@@ -183,11 +310,12 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public double ReadFloat64()
     {
-        // Fast path: data is in a single contiguous segment (99% of cases)
-        if (_reader.UnreadSpan.Length >= 8)
+        if (_isContiguous)
         {
-            var result = BinaryPrimitives.ReadDoubleBigEndian(_reader.UnreadSpan);
-            _reader.Advance(8);
+            if (_position + 8 > _span.Length)
+                ThrowInsufficientData();
+            var result = BinaryPrimitives.ReadDoubleBigEndian(_span.Slice(_position));
+            _position += 8;
             return result;
         }
         return ReadFloat64Slow();
@@ -196,6 +324,12 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.NoInlining)]
     private double ReadFloat64Slow()
     {
+        if (_reader.UnreadSpan.Length >= 8)
+        {
+            var result = BinaryPrimitives.ReadDoubleBigEndian(_reader.UnreadSpan);
+            _reader.Advance(8);
+            return result;
+        }
         Span<byte> buffer = stackalloc byte[8];
         if (!_reader.TryCopyTo(buffer))
             ThrowInsufficientData();
@@ -226,12 +360,49 @@ public ref struct KafkaProtocolReader
     /// <summary>
     /// Reads an unsigned variable-length integer.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public int ReadUnsignedVarInt()
     {
         return (int)ReadVarUInt();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint ReadVarUInt()
+    {
+        if (_isContiguous)
+        {
+            return ReadVarUIntFast();
+        }
+        return ReadVarUIntSlow();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private uint ReadVarUIntFast()
+    {
+        // Fast path for contiguous memory - direct span access
+        uint result = 0;
+        var shift = 0;
+
+        while (shift < 35)
+        {
+            if (_position >= _span.Length)
+                ThrowInsufficientData();
+
+            var b = _span[_position++];
+            result |= (uint)(b & 0x7F) << shift;
+
+            if ((b & 0x80) == 0)
+                return result;
+
+            shift += 7;
+        }
+
+        ThrowMalformedVarInt();
+        return 0; // Unreachable
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private uint ReadVarUIntSlow()
     {
         uint result = 0;
         var shift = 0;
@@ -253,7 +424,43 @@ public ref struct KafkaProtocolReader
         return 0; // Unreachable
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private ulong ReadVarULong()
+    {
+        if (_isContiguous)
+        {
+            return ReadVarULongFast();
+        }
+        return ReadVarULongSlow();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private ulong ReadVarULongFast()
+    {
+        // Fast path for contiguous memory - direct span access
+        ulong result = 0;
+        var shift = 0;
+
+        while (shift < 70)
+        {
+            if (_position >= _span.Length)
+                ThrowInsufficientData();
+
+            var b = _span[_position++];
+            result |= (ulong)(b & 0x7F) << shift;
+
+            if ((b & 0x80) == 0)
+                return result;
+
+            shift += 7;
+        }
+
+        ThrowMalformedVarInt();
+        return 0; // Unreachable
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private ulong ReadVarULongSlow()
     {
         ulong result = 0;
         var shift = 0;
@@ -335,6 +542,21 @@ public ref struct KafkaProtocolReader
         if (length == 0)
             return string.Empty;
 
+        if (_isContiguous)
+        {
+            if (_position + length > _span.Length)
+                ThrowInsufficientData();
+            var result = Encoding.UTF8.GetString(_span.Slice(_position, length));
+            _position += length;
+            return result;
+        }
+
+        return ReadStringContentSlow(length);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private string ReadStringContentSlow(int length)
+    {
         if (_reader.UnreadSpan.Length >= length)
         {
             var result = Encoding.UTF8.GetString(_reader.UnreadSpan[..length]);
@@ -388,6 +610,15 @@ public ref struct KafkaProtocolReader
     private byte[] ReadBytesContent(int length)
     {
         var result = new byte[length];
+        if (_isContiguous)
+        {
+            if (_position + length > _span.Length)
+                ThrowInsufficientData();
+            _span.Slice(_position, length).CopyTo(result);
+            _position += length;
+            return result;
+        }
+
         if (!_reader.TryCopyTo(result))
             ThrowInsufficientData();
         _reader.Advance(length);
@@ -399,6 +630,15 @@ public ref struct KafkaProtocolReader
     /// </summary>
     public void ReadRawBytes(Span<byte> destination)
     {
+        if (_isContiguous)
+        {
+            if (_position + destination.Length > _span.Length)
+                ThrowInsufficientData();
+            _span.Slice(_position, destination.Length).CopyTo(destination);
+            _position += destination.Length;
+            return;
+        }
+
         if (!_reader.TryCopyTo(destination))
             ThrowInsufficientData();
         _reader.Advance(destination.Length);
@@ -426,7 +666,18 @@ public ref struct KafkaProtocolReader
         if (count == 0)
             return ReadOnlyMemory<byte>.Empty;
 
-        // Fast path: data is in a single contiguous segment
+        // For contiguous mode, we can't return a slice of span as Memory,
+        // but we can copy into a new array (still faster than SequenceReader overhead)
+        if (_isContiguous)
+        {
+            if (_position + count > _span.Length)
+                ThrowInsufficientData();
+            var result = _span.Slice(_position, count).ToArray();
+            _position += count;
+            return result;
+        }
+
+        // Multi-segment: try fast path first
         if (_reader.UnreadSpan.Length >= count)
         {
             // Get the underlying memory from the current position
@@ -500,6 +751,15 @@ public ref struct KafkaProtocolReader
     {
         if (count <= 0)
             return;
+
+        if (_isContiguous)
+        {
+            if (_position + count > _span.Length)
+                ThrowInsufficientData();
+            _position += count;
+            return;
+        }
+
         if (_reader.Remaining < count)
             ThrowInsufficientData();
         _reader.Advance(count);
@@ -510,6 +770,10 @@ public ref struct KafkaProtocolReader
     /// </summary>
     public readonly ReadOnlySequence<byte> GetRemainingSequence()
     {
+        if (_isContiguous)
+        {
+            return new ReadOnlySequence<byte>(_span.Slice(_position).ToArray());
+        }
         return _reader.UnreadSequence;
     }
 
