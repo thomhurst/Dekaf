@@ -152,7 +152,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // - Loop retries with the new batch (created by us or another thread)
         while (true)
         {
-            var batch = _batches.GetOrAdd(topicPartition, tp => new PartitionBatch(tp, _options));
+            // Hot path optimization: TryGetValue first to avoid lambda invocation when batch exists.
+            // Most appends hit an existing batch, so this avoids GetOrAdd overhead.
+            if (!_batches.TryGetValue(topicPartition, out var batch))
+            {
+                // Cold path: Use static lambda with explicit state parameter to avoid closure allocation.
+                // The captured _options would create a closure on every call otherwise.
+                batch = _batches.GetOrAdd(topicPartition, static (tp, options) => new PartitionBatch(tp, options), _options);
+            }
 
             var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
 
