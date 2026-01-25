@@ -15,6 +15,7 @@ namespace Dekaf.Benchmarks;
 public class TopicPartitionCacheBenchmarks
 {
     private RecordAccumulator _cachedAccumulator = null!;
+    private ValueTaskSourcePool<RecordMetadata> _pool = null!;
     private ProducerOptions _options = null!;
     private const string TestTopic = "benchmark-topic";
     private const int TestPartition = 0;
@@ -36,7 +37,8 @@ public class TopicPartitionCacheBenchmarks
             BufferMemory = 32 * 1024 * 1024
         };
 
-        _cachedAccumulator = new RecordAccumulator(_options, _ => { });
+        _cachedAccumulator = new RecordAccumulator(_options);
+        _pool = new ValueTaskSourcePool<RecordMetadata>();
 
         // Create test data
         _keyBytes = System.Text.Encoding.UTF8.GetBytes("test-key");
@@ -47,6 +49,7 @@ public class TopicPartitionCacheBenchmarks
     public async Task Cleanup()
     {
         await _cachedAccumulator.DisposeAsync();
+        await _pool.DisposeAsync();
     }
 
     [Benchmark(Description = "Cached: Single partition, 1000 produces")]
@@ -54,7 +57,7 @@ public class TopicPartitionCacheBenchmarks
     {
         for (var i = 0; i < 1000; i++)
         {
-            var tcs = new TaskCompletionSource<RecordMetadata>();
+            var completion = _pool.Rent();
             var key = new PooledMemory(_keyBytes, _keyBytes.Length);
             var value = new PooledMemory(_valueBytes, _valueBytes.Length);
 
@@ -66,7 +69,7 @@ public class TopicPartitionCacheBenchmarks
                 value,
                 null,
                 null,
-                tcs,
+                completion,
                 CancellationToken.None).ConfigureAwait(false);
         }
     }
@@ -77,7 +80,7 @@ public class TopicPartitionCacheBenchmarks
         // Simulate the old behavior by creating TopicPartition on every call
         for (var i = 0; i < 1000; i++)
         {
-            var tcs = new TaskCompletionSource<RecordMetadata>();
+            var completion = _pool.Rent();
             var key = new PooledMemory(_keyBytes, _keyBytes.Length);
             var value = new PooledMemory(_valueBytes, _valueBytes.Length);
 
@@ -92,7 +95,7 @@ public class TopicPartitionCacheBenchmarks
                 value,
                 null,
                 null,
-                tcs,
+                completion,
                 CancellationToken.None).ConfigureAwait(false);
         }
     }
@@ -103,7 +106,7 @@ public class TopicPartitionCacheBenchmarks
         for (var i = 0; i < 1000; i++)
         {
             var partition = i % PartitionCount;
-            var tcs = new TaskCompletionSource<RecordMetadata>();
+            var completion = _pool.Rent();
             var key = new PooledMemory(_keyBytes, _keyBytes.Length);
             var value = new PooledMemory(_valueBytes, _valueBytes.Length);
 
@@ -115,7 +118,7 @@ public class TopicPartitionCacheBenchmarks
                 value,
                 null,
                 null,
-                tcs,
+                completion,
                 CancellationToken.None).ConfigureAwait(false);
         }
     }
@@ -127,7 +130,7 @@ public class TopicPartitionCacheBenchmarks
         for (var i = 0; i < 1000; i++)
         {
             var partition = i % PartitionCount;
-            var tcs = new TaskCompletionSource<RecordMetadata>();
+            var completion = _pool.Rent();
             var key = new PooledMemory(_keyBytes, _keyBytes.Length);
             var value = new PooledMemory(_valueBytes, _valueBytes.Length);
 
@@ -142,7 +145,7 @@ public class TopicPartitionCacheBenchmarks
                 value,
                 null,
                 null,
-                tcs,
+                completion,
                 CancellationToken.None).ConfigureAwait(false);
         }
     }
@@ -159,7 +162,7 @@ public class TopicPartitionCacheBenchmarks
                 for (var i = 0; i < 250; i++)
                 {
                     var partition = (threadId * 250 + i) % PartitionCount;
-                    var tcs = new TaskCompletionSource<RecordMetadata>();
+                    var completion = _pool.Rent();
                     var key = new PooledMemory(_keyBytes, _keyBytes.Length);
                     var value = new PooledMemory(_valueBytes, _valueBytes.Length);
 
@@ -171,7 +174,7 @@ public class TopicPartitionCacheBenchmarks
                         value,
                         null,
                         null,
-                        tcs,
+                        completion,
                         CancellationToken.None).ConfigureAwait(false);
                 }
             });
@@ -191,7 +194,7 @@ public class TopicPartitionCacheBenchmarks
                 for (var i = 0; i < 250; i++)
                 {
                     var partition = (threadId * 250 + i) % PartitionCount;
-                    var tcs = new TaskCompletionSource<RecordMetadata>();
+                    var completion = _pool.Rent();
                     var key = new PooledMemory(_keyBytes, _keyBytes.Length);
                     var value = new PooledMemory(_valueBytes, _valueBytes.Length);
 
@@ -206,7 +209,7 @@ public class TopicPartitionCacheBenchmarks
                         value,
                         null,
                         null,
-                        tcs,
+                        completion,
                         CancellationToken.None).ConfigureAwait(false);
                 }
             });

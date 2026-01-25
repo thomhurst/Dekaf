@@ -29,13 +29,14 @@ public class RecordAccumulatorTests
         // returns the same ReadyBatch instance, preventing double-cleanup of resources.
 
         var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options, _ => { }); // No-op callback for tests
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
 
         try
         {
             // Append a record to create a non-empty batch
-            var completion = new TaskCompletionSource<RecordMetadata>();
+            var completion = pool.Rent();
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
@@ -83,6 +84,7 @@ public class RecordAccumulatorTests
         finally
         {
             await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
         }
     }
 
@@ -93,13 +95,14 @@ public class RecordAccumulatorTests
         // it only executes once, even if called multiple times.
 
         var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options, _ => { }); // No-op callback for tests
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
 
         try
         {
             // Append a record
-            var completion = new TaskCompletionSource<RecordMetadata>();
+            var completion = pool.Rent();
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
@@ -154,6 +157,7 @@ public class RecordAccumulatorTests
         finally
         {
             await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
         }
     }
 
@@ -163,13 +167,14 @@ public class RecordAccumulatorTests
         // This test verifies that calling Complete() followed by Fail() only triggers cleanup once.
 
         var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options, _ => { }); // No-op callback for tests
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
 
         try
         {
             // Create a batch
-            var completion = new TaskCompletionSource<RecordMetadata>();
+            var completion = pool.Rent();
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
@@ -216,6 +221,7 @@ public class RecordAccumulatorTests
         finally
         {
             await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
         }
     }
 
@@ -226,7 +232,8 @@ public class RecordAccumulatorTests
         // It ensures that the per-partition lock in PartitionBatch correctly serializes appends.
 
         var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options, _ => { }); // No-op callback for tests
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
 
         try
@@ -243,7 +250,7 @@ public class RecordAccumulatorTests
                     var results = new List<RecordAppendResult>();
                     for (int j = 0; j < recordsPerThread; j++)
                     {
-                        var completion = new TaskCompletionSource<RecordMetadata>();
+                        var completion = pool.Rent();
                         var pooledKey = new PooledMemory(null, 0, isNull: true);
                         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
@@ -295,6 +302,7 @@ public class RecordAccumulatorTests
         finally
         {
             await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
         }
     }
 
@@ -305,7 +313,8 @@ public class RecordAccumulatorTests
         // Each partition should have its own PartitionBatch with its own lock, ensuring no cross-partition contention.
 
         var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options, _ => { }); // No-op callback for tests
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
 
         try
         {
@@ -323,7 +332,7 @@ public class RecordAccumulatorTests
 
                     for (int j = 0; j < recordsPerPartition; j++)
                     {
-                        var completion = new TaskCompletionSource<RecordMetadata>();
+                        var completion = pool.Rent();
                         var pooledKey = new PooledMemory(null, 0, isNull: true);
                         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
@@ -361,6 +370,7 @@ public class RecordAccumulatorTests
         finally
         {
             await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
         }
     }
 
@@ -371,7 +381,8 @@ public class RecordAccumulatorTests
         // This verifies that under high contention, no exceptions occur and all operations complete successfully.
 
         var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options, _ => { }); // No-op callback for tests
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
 
         try
         {
@@ -394,7 +405,7 @@ public class RecordAccumulatorTests
                         var partition = threadRandom.Next(0, partitionCount);
                         var topicPartition = new TopicPartition("test-topic", partition);
 
-                        var completion = new TaskCompletionSource<RecordMetadata>();
+                        var completion = pool.Rent();
                         var pooledKey = new PooledMemory(null, 0, isNull: true);
                         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
@@ -434,6 +445,7 @@ public class RecordAccumulatorTests
         finally
         {
             await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
         }
     }
 }
