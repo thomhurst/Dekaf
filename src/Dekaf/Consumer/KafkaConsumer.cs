@@ -1505,10 +1505,15 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
 
         // Cache the result - will be reused until assignment/paused changes (synchronized write)
+        // Use double-checked locking: another thread may have populated cache while we were building.
+        // First writer wins (has fresher metadata from earlier point in time).
         lock (_partitionCacheLock)
         {
-            _cachedPartitionsByBroker = result;
-            return result;
+            if (_cachedPartitionsByBroker is null)
+            {
+                _cachedPartitionsByBroker = result;
+            }
+            return _cachedPartitionsByBroker;
         }
     }
 
