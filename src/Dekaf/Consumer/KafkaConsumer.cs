@@ -933,6 +933,18 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         try
         {
             timeoutCts.CancelAfter(timeout);
+
+            // Fast path: if no external cancellation, use timeout CTS directly (avoids allocation)
+            if (!cancellationToken.CanBeCanceled)
+            {
+                await foreach (var result in ConsumeAsync(timeoutCts.Token).ConfigureAwait(false))
+                {
+                    return result;
+                }
+                return null;
+            }
+
+            // Slow path: need to link external cancellation with timeout
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
             await foreach (var result in ConsumeAsync(linkedCts.Token).ConfigureAwait(false))

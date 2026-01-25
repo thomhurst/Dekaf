@@ -83,12 +83,13 @@ public class ProducerBenchmarks
         _confluentProducer.Flush(TimeSpan.FromSeconds(5));
     }
 
-    [IterationCleanup]
+    [IterationCleanup(Targets = [nameof(DekafSingleProduce), nameof(ConfluentSingleProduce), nameof(DekafBatchProduce), nameof(ConfluentBatchProduce)])]
     public void IterationCleanup()
     {
-        // Flush both producers between iterations to prevent queue buildup
-        // and ensure clean state for next iteration
-        // Note: BenchmarkDotNet requires void return type, so use GetAwaiter().GetResult()
+        // Flush both producers between iterations for awaited benchmarks only.
+        // Fire-and-forget benchmarks (DekafFireAndForget, ConfluentFireAndForget) intentionally
+        // skip iteration cleanup to measure pure queueing time without flush overhead.
+        // GlobalCleanup handles flushing before teardown.
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         _dekafProducer.FlushAsync(cts.Token).GetAwaiter().GetResult();
         _confluentProducer.Flush(TimeSpan.FromSeconds(30));
@@ -97,6 +98,18 @@ public class ProducerBenchmarks
     [GlobalCleanup]
     public async Task Cleanup()
     {
+        // Flush any remaining messages from fire-and-forget benchmarks before disposing
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        try
+        {
+            await _dekafProducer.FlushAsync(cts.Token);
+        }
+        catch
+        {
+            // Ignore flush errors during cleanup
+        }
+        _confluentProducer.Flush(TimeSpan.FromSeconds(60));
+
         await _dekafProducer.DisposeAsync();
         _confluentProducer.Dispose();
         await _kafka.DisposeAsync();
