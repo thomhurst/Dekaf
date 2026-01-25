@@ -185,6 +185,72 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         return await completion.Task.ConfigureAwait(false);
     }
 
+    /// <inheritdoc />
+    public void Produce(ProducerMessage<TKey, TValue> message)
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
+        // Rent completion source from pool - it will be returned when batch completes
+        var completion = _tcsPool.Rent();
+
+        var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None);
+
+        // Use TryWrite for fire-and-forget - if channel is full, this becomes blocking
+        // but unbounded channels should never block on write
+        if (!_workChannel.Writer.TryWrite(workItem))
+        {
+            // Channel is completed, producer is being disposed
+            _tcsPool.Return(completion);
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
+    }
+
+    /// <inheritdoc />
+    public void Produce(ProducerMessage<TKey, TValue> message, Action<RecordMetadata?, Exception?> deliveryHandler)
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
+        ArgumentNullException.ThrowIfNull(deliveryHandler);
+
+        // Rent completion source from pool - it will be returned when batch completes
+        var completion = _tcsPool.Rent();
+
+        // Register continuation to invoke callback when delivery completes
+        _ = completion.Task.ContinueWith(
+            static (task, state) =>
+            {
+                var handler = (Action<RecordMetadata?, Exception?>)state!;
+                if (task.IsCompletedSuccessfully)
+                {
+                    handler(task.Result, null);
+                }
+                else if (task.IsFaulted)
+                {
+                    handler(null, task.Exception?.InnerException ?? task.Exception);
+                }
+                else if (task.IsCanceled)
+                {
+                    handler(null, new OperationCanceledException());
+                }
+            },
+            deliveryHandler,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+        var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None);
+
+        // Use TryWrite for fire-and-forget
+        if (!_workChannel.Writer.TryWrite(workItem))
+        {
+            // Channel is completed, producer is being disposed
+            _tcsPool.Return(completion);
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
+    }
+
     private async Task ProcessWorkAsync(CancellationToken cancellationToken)
     {
         await foreach (var work in _workChannel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))

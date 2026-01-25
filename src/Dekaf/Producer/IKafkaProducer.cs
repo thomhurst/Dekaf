@@ -58,6 +58,33 @@ public interface IKafkaProducer<TKey, TValue> : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Produces a message without waiting for acknowledgment (fire-and-forget).
+    /// </summary>
+    /// <remarks>
+    /// <para>This method queues the message for delivery without waiting for broker acknowledgment.
+    /// It provides lower latency than <see cref="ProduceAsync"/> but offers no delivery guarantees.</para>
+    ///
+    /// <para>To ensure all messages are delivered, call <see cref="FlushAsync"/> before disposing the producer.</para>
+    ///
+    /// <para>Errors during delivery will be logged but not thrown. For reliable delivery with error handling,
+    /// use the callback overload or <see cref="ProduceAsync"/>.</para>
+    /// </remarks>
+    void Produce(ProducerMessage<TKey, TValue> message);
+
+    /// <summary>
+    /// Produces a message without waiting for acknowledgment, with a delivery callback.
+    /// </summary>
+    /// <remarks>
+    /// <para>This method queues the message for delivery and invokes the callback when delivery completes
+    /// (either successfully or with an error).</para>
+    ///
+    /// <para>The callback is invoked on a background thread. Do not perform blocking operations in the callback.</para>
+    /// </remarks>
+    /// <param name="message">The message to produce.</param>
+    /// <param name="deliveryHandler">Callback invoked when delivery completes. The exception parameter is null on success.</param>
+    void Produce(ProducerMessage<TKey, TValue> message, Action<RecordMetadata?, Exception?> deliveryHandler);
+
+    /// <summary>
     /// Flushes any pending messages.
     /// </summary>
     ValueTask FlushAsync(CancellationToken cancellationToken = default);
