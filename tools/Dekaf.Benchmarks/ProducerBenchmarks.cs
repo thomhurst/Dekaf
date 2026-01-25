@@ -83,7 +83,7 @@ public class ProducerBenchmarks
         _confluentProducer.Flush(TimeSpan.FromSeconds(5));
     }
 
-    [IterationCleanup(Targets = [nameof(DekafSingleProduce), nameof(ConfluentSingleProduce), nameof(DekafBatchProduce), nameof(ConfluentBatchProduce)])]
+    [IterationCleanup(Targets = [nameof(SingleProduce_Dekaf), nameof(SingleProduce_Confluent), nameof(BatchProduce_Dekaf), nameof(BatchProduce_Confluent)])]
     public void IterationCleanup()
     {
         // Flush both producers between iterations for awaited benchmarks only.
@@ -116,7 +116,7 @@ public class ProducerBenchmarks
     }
 
     [Benchmark(Description = "Dekaf: Single Message Produce")]
-    public async Task<DekafProducer.RecordMetadata> DekafSingleProduce()
+    public async Task<DekafProducer.RecordMetadata> SingleProduce_Dekaf()
     {
         return await _dekafProducer.ProduceAsync(new DekafProducer.ProducerMessage<string, string>
         {
@@ -127,7 +127,7 @@ public class ProducerBenchmarks
     }
 
     [Benchmark(Description = "Confluent: Single Message Produce")]
-    public async Task<Confluent.Kafka.DeliveryResult<string, string>> ConfluentSingleProduce()
+    public async Task<Confluent.Kafka.DeliveryResult<string, string>> SingleProduce_Confluent()
     {
         return await _confluentProducer.ProduceAsync(Topic, new Confluent.Kafka.Message<string, string>
         {
@@ -137,7 +137,7 @@ public class ProducerBenchmarks
     }
 
     [Benchmark(Description = "Dekaf: Batch Produce")]
-    public async Task DekafBatchProduce()
+    public async Task BatchProduce_Dekaf()
     {
         // Convert ValueTasks to Tasks immediately - ValueTasks must not be stored
         var tasks = new List<Task<DekafProducer.RecordMetadata>>(BatchSize);
@@ -156,7 +156,7 @@ public class ProducerBenchmarks
     }
 
     [Benchmark(Description = "Confluent: Batch Produce")]
-    public async Task ConfluentBatchProduce()
+    public async Task BatchProduce_Confluent()
     {
         var tasks = new List<Task<Confluent.Kafka.DeliveryResult<string, string>>>(BatchSize);
 
@@ -173,7 +173,7 @@ public class ProducerBenchmarks
     }
 
     [Benchmark(Description = "Dekaf: Fire-and-Forget Produce")]
-    public void DekafFireAndForget()
+    public void FireAndForget_Dekaf()
     {
         for (var i = 0; i < BatchSize; i++)
         {
@@ -187,7 +187,7 @@ public class ProducerBenchmarks
     }
 
     [Benchmark(Description = "Confluent: Fire-and-Forget Produce")]
-    public void ConfluentFireAndForget()
+    public void FireAndForget_Confluent()
     {
         for (var i = 0; i < BatchSize; i++)
         {
