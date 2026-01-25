@@ -76,17 +76,10 @@ public sealed class Headers : IEnumerable<Header>
 
     /// <summary>
     /// Gets all headers with the specified key.
-    /// Uses iterator method to avoid LINQ closure allocation.
     /// </summary>
     public IEnumerable<Header> GetAll(string key)
     {
-        foreach (var header in _headers)
-        {
-            if (header.Key == key)
-            {
-                yield return header;
-            }
-        }
+        return _headers.Where(h => h.Key == key);
     }
 
     /// <summary>

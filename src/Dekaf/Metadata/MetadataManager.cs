@@ -308,12 +308,11 @@ public sealed class MetadataManager : IAsyncDisposable
 
     internal IReadOnlyList<(string Host, int Port)> GetEndpointsToTry()
     {
-        // Get current brokers - this allocates, but we need it to detect changes
-        var currentBrokers = _metadata.GetBrokers();
-
         // Thread-safe cache check - avoid rebuilding if brokers haven't changed
         lock (_endpointCacheLock)
         {
+            // Get current brokers inside lock to prevent race with _metadata.Update()
+            var currentBrokers = _metadata.GetBrokers();
             // Compute hash of broker data (NodeId, Host, Port) to detect any changes
             // This detects count changes, membership changes, AND host/port changes
             var hash = new HashCode();
