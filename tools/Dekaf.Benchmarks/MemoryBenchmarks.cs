@@ -184,7 +184,8 @@ public class MemoryBenchmarks
                 var pooledValue = new PooledMemory(null, 0, isNull: true);
 
                 await accumulator.AppendAsync(
-                    topicPartition,
+                    topicPartition.Topic,
+                    topicPartition.Partition,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     pooledKey,
                     pooledValue,
