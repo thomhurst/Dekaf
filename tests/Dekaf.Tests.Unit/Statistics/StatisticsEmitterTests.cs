@@ -8,28 +8,26 @@ public class StatisticsEmitterTests
     public async Task Emitter_CallsHandler_AtInterval()
     {
         var callCount = 0;
-        var callEvent = new ManualResetEventSlim(false);
+        var tcs = new TaskCompletionSource<bool>();
         var emitter = new StatisticsEmitter<int>(
             TimeSpan.FromMilliseconds(50),
             () => 42,
             _ =>
             {
-                Interlocked.Increment(ref callCount);
-                callEvent.Set();
+                var count = Interlocked.Increment(ref callCount);
+                if (count >= 2)
+                {
+                    tcs.TrySetResult(true);
+                }
             });
 
-        // Wait for at least one emission with timeout
-        var signaled = callEvent.Wait(TimeSpan.FromSeconds(2));
-        await Assert.That(signaled).IsTrue();
-
-        // Wait for more emissions (enough time for multiple intervals)
-        // Using 500ms to allow for timer imprecision on busy CI runners
-        await Task.Delay(500);
+        // Wait for at least 2 emissions with timeout (event-based, not timing-based)
+        var completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(5))) == tcs.Task;
+        await Assert.That(completed).IsTrue();
 
         await emitter.DisposeAsync().ConfigureAwait(false);
 
-        // Should have been called at least 2 times (50ms interval, 500ms+ wait after first)
-        // Using relaxed expectation for CI environments
+        // Should have been called at least 2 times
         await Assert.That(callCount).IsGreaterThanOrEqualTo(2);
     }
 
