@@ -210,6 +210,12 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly ConsumerStatisticsCollector _statisticsCollector = new();
     private readonly StatisticsEmitter<ConsumerStatistics>? _statisticsEmitter;
 
+    // Cached partition grouping by broker to avoid allocations on every fetch
+    // Invalidated whenever _assignment or _paused changes
+    // Access to _cachedPartitionsByBroker must be synchronized via _partitionCacheLock
+    private Dictionary<int, List<TopicPartition>>? _cachedPartitionsByBroker;
+    private readonly object _partitionCacheLock = new();
+
     public KafkaConsumer(
         ConsumerOptions options,
         IDeserializer<TKey> keyDeserializer,
@@ -384,6 +390,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     {
         _subscription.Clear();
         _assignment.Clear();
+        InvalidatePartitionCache();
         return this;
     }
 
@@ -395,12 +402,14 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             _assignment.Add(partition);
         }
+        InvalidatePartitionCache();
         return this;
     }
 
     public IKafkaConsumer<TKey, TValue> Unassign()
     {
         _assignment.Clear();
+        InvalidatePartitionCache();
         return this;
     }
 
@@ -423,6 +432,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             // Otherwise, positions will be initialized lazily based on auto.offset.reset
         }
 
+        InvalidatePartitionCache();
         return this;
     }
 
@@ -440,6 +450,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         // Clear any pending fetch data for the removed partitions
         ClearFetchBufferForPartitions(partitions);
 
+        InvalidatePartitionCache();
         return this;
     }
 
@@ -1097,6 +1108,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             _paused.Add(partition);
         }
+        InvalidatePartitionCache();
         return this;
     }
 
@@ -1106,6 +1118,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             _paused.Remove(partition);
         }
+        InvalidatePartitionCache();
         return this;
     }
 
@@ -1297,6 +1310,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             {
                 _assignment.Add(partition);
             }
+            InvalidatePartitionCache();
 
             // Clean up state for removed partitions
             foreach (var partition in removedPartitions)
@@ -1567,13 +1581,43 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
     }
 
+    /// <summary>
+    /// Invalidates the cached partition grouping. Called whenever _assignment or _paused changes.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void InvalidatePartitionCache()
+    {
+        lock (_partitionCacheLock)
+        {
+            _cachedPartitionsByBroker = null;
+        }
+    }
+
     private async ValueTask<Dictionary<int, List<TopicPartition>>> GroupPartitionsByBrokerAsync(CancellationToken cancellationToken)
     {
+        // Check cache and take snapshot of assignment/paused while holding lock
+        HashSet<TopicPartition> assignmentSnapshot;
+        HashSet<TopicPartition> pausedSnapshot;
+
+        lock (_partitionCacheLock)
+        {
+            if (_cachedPartitionsByBroker is not null)
+            {
+                return _cachedPartitionsByBroker;
+            }
+
+            // Take snapshot of assignment and paused sets to avoid race conditions
+            // during iteration (these are regular HashSets, not thread-safe)
+            assignmentSnapshot = new HashSet<TopicPartition>(_assignment);
+            pausedSnapshot = new HashSet<TopicPartition>(_paused);
+        }
+
+        // Build the cache outside the lock - allocate once per assignment change
         var result = new Dictionary<int, List<TopicPartition>>();
 
-        foreach (var partition in _assignment)
+        foreach (var partition in assignmentSnapshot)
         {
-            if (_paused.Contains(partition))
+            if (pausedSnapshot.Contains(partition))
                 continue;
 
             var leader = await _metadataManager.GetPartitionLeaderAsync(partition.Topic, partition.Partition, cancellationToken)
@@ -1591,7 +1635,17 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             list.Add(partition);
         }
 
-        return result;
+        // Cache the result - will be reused until assignment/paused changes (synchronized write)
+        // Use double-checked locking: another thread may have populated cache while we were building.
+        // First writer wins (has fresher metadata from earlier point in time).
+        lock (_partitionCacheLock)
+        {
+            if (_cachedPartitionsByBroker is null)
+            {
+                _cachedPartitionsByBroker = result;
+            }
+            return _cachedPartitionsByBroker;
+        }
     }
 
     private async ValueTask FetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
