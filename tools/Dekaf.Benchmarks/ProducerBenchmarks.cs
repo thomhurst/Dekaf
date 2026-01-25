@@ -84,23 +84,15 @@ public class ProducerBenchmarks
     }
 
     [IterationCleanup(Targets = [nameof(DekafSingleProduce), nameof(ConfluentSingleProduce), nameof(DekafBatchProduce), nameof(ConfluentBatchProduce)])]
-    public void IterationCleanupForAwaitedBenchmarks()
+    public void IterationCleanup()
     {
-        // Flush both producers between iterations for awaited benchmarks
-        // to ensure clean state for next iteration.
-        // Note: BenchmarkDotNet requires void return type, so use GetAwaiter().GetResult()
+        // Flush both producers between iterations for awaited benchmarks only.
+        // Fire-and-forget benchmarks (DekafFireAndForget, ConfluentFireAndForget) intentionally
+        // skip iteration cleanup to measure pure queueing time without flush overhead.
+        // GlobalCleanup handles flushing before teardown.
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         _dekafProducer.FlushAsync(cts.Token).GetAwaiter().GetResult();
         _confluentProducer.Flush(TimeSpan.FromSeconds(30));
-    }
-
-    [IterationCleanup(Targets = [nameof(DekafFireAndForget), nameof(ConfluentFireAndForget)])]
-    public void IterationCleanupForFireAndForget()
-    {
-        // For fire-and-forget benchmarks, we do NOT flush during iteration cleanup
-        // because that would contaminate the measurement. The benchmark measures
-        // only the time to queue messages, not the time to send them.
-        // GlobalCleanup will flush before teardown.
     }
 
     [GlobalCleanup]

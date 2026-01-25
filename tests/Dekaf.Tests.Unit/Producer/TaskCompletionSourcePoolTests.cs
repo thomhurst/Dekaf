@@ -16,7 +16,7 @@ public class TaskCompletionSourcePoolTests
     }
 
     [Test]
-    public async Task Return_AllowsReuse()
+    public async Task Return_IsNoOp_TCSCannotBeReused()
     {
         var pool = new TaskCompletionSourcePool<int>();
 
@@ -25,13 +25,15 @@ public class TaskCompletionSourcePoolTests
         tcs1.SetResult(42);
         await Assert.That(tcs1.Task.Result).IsEqualTo(42);
 
-        // Return it to the pool
+        // Return is a no-op (TCS cannot be reset/reused)
         pool.Return(tcs1);
 
-        // Rent another TCS - should get a fresh instance from the pool
+        // Rent another TCS - always gets a fresh instance
         var tcs2 = pool.Rent();
         await Assert.That(tcs2).IsNotNull();
         await Assert.That(tcs2.Task.IsCompleted).IsFalse();
+        // Verify it's a different instance
+        await Assert.That(tcs2).IsNotSameReferenceAs(tcs1);
     }
 
     [Test]
@@ -92,5 +94,17 @@ public class TaskCompletionSourcePoolTests
         await Task.WhenAll(tasks).ConfigureAwait(false);
 
         await Assert.That(completedCount).IsEqualTo(100);
+    }
+
+    [Test]
+    public async Task ReturnCallback_IsCached()
+    {
+        var pool = new TaskCompletionSourcePool<int>();
+
+        // Getting ReturnCallback multiple times should return the same instance
+        var callback1 = pool.ReturnCallback;
+        var callback2 = pool.ReturnCallback;
+
+        await Assert.That(callback1).IsSameReferenceAs(callback2);
     }
 }

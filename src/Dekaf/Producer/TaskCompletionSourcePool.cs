@@ -14,6 +14,7 @@ namespace Dekaf.Producer;
 internal sealed class TaskCompletionSourcePool<T> : IAsyncDisposable
 {
     private readonly TaskCreationOptions _creationOptions;
+    private readonly Action<TaskCompletionSource<T>> _returnCallback;
     private volatile bool _disposed;
 
     /// <summary>
@@ -23,12 +24,14 @@ internal sealed class TaskCompletionSourcePool<T> : IAsyncDisposable
     public TaskCompletionSourcePool(TaskCreationOptions creationOptions = TaskCreationOptions.RunContinuationsAsynchronously)
     {
         _creationOptions = creationOptions;
+        _returnCallback = Return; // Cache delegate to avoid allocation on every access
     }
 
     /// <summary>
     /// Gets the return callback that can be passed to components that need to signal completion.
+    /// This delegate is cached to avoid allocation on every access.
     /// </summary>
-    public Action<TaskCompletionSource<T>> ReturnCallback => Return;
+    public Action<TaskCompletionSource<T>> ReturnCallback => _returnCallback;
 
     /// <summary>
     /// Creates a new TaskCompletionSource.
