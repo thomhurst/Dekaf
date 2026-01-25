@@ -21,11 +21,35 @@ public static class Dekaf
     }
 
     /// <summary>
+    /// Creates a producer with the specified bootstrap servers.
+    /// </summary>
+    /// <param name="bootstrapServers">Comma-separated list of bootstrap servers.</param>
+    public static IKafkaProducer<TKey, TValue> CreateProducer<TKey, TValue>(string bootstrapServers)
+    {
+        return new ProducerBuilder<TKey, TValue>()
+            .WithBootstrapServers(bootstrapServers)
+            .Build();
+    }
+
+    /// <summary>
     /// Creates a consumer builder.
     /// </summary>
     public static ConsumerBuilder<TKey, TValue> CreateConsumer<TKey, TValue>()
     {
         return new ConsumerBuilder<TKey, TValue>();
+    }
+
+    /// <summary>
+    /// Creates a consumer with the specified bootstrap servers and group ID.
+    /// </summary>
+    /// <param name="bootstrapServers">Comma-separated list of bootstrap servers.</param>
+    /// <param name="groupId">The consumer group ID.</param>
+    public static IKafkaConsumer<TKey, TValue> CreateConsumer<TKey, TValue>(string bootstrapServers, string groupId)
+    {
+        return new ConsumerBuilder<TKey, TValue>()
+            .WithBootstrapServers(bootstrapServers)
+            .WithGroupId(groupId)
+            .Build();
     }
 }
 
@@ -88,6 +112,16 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithLingerMs(int lingerMs)
     {
         _lingerMs = lingerMs;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the linger time for batching messages.
+    /// </summary>
+    /// <param name="linger">The time to wait before sending a batch.</param>
+    public ProducerBuilder<TKey, TValue> WithLinger(TimeSpan linger)
+    {
+        _lingerMs = (int)linger.TotalMilliseconds;
         return this;
     }
 
@@ -293,16 +327,24 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// Sets the handler for statistics events.
     /// </summary>
     /// <param name="handler">The handler to invoke when statistics are emitted.</param>
-    public ProducerBuilder<TKey, TValue> OnStatistics(Action<Statistics.ProducerStatistics> handler)
+    public ProducerBuilder<TKey, TValue> WithStatisticsHandler(Action<Statistics.ProducerStatistics> handler)
     {
         _statisticsHandler = handler ?? throw new ArgumentNullException(nameof(handler));
         return this;
     }
 
+    /// <summary>
+    /// Sets the handler for statistics events.
+    /// </summary>
+    /// <param name="handler">The handler to invoke when statistics are emitted.</param>
+    [Obsolete("Use WithStatisticsHandler instead.")]
+    public ProducerBuilder<TKey, TValue> OnStatistics(Action<Statistics.ProducerStatistics> handler)
+        => WithStatisticsHandler(handler);
+
     public IKafkaProducer<TKey, TValue> Build()
     {
         if (_bootstrapServers.Count == 0)
-            throw new InvalidOperationException("Bootstrap servers must be specified");
+            throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
 
         var keySerializer = _keySerializer ?? GetDefaultSerializer<TKey>();
         var valueSerializer = _valueSerializer ?? GetDefaultSerializer<TValue>();
@@ -384,6 +426,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
 private bool _enablePartitionEof;
     private TimeSpan? _statisticsInterval;
     private Action<Statistics.ConsumerStatistics>? _statisticsHandler;
+    private readonly List<string> _topicsToSubscribe = [];
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -417,21 +460,66 @@ private bool _enablePartitionEof;
         return this;
     }
 
-    public ConsumerBuilder<TKey, TValue> EnableAutoCommit(bool enable = true)
+    /// <summary>
+    /// Subscribes the consumer to the specified topic when built.
+    /// This is equivalent to calling Subscribe() on the built consumer.
+    /// </summary>
+    /// <param name="topic">The topic to subscribe to.</param>
+    public ConsumerBuilder<TKey, TValue> SubscribeTo(string topic)
     {
-        _enableAutoCommit = enable;
+        _topicsToSubscribe.Add(topic);
         return this;
     }
 
-    public ConsumerBuilder<TKey, TValue> DisableAutoCommit()
+    /// <summary>
+    /// Subscribes the consumer to the specified topics when built.
+    /// This is equivalent to calling Subscribe() on the built consumer.
+    /// </summary>
+    /// <param name="topics">The topics to subscribe to.</param>
+    public ConsumerBuilder<TKey, TValue> SubscribeTo(params string[] topics)
     {
-        _enableAutoCommit = false;
+        _topicsToSubscribe.AddRange(topics);
         return this;
     }
+
+    /// <summary>
+    /// Configures automatic offset commits.
+    /// </summary>
+    /// <param name="enabled">True to enable automatic commits, false to disable.</param>
+    public ConsumerBuilder<TKey, TValue> WithAutoCommit(bool enabled = true)
+    {
+        _enableAutoCommit = enabled;
+        return this;
+    }
+
+    /// <summary>
+    /// Enables or disables automatic offset commits.
+    /// </summary>
+    /// <param name="enable">True to enable automatic commits, false to disable.</param>
+    [Obsolete("Use WithAutoCommit instead.")]
+    public ConsumerBuilder<TKey, TValue> EnableAutoCommit(bool enable = true)
+        => WithAutoCommit(enable);
+
+    /// <summary>
+    /// Disables automatic offset commits.
+    /// </summary>
+    [Obsolete("Use WithAutoCommit(false) instead.")]
+    public ConsumerBuilder<TKey, TValue> DisableAutoCommit()
+        => WithAutoCommit(false);
 
     public ConsumerBuilder<TKey, TValue> WithAutoCommitInterval(int intervalMs)
     {
         _autoCommitIntervalMs = intervalMs;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the interval for automatic offset commits.
+    /// </summary>
+    /// <param name="interval">The interval between automatic commits.</param>
+    public ConsumerBuilder<TKey, TValue> WithAutoCommitInterval(TimeSpan interval)
+    {
+        _autoCommitIntervalMs = (int)interval.TotalMilliseconds;
         return this;
     }
 
@@ -463,6 +551,16 @@ private bool _enablePartitionEof;
     public ConsumerBuilder<TKey, TValue> WithSessionTimeout(int timeoutMs)
     {
         _sessionTimeoutMs = timeoutMs;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the session timeout for consumer group membership.
+    /// </summary>
+    /// <param name="timeout">The session timeout duration.</param>
+    public ConsumerBuilder<TKey, TValue> WithSessionTimeout(TimeSpan timeout)
+    {
+        _sessionTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
     }
 
@@ -631,16 +729,24 @@ private bool _enablePartitionEof;
     /// Sets the handler for statistics events.
     /// </summary>
     /// <param name="handler">The handler to invoke when statistics are emitted.</param>
-    public ConsumerBuilder<TKey, TValue> OnStatistics(Action<Statistics.ConsumerStatistics> handler)
+    public ConsumerBuilder<TKey, TValue> WithStatisticsHandler(Action<Statistics.ConsumerStatistics> handler)
     {
         _statisticsHandler = handler ?? throw new ArgumentNullException(nameof(handler));
         return this;
     }
 
+    /// <summary>
+    /// Sets the handler for statistics events.
+    /// </summary>
+    /// <param name="handler">The handler to invoke when statistics are emitted.</param>
+    [Obsolete("Use WithStatisticsHandler instead.")]
+    public ConsumerBuilder<TKey, TValue> OnStatistics(Action<Statistics.ConsumerStatistics> handler)
+        => WithStatisticsHandler(handler);
+
     public IKafkaConsumer<TKey, TValue> Build()
     {
         if (_bootstrapServers.Count == 0)
-            throw new InvalidOperationException("Bootstrap servers must be specified");
+            throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
 
         var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>();
         var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>();
@@ -671,7 +777,14 @@ private bool _enablePartitionEof;
             StatisticsHandler = _statisticsHandler
         };
 
-        return new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory);
+        var consumer = new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory);
+
+        if (_topicsToSubscribe.Count > 0)
+        {
+            consumer.Subscribe(_topicsToSubscribe.ToArray());
+        }
+
+        return consumer;
     }
 
     private static IDeserializer<T> GetDefaultDeserializer<T>()

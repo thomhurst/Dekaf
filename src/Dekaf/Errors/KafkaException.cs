@@ -1,4 +1,5 @@
 using Dekaf.Protocol;
+using Dekaf.Serialization;
 
 namespace Dekaf.Errors;
 
@@ -216,4 +217,46 @@ public sealed class AuthorizationException : KafkaException
     /// The resource that was denied.
     /// </summary>
     public string? Resource { get; init; }
+}
+
+/// <summary>
+/// Exception thrown when serialization or deserialization fails.
+/// </summary>
+public sealed class SerializationException : KafkaException
+{
+    public SerializationException() : base()
+    {
+    }
+
+    public SerializationException(string message) : base(message)
+    {
+    }
+
+    public SerializationException(string message, Exception innerException) : base(message, innerException)
+    {
+    }
+
+    /// <summary>
+    /// Creates a serialization exception with context about what was being serialized.
+    /// </summary>
+    /// <param name="message">The error message.</param>
+    /// <param name="innerException">The underlying exception.</param>
+    /// <param name="topic">The topic being produced to or consumed from.</param>
+    /// <param name="component">The component (key or value) that failed to serialize.</param>
+    public SerializationException(string message, Exception innerException, string? topic, SerializationComponent component)
+        : base(message, innerException)
+    {
+        Topic = topic;
+        Component = component;
+    }
+
+    /// <summary>
+    /// The topic involved in the serialization operation.
+    /// </summary>
+    public string? Topic { get; init; }
+
+    /// <summary>
+    /// The component (key or value) that failed to serialize.
+    /// </summary>
+    public SerializationComponent Component { get; init; }
 }
