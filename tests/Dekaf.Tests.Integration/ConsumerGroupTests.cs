@@ -91,7 +91,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithSessionTimeout(10000)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .Build();
 
         consumer1.Subscribe(topic);
@@ -184,7 +184,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithSessionTimeout(10000)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .Build())
         {
             consumer1.Subscribe(topic);
@@ -209,7 +209,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithSessionTimeout(10000)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .Build();
 
         consumer2.Subscribe(topic);
@@ -418,7 +418,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
             .WithGroupInstanceId(instanceId)
             .WithSessionTimeout(10000)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .Build())
         {
             consumer1.Subscribe(topic);
@@ -448,7 +448,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
             .WithGroupInstanceId(instanceId)
             .WithSessionTimeout(10000)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .Build();
 
         consumer2.Subscribe(topic);
@@ -489,7 +489,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithSessionTimeout(10000)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .Build();
 
         consumer.Subscribe(topic);
@@ -543,7 +543,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithSessionTimeout(10000)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .Build();
 
         consumer.Subscribe(topic);
@@ -594,7 +594,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithSessionTimeout(10000)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .Build();
 
         consumer.Subscribe(topic);

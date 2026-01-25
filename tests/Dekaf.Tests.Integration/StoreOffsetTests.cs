@@ -39,7 +39,7 @@ public class StoreOffsetTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(10000)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .WithAutoOffsetStore(false) // Manual offset storage
             .Build();
 
@@ -102,7 +102,7 @@ public class StoreOffsetTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(10000)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .WithAutoOffsetStore(true) // Auto offset storage (default)
             .Build();
 
@@ -158,7 +158,7 @@ public class StoreOffsetTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(10000)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .WithAutoOffsetStore(false)
             .Build())
         {
@@ -187,7 +187,7 @@ public class StoreOffsetTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(10000)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .WithAutoOffsetStore(false)
             .Build();
 
@@ -232,7 +232,7 @@ public class StoreOffsetTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(10000)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .WithAutoOffsetStore(false)
             .Build();
 
@@ -286,7 +286,7 @@ public class StoreOffsetTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(10000)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .WithAutoOffsetStore(false)
             .Build();
 
@@ -345,7 +345,7 @@ public class StoreOffsetTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(10000)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .WithAutoOffsetStore(false)
             .Build())
         {
@@ -371,7 +371,7 @@ public class StoreOffsetTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(10000)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .Build();
 
         consumer2.Subscribe(topic);
@@ -413,7 +413,7 @@ public class StoreOffsetTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(10000)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .WithAutoOffsetStore(false)
             .Build();
 
@@ -473,7 +473,7 @@ public class StoreOffsetTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(10000)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .WithAutoOffsetStore(false)
             .Build();
 
@@ -525,7 +525,7 @@ public class StoreOffsetTests(KafkaTestContainer kafka)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(10000)
-            .DisableAutoCommit()
+            .WithAutoCommit(false)
             .WithAutoOffsetStore(false)
             .Build();
 

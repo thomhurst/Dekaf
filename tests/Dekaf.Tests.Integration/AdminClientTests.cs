@@ -352,7 +352,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
                 .WithClientId("test-consumer")
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .DisableAutoCommit()
+                .WithAutoCommit(false)
                 .Build())
             {
                 consumer.Subscribe(topic);
