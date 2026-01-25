@@ -205,7 +205,6 @@ public sealed class RecordBatch : IDisposable
 
         // Determine how to handle the record data based on compression and pooled memory availability
         ReadOnlyMemory<byte> recordData;
-        IPooledMemory? memoryOwner = null;
 
         if (compression != CompressionType.None)
         {
@@ -217,26 +216,23 @@ public sealed class RecordBatch : IDisposable
             codec.Decompress(new ReadOnlySequence<byte>(rawRecordData), decompressedBuffer);
             recordData = decompressedBuffer.WrittenMemory.ToArray();
         }
+        else if (ResponseParsingContext.HasPooledMemory)
+        {
+            // Zero-copy: use the raw data directly from the pooled buffer
+            // Mark that at least one batch used the pooled memory, so ownership
+            // will be transferred to PendingFetchData after parsing completes
+            ResponseParsingContext.MarkMemoryUsed();
+            recordData = rawRecordData;
+        }
         else
         {
-            // Uncompressed data - check if we can use zero-copy with pooled memory
-            memoryOwner = ResponseParsingContext.TakePooledMemory();
-            if (memoryOwner is not null)
-            {
-                // Zero-copy: use the raw data directly from the pooled buffer
-                // The LazyRecordList will own the pooled memory and dispose it when done
-                recordData = rawRecordData;
-            }
-            else
-            {
-                // No pooled memory available (legacy path or not from network)
-                // Copy to owned memory to avoid use-after-free
-                recordData = rawRecordData.ToArray();
-            }
+            // No pooled memory available (legacy path or not from network)
+            // Copy to owned memory to avoid use-after-free
+            recordData = rawRecordData.ToArray();
         }
 
         // Create a lazy record list that parses on-demand
-        var lazyRecords = new LazyRecordList(recordData, recordCount, memoryOwner);
+        var lazyRecords = new LazyRecordList(recordData, recordCount);
 
         return new RecordBatch
         {
@@ -263,23 +259,22 @@ public sealed class RecordBatch : IDisposable
 /// Uses incremental list growth instead of pre-allocating full array.
 /// </summary>
 /// <remarks>
-/// When created with a memory owner, this list owns the pooled memory and will dispose it
-/// when the list is disposed. This enables zero-copy parsing from the network buffer.
+/// When used with zero-copy parsing, the raw data references the pooled network buffer.
+/// The memory ownership is managed at the PendingFetchData level, not here.
+/// Dispose marks the list as disposed to prevent access after the buffer is released.
 /// </remarks>
 internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 {
     private readonly ReadOnlyMemory<byte> _rawData;
     private readonly int _count;
-    private readonly IPooledMemory? _memoryOwner;
     private List<Record>? _parsedRecords;
     private int _nextParseOffset;
     private bool _disposed;
 
-    public LazyRecordList(ReadOnlyMemory<byte> rawData, int count, IPooledMemory? memoryOwner = null)
+    public LazyRecordList(ReadOnlyMemory<byte> rawData, int count)
     {
         _rawData = rawData;
         _count = count;
-        _memoryOwner = memoryOwner;
     }
 
     public int Count => _count;
@@ -325,16 +320,12 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     }
 
     /// <summary>
-    /// Disposes the pooled memory owner if one was provided.
-    /// After disposal, accessing records will throw ObjectDisposedException.
+    /// Marks the list as disposed. After disposal, accessing records will throw ObjectDisposedException.
+    /// Note: Memory ownership is managed at PendingFetchData level, not here.
     /// </summary>
     public void Dispose()
     {
-        if (_disposed)
-            return;
-
         _disposed = true;
-        _memoryOwner?.Dispose();
     }
 }
 

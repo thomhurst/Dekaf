@@ -342,7 +342,7 @@ public class RecordBatchTests
     }
 
     [Test]
-    public async Task RecordBatch_WithPooledMemoryContext_TakesOwnership()
+    public async Task RecordBatch_WithPooledMemoryContext_MarksMemoryAsUsed()
     {
         var buffer = new ArrayBufferWriter<byte>();
 
@@ -366,12 +366,19 @@ public class RecordBatchTests
             var reader = new KafkaProtocolReader(buffer.WrittenMemory);
             var parsedBatch = RecordBatch.Read(ref reader);
 
-            // Memory should have been taken
-            await Assert.That(ResponseParsingContext.WasMemoryTaken).IsTrue();
+            // Memory should be marked as used (not taken - ownership transferred later)
+            await Assert.That(ResponseParsingContext.WasMemoryUsed).IsTrue();
 
-            // Disposing the batch should dispose the mock memory
-            parsedBatch.Dispose();
+            // Taking the memory should return it
+            var takenMemory = ResponseParsingContext.TakePooledMemory();
+            await Assert.That(takenMemory).IsEqualTo(mockMemory);
+
+            // Disposing the taken memory disposes the mock
+            takenMemory!.Dispose();
             await Assert.That(mockMemory.IsDisposed).IsTrue();
+
+            // Disposing the batch should not throw (it no longer owns the memory)
+            parsedBatch.Dispose();
         }
         finally
         {
@@ -410,21 +417,24 @@ public class RecordBatchTests
     }
 
     [Test]
-    public async Task ResponseParsingContext_TakePooledMemory_OnlyTakesOnce()
+    public async Task ResponseParsingContext_TakePooledMemory_RequiresMemoryUsed()
     {
         var mockMemory = new MockPooledMemory(new byte[100]);
 
         ResponseParsingContext.SetPooledMemory(mockMemory);
         try
         {
-            // First take should succeed
+            // Without marking as used, take should return null
             var taken1 = ResponseParsingContext.TakePooledMemory();
-            await Assert.That(taken1).IsNotNull();
-            await Assert.That(ResponseParsingContext.WasMemoryTaken).IsTrue();
+            await Assert.That(taken1).IsNull();
 
-            // Second take should return null
+            // Mark as used
+            ResponseParsingContext.MarkMemoryUsed();
+            await Assert.That(ResponseParsingContext.WasMemoryUsed).IsTrue();
+
+            // Now take should succeed
             var taken2 = ResponseParsingContext.TakePooledMemory();
-            await Assert.That(taken2).IsNull();
+            await Assert.That(taken2).IsNotNull();
         }
         finally
         {
@@ -438,13 +448,13 @@ public class RecordBatchTests
         var mockMemory = new MockPooledMemory(new byte[100]);
 
         ResponseParsingContext.SetPooledMemory(mockMemory);
-        ResponseParsingContext.TakePooledMemory();
-        await Assert.That(ResponseParsingContext.WasMemoryTaken).IsTrue();
+        ResponseParsingContext.MarkMemoryUsed();
+        await Assert.That(ResponseParsingContext.WasMemoryUsed).IsTrue();
 
         ResponseParsingContext.Reset();
 
-        await Assert.That(ResponseParsingContext.WasMemoryTaken).IsFalse();
-        await Assert.That(ResponseParsingContext.CurrentMemory).IsNull();
+        await Assert.That(ResponseParsingContext.WasMemoryUsed).IsFalse();
+        await Assert.That(ResponseParsingContext.HasPooledMemory).IsFalse();
     }
 
     /// <summary>

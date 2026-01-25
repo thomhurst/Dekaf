@@ -32,6 +32,13 @@ public sealed class FetchResponse : IKafkaResponse
     /// </summary>
     public required IReadOnlyList<FetchResponseTopic> Responses { get; init; }
 
+    /// <summary>
+    /// Internal: Pooled memory owner for zero-copy parsing.
+    /// Set by KafkaConnection after parsing when records reference the network buffer.
+    /// Must be disposed after all records have been consumed.
+    /// </summary>
+    internal IPooledMemory? PooledMemoryOwner { get; set; }
+
     public static IKafkaResponse Read(ref KafkaProtocolReader reader, short version)
     {
         var isFlexible = version >= 12;

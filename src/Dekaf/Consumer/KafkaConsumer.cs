@@ -81,12 +81,13 @@ internal sealed class CancellationTokenSourcePool
 /// </summary>
 /// <remarks>
 /// Implements IDisposable to release pooled memory from the network buffer.
-/// When using zero-copy parsing, the RecordBatches hold references to the pooled network buffer.
-/// Dispose must be called after consuming all records to return the buffer to the pool.
+/// When using zero-copy parsing, all RecordBatches share a reference to the pooled network buffer.
+/// The memory owner is stored here and disposed after all records have been consumed.
 /// </remarks>
 internal sealed class PendingFetchData : IDisposable
 {
     private readonly IReadOnlyList<RecordBatch> _batches;
+    private readonly Protocol.IPooledMemory? _memoryOwner;
     private int _batchIndex = -1;
     private int _recordIndex = -1;
     private bool _disposed;
@@ -99,12 +100,13 @@ internal sealed class PendingFetchData : IDisposable
     /// </summary>
     public TopicPartition TopicPartition { get; }
 
-    public PendingFetchData(string topic, int partitionIndex, IReadOnlyList<RecordBatch> batches)
+    public PendingFetchData(string topic, int partitionIndex, IReadOnlyList<RecordBatch> batches, Protocol.IPooledMemory? memoryOwner = null)
     {
         Topic = topic;
         PartitionIndex = partitionIndex;
         TopicPartition = new TopicPartition(topic, partitionIndex);
         _batches = batches;
+        _memoryOwner = memoryOwner;
     }
 
     public RecordBatch CurrentBatch => _batches[_batchIndex];
@@ -157,7 +159,7 @@ internal sealed class PendingFetchData : IDisposable
     }
 
     /// <summary>
-    /// Disposes all record batches, releasing any pooled network buffer memory.
+    /// Disposes all record batches and releases the pooled network buffer memory.
     /// </summary>
     public void Dispose()
     {
@@ -166,11 +168,14 @@ internal sealed class PendingFetchData : IDisposable
 
         _disposed = true;
 
-        // Dispose all batches to release pooled memory
+        // Dispose all batches to mark them as disposed
         foreach (var batch in _batches)
         {
             batch.Dispose();
         }
+
+        // Release the pooled network buffer
+        _memoryOwner?.Dispose();
     }
 }
 
@@ -765,6 +770,14 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         var latencyMs = (long)(DateTimeOffset.UtcNow - requestStartTime).TotalMilliseconds;
         _statisticsCollector.RecordFetchResponseReceived(latencyMs);
 
+        // Take ownership of pooled memory from the response (if zero-copy was used)
+        var memoryOwner = response.PooledMemoryOwner;
+        response.PooledMemoryOwner = null; // Clear to prevent double-dispose
+
+        // Collect pending fetch data items - we need to assign memory owner to the last one
+        // since FIFO processing means the last one will be disposed last
+        List<PendingFetchData>? pendingItems = null;
+
         // Write to prefetch channel
         foreach (var topicResponse in response.Responses)
         {
@@ -818,7 +831,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     // Update fetch positions for next prefetch
                     UpdateFetchPositionsFromPrefetch(pending);
 
-                    await _prefetchChannel.Writer.WriteAsync(pending, cancellationToken).ConfigureAwait(false);
+                    // Collect for later - we'll assign memory owner to the last one
+                    pendingItems ??= [];
+                    pendingItems.Add(pending);
                 }
                 else if (_options.EnablePartitionEof)
                 {
@@ -838,6 +853,31 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 }
             }
         }
+
+        // Write all pending items to the channel, with memory owner attached to the last one
+        if (pendingItems is not null)
+        {
+            for (var i = 0; i < pendingItems.Count; i++)
+            {
+                var pending = pendingItems[i];
+
+                // Assign memory owner to the LAST item (will be disposed last due to FIFO)
+                if (i == pendingItems.Count - 1 && memoryOwner is not null)
+                {
+                    pending = new PendingFetchData(
+                        pending.Topic,
+                        pending.PartitionIndex,
+                        pending.GetBatches(),
+                        memoryOwner);
+                    memoryOwner = null; // Transferred
+                }
+
+                await _prefetchChannel.Writer.WriteAsync(pending, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        // If no pending items were created but we have a memory owner, dispose it
+        memoryOwner?.Dispose();
     }
 
     private void UpdateFetchPositionsFromPrefetch(PendingFetchData pending)
@@ -1751,6 +1791,13 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         var latencyMs = (long)(DateTimeOffset.UtcNow - requestStartTime).TotalMilliseconds;
         _statisticsCollector.RecordFetchResponseReceived(latencyMs);
 
+        // Take ownership of pooled memory from the response (if zero-copy was used)
+        var memoryOwner = response.PooledMemoryOwner;
+        response.PooledMemoryOwner = null; // Clear to prevent double-dispose
+
+        // Collect pending fetch data items - we need to assign memory owner to the last one
+        List<PendingFetchData>? pendingItems = null;
+
         // Queue pending fetch data for lazy iteration - don't parse records yet!
         foreach (var topicResponse in response.Responses)
         {
@@ -1793,8 +1840,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                         _eofEmitted.Remove(tp);
                     }
 
-                    // Queue the pending fetch data for lazy record iteration
-                    _pendingFetches.Enqueue(new PendingFetchData(
+                    // Collect pending fetch data for lazy record iteration
+                    pendingItems ??= [];
+                    pendingItems.Add(new PendingFetchData(
                         topic,
                         partitionResponse.PartitionIndex,
                         partitionResponse.Records!));
@@ -1817,6 +1865,31 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 }
             }
         }
+
+        // Enqueue all pending items, with memory owner attached to the last one
+        if (pendingItems is not null)
+        {
+            for (var i = 0; i < pendingItems.Count; i++)
+            {
+                var pending = pendingItems[i];
+
+                // Assign memory owner to the LAST item (will be disposed last due to FIFO)
+                if (i == pendingItems.Count - 1 && memoryOwner is not null)
+                {
+                    pending = new PendingFetchData(
+                        pending.Topic,
+                        pending.PartitionIndex,
+                        pending.GetBatches(),
+                        memoryOwner);
+                    memoryOwner = null; // Transferred
+                }
+
+                _pendingFetches.Enqueue(pending);
+            }
+        }
+
+        // If no pending items were created but we have a memory owner, dispose it
+        memoryOwner?.Dispose();
     }
 
     /// <summary>

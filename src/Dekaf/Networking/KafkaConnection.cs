@@ -222,11 +222,24 @@ public sealed class KafkaConnection : IKafkaConnection
                     var reader = new KafkaProtocolReader(pooledBuffer.Data);
                     var response = (TResponse)TResponse.Read(ref reader, apiVersion);
 
-                    // If memory was taken by RecordBatch, don't dispose it here
-                    // The consumer will dispose it after iterating through records
-                    if (!Protocol.ResponseParsingContext.WasMemoryTaken)
+                    // If memory was used by any batch, attach it to the FetchResponse
+                    // The consumer will take it and dispose after iterating through records
+                    if (Protocol.ResponseParsingContext.WasMemoryUsed)
                     {
-                        // No batches took ownership (e.g., empty response or all compressed)
+                        var takenMemory = Protocol.ResponseParsingContext.TakePooledMemory();
+                        if (response is Protocol.Messages.FetchResponse fetchResponse && takenMemory is not null)
+                        {
+                            fetchResponse.PooledMemoryOwner = takenMemory;
+                        }
+                        else
+                        {
+                            // Shouldn't happen, but dispose to avoid leak
+                            takenMemory?.Dispose();
+                        }
+                    }
+                    else
+                    {
+                        // No batches used pooled memory (e.g., empty response or all compressed)
                         memoryOwner.Dispose();
                     }
 
