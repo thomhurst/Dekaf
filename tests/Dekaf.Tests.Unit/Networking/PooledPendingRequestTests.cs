@@ -387,4 +387,61 @@ public class PooledPendingRequestTests
 
         pool.Return(request);
     }
+
+    [Test]
+    public async Task RegisterCancellation_WakesUpAwaitingTask()
+    {
+        // This test verifies that cancellation properly wakes up a task that's already awaiting
+        // (more closely matches the integration test scenario where await happens before timeout)
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+
+        var cts = new CancellationTokenSource();
+        request.RegisterCancellation(cts.Token);
+
+        // Start awaiting BEFORE cancellation
+        var awaiterStarted = new TaskCompletionSource<bool>();
+        var task = Task.Run(async () =>
+        {
+            awaiterStarted.SetResult(true);
+            await request.AsValueTask().ConfigureAwait(false);
+        });
+
+        // Wait for the task to actually start awaiting
+        await awaiterStarted.Task.ConfigureAwait(false);
+        await Task.Delay(50).ConfigureAwait(false); // Extra delay to ensure continuation is registered
+
+        // Cancel while awaiting - this should wake up the task
+        cts.Cancel();
+
+        // Task should now throw OperationCanceledException
+        await Assert.ThrowsAsync<OperationCanceledException>(() => task);
+
+        pool.Return(request);
+    }
+
+    [Test]
+    public async Task CancelAfter_WakesUpAwaitingTask()
+    {
+        // This test simulates the exact pattern used in KafkaConnection.SendAsync:
+        // CancelAfter schedules a timer, then we await, and timeout fires later
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+
+        var cts = new CancellationTokenSource();
+        cts.CancelAfter(TimeSpan.FromMilliseconds(100)); // Short timeout for test
+        request.RegisterCancellation(cts.Token);
+
+        // Await - should be woken up when the timer fires
+        var thrown = await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        {
+            await request.AsValueTask().ConfigureAwait(false);
+        });
+
+        await Assert.That(thrown).IsNotNull();
+
+        pool.Return(request);
+    }
 }

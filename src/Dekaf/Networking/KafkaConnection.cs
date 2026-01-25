@@ -525,7 +525,12 @@ public sealed class KafkaConnection : IKafkaConnection
             if (_pendingRequests.TryRemove(kvp.Key, out var pending))
             {
                 pending.TrySetException(ex);
-                _pendingRequestPool.Return(pending);
+                // NOTE: Do NOT return to pool here. When using ConfigureAwait(false),
+                // the continuation might run asynchronously on the thread pool.
+                // If we call Return() (which calls Reset()), the version will be
+                // incremented before GetResult() is called, causing a version mismatch.
+                // The awaiter in SendAsync will eventually call GetResult(), then the
+                // outer finally block will return the request to the pool.
             }
         }
     }
