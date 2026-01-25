@@ -97,92 +97,168 @@ jobs:
 
       - name: Generate Benchmark Summary
         run: |
-          echo "# Benchmark Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## Run Information" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Runner:** ubuntu-latest" >> $GITHUB_STEP_SUMMARY
-          echo "- **.NET Version:** ${{ env.DOTNET_VERSION }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          python3 << 'EOF'
+          import json
+          import os
 
-          # Helper function to format bytes
-          format_bytes() {
-            local bytes=$1
-            if [ "$bytes" -ge 1048576 ]; then
-              echo "$(echo "scale=2; $bytes / 1048576" | bc) MB"
-            elif [ "$bytes" -ge 1024 ]; then
-              echo "$(echo "scale=2; $bytes / 1024" | bc) KB"
-            else
-              echo "${bytes} B"
-            fi
-          }
+          def format_time(ns):
+              """Format nanoseconds to appropriate unit"""
+              if ns is None:
+                  return "-"
+              if ns >= 1_000_000_000:
+                  return f"{ns / 1_000_000_000:.2f} s"
+              elif ns >= 1_000_000:
+                  return f"{ns / 1_000_000:.2f} ms"
+              elif ns >= 1_000:
+                  return f"{ns / 1_000:.2f} µs"
+              else:
+                  return f"{ns:.0f} ns"
 
-          # Check for serialization results
-          if [ -d "tools/Dekaf.Benchmarks/BenchmarkResults/Serialization" ]; then
-            echo "## Serialization Benchmarks" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Benchmark | Mean | Error | StdDev | Allocated |" >> $GITHUB_STEP_SUMMARY
-            echo "|-----------|------|-------|--------|-----------|" >> $GITHUB_STEP_SUMMARY
+          def format_bytes(b):
+              """Format bytes to appropriate unit"""
+              if b is None or b == 0:
+                  return "0 B"
+              if b >= 1_048_576:
+                  return f"{b / 1_048_576:.1f} MB"
+              elif b >= 1_024:
+                  return f"{b / 1_024:.1f} KB"
+              else:
+                  return f"{b} B"
 
-            for f in tools/Dekaf.Benchmarks/BenchmarkResults/Serialization/results/*.json; do
-              if [ -f "$f" ]; then
-                jq -r '.Benchmarks[]? | "| \(.MethodTitle // .Method) | \((.Statistics.Mean / 1000000 * 100 | round) / 100) ms | \((.Statistics.StandardError / 1000000 * 100 | round) / 100) ms | \((.Statistics.StandardDeviation / 1000000 * 100 | round) / 100) ms | \(.Memory.BytesAllocatedPerOperation // 0) B |"' "$f" >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Failed to parse $f" >&2
-              fi
-            done
-            echo "" >> $GITHUB_STEP_SUMMARY
-          fi
+          def load_benchmarks(category):
+              """Load benchmarks from a category folder"""
+              path = f"tools/Dekaf.Benchmarks/BenchmarkResults/{category}/results"
+              benchmarks = []
+              if os.path.isdir(path):
+                  for f in os.listdir(path):
+                      if f.endswith('.json'):
+                          with open(os.path.join(path, f)) as fp:
+                              data = json.load(fp)
+                              for b in data.get('Benchmarks', []):
+                                  if b.get('Statistics') and b['Statistics'].get('Mean') is not None:
+                                      benchmarks.append(b)
+              return benchmarks
 
-          # Check for memory results
-          if [ -d "tools/Dekaf.Benchmarks/BenchmarkResults/Memory" ]; then
-            echo "## Memory Benchmarks" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Benchmark | Mean | Allocated |" >> $GITHUB_STEP_SUMMARY
-            echo "|-----------|------|-----------|" >> $GITHUB_STEP_SUMMARY
+          output = []
+          output.append("# Benchmark Results\n")
 
-            for f in tools/Dekaf.Benchmarks/BenchmarkResults/Memory/results/*.json; do
-              if [ -f "$f" ]; then
-                jq -r '.Benchmarks[]? | "| \(.MethodTitle // .Method) | \((.Statistics.Mean / 1000 * 100 | round) / 100) µs | \(.Memory.BytesAllocatedPerOperation // 0) B |"' "$f" >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Failed to parse $f" >&2
-              fi
-            done
-            echo "" >> $GITHUB_STEP_SUMMARY
-          fi
+          # Memory Benchmarks - Zero Allocation Focus
+          memory = load_benchmarks("Memory")
+          if memory:
+              output.append("## Memory Benchmarks (Zero-Allocation Protocol)\n")
+              output.append("| Operation | Time | Allocated |")
+              output.append("|-----------|------|-----------|")
+              for b in sorted(memory, key=lambda x: x.get('MethodTitle', x.get('Method', ''))):
+                  name = b.get('MethodTitle', b.get('Method', ''))
+                  mean = b['Statistics']['Mean']
+                  alloc = b.get('Memory', {}).get('BytesAllocatedPerOperation', 0)
+                  zero = "**0 B** ✓" if alloc == 0 else format_bytes(alloc)
+                  output.append(f"| {name} | {format_time(mean)} | {zero} |")
+              output.append("")
 
-          # Check for producer results
-          if [ -d "tools/Dekaf.Benchmarks/BenchmarkResults/Producer" ]; then
-            echo "## Producer Benchmarks (Dekaf vs Confluent.Kafka)" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Benchmark | Parameters | Mean | Error | Allocated |" >> $GITHUB_STEP_SUMMARY
-            echo "|-----------|------------|------|-------|-----------|" >> $GITHUB_STEP_SUMMARY
+          # Serialization Benchmarks - Group by type
+          serial = load_benchmarks("Serialization")
+          if serial:
+              output.append("## Serialization Benchmarks\n")
 
-            for f in tools/Dekaf.Benchmarks/BenchmarkResults/Producer/results/*.json; do
-              if [ -f "$f" ]; then
-                jq -r '.Benchmarks[]? | "| \(.MethodTitle // .Method) | \(.Parameters // "-") | \((.Statistics.Mean / 1000000 * 100 | round) / 100) ms | \((.Statistics.StandardError / 1000000 * 100 | round) / 100) ms | \(.Memory.BytesAllocatedPerOperation // 0) B |"' "$f" >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Failed to parse $f" >&2
-              fi
-            done
-            echo "" >> $GITHUB_STEP_SUMMARY
-          fi
+              # Group by operation type
+              dekaf_ops = [b for b in serial if 'Dekaf' in b.get('MethodTitle', b.get('Method', ''))]
+              baseline_ops = [b for b in serial if 'Baseline' in b.get('MethodTitle', b.get('Method', ''))]
 
-          # Check for consumer results
-          if [ -d "tools/Dekaf.Benchmarks/BenchmarkResults/Consumer" ]; then
-            echo "## Consumer Benchmarks (Dekaf vs Confluent.Kafka)" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Benchmark | Parameters | Mean | Error | Allocated |" >> $GITHUB_STEP_SUMMARY
-            echo "|-----------|------------|------|-------|-----------|" >> $GITHUB_STEP_SUMMARY
+              if dekaf_ops and baseline_ops:
+                  output.append("| Operation | Dekaf | Baseline | Allocated |")
+                  output.append("|-----------|-------|----------|-----------|")
 
-            for f in tools/Dekaf.Benchmarks/BenchmarkResults/Consumer/results/*.json; do
-              if [ -f "$f" ]; then
-                jq -r '.Benchmarks[]? | "| \(.MethodTitle // .Method) | \(.Parameters // "-") | \((.Statistics.Mean / 1000000000 * 100 | round) / 100) s | \((.Statistics.StandardError / 1000000000 * 100 | round) / 100) s | \(.Memory.BytesAllocatedPerOperation // 0) B |"' "$f" >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "Failed to parse $f" >&2
-              fi
-            done
-            echo "" >> $GITHUB_STEP_SUMMARY
-          fi
+                  # Match operations
+                  ops = {}
+                  for b in dekaf_ops:
+                      name = b.get('MethodTitle', b.get('Method', '')).replace('Dekaf Writer: ', '')
+                      ops.setdefault(name, {})['dekaf'] = b
+                  for b in baseline_ops:
+                      name = b.get('MethodTitle', b.get('Method', '')).replace('Baseline Writer: ', '')
+                      ops.setdefault(name, {})['baseline'] = b
 
-          echo "## Notes" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- Producer and Consumer benchmarks run against Kafka in Docker (apache/kafka)" >> $GITHUB_STEP_SUMMARY
-          echo "- Memory benchmarks highlight Dekaf's zero-allocation design" >> $GITHUB_STEP_SUMMARY
-          echo "- Full results are available in the uploaded artifacts" >> $GITHUB_STEP_SUMMARY
+                  for name, pair in sorted(ops.items()):
+                      d = pair.get('dekaf')
+                      bl = pair.get('baseline')
+                      d_time = format_time(d['Statistics']['Mean']) if d else "-"
+                      b_time = format_time(bl['Statistics']['Mean']) if bl else "-"
+                      alloc = d.get('Memory', {}).get('BytesAllocatedPerOperation', 0) if d else 0
+                      zero = "**0 B** ✓" if alloc == 0 else format_bytes(alloc)
+                      output.append(f"| {name} | {d_time} | {b_time} | {zero} |")
+              output.append("")
+
+          # Producer Benchmarks - Compare Dekaf vs Confluent
+          producer = load_benchmarks("Producer")
+          if producer:
+              output.append("## Producer Benchmarks (Dekaf vs Confluent.Kafka)\n")
+
+              # Group by test type and parameters
+              by_params = {}
+              for b in producer:
+                  params = b.get('Parameters', '')
+                  by_params.setdefault(params, []).append(b)
+
+              for params in sorted(by_params.keys()):
+                  benches = by_params[params]
+                  if params:
+                      # Parse params for header
+                      parts = dict(p.split('=') for p in params.split('&') if '=' in p)
+                      msg_size = parts.get('MessageSize', '?')
+                      batch = parts.get('BatchSize', '?')
+                      output.append(f"**Message: {msg_size}B, Batch: {batch}**\n")
+
+                  output.append("| Benchmark | Time | Allocated |")
+                  output.append("|-----------|------|-----------|")
+
+                  for b in sorted(benches, key=lambda x: x.get('MethodTitle', '')):
+                      name = b.get('MethodTitle', b.get('Method', ''))
+                      mean = b['Statistics']['Mean']
+                      alloc = b.get('Memory', {}).get('BytesAllocatedPerOperation', 0)
+                      zero = "**0 B** ✓" if alloc == 0 else format_bytes(alloc)
+                      output.append(f"| {name} | {format_time(mean)} | {zero} |")
+                  output.append("")
+
+          # Consumer Benchmarks
+          consumer = load_benchmarks("Consumer")
+          if consumer:
+              output.append("## Consumer Benchmarks (Dekaf vs Confluent.Kafka)\n")
+
+              by_params = {}
+              for b in consumer:
+                  params = b.get('Parameters', '')
+                  by_params.setdefault(params, []).append(b)
+
+              for params in sorted(by_params.keys()):
+                  benches = by_params[params]
+                  if params:
+                      parts = dict(p.split('=') for p in params.split('&') if '=' in p)
+                      count = parts.get('MessageCount', '?')
+                      size = parts.get('MessageSize', '?')
+                      output.append(f"**{count} messages × {size}B**\n")
+
+                  output.append("| Benchmark | Time | Allocated |")
+                  output.append("|-----------|------|-----------|")
+
+                  for b in sorted(benches, key=lambda x: x.get('MethodTitle', '')):
+                      name = b.get('MethodTitle', b.get('Method', ''))
+                      mean = b['Statistics']['Mean']
+                      alloc = b.get('Memory', {}).get('BytesAllocatedPerOperation', 0)
+                      output.append(f"| {name} | {format_time(mean)} | {format_bytes(alloc)} |")
+                  output.append("")
+
+          # ConsumeResult Benchmarks
+          consume_result = [b for b in load_benchmarks("Consumer")
+                           if 'ConsumeResult' in b.get('Type', '')]
+          # Already included above, skip separate section
+
+          output.append("---\n")
+          output.append("*Benchmarks run on GitHub Actions (ubuntu-latest) against Apache Kafka in Docker*")
+
+          # Write to summary
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              f.write('\n'.join(output))
+          EOF
 
   benchmark-comparison:
     name: Store Benchmark History
@@ -209,18 +285,32 @@ jobs:
           mkdir -p combined-results
 
           # Create a combined JSON file with all benchmarks
-          echo '{"Benchmarks":[]}' > combined-results/combined.json
+          # Filter out benchmarks with null Statistics (these fail github-action-benchmark)
+          python3 << 'EOF'
+          import json
+          import os
 
-          for f in $(find benchmark-results -name "*.json" -path "*/results/*" 2>/dev/null); do
-            if [ -f "$f" ]; then
-              echo "Processing: $f"
-              # Extract benchmarks and append to combined file
-              jq -s '.[0].Benchmarks += .[1].Benchmarks | .[0]' combined-results/combined.json "$f" > combined-results/temp.json && mv combined-results/temp.json combined-results/combined.json
-            fi
-          done
+          combined = {'Benchmarks': []}
+          for root, dirs, files in os.walk('benchmark-results'):
+              for f in files:
+                  if f.endswith('.json') and 'results' in root:
+                      path = os.path.join(root, f)
+                      print(f"Processing: {path}")
+                      with open(path) as fp:
+                          data = json.load(fp)
+                          for bench in data.get('Benchmarks', []):
+                              # Only include benchmarks with valid Statistics
+                              stats = bench.get('Statistics')
+                              if stats is not None and stats.get('Mean') is not None:
+                                  combined['Benchmarks'].append(bench)
+                              else:
+                                  print(f"  Skipping (null Statistics): {bench.get('DisplayInfo', bench.get('Method', 'unknown'))}")
 
-          echo "Combined results:"
-          cat combined-results/combined.json | jq '.Benchmarks | length'
+          with open('combined-results/combined.json', 'w') as fp:
+              json.dump(combined, fp)
+
+          print(f"\nCombined results: {len(combined['Benchmarks'])} benchmarks")
+          EOF
 
       - name: Store Benchmark Results
         uses: benchmark-action/github-action-benchmark@v1
