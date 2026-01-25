@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
@@ -110,20 +111,47 @@ public sealed class MetadataManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// Attempts to get topic metadata from cache synchronously.
+    /// Returns true if valid cached metadata exists, false if a refresh is needed.
+    /// This is the fast path - no async overhead, no allocations.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryGetCachedTopicMetadata(string topicName, out TopicInfo? topic)
+    {
+        topic = _metadata.GetTopic(topicName);
+        return topic is not null
+            && topic.PartitionCount > 0
+            && topic.ErrorCode == ErrorCode.None
+            && !_metadata.IsStale(_options.MetadataMaxAge);
+    }
+
+    /// <summary>
     /// Gets topic metadata, fetching if necessary.
     /// Retries if the topic is being created (has no partitions or transient error).
     /// </summary>
     public async ValueTask<TopicInfo?> GetTopicMetadataAsync(string topicName, CancellationToken cancellationToken = default)
     {
-        var topic = _metadata.GetTopic(topicName);
-        if (topic is not null && topic.PartitionCount > 0 && topic.ErrorCode == ErrorCode.None && !_metadata.IsStale(_options.MetadataMaxAge))
+        // Fast path: check cache synchronously first
+        if (TryGetCachedTopicMetadata(topicName, out var topic))
         {
             return topic;
         }
 
+        // Slow path: need to refresh metadata
+        return await GetTopicMetadataSlowAsync(topicName, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Slow path for topic metadata retrieval when cache miss occurs.
+    /// Separated from GetTopicMetadataAsync to keep the fast path inlined.
+    /// </summary>
+    private async ValueTask<TopicInfo?> GetTopicMetadataSlowAsync(string topicName, CancellationToken cancellationToken)
+    {
         // Retry logic for topics being created
         const int maxRetries = 3;
         const int retryDelayMs = 500;
+
+        TopicInfo? topic = null;
 
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
