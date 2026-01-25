@@ -110,7 +110,8 @@ public sealed class RecordBatch : IDisposable
             var registry = codecs ?? CompressionCodecRegistry.Default;
             var codec = registry.GetCodec(compression);
             compressedBuffer = new ArrayBufferWriter<byte>(recordsData.Length);
-            codec.Compress(new ReadOnlySequence<byte>(recordsData.ToArray()), compressedBuffer);
+            // Use WrittenMemory instead of ToArray() to avoid heap allocation
+            codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), compressedBuffer);
             compressedRecords = compressedBuffer.WrittenSpan;
         }
         else

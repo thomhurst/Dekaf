@@ -161,13 +161,11 @@ public sealed class ClusterMetadata
             _topicsById.Clear();
             foreach (var topic in response.Topics)
             {
-                var topicInfo = new TopicInfo
+                // Use explicit loop instead of LINQ Select to avoid enumerator allocation
+                var partitions = new List<PartitionInfo>(topic.Partitions.Count);
+                foreach (var p in topic.Partitions)
                 {
-                    Name = topic.Name,
-                    TopicId = topic.TopicId,
-                    ErrorCode = topic.ErrorCode,
-                    IsInternal = topic.IsInternal,
-                    Partitions = topic.Partitions.Select(p => new PartitionInfo
+                    partitions.Add(new PartitionInfo
                     {
                         PartitionIndex = p.PartitionIndex,
                         LeaderId = p.LeaderId,
@@ -176,7 +174,16 @@ public sealed class ClusterMetadata
                         IsrNodes = p.IsrNodes,
                         OfflineReplicas = p.OfflineReplicas,
                         ErrorCode = p.ErrorCode
-                    }).ToList()
+                    });
+                }
+
+                var topicInfo = new TopicInfo
+                {
+                    Name = topic.Name,
+                    TopicId = topic.TopicId,
+                    ErrorCode = topic.ErrorCode,
+                    IsInternal = topic.IsInternal,
+                    Partitions = partitions
                 };
 
                 _topics[topic.Name] = topicInfo;
