@@ -51,14 +51,14 @@ public class SerializationBenchmarks
     // ===== Protocol Writer Benchmarks =====
 
     [Benchmark(Description = "Dekaf Writer: Int32")]
-    public void DekafWriteInt32()
+    public void WriteInt32_Dekaf()
     {
         var writer = new KafkaProtocolWriter(_buffer);
         writer.WriteInt32(12345678);
     }
 
     [Benchmark(Description = "Baseline Writer: Int32")]
-    public void BaselineWriteInt32()
+    public void WriteInt32_Baseline()
     {
         var span = _buffer.GetSpan(4);
         BinaryPrimitives.WriteInt32BigEndian(span, 12345678);
@@ -66,14 +66,14 @@ public class SerializationBenchmarks
     }
 
     [Benchmark(Description = "Dekaf Writer: Int64")]
-    public void DekafWriteInt64()
+    public void WriteInt64_Dekaf()
     {
         var writer = new KafkaProtocolWriter(_buffer);
         writer.WriteInt64(9876543210L);
     }
 
     [Benchmark(Description = "Baseline Writer: Int64")]
-    public void BaselineWriteInt64()
+    public void WriteInt64_Baseline()
     {
         var span = _buffer.GetSpan(8);
         BinaryPrimitives.WriteInt64BigEndian(span, 9876543210L);
@@ -81,14 +81,14 @@ public class SerializationBenchmarks
     }
 
     [Benchmark(Description = "Dekaf Writer: String")]
-    public void DekafWriteString()
+    public void WriteString_Dekaf()
     {
         var writer = new KafkaProtocolWriter(_buffer);
         writer.WriteString(_testString);
     }
 
     [Benchmark(Description = "Baseline Writer: String")]
-    public void BaselineWriteString()
+    public void WriteString_Baseline()
     {
         var byteCount = Encoding.UTF8.GetByteCount(_testString);
         var span = _buffer.GetSpan(2 + byteCount);
@@ -98,28 +98,28 @@ public class SerializationBenchmarks
     }
 
     [Benchmark(Description = "Dekaf Writer: CompactString")]
-    public void DekafWriteCompactString()
+    public void WriteCompactString_Dekaf()
     {
         var writer = new KafkaProtocolWriter(_buffer);
         writer.WriteCompactString(_testString);
     }
 
     [Benchmark(Description = "Dekaf Writer: VarInt (small)")]
-    public void DekafWriteVarIntSmall()
+    public void WriteVarIntSmall_Dekaf()
     {
         var writer = new KafkaProtocolWriter(_buffer);
         writer.WriteVarInt(42);
     }
 
     [Benchmark(Description = "Dekaf Writer: VarInt (large)")]
-    public void DekafWriteVarIntLarge()
+    public void WriteVarIntLarge_Dekaf()
     {
         var writer = new KafkaProtocolWriter(_buffer);
         writer.WriteVarInt(300);
     }
 
     [Benchmark(Description = "Dekaf Writer: VarInt (negative)")]
-    public void DekafWriteVarIntNegative()
+    public void WriteVarIntNegative_Dekaf()
     {
         var writer = new KafkaProtocolWriter(_buffer);
         writer.WriteVarInt(-150);
@@ -128,20 +128,20 @@ public class SerializationBenchmarks
     // ===== Protocol Reader Benchmarks =====
 
     [Benchmark(Description = "Dekaf Reader: Int32")]
-    public int DekafReadInt32()
+    public int ReadInt32_Dekaf()
     {
         var reader = new KafkaProtocolReader(_readBuffer);
         return reader.ReadInt32();
     }
 
     [Benchmark(Description = "Baseline Reader: Int32")]
-    public int BaselineReadInt32()
+    public int ReadInt32_Baseline()
     {
         return BinaryPrimitives.ReadInt32BigEndian(_readBuffer);
     }
 
     [Benchmark(Description = "Dekaf Reader: Int64")]
-    public long DekafReadInt64()
+    public long ReadInt64_Dekaf()
     {
         var reader = new KafkaProtocolReader(_readBuffer);
         _ = reader.ReadInt32(); // skip int32
@@ -149,7 +149,7 @@ public class SerializationBenchmarks
     }
 
     [Benchmark(Description = "Dekaf Reader: String")]
-    public string? DekafReadString()
+    public string? ReadString_Dekaf()
     {
         var reader = new KafkaProtocolReader(_readBuffer);
         _ = reader.ReadInt32();
@@ -158,7 +158,7 @@ public class SerializationBenchmarks
     }
 
     [Benchmark(Description = "Dekaf Reader: Full Sequence")]
-    public (int, long, string?, string?, int, int) DekafReadFullSequence()
+    public (int, long, string?, string?, int, int) ReadFullSequence_Dekaf()
     {
         var reader = new KafkaProtocolReader(_readBuffer);
         var i32 = reader.ReadInt32();
@@ -173,7 +173,7 @@ public class SerializationBenchmarks
     // ===== Serializer Benchmarks =====
 
     [Benchmark(Description = "Dekaf Serializer: String")]
-    public void DekafSerializeString()
+    public void SerializeString_Dekaf()
     {
         var serializer = Serializers.String;
         var context = new SerializationContext { Topic = "test", Component = SerializationComponent.Value };
@@ -181,7 +181,7 @@ public class SerializationBenchmarks
     }
 
     [Benchmark(Description = "Dekaf Serializer: Int32")]
-    public void DekafSerializeInt32()
+    public void SerializeInt32_Dekaf()
     {
         var serializer = Serializers.Int32;
         var context = new SerializationContext { Topic = "test", Component = SerializationComponent.Value };
@@ -189,7 +189,7 @@ public class SerializationBenchmarks
     }
 
     [Benchmark(Description = "Dekaf Deserializer: String")]
-    public string DekafDeserializeString()
+    public string DeserializeString_Dekaf()
     {
         var serializer = Serializers.String;
         var context = new SerializationContext { Topic = "test", Component = SerializationComponent.Value };
@@ -197,7 +197,7 @@ public class SerializationBenchmarks
     }
 
     [Benchmark(Description = "Dekaf Deserializer: Int32")]
-    public int DekafDeserializeInt32()
+    public int DeserializeInt32_Dekaf()
     {
         var data = new byte[] { 0x00, 0xBC, 0x61, 0x4E }; // 12345678 big-endian
         var serializer = Serializers.Int32;

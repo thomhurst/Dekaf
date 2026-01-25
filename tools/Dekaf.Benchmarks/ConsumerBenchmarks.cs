@@ -67,7 +67,7 @@ public class ConsumerBenchmarks
     }
 
     [Benchmark(Description = "Dekaf: Consume All Messages")]
-    public async Task<int> DekafConsumeAll()
+    public async Task<int> ConsumeAll_Dekaf()
     {
         var count = 0;
 
@@ -93,7 +93,7 @@ public class ConsumerBenchmarks
     }
 
     [Benchmark(Description = "Confluent: Consume All Messages")]
-    public int ConfluentConsumeAll()
+    public int ConsumeAll_Confluent()
     {
         var count = 0;
 
@@ -124,7 +124,7 @@ public class ConsumerBenchmarks
     }
 
     [Benchmark(Description = "Dekaf: Poll Single Message")]
-    public async Task<DekafConsumer.ConsumeResult<string, string>?> DekafPollSingle()
+    public async Task<DekafConsumer.ConsumeResult<string, string>?> PollSingle_Dekaf()
     {
         await using var consumer = DekafLib.Dekaf.CreateConsumer<string, string>()
             .WithBootstrapServers(_kafka.BootstrapServers)
@@ -139,7 +139,7 @@ public class ConsumerBenchmarks
     }
 
     [Benchmark(Description = "Confluent: Poll Single Message")]
-    public Confluent.Kafka.ConsumeResult<string, string>? ConfluentPollSingle()
+    public Confluent.Kafka.ConsumeResult<string, string>? PollSingle_Confluent()
     {
         var config = new Confluent.Kafka.ConsumerConfig
         {
