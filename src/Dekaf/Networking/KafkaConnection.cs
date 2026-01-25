@@ -208,15 +208,61 @@ public sealed class KafkaConnection : IKafkaConnection
 
             _logger?.LogDebug("Response received for correlation {CorrelationId}", correlationId);
 
-            try
+            // Check if this is a FetchResponse - if so, use zero-copy parsing
+            // by transferring buffer ownership to the response
+            var isFetchResponse = TRequest.ApiKey == ApiKey.Fetch;
+
+            if (isFetchResponse)
             {
-                var reader = new KafkaProtocolReader(pooledBuffer.Data);
-                return (TResponse)TResponse.Read(ref reader, apiVersion);
+                // Transfer ownership to the response via parsing context
+                var memoryOwner = pooledBuffer.TransferOwnership();
+                Protocol.ResponseParsingContext.SetPooledMemory(memoryOwner);
+                try
+                {
+                    var reader = new KafkaProtocolReader(pooledBuffer.Data);
+                    var response = (TResponse)TResponse.Read(ref reader, apiVersion);
+
+                    // If memory was used by any batch, attach it to the FetchResponse
+                    // The consumer will take it and dispose after iterating through records
+                    if (Protocol.ResponseParsingContext.WasMemoryUsed)
+                    {
+                        var takenMemory = Protocol.ResponseParsingContext.TakePooledMemory();
+                        if (response is Protocol.Messages.FetchResponse fetchResponse && takenMemory is not null)
+                        {
+                            fetchResponse.PooledMemoryOwner = takenMemory;
+                        }
+                        else
+                        {
+                            // Shouldn't happen, but dispose to avoid leak
+                            takenMemory?.Dispose();
+                        }
+                    }
+                    else
+                    {
+                        // No batches used pooled memory (e.g., empty response or all compressed)
+                        memoryOwner.Dispose();
+                    }
+
+                    return response;
+                }
+                finally
+                {
+                    Protocol.ResponseParsingContext.Reset();
+                }
             }
-            finally
+            else
             {
-                // Return buffer to pool after deserialization
-                pooledBuffer.Dispose();
+                // Non-fetch response - use normal parsing and dispose buffer after
+                try
+                {
+                    var reader = new KafkaProtocolReader(pooledBuffer.Data);
+                    return (TResponse)TResponse.Read(ref reader, apiVersion);
+                }
+                finally
+                {
+                    // Return buffer to pool after deserialization
+                    pooledBuffer.Dispose();
+                }
             }
         }
         finally
@@ -1274,11 +1320,54 @@ internal readonly struct PooledResponseBuffer : IDisposable
         return new PooledResponseBuffer(_buffer, Length - additionalOffset, IsPooled, _offset + additionalOffset);
     }
 
+    /// <summary>
+    /// Transfers ownership of this buffer to a new PooledResponseMemory instance.
+    /// After calling this, the buffer should NOT be disposed via this struct.
+    /// </summary>
+    public PooledResponseMemory TransferOwnership()
+    {
+        return new PooledResponseMemory(_buffer, Length, IsPooled, _offset);
+    }
+
     public void Dispose()
     {
         if (IsPooled && _buffer is not null)
         {
             ArrayPool<byte>.Shared.Return(_buffer);
+        }
+    }
+}
+
+/// <summary>
+/// A class-based wrapper for pooled response memory that implements IPooledMemory.
+/// Used to transfer buffer ownership from KafkaConnection to FetchResponse/RecordBatch
+/// for zero-copy record parsing.
+/// </summary>
+internal sealed class PooledResponseMemory : Protocol.IPooledMemory
+{
+    private byte[]? _buffer;
+    private readonly int _length;
+    private readonly bool _isPooled;
+    private readonly int _offset;
+
+    public PooledResponseMemory(byte[] buffer, int length, bool isPooled, int offset)
+    {
+        _buffer = buffer;
+        _length = length;
+        _isPooled = isPooled;
+        _offset = offset;
+    }
+
+    public ReadOnlyMemory<byte> Memory => _buffer is not null
+        ? _buffer.AsMemory(_offset, _length)
+        : throw new ObjectDisposedException(nameof(PooledResponseMemory));
+
+    public void Dispose()
+    {
+        var buffer = Interlocked.Exchange(ref _buffer, null);
+        if (_isPooled && buffer is not null)
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 }

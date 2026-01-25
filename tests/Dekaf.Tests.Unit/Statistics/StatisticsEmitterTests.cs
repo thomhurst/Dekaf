@@ -23,11 +23,12 @@ public class StatisticsEmitterTests
         await Assert.That(signaled).IsTrue();
 
         // Wait for more emissions (enough time for multiple intervals)
-        await Task.Delay(300);
+        // Using 500ms to allow for timer imprecision on busy CI runners
+        await Task.Delay(500);
 
         await emitter.DisposeAsync().ConfigureAwait(false);
 
-        // Should have been called at least 2 times (50ms interval, 300ms+ wait)
+        // Should have been called at least 2 times (50ms interval, 500ms+ wait after first)
         // Using relaxed expectation for CI environments
         await Assert.That(callCount).IsGreaterThanOrEqualTo(2);
     }

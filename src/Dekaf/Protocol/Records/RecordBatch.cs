@@ -8,7 +8,12 @@ namespace Dekaf.Protocol.Records;
 /// This is the modern record format used since Kafka 0.11.
 /// Supports lazy record parsing - records are only parsed when enumerated.
 /// </summary>
-public sealed class RecordBatch
+/// <remarks>
+/// When created via Read() during FetchResponse parsing with pooled memory context,
+/// the Records property returns a LazyRecordList that references the pooled network buffer.
+/// Call DisposeRecords() to release the pooled memory when done consuming records.
+/// </remarks>
+public sealed class RecordBatch : IDisposable
 {
     // Thread-local reusable buffers for serialization to avoid per-batch allocations
     [ThreadStatic]
@@ -64,6 +69,18 @@ public sealed class RecordBatch
     /// on first enumeration to avoid allocations for unconsumed records.
     /// </summary>
     public required IReadOnlyList<Record> Records { get; init; }
+
+    /// <summary>
+    /// Disposes any pooled memory associated with this batch's records.
+    /// Call this after consuming all records from this batch.
+    /// </summary>
+    public void Dispose()
+    {
+        if (Records is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
+    }
 
     /// <summary>
     /// Writes the record batch to the output buffer.
@@ -149,6 +166,12 @@ public sealed class RecordBatch
     /// Reads a record batch from the input buffer.
     /// Records are parsed lazily to avoid allocations for unconsumed records.
     /// </summary>
+    /// <remarks>
+    /// If a ResponseParsingContext with pooled memory is active, the records will reference
+    /// the pooled buffer directly (zero-copy). The first batch to be parsed will take ownership
+    /// of the pooled memory, and subsequent batches will share it.
+    /// Call Dispose() on the batch to release the pooled memory when done.
+    /// </remarks>
     public static RecordBatch Read(ref KafkaProtocolReader reader, CompressionCodecRegistry? codecs = null)
     {
         var baseOffset = reader.ReadInt64();
@@ -180,22 +203,31 @@ public sealed class RecordBatch
         // Capture the raw record data
         var rawRecordData = reader.ReadMemorySlice(recordsLength);
 
-        // Decompress if needed, and ALWAYS copy to owned memory.
-        // IMPORTANT: rawRecordData references the pooled network buffer which will be
-        // returned to the pool after parsing completes. LazyRecordList holds this reference
-        // and parses records lazily, so we must copy to owned memory to avoid use-after-free.
+        // Determine how to handle the record data based on compression and pooled memory availability
         ReadOnlyMemory<byte> recordData;
+
         if (compression != CompressionType.None)
         {
+            // Compressed data must be decompressed to a new buffer.
+            // We still need to copy because decompression creates new data.
             var registry = codecs ?? CompressionCodecRegistry.Default;
             var codec = registry.GetCodec(compression);
             var decompressedBuffer = new ArrayBufferWriter<byte>(recordsLength * 4); // Estimate 4x expansion
             codec.Decompress(new ReadOnlySequence<byte>(rawRecordData), decompressedBuffer);
-            recordData = decompressedBuffer.WrittenMemory.ToArray(); // Copy to owned memory
+            recordData = decompressedBuffer.WrittenMemory.ToArray();
+        }
+        else if (ResponseParsingContext.HasPooledMemory)
+        {
+            // Zero-copy: use the raw data directly from the pooled buffer
+            // Mark that at least one batch used the pooled memory, so ownership
+            // will be transferred to PendingFetchData after parsing completes
+            ResponseParsingContext.MarkMemoryUsed();
+            recordData = rawRecordData;
         }
         else
         {
-            // Copy to owned memory to avoid use-after-free when the pooled buffer is returned
+            // No pooled memory available (legacy path or not from network)
+            // Copy to owned memory to avoid use-after-free
             recordData = rawRecordData.ToArray();
         }
 
@@ -226,12 +258,18 @@ public sealed class RecordBatch
 /// Records are only parsed when accessed, avoiding allocations for unconsumed records.
 /// Uses incremental list growth instead of pre-allocating full array.
 /// </summary>
-internal sealed class LazyRecordList : IReadOnlyList<Record>
+/// <remarks>
+/// When used with zero-copy parsing, the raw data references the pooled network buffer.
+/// The memory ownership is managed at the PendingFetchData level, not here.
+/// Dispose marks the list as disposed to prevent access after the buffer is released.
+/// </remarks>
+internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 {
     private readonly ReadOnlyMemory<byte> _rawData;
     private readonly int _count;
     private List<Record>? _parsedRecords;
     private int _nextParseOffset;
+    private bool _disposed;
 
     public LazyRecordList(ReadOnlyMemory<byte> rawData, int count)
     {
@@ -245,6 +283,8 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>
     {
         get
         {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(LazyRecordList));
             if (index < 0 || index >= _count)
                 throw new ArgumentOutOfRangeException(nameof(index));
 
@@ -277,6 +317,15 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>
             _parsedRecords.Add(record);
             _nextParseOffset += (int)reader.Consumed;
         }
+    }
+
+    /// <summary>
+    /// Marks the list as disposed. After disposal, accessing records will throw ObjectDisposedException.
+    /// Note: Memory ownership is managed at PendingFetchData level, not here.
+    /// </summary>
+    public void Dispose()
+    {
+        _disposed = true;
     }
 }
 
