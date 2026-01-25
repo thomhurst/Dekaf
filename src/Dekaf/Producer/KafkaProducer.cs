@@ -236,15 +236,30 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
 
         // All checks passed - we can proceed synchronously
-        // Rent completion source from pool
         var completion = _valueTaskSourcePool.Rent();
+        ProduceSyncCore(message, topicInfo, completion);
+        return true;
+    }
+
+    /// <summary>
+    /// Core synchronous produce logic shared between TryProduceSync and TryProduceSyncWithHandler.
+    /// Handles serialization, partitioning, and accumulator append with proper resource cleanup.
+    /// </summary>
+    private void ProduceSyncCore(
+        ProducerMessage<TKey, TValue> message,
+        TopicInfo topicInfo,
+        PooledValueTaskSource<RecordMetadata> completion)
+    {
+        var key = PooledMemory.Null;
+        var value = PooledMemory.Null;
+        RecordHeader[]? pooledHeaderArray = null;
 
         try
         {
             // Serialize key and value
             var keyIsNull = message.Key is null;
-            var key = keyIsNull ? PooledMemory.Null : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
-            var value = SerializeValueToPooled(message.Value, message.Topic, message.Headers);
+            key = keyIsNull ? PooledMemory.Null : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
+            value = SerializeValueToPooled(message.Value, message.Topic, message.Headers);
 
             // Determine partition
             var partition = message.Partition
@@ -256,7 +271,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             // Convert headers
             IReadOnlyList<RecordHeader>? recordHeaders = null;
-            RecordHeader[]? pooledHeaderArray = null;
             if (message.Headers is not null && message.Headers.Count > 0)
             {
                 recordHeaders = ConvertHeaders(message.Headers, out pooledHeaderArray);
@@ -273,28 +287,37 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 pooledHeaderArray,
                 completion))
             {
-                // Accumulator is disposed, return arrays and throw
-                key.Return();
-                value.Return();
-                if (pooledHeaderArray is not null)
-                {
-                    ArrayPool<RecordHeader>.Shared.Return(pooledHeaderArray);
-                }
-                completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
-                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+                // Accumulator is disposed - cleanup and throw
+                CleanupPooledResources(key, value, pooledHeaderArray);
+                var disposedException = new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+                completion.TrySetException(disposedException);
+                throw disposedException;
             }
 
             // Track message produced
             var messageBytes = key.Length + value.Length;
             _statisticsCollector.RecordMessageProduced(message.Topic, partition, messageBytes);
-
-            return true;
         }
-        catch
+        catch (Exception ex) when (ex is not ObjectDisposedException)
         {
-            // On any exception, ensure completion source is returned to pool
-            completion.TrySetException(new InvalidOperationException("Synchronous produce failed"));
+            // Cleanup resources on any exception (except ObjectDisposedException which already cleaned up)
+            CleanupPooledResources(key, value, pooledHeaderArray);
+            completion.TrySetException(ex);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Cleans up pooled resources in exception paths.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void CleanupPooledResources(PooledMemory key, PooledMemory value, RecordHeader[]? pooledHeaderArray)
+    {
+        key.Return();
+        value.Return();
+        if (pooledHeaderArray is not null)
+        {
+            ArrayPool<RecordHeader>.Shared.Return(pooledHeaderArray);
         }
     }
 
@@ -355,55 +378,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         completion.SetDeliveryHandler(deliveryHandler);
         _ = AwaitDeliveryAsync(completion);
 
-        try
-        {
-            var keyIsNull = message.Key is null;
-            var key = keyIsNull ? PooledMemory.Null : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
-            var value = SerializeValueToPooled(message.Value, message.Topic, message.Headers);
-
-            var partition = message.Partition
-                ?? _partitioner.Partition(message.Topic, key.Span, keyIsNull, topicInfo.PartitionCount);
-
-            var timestamp = message.Timestamp ?? DateTimeOffset.UtcNow;
-            var timestampMs = timestamp.ToUnixTimeMilliseconds();
-
-            IReadOnlyList<RecordHeader>? recordHeaders = null;
-            RecordHeader[]? pooledHeaderArray = null;
-            if (message.Headers is not null && message.Headers.Count > 0)
-            {
-                recordHeaders = ConvertHeaders(message.Headers, out pooledHeaderArray);
-            }
-
-            if (!_accumulator.TryAppendSync(
-                message.Topic,
-                partition,
-                timestampMs,
-                key,
-                value,
-                recordHeaders,
-                pooledHeaderArray,
-                completion))
-            {
-                key.Return();
-                value.Return();
-                if (pooledHeaderArray is not null)
-                {
-                    ArrayPool<RecordHeader>.Shared.Return(pooledHeaderArray);
-                }
-                completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
-                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-            }
-
-            var messageBytes = key.Length + value.Length;
-            _statisticsCollector.RecordMessageProduced(message.Topic, partition, messageBytes);
-
-            return true;
-        }
-        catch
-        {
-            completion.TrySetException(new InvalidOperationException("Synchronous produce failed"));
-            throw;
-        }
+        ProduceSyncCore(message, topicInfo, completion);
+        return true;
     }
 
     /// <summary>

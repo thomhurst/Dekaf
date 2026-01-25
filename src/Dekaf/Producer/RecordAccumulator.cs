@@ -500,7 +500,7 @@ internal sealed class PartitionBatch
         }
         finally
         {
-            if (lockTaken) _spinLock.Exit(useMemoryBarrier: false);
+            if (lockTaken) _spinLock.Exit();
         }
     }
 
@@ -529,7 +529,7 @@ internal sealed class PartitionBatch
         }
         finally
         {
-            if (lockTaken) _spinLock.Exit(useMemoryBarrier: false);
+            if (lockTaken) _spinLock.Exit();
         }
     }
 
