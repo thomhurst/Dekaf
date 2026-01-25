@@ -19,6 +19,12 @@ public ref struct KafkaProtocolReader
     private readonly ReadOnlySpan<byte> _span;
     private int _position;
 
+    // Backing memory for zero-allocation slicing (when available)
+    // This allows ReadMemorySlice() and GetRemainingSequence() to return
+    // slices without allocating when the reader was constructed from Memory/array
+    private readonly ReadOnlyMemory<byte> _memory;
+    private readonly bool _hasMemory;
+
     // Slow path: SequenceReader for multi-segment sequences (rare)
     // This is only allocated/used when data spans multiple segments
     private SequenceReader<byte> _reader;
@@ -31,6 +37,8 @@ public ref struct KafkaProtocolReader
     public KafkaProtocolReader(byte[] buffer)
     {
         _span = buffer;
+        _memory = buffer;
+        _hasMemory = true;
         _position = 0;
         _isContiguous = true;
         _reader = default;
@@ -38,11 +46,15 @@ public ref struct KafkaProtocolReader
 
     /// <summary>
     /// Creates a reader from contiguous memory. This is the fast path used for most protocol parsing.
+    /// Note: ReadMemorySlice() and GetRemainingSequence() will allocate when using this constructor
+    /// since spans cannot be converted to Memory without copying.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public KafkaProtocolReader(ReadOnlySpan<byte> buffer)
     {
         _span = buffer;
+        _memory = default;
+        _hasMemory = false;
         _position = 0;
         _isContiguous = true;
         _reader = default;
@@ -57,6 +69,8 @@ public ref struct KafkaProtocolReader
         {
             // Fast path: Single segment - use direct span access
             _span = buffer.FirstSpan;
+            _memory = buffer.First;
+            _hasMemory = true;
             _position = 0;
             _isContiguous = true;
             _reader = default;
@@ -65,6 +79,8 @@ public ref struct KafkaProtocolReader
         {
             // Slow path: Multi-segment - use SequenceReader
             _span = default;
+            _memory = default;
+            _hasMemory = false;
             _position = 0;
             _isContiguous = false;
             _reader = new SequenceReader<byte>(buffer);
@@ -78,6 +94,8 @@ public ref struct KafkaProtocolReader
     public KafkaProtocolReader(ReadOnlyMemory<byte> buffer)
     {
         _span = buffer.Span;
+        _memory = buffer;
+        _hasMemory = true;
         _position = 0;
         _isContiguous = true;
         _reader = default;
@@ -666,8 +684,17 @@ public ref struct KafkaProtocolReader
         if (count == 0)
             return ReadOnlyMemory<byte>.Empty;
 
-        // For contiguous mode, we can't return a slice of span as Memory,
-        // but we can copy into a new array (still faster than SequenceReader overhead)
+        // Fast path: Return a slice of the backing memory (zero-allocation)
+        if (_isContiguous && _hasMemory)
+        {
+            if (_position + count > _span.Length)
+                ThrowInsufficientData();
+            var result = _memory.Slice(_position, count);
+            _position += count;
+            return result;
+        }
+
+        // Fallback for span-only mode: must allocate since spans can't become Memory
         if (_isContiguous)
         {
             if (_position + count > _span.Length)
@@ -770,10 +797,18 @@ public ref struct KafkaProtocolReader
     /// </summary>
     public readonly ReadOnlySequence<byte> GetRemainingSequence()
     {
+        // Fast path: Return a slice of the backing memory (zero-allocation)
+        if (_isContiguous && _hasMemory)
+        {
+            return new ReadOnlySequence<byte>(_memory.Slice(_position));
+        }
+
+        // Fallback for span-only mode: must allocate since spans can't become Memory
         if (_isContiguous)
         {
             return new ReadOnlySequence<byte>(_span.Slice(_position).ToArray());
         }
+
         return _reader.UnreadSequence;
     }
 

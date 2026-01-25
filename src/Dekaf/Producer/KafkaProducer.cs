@@ -216,8 +216,20 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         // All checks passed - we can proceed synchronously
         completion = _valueTaskSourcePool.Rent();
-        // ProduceSyncCore may throw - that's intentional for awaited calls
-        ProduceSyncCore(message, topicInfo, completion);
+        try
+        {
+            ProduceSyncCore(message, topicInfo, completion);
+        }
+        catch (Exception ex)
+        {
+            // If ProduceSyncCore throws before setting result/exception on completion,
+            // the rented completion would be leaked (never awaited = never returned to pool).
+            // Set the exception on the completion so the caller can await it and it gets
+            // properly returned to the pool.
+            // Note: ProduceSyncCore may have already called TrySetException, so use Try variant.
+            // Don't re-throw here - let the caller await the ValueTask and get the exception.
+            completion.TrySetException(ex);
+        }
         return true;
     }
 
