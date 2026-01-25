@@ -252,8 +252,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         // Append to accumulator - passes completion through to batch
         // The batch will complete the TCS when sent, so we don't await anything here
+        // Pass topic and partition separately to avoid TopicPartition allocation
         var result = await _accumulator.AppendAsync(
-            new TopicPartition(message.Topic, partition),
+            message.Topic,
+            partition,
             timestampMs,
             key,
             value,

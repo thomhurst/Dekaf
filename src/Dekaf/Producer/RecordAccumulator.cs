@@ -81,6 +81,22 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private volatile bool _disposed;
     private volatile bool _closed;
 
+    // Cache for TopicPartition instances to avoid repeated allocations.
+    // Using a nested ConcurrentDictionary: outer key is topic (string), inner key is partition (int).
+    // This allows O(1) lookup without allocating a TopicPartition struct on the hot path.
+    //
+    // TRADE-OFF: Unbounded cache growth - the cache grows as new topic-partition pairs are seen.
+    // This is acceptable because:
+    // 1. Typical workloads have a bounded set of topic-partition pairs (e.g., 100 topics × 10 partitions = 1000 entries)
+    // 2. Each entry is small (~50 bytes: string reference + int + dictionary overhead)
+    // 3. The memory cost (50KB for 1000 partitions) is negligible compared to batch buffers (MB-GB range)
+    // 4. Producers typically write to the same topics throughout their lifetime
+    // 5. The cache is cleared on disposal, preventing leaks in producer recreation scenarios
+    //
+    // For extreme cases with thousands of topics, the memory overhead is still minor and worth the
+    // allocation elimination in the critical produce path.
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, TopicPartition>> _topicPartitionCache = new();
+
     public RecordAccumulator(ProducerOptions options, Action<TaskCompletionSource<RecordMetadata>> returnTcsToPool)
     {
         _options = options;
@@ -106,13 +122,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// Header array may also be pooled (if large) and will be returned to pool when batch completes.
     /// The completion source will be completed when the batch is sent.
     /// Backpressure is applied through channel capacity when batches are written.
-    ///
-    /// Thread-safety: Uses ConcurrentDictionary to avoid cross-partition contention. Each partition
-    /// has its own batch with its own lock, so concurrent appends to different partitions don't block
-    /// each other. PartitionBatch.TryAppend uses a lock to protect List<T> mutations.
+    /// Optimized to avoid TopicPartition allocation on the hot path by using a nested cache.
     /// </summary>
     public async ValueTask<RecordAppendResult> AppendAsync(
-        TopicPartition topicPartition,
+        string topic,
+        int partition,
         long timestamp,
         PooledMemory key,
         PooledMemory value,
@@ -124,13 +138,30 @@ public sealed class RecordAccumulator : IAsyncDisposable
         if (_disposed)
             throw new ObjectDisposedException(nameof(RecordAccumulator));
 
-        var batch = _batches.GetOrAdd(topicPartition, tp => new PartitionBatch(tp, _options, _returnTcsToPool));
+        // OPTIMIZATION: Use a nested cache to get/create TopicPartition without allocating on hot path.
+        // First, get or create the partition cache for this topic.
+        var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
 
-        var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
+        // Then, get or create the TopicPartition for this partition.
+        // This is cached, so subsequent calls with same topic/partition reuse the struct.
+        var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
 
-        if (!result.Success)
+        // Loop until we successfully append the record.
+        // This handles the race condition where multiple threads try to replace a full batch:
+        // - GetOrAdd gets existing batch or creates a new one
+        // - If append fails (batch full), complete it and atomically remove it
+        // - TryRemove(KeyValuePair) only removes if value matches, preventing orphaned batches
+        // - Loop retries with the new batch (created by us or another thread)
+        while (true)
         {
-            // Batch is full, need to flush and create new batch
+            var batch = _batches.GetOrAdd(topicPartition, tp => new PartitionBatch(tp, _options, _returnTcsToPool));
+
+            var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
+
+            if (result.Success)
+                return result;
+
+            // Batch is full, complete it and queue for sending
             var readyBatch = batch.Complete();
             if (readyBatch is not null)
             {
@@ -138,13 +169,15 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
             }
 
-            // Create new batch and retry
-            batch = new PartitionBatch(topicPartition, _options, _returnTcsToPool);
-            _batches[topicPartition] = batch;
-            result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
-        }
+            // Atomically remove the completed batch only if it's still the same instance.
+            // If another thread already replaced it, this is a no-op and we'll use their new batch.
+            // This prevents the race where two threads both create new batches and one gets orphaned.
+            _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch));
 
-        return result;
+            // Loop will call GetOrAdd again, which will either:
+            // 1. Create a new batch (if we successfully removed the old one)
+            // 2. Return the batch another thread already created (if they won the race)
+        }
     }
 
 
@@ -174,13 +207,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 if (readyBatch is not null)
                 {
                     await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-
-                    // Use conditional removal to ensure we only remove the batch we just completed.
-                    // If another thread already replaced this batch with a new one (via AppendAsync),
-                    // we don't want to remove the new batch.
-                    // TryRemove with ICollection<KeyValuePair<K,V>> compares by reference equality,
-                    // so this is safe even if a new batch was created for the same partition.
-                    _batches.TryRemove(kvp);
+                    // Only remove if the batch is still the same instance.
+                    // If AppendAsync already replaced it with a new batch, don't remove the new one.
+                    _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch));
                 }
             }
         }
@@ -193,13 +222,16 @@ public sealed class RecordAccumulator : IAsyncDisposable
     {
         foreach (var kvp in _batches)
         {
-            var readyBatch = kvp.Value.Complete();
+            var batch = kvp.Value;
+            var readyBatch = batch.Complete();
             if (readyBatch is not null)
             {
                 await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                // Only remove if the batch is still the same instance.
+                // If AppendAsync already replaced it with a new batch, don't remove the new one.
+                _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch));
             }
         }
-        _batches.Clear();
     }
 
     /// <summary>
@@ -236,6 +268,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
             readyBatch?.Fail(disposedException);
         }
         _batches.Clear();
+
+        // Clear the TopicPartition cache to release memory
+        _topicPartitionCache.Clear();
 
         // Complete the channel if not already closed by CloseAsync
         if (!_closed)
@@ -312,6 +347,7 @@ internal sealed class PartitionBatch
         _pooledHeaderArrayCount = 0;
     }
 
+    public TopicPartition TopicPartition => _topicPartition;
     public int RecordCount => _recordCount;
     public int EstimatedSize => _estimatedSize;
 

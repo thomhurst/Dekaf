@@ -40,7 +40,8 @@ public class RecordAccumulatorTests
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
             var result = await accumulator.AppendAsync(
-                topicPartition,
+                topicPartition.Topic,
+                topicPartition.Partition,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 pooledKey,
                 pooledValue,
@@ -103,7 +104,8 @@ public class RecordAccumulatorTests
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
             await accumulator.AppendAsync(
-                topicPartition,
+                topicPartition.Topic,
+                topicPartition.Partition,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 pooledKey,
                 pooledValue,
@@ -172,7 +174,8 @@ public class RecordAccumulatorTests
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
             await accumulator.AppendAsync(
-                topicPartition,
+                topicPartition.Topic,
+                topicPartition.Partition,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 pooledKey,
                 pooledValue,
@@ -245,7 +248,8 @@ public class RecordAccumulatorTests
                         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
                         var result = await accumulator.AppendAsync(
-                            topicPartition,
+                            topicPartition.Topic,
+                            topicPartition.Partition,
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                             pooledKey,
                             pooledValue,
@@ -324,7 +328,8 @@ public class RecordAccumulatorTests
                         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
                         var result = await accumulator.AppendAsync(
-                            topicPartition,
+                            topicPartition.Topic,
+                            topicPartition.Partition,
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                             pooledKey,
                             pooledValue,
@@ -394,7 +399,8 @@ public class RecordAccumulatorTests
                         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
                         var result = await accumulator.AppendAsync(
-                            topicPartition,
+                            topicPartition.Topic,
+                            topicPartition.Partition,
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                             pooledKey,
                             pooledValue,
