@@ -1,3 +1,4 @@
+using System.Threading.Tasks.Sources;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -305,5 +306,195 @@ public class PooledValueTaskSourceTests
         source3.SetResult(3);
         var result3 = await source3.Task.ConfigureAwait(false);
         await Assert.That(result3).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task ConcurrentTrySetResult_OnlyOneSucceeds()
+    {
+        // Test that concurrent TrySetResult calls are safe and only one wins
+        var pool = new ValueTaskSourcePool<int>();
+        var source = pool.Rent();
+
+        var successCount = 0;
+        var barrier = new Barrier(10);
+        var tasks = new List<Task>();
+
+        for (int i = 0; i < 10; i++)
+        {
+            var value = i;
+            tasks.Add(Task.Run(() =>
+            {
+                barrier.SignalAndWait(); // Ensure all threads start simultaneously
+                if (source.TrySetResult(value))
+                {
+                    Interlocked.Increment(ref successCount);
+                }
+            }));
+        }
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        // Only one thread should succeed
+        await Assert.That(successCount).IsEqualTo(1);
+
+        // The task should complete with a value
+        var result = await source.Task.ConfigureAwait(false);
+        await Assert.That(result).IsGreaterThanOrEqualTo(0);
+        await Assert.That(result).IsLessThan(10);
+    }
+
+    [Test]
+    public async Task ConcurrentTrySetResult_AndTrySetException_OnlyOneSucceeds()
+    {
+        // Test mixed concurrent completion attempts
+        var pool = new ValueTaskSourcePool<int>();
+        var source = pool.Rent();
+
+        var successCount = 0;
+        var barrier = new Barrier(4);
+        var tasks = new List<Task>();
+
+        // 2 threads try SetResult
+        for (int i = 0; i < 2; i++)
+        {
+            var value = i;
+            tasks.Add(Task.Run(() =>
+            {
+                barrier.SignalAndWait();
+                if (source.TrySetResult(value))
+                    Interlocked.Increment(ref successCount);
+            }));
+        }
+
+        // 2 threads try SetException
+        for (int i = 0; i < 2; i++)
+        {
+            tasks.Add(Task.Run(() =>
+            {
+                barrier.SignalAndWait();
+                if (source.TrySetException(new InvalidOperationException("test")))
+                    Interlocked.Increment(ref successCount);
+            }));
+        }
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        // Only one should succeed
+        await Assert.That(successCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task GetStatus_ReturnsPending_BeforeCompletion()
+    {
+        var pool = new ValueTaskSourcePool<int>();
+        var source = pool.Rent();
+
+        // Access via interface to test GetStatus
+        var valueTaskSource = (IValueTaskSource<int>)source;
+        var status = valueTaskSource.GetStatus(source.Version);
+
+        await Assert.That(status).IsEqualTo(ValueTaskSourceStatus.Pending);
+    }
+
+    [Test]
+    public async Task GetStatus_ReturnsSucceeded_AfterSetResult()
+    {
+        var pool = new ValueTaskSourcePool<int>();
+        var source = pool.Rent();
+
+        source.SetResult(42);
+
+        var valueTaskSource = (IValueTaskSource<int>)source;
+        var status = valueTaskSource.GetStatus(source.Version);
+
+        await Assert.That(status).IsEqualTo(ValueTaskSourceStatus.Succeeded);
+    }
+
+    [Test]
+    public async Task GetStatus_ReturnsFaulted_AfterSetException()
+    {
+        var pool = new ValueTaskSourcePool<int>();
+        var source = pool.Rent();
+
+        source.SetException(new InvalidOperationException("test"));
+
+        var valueTaskSource = (IValueTaskSource<int>)source;
+        var status = valueTaskSource.GetStatus(source.Version);
+
+        await Assert.That(status).IsEqualTo(ValueTaskSourceStatus.Faulted);
+    }
+
+    [Test]
+    public async Task GetStatus_ReturnsCanceled_AfterTrySetCanceled()
+    {
+        var pool = new ValueTaskSourcePool<int>();
+        var source = pool.Rent();
+
+        source.TrySetCanceled(new CancellationToken(true));
+
+        var valueTaskSource = (IValueTaskSource<int>)source;
+        var status = valueTaskSource.GetStatus(source.Version);
+
+        // ManualResetValueTaskSourceCore correctly detects OperationCanceledException as Canceled
+        await Assert.That(status).IsEqualTo(ValueTaskSourceStatus.Canceled);
+    }
+
+    [Test]
+    public async Task DeliveryHandler_ExceptionInHandler_DoesNotPreventCompletion()
+    {
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var source = pool.Rent();
+
+        source.SetDeliveryHandler((_, _) => throw new InvalidOperationException("Handler error"));
+
+        var metadata = new RecordMetadata
+        {
+            Topic = "test",
+            Partition = 0,
+            Offset = 1,
+            Timestamp = DateTimeOffset.UtcNow
+        };
+
+        source.SetResult(metadata);
+
+        // The handler exception should propagate (not swallowed)
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await source.Task.ConfigureAwait(false);
+        });
+    }
+
+    [Test]
+    public async Task SourceWithoutPool_CompletesSuccessfully()
+    {
+        // Create a source directly without going through pool
+        var source = new PooledValueTaskSource<int>();
+
+        source.SetResult(42);
+        var result = await source.Task.ConfigureAwait(false);
+
+        await Assert.That(result).IsEqualTo(42);
+        // No pool to return to - should not throw
+    }
+
+    [Test]
+    public async Task HasCompleted_ResetAfterAwait()
+    {
+        var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
+
+        var source = pool.Rent();
+
+        // First completion
+        await Assert.That(source.TrySetResult(1)).IsTrue();
+        await source.Task.ConfigureAwait(false);
+
+        // Get the same instance back
+        var sameSource = pool.Rent();
+        await Assert.That(source).IsSameReferenceAs(sameSource);
+
+        // Should be able to complete again (hasCompleted was reset)
+        await Assert.That(sameSource.TrySetResult(2)).IsTrue();
+        var result = await sameSource.Task.ConfigureAwait(false);
+        await Assert.That(result).IsEqualTo(2);
     }
 }

@@ -255,4 +255,147 @@ public class ValueTaskSourcePoolTests
             return Task.CompletedTask;
         });
     }
+
+    [Test]
+    public async Task Return_AfterDispose_IsSilent()
+    {
+        var pool = new ValueTaskSourcePool<int>();
+        var source = pool.Rent();
+
+        // Dispose the pool
+        await pool.DisposeAsync().ConfigureAwait(false);
+
+        // Complete the source - Return should be silent (not throw)
+        source.SetResult(42);
+        await source.Task.ConfigureAwait(false);
+
+        // If we get here without exception, the test passes
+        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task HighContention_StressTest()
+    {
+        // Stress test with many concurrent operations
+        var pool = new ValueTaskSourcePool<int>(maxPoolSize: 50);
+        var completedCount = 0;
+        const int operationCount = 1000;
+        const int threadCount = 20;
+
+        var tasks = new List<Task>();
+        for (int t = 0; t < threadCount; t++)
+        {
+            tasks.Add(Task.Run(async () =>
+            {
+                for (int i = 0; i < operationCount / threadCount; i++)
+                {
+                    var source = pool.Rent();
+                    source.SetResult(i);
+                    await source.Task.ConfigureAwait(false);
+                    Interlocked.Increment(ref completedCount);
+                }
+            }));
+        }
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        await Assert.That(completedCount).IsEqualTo(operationCount);
+        // Pool should have some items (up to max)
+        await Assert.That(pool.ApproximateCount).IsLessThanOrEqualTo(50);
+    }
+
+    [Test]
+    public async Task Pool_WithMaxSize1_ForcesReuse()
+    {
+        var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
+        PooledValueTaskSource<int>? firstSource = null;
+        var reuseCount = 0;
+
+        for (int i = 0; i < 10; i++)
+        {
+            var source = pool.Rent();
+
+            if (firstSource == null)
+            {
+                firstSource = source;
+            }
+            else if (ReferenceEquals(source, firstSource))
+            {
+                reuseCount++;
+            }
+
+            source.SetResult(i);
+            await source.Task.ConfigureAwait(false);
+        }
+
+        // With max size 1, after the first iteration, we should always reuse
+        await Assert.That(reuseCount).IsEqualTo(9);
+    }
+
+    [Test]
+    public async Task DefaultConstructor_UsesDefaultMaxSize()
+    {
+        var pool = new ValueTaskSourcePool<int>();
+
+        await Assert.That(pool.MaxPoolSize).IsEqualTo(ValueTaskSourcePool<int>.DefaultMaxPoolSize);
+    }
+
+    [Test]
+    public async Task ApproximateCount_TracksPoolSize()
+    {
+        var pool = new ValueTaskSourcePool<int>(maxPoolSize: 10);
+
+        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
+
+        // Rent and return 5 sources
+        var sources = new List<PooledValueTaskSource<int>>();
+        for (int i = 0; i < 5; i++)
+        {
+            sources.Add(pool.Rent());
+        }
+
+        // Still 0 - sources are rented, not returned
+        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
+
+        // Complete and await all
+        for (int i = 0; i < 5; i++)
+        {
+            sources[i].SetResult(i);
+            await sources[i].Task.ConfigureAwait(false);
+        }
+
+        // Now should have 5 in pool
+        await Assert.That(pool.ApproximateCount).IsEqualTo(5);
+    }
+
+    [Test]
+    public async Task ConcurrentRentAndReturn_MaintainsConsistency()
+    {
+        var pool = new ValueTaskSourcePool<int>(maxPoolSize: 100);
+        var barrier = new Barrier(10);
+        var tasks = new List<Task>();
+
+        // 10 threads doing concurrent rent/complete/return cycles
+        for (int t = 0; t < 10; t++)
+        {
+            tasks.Add(Task.Run(async () =>
+            {
+                barrier.SignalAndWait();
+
+                for (int i = 0; i < 100; i++)
+                {
+                    var source = pool.Rent();
+                    source.SetResult(i);
+                    var result = await source.Task.ConfigureAwait(false);
+                    await Assert.That(result).IsEqualTo(i);
+                }
+            }));
+        }
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        // Pool should be in a consistent state
+        await Assert.That(pool.ApproximateCount).IsLessThanOrEqualTo(100);
+        await Assert.That(pool.ApproximateCount).IsGreaterThanOrEqualTo(0);
+    }
 }
