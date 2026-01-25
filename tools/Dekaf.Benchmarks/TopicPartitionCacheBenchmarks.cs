@@ -15,7 +15,6 @@ namespace Dekaf.Benchmarks;
 public class TopicPartitionCacheBenchmarks
 {
     private RecordAccumulator _cachedAccumulator = null!;
-    private RecordAccumulator _uncachedAccumulator = null!;
     private ProducerOptions _options = null!;
     private const string TestTopic = "benchmark-topic";
     private const int TestPartition = 0;
@@ -37,7 +36,7 @@ public class TopicPartitionCacheBenchmarks
             BufferMemory = 32 * 1024 * 1024
         };
 
-        _cachedAccumulator = new RecordAccumulator(_options);
+        _cachedAccumulator = new RecordAccumulator(_options, _ => { });
 
         // Create test data
         _keyBytes = System.Text.Encoding.UTF8.GetBytes("test-key");
