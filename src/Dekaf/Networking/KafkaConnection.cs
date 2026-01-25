@@ -1308,13 +1308,10 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
                 static state => ((PooledPendingRequest)state!).OnCancelled(),
                 this);
 
-            // Combine with existing registration
+            // Dispose old registration and replace with new one
             var oldRegistration = _cancellationRegistration;
-            _cancellationRegistration = new CancellationTokenRegistration();
-
-            // Create a combined cleanup
-            oldRegistration.Dispose();
             _cancellationRegistration = newRegistration;
+            oldRegistration.Dispose();
         }
     }
 
