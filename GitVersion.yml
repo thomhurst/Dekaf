@@ -1,0 +1,26 @@
+mode: ContinuousDelivery
+branches:
+  main:
+    mode: ContinuousDelivery
+    label: ci
+    increment: Patch
+  develop:
+    mode: ContinuousDelivery
+    label: alpha
+    increment: Minor
+  feature:
+    regex: ^features?[/-](?<BranchName>.+)
+    label: alpha.{BranchName}
+    increment: Inherit
+  release:
+    regex: ^releases?[/-]
+    label: rc
+    increment: None
+  hotfix:
+    regex: ^hotfix(es)?[/-]
+    label: beta
+    increment: Patch
+  pull-request:
+    regex: ^(pull|pull-requests|pr)[/-](?<Number>\d+)
+    label: pr.{Number}
+    increment: Inherit
