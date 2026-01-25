@@ -85,7 +85,7 @@ public class MetadataManagerTests
     }
 
     [Test]
-    public async Task GetEndpointsToTry_CacheHit_ReturnsSameEndpointsWithoutReallocation()
+    public async Task GetEndpointsToTry_CacheHit_ReturnsSameCachedInstance()
     {
         var manager = CreateTestManager();
 
@@ -98,7 +98,7 @@ public class MetadataManagerTests
         // First call builds cache
         var endpoints1 = manager.GetEndpointsToTry();
 
-        // Second call should return the same endpoints (cache hit)
+        // Second call should return the same cached list (zero allocation)
         var endpoints2 = manager.GetEndpointsToTry();
 
         // Verify endpoints are equal
@@ -108,8 +108,8 @@ public class MetadataManagerTests
             await Assert.That(endpoints1[i]).IsEquivalentTo(endpoints2[i]);
         }
 
-        // Defensive copy means they're different list instances
-        await Assert.That(ReferenceEquals(endpoints1, endpoints2)).IsFalse();
+        // IReadOnlyList return type prevents modification, so same instance is safe
+        await Assert.That(ReferenceEquals(endpoints1, endpoints2)).IsTrue();
     }
 
     [Test]
@@ -201,7 +201,7 @@ public class MetadataManagerTests
     }
 
     [Test]
-    public async Task GetEndpointsToTry_MultipleCalls_ReturnsDefensiveCopy()
+    public async Task GetEndpointsToTry_MultipleCalls_ReturnsCachedReadOnlyList()
     {
         var manager = CreateTestManager();
 
@@ -211,10 +211,9 @@ public class MetadataManagerTests
         var endpoints1 = manager.GetEndpointsToTry();
         var endpoints2 = manager.GetEndpointsToTry();
 
-        // Modifying one list should not affect the other (defensive copy)
-        endpoints1.Add(("modified", 1234));
-
-        await Assert.That(endpoints1.Count).IsGreaterThan(endpoints2.Count);
+        // Both calls should return the same cached content (IReadOnlyList prevents modification)
+        await Assert.That(endpoints1.Count).IsEqualTo(endpoints2.Count);
+        await Assert.That(endpoints1[0]).IsEqualTo(endpoints2[0]);
     }
 
     [Test]

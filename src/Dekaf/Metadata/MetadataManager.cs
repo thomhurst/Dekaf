@@ -45,9 +45,9 @@ public sealed class MetadataManager : IAsyncDisposable
             var colonIndex = server.IndexOf(':');
             if (colonIndex > 0 && colonIndex < server.Length - 1)
             {
-                var host = server.Substring(0, colonIndex);
-                var portStr = server.Substring(colonIndex + 1);
-                if (int.TryParse(portStr, out var port))
+                var host = server[..colonIndex];
+                // Use span-based parsing to avoid string allocation for port
+                if (int.TryParse(server.AsSpan(colonIndex + 1), out var port))
                 {
                     _bootstrapEndpoints.Add((host, port));
                 }
@@ -306,7 +306,7 @@ public sealed class MetadataManager : IAsyncDisposable
         _logger?.LogDebug("Negotiated Metadata API version: {Version}", _metadataApiVersion);
     }
 
-    internal List<(string Host, int Port)> GetEndpointsToTry()
+    internal IReadOnlyList<(string Host, int Port)> GetEndpointsToTry()
     {
         // Get current brokers - this allocates, but we need it to detect changes
         var currentBrokers = _metadata.GetBrokers();
@@ -328,8 +328,8 @@ public sealed class MetadataManager : IAsyncDisposable
             // Cache is valid if broker hash hasn't changed
             if (_cachedEndpoints is not null && _cachedBrokerHash == currentBrokerHash)
             {
-                // Return defensive copy to prevent caller modification
-                return new List<(string Host, int Port)>(_cachedEndpoints);
+                // Return cached list directly - callers only iterate, no modification
+                return _cachedEndpoints;
             }
 
             // Build new endpoint list (allocation only when metadata changes)
@@ -352,8 +352,8 @@ public sealed class MetadataManager : IAsyncDisposable
             _cachedBrokerHash = currentBrokerHash;
             _cachedEndpoints = endpoints;
 
-            // Return defensive copy
-            return new List<(string Host, int Port)>(endpoints);
+            // Return cached list directly - callers only iterate, no modification
+            return endpoints;
         }
     }
 
