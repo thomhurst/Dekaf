@@ -1279,8 +1279,7 @@ internal sealed class PendingRequestPool
 
 /// <summary>
 /// A poolable pending request that implements <see cref="IValueTaskSource{T}"/> for zero-allocation
-/// async completion. Uses explicit continuation tracking for reliable cancellation signaling,
-/// similar to how System.IO.Pipelines.Pipe handles awaitable operations.
+/// async completion. Uses <see cref="ManualResetValueTaskSourceCore{T}"/> internally.
 /// </summary>
 internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuffer>
 {
@@ -1290,12 +1289,6 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     private int _state; // 0 = pending, 1 = completing, 2 = completed
     private PooledResponseBuffer? _pendingBuffer; // Buffer received but not yet processed
 
-    // Explicit continuation tracking for reliable cancellation signaling
-    private Action<object?>? _continuation;
-    private object? _continuationState;
-    private ExecutionContext? _executionContext;
-    private object? _scheduler;
-
     /// <summary>
     /// Initializes the request for a new operation.
     /// </summary>
@@ -1304,10 +1297,6 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         _responseHeaderVersion = responseHeaderVersion;
         _state = 0;
         _pendingBuffer = null;
-        _continuation = null;
-        _continuationState = null;
-        _executionContext = null;
-        _scheduler = null;
 
         // Register for cancellation if the token can be cancelled
         if (cancellationToken.CanBeCanceled)
@@ -1398,7 +1387,6 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         finally
         {
             Volatile.Write(ref _state, 2); // Mark as completed
-            // Note: continuation is invoked by ManualResetValueTaskSourceCore
         }
 
         return true;
@@ -1431,85 +1419,9 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
             return false;
         }
 
-        // Set the exception on the core
         _core.SetException(new OperationCanceledException());
         Volatile.Write(ref _state, 2);
-
-        // Explicitly invoke the continuation if one was registered
-        // This ensures the awaiter is woken up even if ManualResetValueTaskSourceCore
-        // has issues signaling (belt and suspenders approach)
-        var continuation = Interlocked.Exchange(ref _continuation, null);
-        if (continuation != null)
-        {
-            var state = _continuationState;
-            var executionContext = _executionContext;
-            var scheduler = _scheduler;
-
-            _continuationState = null;
-            _executionContext = null;
-            _scheduler = null;
-
-            InvokeContinuation(continuation, state, executionContext, scheduler);
-        }
-
         return true;
-    }
-
-    private static void InvokeContinuation(
-        Action<object?> continuation,
-        object? state,
-        ExecutionContext? executionContext,
-        object? scheduler)
-    {
-        // Schedule on appropriate scheduler if specified
-        if (scheduler != null)
-        {
-            if (scheduler is SynchronizationContext sc)
-            {
-                sc.Post(static s =>
-                {
-                    var (cont, st) = ((Action<object?>, object?))s!;
-                    cont(st);
-                }, (continuation, state));
-                return;
-            }
-            else if (scheduler is TaskScheduler ts)
-            {
-                Task.Factory.StartNew(
-                    static s =>
-                    {
-                        var (cont, st) = ((Action<object?>, object?))s!;
-                        cont(st);
-                    },
-                    (continuation, state),
-                    CancellationToken.None,
-                    TaskCreationOptions.DenyChildAttach,
-                    ts);
-                return;
-            }
-        }
-
-        // No scheduler - run on thread pool
-        if (executionContext != null)
-        {
-            ThreadPool.QueueUserWorkItem(static s =>
-            {
-                var (cont, st, ec) = ((Action<object?>, object?, ExecutionContext))s!;
-                ExecutionContext.Run(ec, static state =>
-                {
-                    var (c, st2) = ((Action<object?>, object?))state!;
-                    c(st2);
-                }, (cont, st));
-            }, (continuation, state, executionContext));
-        }
-        else
-        {
-            ThreadPool.UnsafeQueueUserWorkItem(static s =>
-            {
-                var (cont, st) = ((Action<object?>, object?))s!;
-                cont(st);
-            }, (continuation, state), preferLocal: false);
-        }
     }
 
     private PooledResponseBuffer? ParseAndSliceResponse(PooledResponseBuffer pooledBuffer)
@@ -1611,12 +1523,6 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         _cancellationRegistration.Dispose();
         _cancellationRegistration = default;
 
-        // Clear continuation tracking
-        _continuation = null;
-        _continuationState = null;
-        _executionContext = null;
-        _scheduler = null;
-
         // Reset the core for reuse
         _core.Reset();
         _state = 0;
@@ -1625,12 +1531,6 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     // IValueTaskSource implementation
     PooledResponseBuffer IValueTaskSource<PooledResponseBuffer>.GetResult(short token)
     {
-        // Clear continuation on GetResult to avoid double invocation
-        _continuation = null;
-        _continuationState = null;
-        _executionContext = null;
-        _scheduler = null;
-
         return _core.GetResult(token);
     }
 
@@ -1645,56 +1545,6 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         short token,
         ValueTaskSourceOnCompletedFlags flags)
     {
-        // Store continuation for explicit invocation on cancellation
-        // This is a belt-and-suspenders approach - ManualResetValueTaskSourceCore should
-        // invoke the continuation, but we keep a backup in case of issues
-        if ((flags & ValueTaskSourceOnCompletedFlags.FlowExecutionContext) != 0)
-        {
-            _executionContext = ExecutionContext.Capture();
-        }
-
-        if ((flags & ValueTaskSourceOnCompletedFlags.UseSchedulingContext) != 0)
-        {
-            _scheduler = (object?)SynchronizationContext.Current ?? TaskScheduler.Current;
-        }
-
-        // Store continuation atomically - if already completed, invoke immediately
-        var previousContinuation = Interlocked.CompareExchange(ref _continuation, continuation, null);
-        if (previousContinuation != null)
-        {
-            // Already had a continuation or was already completed
-            // This shouldn't happen in normal usage, but handle it gracefully
-            ThreadPool.UnsafeQueueUserWorkItem(static s =>
-            {
-                var (cont, st) = ((Action<object?>, object?))s!;
-                cont(st);
-            }, (continuation, state), preferLocal: false);
-            return;
-        }
-
-        _continuationState = state;
-
-        // Check if we're already completed (race with TrySetCanceled)
-        if (Volatile.Read(ref _state) == 2)
-        {
-            // Already completed - invoke continuation now
-            var storedContinuation = Interlocked.Exchange(ref _continuation, null);
-            if (storedContinuation != null)
-            {
-                var storedState = _continuationState;
-                var ec = _executionContext;
-                var sched = _scheduler;
-
-                _continuationState = null;
-                _executionContext = null;
-                _scheduler = null;
-
-                InvokeContinuation(storedContinuation, storedState, ec, sched);
-                return;
-            }
-        }
-
-        // Register with core for normal completion path
         _core.OnCompleted(continuation, state, token, flags);
     }
 }
