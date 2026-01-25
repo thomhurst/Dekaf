@@ -46,8 +46,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly ProducerStatisticsCollector _statisticsCollector = new();
     private readonly StatisticsEmitter<ProducerStatistics>? _statisticsEmitter;
 
-    // Pool for TaskCompletionSource to avoid per-message allocations
-    private readonly TaskCompletionSourcePool<RecordMetadata> _tcsPool = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    // Pool for PooledValueTaskSource to avoid per-message allocations
+    // Unlike TaskCompletionSource, these can be reset and reused
+    private readonly ValueTaskSourcePool<RecordMetadata> _valueTaskSourcePool = new();
 
     // Thread-local reusable buffers for serialization to avoid per-message allocations
     [ThreadStatic]
@@ -107,7 +108,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             options.BootstrapServers,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
-        _accumulator = new RecordAccumulator(options, _tcsPool.Return);
+        _accumulator = new RecordAccumulator(options);
         _compressionCodecs = new CompressionCodecRegistry();
 
         _senderCts = new CancellationTokenSource();
@@ -173,15 +174,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
-        // Rent completion source from pool to avoid per-message allocation
-        var completion = _tcsPool.Rent();
+        // Rent completion source from pool - it will auto-return when awaited
+        var completion = _valueTaskSourcePool.Rent();
 
         var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, cancellationToken);
 
         // Write to channel (backpressure if full)
         await _workChannel.Writer.WriteAsync(workItem, cancellationToken).ConfigureAwait(false);
 
-        // Await the result
+        // Await the result - source auto-returns to pool when GetResult() is called
         return await completion.Task.ConfigureAwait(false);
     }
 
@@ -191,8 +192,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
-        // Rent completion source from pool - it will be returned when batch completes
-        var completion = _tcsPool.Rent();
+        // Rent completion source from pool - it will auto-return when batch completes and is awaited
+        var completion = _valueTaskSourcePool.Rent();
 
         var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None);
 
@@ -201,7 +202,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (!_workChannel.Writer.TryWrite(workItem))
         {
             // Channel is completed, producer is being disposed
-            _tcsPool.Return(completion);
+            // For fire-and-forget, we need to complete the source so it returns to pool
+            completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
         }
     }
@@ -214,31 +216,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         ArgumentNullException.ThrowIfNull(deliveryHandler);
 
-        // Rent completion source from pool - it will be returned when batch completes
-        var completion = _tcsPool.Rent();
+        // Rent completion source from pool - it will auto-return when GetResult() is called
+        var completion = _valueTaskSourcePool.Rent();
 
-        // Register continuation to invoke callback when delivery completes
-        _ = completion.Task.ContinueWith(
-            static (task, state) =>
-            {
-                var handler = (Action<RecordMetadata?, Exception?>)state!;
-                if (task.IsCompletedSuccessfully)
-                {
-                    handler(task.Result, null);
-                }
-                else if (task.IsFaulted)
-                {
-                    handler(null, task.Exception?.InnerException ?? task.Exception);
-                }
-                else if (task.IsCanceled)
-                {
-                    handler(null, new OperationCanceledException());
-                }
-            },
-            deliveryHandler,
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
+        // Set the delivery handler - it will be invoked when GetResult() is called
+        completion.SetDeliveryHandler(deliveryHandler);
+
+        // Schedule async helper to await the result and trigger the handler
+        _ = AwaitDeliveryAsync(completion);
 
         var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None);
 
@@ -246,8 +231,24 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (!_workChannel.Writer.TryWrite(workItem))
         {
             // Channel is completed, producer is being disposed
-            _tcsPool.Return(completion);
+            completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
+    }
+
+    /// <summary>
+    /// Awaits the completion source to trigger the delivery handler and auto-return to pool.
+    /// </summary>
+    private static async Task AwaitDeliveryAsync(PooledValueTaskSource<RecordMetadata> completion)
+    {
+        try
+        {
+            // Awaiting triggers GetResult() which invokes the handler and returns to pool
+            await completion.Task.ConfigureAwait(false);
+        }
+        catch
+        {
+            // Exception is passed to handler via GetResult() - swallow here
         }
     }
 
@@ -275,7 +276,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     private async ValueTask ProduceInternalAsync(
         ProducerMessage<TKey, TValue> message,
-        TaskCompletionSource<RecordMetadata> completion,
+        PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken)
     {
         // Ensure metadata is initialized
@@ -829,8 +830,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Dispose accumulator - this will fail any remaining batches if graceful shutdown failed
         await _accumulator.DisposeAsync().ConfigureAwait(false);
 
-        // Dispose TCS pool - prevents resource leaks
-        await _tcsPool.DisposeAsync().ConfigureAwait(false);
+        // Dispose ValueTaskSource pool - prevents resource leaks
+        await _valueTaskSourcePool.DisposeAsync().ConfigureAwait(false);
 
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
@@ -846,12 +847,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 internal sealed class ProduceWorkItem<TKey, TValue>
 {
     public ProducerMessage<TKey, TValue> Message { get; }
-    public TaskCompletionSource<RecordMetadata> Completion { get; }
+    public PooledValueTaskSource<RecordMetadata> Completion { get; }
     public CancellationToken CancellationToken { get; }
 
     public ProduceWorkItem(
         ProducerMessage<TKey, TValue> message,
-        TaskCompletionSource<RecordMetadata> completion,
+        PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken)
     {
         Message = message;

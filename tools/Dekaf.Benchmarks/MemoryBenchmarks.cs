@@ -172,14 +172,15 @@ public class MemoryBenchmarks
             LingerMs = 100
         };
 
-        var accumulator = new RecordAccumulator(options, _ => { });
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
         var topicPartition = new TopicPartition("test-topic", 0);
 
         try
         {
             for (var i = 0; i < 50; i++)
             {
-                var completion = new TaskCompletionSource<RecordMetadata>();
+                var completion = pool.Rent();
                 var pooledKey = new PooledMemory(null, 0, isNull: true);
                 var pooledValue = new PooledMemory(null, 0, isNull: true);
 
@@ -198,6 +199,7 @@ public class MemoryBenchmarks
         finally
         {
             await accumulator.DisposeAsync().ConfigureAwait(false);
+            await pool.DisposeAsync().ConfigureAwait(false);
         }
     }
 }

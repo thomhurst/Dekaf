@@ -1,6 +1,9 @@
 name: Benchmarks
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       benchmark_filter:

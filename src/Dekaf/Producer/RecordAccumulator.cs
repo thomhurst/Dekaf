@@ -77,7 +77,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private readonly ProducerOptions _options;
     private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
     private readonly Channel<ReadyBatch> _readyBatches;
-    private readonly Action<TaskCompletionSource<RecordMetadata>> _returnTcsToPool;
     private volatile bool _disposed;
     private volatile bool _closed;
 
@@ -97,10 +96,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
     // allocation elimination in the critical produce path.
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, TopicPartition>> _topicPartitionCache = new();
 
-    public RecordAccumulator(ProducerOptions options, Action<TaskCompletionSource<RecordMetadata>> returnTcsToPool)
+    public RecordAccumulator(ProducerOptions options)
     {
         _options = options;
-        _returnTcsToPool = returnTcsToPool;
 
         // Backpressure via channel capacity instead of manual memory tracking
         // MaxQueuedBatches controls how many batches can be in-flight
@@ -132,7 +130,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
         PooledMemory value,
         IReadOnlyList<RecordHeader>? headers,
         RecordHeader[]? pooledHeaderArray,
-        TaskCompletionSource<RecordMetadata> completion,
+        PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken)
     {
         if (_disposed)
@@ -154,7 +152,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // - Loop retries with the new batch (created by us or another thread)
         while (true)
         {
-            var batch = _batches.GetOrAdd(topicPartition, tp => new PartitionBatch(tp, _options, _returnTcsToPool));
+            var batch = _batches.GetOrAdd(topicPartition, tp => new PartitionBatch(tp, _options));
 
             var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
 
@@ -302,13 +300,12 @@ internal sealed class PartitionBatch
 
     private readonly TopicPartition _topicPartition;
     private readonly ProducerOptions _options;
-    private readonly Action<TaskCompletionSource<RecordMetadata>> _returnTcsToPool;
 
     // Zero-allocation array management: use pooled arrays instead of List<T>
     private Record[] _records;
     private int _recordCount;
 
-    private TaskCompletionSource<RecordMetadata>[] _completionSources;
+    private PooledValueTaskSource<RecordMetadata>[] _completionSources;
     private int _completionSourceCount;
 
     private byte[][] _pooledArrays;
@@ -326,18 +323,17 @@ internal sealed class PartitionBatch
     private int _isCompleted; // 0 = not completed, 1 = completed (Interlocked guard for idempotent Complete)
     private ReadyBatch? _completedBatch; // Cached result to ensure Complete() is idempotent
 
-    public PartitionBatch(TopicPartition topicPartition, ProducerOptions options, Action<TaskCompletionSource<RecordMetadata>> returnTcsToPool)
+    public PartitionBatch(TopicPartition topicPartition, ProducerOptions options)
     {
         _topicPartition = topicPartition;
         _options = options;
-        _returnTcsToPool = returnTcsToPool;
         _createdAt = DateTimeOffset.UtcNow;
 
         // Rent arrays from pool - eliminates List allocations
         _records = ArrayPool<Record>.Shared.Rent(InitialRecordCapacity);
         _recordCount = 0;
 
-        _completionSources = ArrayPool<TaskCompletionSource<RecordMetadata>>.Shared.Rent(InitialRecordCapacity);
+        _completionSources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(InitialRecordCapacity);
         _completionSourceCount = 0;
 
         _pooledArrays = ArrayPool<byte[]>.Shared.Rent(InitialRecordCapacity * 2);
@@ -357,7 +353,7 @@ internal sealed class PartitionBatch
         PooledMemory value,
         IReadOnlyList<RecordHeader>? headers,
         RecordHeader[]? pooledHeaderArray,
-        TaskCompletionSource<RecordMetadata> completion)
+        PooledValueTaskSource<RecordMetadata> completion)
     {
         // Lock required: Multiple threads can call TryAppend concurrently via ConcurrentDictionary.AddOrUpdate.
         // List<T> is not thread-safe, so we must synchronize access to _records, _completionSources, etc.
@@ -383,7 +379,7 @@ internal sealed class PartitionBatch
             }
             if (_completionSourceCount >= _completionSources.Length)
             {
-                GrowArray(ref _completionSources, ref _completionSourceCount, ArrayPool<TaskCompletionSource<RecordMetadata>>.Shared);
+                GrowArray(ref _completionSources, ref _completionSourceCount, ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared);
             }
             if (_pooledArrayCount + 2 >= _pooledArrays.Length) // +2 for key and value
             {
@@ -492,6 +488,7 @@ internal sealed class PartitionBatch
 
         // Pass pooled arrays directly to ReadyBatch - no copying needed
         // ReadyBatch will return them to pool when done
+        // PooledValueTaskSource auto-returns to its pool when GetResult() is called
         _completedBatch = new ReadyBatch(
             _topicPartition,
             batch,
@@ -500,8 +497,7 @@ internal sealed class PartitionBatch
             _pooledArrays,
             _pooledArrayCount,
             _pooledHeaderArrays,
-            _pooledHeaderArrayCount,
-            _returnTcsToPool);
+            _pooledHeaderArrayCount);
 
         // Null out references - ownership transferred to ReadyBatch
         _completionSources = null!;
@@ -517,7 +513,7 @@ internal sealed class PartitionBatch
         if (_records is not null)
             ArrayPool<Record>.Shared.Return(_records, clearArray: true);
         if (_completionSources is not null)
-            ArrayPool<TaskCompletionSource<RecordMetadata>>.Shared.Return(_completionSources, clearArray: true);
+            ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(_completionSources, clearArray: true);
         if (_pooledArrays is not null)
             ArrayPool<byte[]>.Shared.Return(_pooledArrays, clearArray: true);
         if (_pooledHeaderArrays is not null)
@@ -556,6 +552,7 @@ public readonly record struct RecordAppendResult(bool Success);
 /// <summary>
 /// A batch ready to be sent.
 /// Returns pooled arrays to ArrayPool when complete.
+/// PooledValueTaskSource instances auto-return to their pool when GetResult() is called.
 /// </summary>
 public sealed class ReadyBatch
 {
@@ -568,26 +565,24 @@ public sealed class ReadyBatch
     public int CompletionSourcesCount => _completionSourcesCount;
 
     // Working arrays from accumulator (pooled)
-    private readonly TaskCompletionSource<RecordMetadata>[] _completionSourcesArray;
+    private readonly PooledValueTaskSource<RecordMetadata>[] _completionSourcesArray;
     private readonly int _completionSourcesCount;
     private readonly byte[][] _pooledDataArrays;
     private readonly int _pooledDataArraysCount;
     private readonly RecordHeader[][] _pooledHeaderArrays;
     private readonly int _pooledHeaderArraysCount;
 
-    private readonly Action<TaskCompletionSource<RecordMetadata>> _returnTcsToPool;
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
 
     public ReadyBatch(
         TopicPartition topicPartition,
         RecordBatch recordBatch,
-        TaskCompletionSource<RecordMetadata>[] completionSourcesArray,
+        PooledValueTaskSource<RecordMetadata>[] completionSourcesArray,
         int completionSourcesCount,
         byte[][] pooledDataArrays,
         int pooledDataArraysCount,
         RecordHeader[][] pooledHeaderArrays,
-        int pooledHeaderArraysCount,
-        Action<TaskCompletionSource<RecordMetadata>> returnTcsToPool)
+        int pooledHeaderArraysCount)
     {
         TopicPartition = topicPartition;
         RecordBatch = recordBatch;
@@ -597,7 +592,6 @@ public sealed class ReadyBatch
         _pooledDataArraysCount = pooledDataArraysCount;
         _pooledHeaderArrays = pooledHeaderArrays;
         _pooledHeaderArraysCount = pooledHeaderArraysCount;
-        _returnTcsToPool = returnTcsToPool;
     }
 
     public void Complete(long baseOffset, DateTimeOffset timestamp)
@@ -610,17 +604,16 @@ public sealed class ReadyBatch
         {
             for (var i = 0; i < _completionSourcesCount; i++)
             {
-                var tcs = _completionSourcesArray[i];
-                tcs.TrySetResult(new RecordMetadata
+                var source = _completionSourcesArray[i];
+                // TrySetResult completes the ValueTask; the awaiter's GetResult()
+                // will auto-return the source to its pool
+                source.TrySetResult(new RecordMetadata
                 {
                     Topic = TopicPartition.Topic,
                     Partition = TopicPartition.Partition,
                     Offset = baseOffset + i,
                     Timestamp = timestamp
                 });
-
-                // Return TCS to pool after completion
-                _returnTcsToPool(tcs);
             }
         }
         finally
@@ -639,11 +632,10 @@ public sealed class ReadyBatch
         {
             for (var i = 0; i < _completionSourcesCount; i++)
             {
-                var tcs = _completionSourcesArray[i];
-                tcs.TrySetException(exception);
-
-                // Return TCS to pool after failure
-                _returnTcsToPool(tcs);
+                var source = _completionSourcesArray[i];
+                // TrySetException completes the ValueTask; the awaiter's GetResult()
+                // will auto-return the source to its pool
+                source.TrySetException(exception);
             }
         }
         finally
@@ -672,7 +664,8 @@ public sealed class ReadyBatch
         }
 
         // Return the working arrays to pool
-        ArrayPool<TaskCompletionSource<RecordMetadata>>.Shared.Return(_completionSourcesArray, clearArray: true);
+        // Note: PooledValueTaskSource instances auto-return to their pool when awaited
+        ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(_completionSourcesArray, clearArray: true);
         ArrayPool<byte[]>.Shared.Return(_pooledDataArrays, clearArray: true);
         ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: true);
     }
