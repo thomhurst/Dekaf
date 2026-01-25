@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish_nuget:
+        description: 'Publish to NuGet'
+        type: boolean
+        required: false
+        default: false
 
 env:
   DOTNET_VERSION: '10.0.x'
@@ -12,7 +19,7 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
 jobs:
-  build:
+  build-and-test:
     name: Build & Test
     runs-on: ${{ matrix.os }}
     strategy:
@@ -23,6 +30,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Required for GitVersion
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -30,23 +39,21 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
           dotnet-quality: 'preview'
 
-      - name: Restore dependencies
-        run: dotnet restore
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v3
+        with:
+          versionSpec: '6.x'
 
-      - name: Build
-        run: dotnet build --configuration Release --no-restore
+      - name: Determine Version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v3
+        continue-on-error: true  # Don't fail if GitVersion has issues on PR branches
 
-      - name: Run Unit Tests (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: |
-          dotnet build tests/Dekaf.Tests.Unit --configuration Release
-          ./tests/Dekaf.Tests.Unit/bin/Release/net10.0/Dekaf.Tests.Unit
-
-      - name: Run Unit Tests (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          dotnet build tests/Dekaf.Tests.Unit --configuration Release
-          .\tests\Dekaf.Tests.Unit\bin\Release\net10.0\Dekaf.Tests.Unit.exe
+      - name: Run Pipeline
+        env:
+          NuGet__ShouldPublish: ${{ inputs.publish_nuget == true && 'true' || 'false' }}
+          NuGet__ApiKey: ${{ secrets.NUGET__APIKEY }}
+        run: dotnet run --project tools/Dekaf.Pipeline
 
       - name: Upload Test Results
         uses: actions/upload-artifact@v4
@@ -58,57 +65,9 @@ jobs:
             **/test-results/**
           retention-days: 7
 
-  integration-tests:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    needs: build
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-          dotnet-quality: 'preview'
-
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Build
-        run: dotnet build --configuration Release --no-restore
-
-      - name: Start Kafka
-        run: |
-          docker run -d --name kafka \
-            -p 9092:9092 \
-            apache/kafka:latest
-
-          echo "Waiting for Kafka to start..."
-          for i in {1..30}; do
-            if docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list 2>/dev/null; then
-              echo "Kafka is ready"
-              break
-            fi
-            echo "Attempt $i: Kafka not ready yet..."
-            sleep 2
-          done
-
-      - name: Run Integration Tests
-        env:
-          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
-        run: |
-          dotnet build tests/Dekaf.Tests.Integration --configuration Release
-          ./tests/Dekaf.Tests.Integration/bin/Release/net10.0/Dekaf.Tests.Integration \
-            --hangdump \
-            --hangdump-timeout 5m \
-            --hangdump-type Full \
-            --results-directory ./TestResults/Integration
-
       - name: Upload HangDump artifacts
         uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && runner.os == 'Linux'
         with:
           name: hangdump-artifacts
           path: |
@@ -118,9 +77,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Stop Kafka
-        if: always()
-        run: docker rm -f kafka || true
+      - name: Upload Packages
+        uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: nuget-packages
+          path: |
+            **/bin/Release/*.nupkg
+            **/bin/Release/*.snupkg
+          if-no-files-found: ignore
+          retention-days: 30
 
   code-quality:
     name: Code Quality
@@ -136,44 +102,6 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
           dotnet-quality: 'preview'
 
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Build with Analysis
-        run: dotnet build --configuration Release /p:TreatWarningsAsErrors=true
-
       - name: Check Formatting
         run: dotnet format --verify-no-changes --verbosity diagnostic
         continue-on-error: true  # Format check is informational
-
-  package:
-    name: Create Packages
-    runs-on: ubuntu-latest
-    needs: [build, code-quality]
-    if: github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-          dotnet-quality: 'preview'
-
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Build
-        run: dotnet build --configuration Release --no-restore
-
-      - name: Pack
-        run: dotnet pack --configuration Release --no-build --output ./packages
-
-      - name: Upload Packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: nuget-packages
-          path: ./packages/*.nupkg
-          retention-days: 30

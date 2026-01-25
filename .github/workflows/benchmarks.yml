@@ -9,7 +9,7 @@ on:
       benchmark_filter:
         description: 'Benchmark filter (e.g., *Serialization*, *Producer*)'
         required: false
-        default: '*'
+        default: '*Memory*'
 
 env:
   DOTNET_VERSION: '10.0.x'
@@ -21,11 +21,12 @@ jobs:
     name: Run Benchmarks
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # Note: Kafka service is managed by Testcontainers in the benchmark code
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -33,15 +34,15 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
           dotnet-quality: 'preview'
 
-      - name: Restore dependencies
-        run: dotnet restore
-
-      - name: Build solution
-        run: dotnet build --configuration Release --no-restore
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v3
+        with:
+          versionSpec: '6.x'
 
       - name: Run Serialization Benchmarks (No Docker Required)
         id: serialization_benchmarks
         run: |
+          dotnet build --configuration Release
           cd tools/Dekaf.Benchmarks
           dotnet run -c Release -- --filter "*Serialization*" --exporters json --artifacts ./BenchmarkResults/Serialization
         continue-on-error: true
@@ -249,11 +250,6 @@ jobs:
                       alloc = b.get('Memory', {}).get('BytesAllocatedPerOperation', 0)
                       output.append(f"| {name} | {format_time(mean)} | {format_bytes(alloc)} |")
                   output.append("")
-
-          # ConsumeResult Benchmarks
-          consume_result = [b for b in load_benchmarks("Consumer")
-                           if 'ConsumeResult' in b.get('Type', '')]
-          # Already included above, skip separate section
 
           output.append("---\n")
           output.append("*Benchmarks run on GitHub Actions (ubuntu-latest) against Apache Kafka in Docker*")
