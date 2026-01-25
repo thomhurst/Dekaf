@@ -118,5 +118,5 @@ jobs:
       - name: Run Pipeline (with NuGet publish)
         env:
           NuGet__ShouldPublish: 'true'
-          NuGet__ApiKey: ${{ secrets.NUGET_API_KEY }}
+          NuGet__ApiKey: ${{ secrets.NUGET__APIKEY }}
         run: dotnet run --project tools/Dekaf.Pipeline
