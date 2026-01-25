@@ -216,6 +216,12 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private Dictionary<int, List<TopicPartition>>? _cachedPartitionsByBroker;
     private readonly object _partitionCacheLock = new();
 
+    // Fetch request cache - reduces allocations when partition assignment is stable
+    // Cache is invalidated when assignment or paused partitions change
+    private readonly object _fetchCacheLock = new();
+    private Dictionary<string, List<FetchRequestPartition>>? _cachedTopicPartitions;
+    private List<TopicPartition>? _cachedPartitionsList;
+
     public KafkaConsumer(
         ConsumerOptions options,
         IDeserializer<TKey> keyDeserializer,
@@ -377,6 +383,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             _subscription.Add(topic);
         }
         _assignment.Clear();
+        InvalidateFetchRequestCache();
         return this;
     }
 
@@ -391,6 +398,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         _subscription.Clear();
         _assignment.Clear();
         InvalidatePartitionCache();
+        InvalidateFetchRequestCache();
         return this;
     }
 
@@ -403,6 +411,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             _assignment.Add(partition);
         }
         InvalidatePartitionCache();
+        InvalidateFetchRequestCache();
         return this;
     }
 
@@ -410,6 +419,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     {
         _assignment.Clear();
         InvalidatePartitionCache();
+        InvalidateFetchRequestCache();
         return this;
     }
 
@@ -433,6 +443,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
 
         InvalidatePartitionCache();
+        InvalidateFetchRequestCache();
         return this;
     }
 
@@ -451,6 +462,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         ClearFetchBufferForPartitions(partitions);
 
         InvalidatePartitionCache();
+        InvalidateFetchRequestCache();
         return this;
     }
 
@@ -1109,6 +1121,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             _paused.Add(partition);
         }
         InvalidatePartitionCache();
+        InvalidateFetchRequestCache();
         return this;
     }
 
@@ -1119,6 +1132,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             _paused.Remove(partition);
         }
         InvalidatePartitionCache();
+        InvalidateFetchRequestCache();
         return this;
     }
 
@@ -1311,6 +1325,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 _assignment.Add(partition);
             }
             InvalidatePartitionCache();
+            InvalidateFetchRequestCache();
 
             // Clean up state for removed partitions
             foreach (var partition in removedPartitions)
@@ -1791,13 +1806,32 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     private List<FetchRequestTopic> BuildFetchRequestTopics(List<TopicPartition> partitions)
     {
-        // Group partitions by topic without using LINQ GroupBy
-        Dictionary<string, List<FetchRequestPartition>>? topicPartitions = null;
+        if (partitions.Count == 0)
+            return [];
+
+        // Take snapshots of current state under lock
+        Dictionary<string, List<FetchRequestPartition>>? cachedDict;
+        List<TopicPartition>? cachedList;
+
+        lock (_fetchCacheLock)
+        {
+            cachedDict = _cachedTopicPartitions;
+            cachedList = _cachedPartitionsList;
+        }
+
+        // Check if cache is valid (same partition list as before)
+        if (cachedDict is not null && cachedList is not null && PartitionListsEqual(partitions, cachedList))
+        {
+            // Cache hit: clone and update fetch offsets
+            // Must clone because FetchOffset changes between calls
+            return CloneCacheWithUpdatedOffsets(cachedDict);
+        }
+
+        // Cache miss: build fresh structure
+        var topicPartitions = new Dictionary<string, List<FetchRequestPartition>>();
 
         foreach (var p in partitions)
         {
-            topicPartitions ??= new Dictionary<string, List<FetchRequestPartition>>();
-
             if (!topicPartitions.TryGetValue(p.Topic, out var list))
             {
                 list = new List<FetchRequestPartition>();
@@ -1812,9 +1846,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             });
         }
 
-        if (topicPartitions is null)
-            return [];
-
+        // Build result
         var result = new List<FetchRequestTopic>(topicPartitions.Count);
         foreach (var kvp in topicPartitions)
         {
@@ -1825,7 +1857,106 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             });
         }
 
+        // Update cache (first writer wins to avoid overwriting fresher data)
+        lock (_fetchCacheLock)
+        {
+            if (_cachedTopicPartitions is null)
+            {
+                _cachedTopicPartitions = topicPartitions;
+                _cachedPartitionsList = new List<TopicPartition>(partitions);
+            }
+        }
+
         return result;
+    }
+
+    /// <summary>
+    /// Clones the cached structure with updated fetch offsets.
+    /// Must clone because FetchOffset changes between fetch calls.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private List<FetchRequestTopic> CloneCacheWithUpdatedOffsets(Dictionary<string, List<FetchRequestPartition>> cachedDict)
+    {
+        var result = new List<FetchRequestTopic>(cachedDict.Count);
+
+        foreach (var kvp in cachedDict)
+        {
+            var topic = kvp.Key;
+            var cachedPartitions = kvp.Value;
+            var newPartitions = new List<FetchRequestPartition>(cachedPartitions.Count);
+
+            foreach (var p in cachedPartitions)
+            {
+                var tp = new TopicPartition(topic, p.Partition);
+                newPartitions.Add(new FetchRequestPartition
+                {
+                    Partition = p.Partition,
+                    FetchOffset = _fetchPositions.GetValueOrDefault(tp, 0),
+                    PartitionMaxBytes = p.PartitionMaxBytes
+                });
+            }
+
+            result.Add(new FetchRequestTopic
+            {
+                Topic = topic,
+                Partitions = newPartitions
+            });
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Order-independent partition list equality check.
+    /// Uses O(n²) comparison for small lists (allocation-free), O(n) HashSet for larger lists.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool PartitionListsEqual(List<TopicPartition> a, List<TopicPartition> b)
+    {
+        if (a.Count != b.Count)
+            return false;
+
+        // For small lists, use O(n²) comparison to avoid HashSet allocation
+        if (a.Count <= 16)
+        {
+            foreach (var partitionA in a)
+            {
+                var found = false;
+                foreach (var partitionB in b)
+                {
+                    if (partitionA.Topic == partitionB.Topic && partitionA.Partition == partitionB.Partition)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                    return false;
+            }
+            return true;
+        }
+
+        // For larger lists, use HashSet for O(n) comparison
+        var setB = new HashSet<TopicPartition>(b);
+        foreach (var partitionA in a)
+        {
+            if (!setB.Contains(partitionA))
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Invalidates the fetch request cache. Called when assignment or paused partitions change.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void InvalidateFetchRequestCache()
+    {
+        lock (_fetchCacheLock)
+        {
+            _cachedTopicPartitions = null;
+            _cachedPartitionsList = null;
+        }
     }
 
     private void StartAutoCommit()
