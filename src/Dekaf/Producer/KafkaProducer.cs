@@ -400,7 +400,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 _statisticsCollector.RecordBatchFailed(
                     batch.TopicPartition.Topic,
                     batch.TopicPartition.Partition,
-                    batch.CompletionSources.Count);
+                    batch.CompletionSourcesCount);
 
                 batch.Fail(ex);
             }
@@ -490,7 +490,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             request.TopicData[0].Name == expectedTopic,
             $"Request topic mismatch: expected '{expectedTopic}', got '{request.TopicData[0].Name}'");
 
-        var messageCount = batch.CompletionSources.Count;
+        var messageCount = batch.CompletionSourcesCount;
         var requestStartTime = DateTimeOffset.UtcNow;
 
         // Track request sent
