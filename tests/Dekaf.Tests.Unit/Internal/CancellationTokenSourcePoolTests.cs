@@ -67,17 +67,17 @@ public class CancellationTokenSourcePoolTests
         var pool = new CancellationTokenSourcePool();
         var cts = pool.Rent();
 
-        // Use longer timeouts for CI reliability
-        cts.CancelAfter(TimeSpan.FromMilliseconds(100));
+        // Use longer timeouts for CI reliability (Windows CI can be slow)
+        cts.CancelAfter(TimeSpan.FromMilliseconds(500));
 
         await Assert.That(cts.IsCancellationRequested).IsFalse();
 
         // Wait with polling instead of fixed delay for reliability
-        var timeout = TimeSpan.FromSeconds(5);
+        var timeout = TimeSpan.FromSeconds(10);
         var start = DateTime.UtcNow;
         while (!cts.IsCancellationRequested && DateTime.UtcNow - start < timeout)
         {
-            await Task.Delay(50).ConfigureAwait(false);
+            await Task.Delay(100).ConfigureAwait(false);
         }
 
         await Assert.That(cts.IsCancellationRequested).IsTrue();

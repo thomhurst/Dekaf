@@ -42,6 +42,7 @@ public sealed class KafkaConnection : IKafkaConnection
     private static int s_globalCorrelationId;
     private readonly ConcurrentDictionary<int, PooledPendingRequest> _pendingRequests = new();
     private readonly PendingRequestPool _pendingRequestPool = new();
+    private readonly CancellationTokenSourcePool _timeoutCtsPool = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private static int s_connectionCounter;
     private readonly int _connectionInstanceId = Interlocked.Increment(ref s_connectionCounter);
@@ -196,20 +197,51 @@ public sealed class KafkaConnection : IKafkaConnection
 
             _logger?.LogDebug("Request sent, waiting for response (correlation {CorrelationId})", correlationId);
 
-            // Apply request timeout
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(_options.RequestTimeout);
-
+            // Apply request timeout with pooling for the common case (no user cancellation token)
             PooledResponseBuffer pooledBuffer;
-            try
+            if (!cancellationToken.CanBeCanceled)
             {
-                // Use AsTask().WaitAsync() for reliable timeout handling
-                // The small Task allocation is acceptable for correctness
-                pooledBuffer = await pending.AsValueTask().AsTask().WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+                // Fast path: pool CTS for timeout only
+                var timeoutCts = _timeoutCtsPool.Rent();
+                try
+                {
+                    timeoutCts.CancelAfter(_options.RequestTimeout);
+                    pending.RegisterCancellation(timeoutCts.Token);
+
+                    try
+                    {
+                        // Zero-allocation await via IValueTaskSource
+                        pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+                    {
+                        throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
+                    }
+                }
+                finally
+                {
+                    // CRITICAL: Dispose registration BEFORE returning CTS to pool
+                    // This prevents stale callbacks from firing on reused CTS tokens
+                    pending.DisposeRegistration();
+                    _timeoutCtsPool.Return(timeoutCts);
+                }
             }
-            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            else
             {
-                throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
+                // Slow path: must use linked source (can't pool linked CTS)
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeoutCts.CancelAfter(_options.RequestTimeout);
+                pending.RegisterCancellation(timeoutCts.Token);
+
+                try
+                {
+                    // Zero-allocation await via IValueTaskSource
+                    pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
+                }
             }
 
             _logger?.LogDebug("Response received for correlation {CorrelationId}", correlationId);
@@ -1268,6 +1300,35 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
                 static state => ((PooledPendingRequest)state!).OnCancelled(),
                 this);
         }
+    }
+
+    /// <summary>
+    /// Registers an additional cancellation token (e.g., for timeout).
+    /// Replaces any existing registration.
+    /// </summary>
+    public void RegisterCancellation(CancellationToken cancellationToken)
+    {
+        if (cancellationToken.CanBeCanceled)
+        {
+            var newRegistration = cancellationToken.Register(
+                static state => ((PooledPendingRequest)state!).OnCancelled(),
+                this);
+
+            // Dispose old registration and replace with new one
+            var oldRegistration = _cancellationRegistration;
+            _cancellationRegistration = newRegistration;
+            oldRegistration.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Disposes the current cancellation registration without full reset.
+    /// Call this before returning a pooled CTS to ensure the registration is cleaned up.
+    /// </summary>
+    public void DisposeRegistration()
+    {
+        _cancellationRegistration.Dispose();
+        _cancellationRegistration = default;
     }
 
     private void OnCancelled()
