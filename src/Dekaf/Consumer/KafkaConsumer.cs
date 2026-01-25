@@ -225,10 +225,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     // Fetch request cache - reduces allocations when partition assignment is stable
     // Cache is invalidated when assignment or paused partitions change
     private readonly object _fetchCacheLock = new();
-    private Dictionary<string, List<FetchRequestPartition>>? _cachedTopicPartitions;
+    private Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>? _cachedTopicPartitions;
     private List<TopicPartition>? _cachedPartitionsList;
-    // Quick lookup cache to avoid creating TopicPartition structs in hot path
-    private Dictionary<(string Topic, int Partition), TopicPartition>? _topicPartitionLookup;
 
     public KafkaConsumer(
         ConsumerOptions options,
@@ -1825,52 +1823,58 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             return [];
 
         // Take snapshots of current state under lock
-        Dictionary<string, List<FetchRequestPartition>>? cachedDict;
+        Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>? cachedDict;
         List<TopicPartition>? cachedList;
-        Dictionary<(string Topic, int Partition), TopicPartition>? tpLookup;
 
         lock (_fetchCacheLock)
         {
             cachedDict = _cachedTopicPartitions;
             cachedList = _cachedPartitionsList;
-            tpLookup = _topicPartitionLookup;
         }
 
         // Check if cache is valid (same partition list as before)
-        if (cachedDict is not null && cachedList is not null && tpLookup is not null && PartitionListsEqual(partitions, cachedList))
+        if (cachedDict is not null && cachedList is not null && PartitionListsEqual(partitions, cachedList))
         {
             // Cache hit: clone and update fetch offsets
             // Must clone because FetchOffset changes between calls
-            return CloneCacheWithUpdatedOffsets(cachedDict, tpLookup);
+            return CloneCacheWithUpdatedOffsets(cachedDict);
         }
 
-        // Cache miss: build fresh structure
-        var topicPartitions = new Dictionary<string, List<FetchRequestPartition>>();
+        // Cache miss: build fresh structure with TopicPartition stored alongside
+        var topicPartitions = new Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>();
 
         foreach (var p in partitions)
         {
             if (!topicPartitions.TryGetValue(p.Topic, out var list))
             {
-                list = new List<FetchRequestPartition>();
+                list = [];
                 topicPartitions[p.Topic] = list;
             }
 
-            list.Add(new FetchRequestPartition
-            {
-                Partition = p.Partition,
-                FetchOffset = _fetchPositions.GetValueOrDefault(p, 0),
-                PartitionMaxBytes = _options.MaxPartitionFetchBytes
-            });
+            list.Add((
+                new FetchRequestPartition
+                {
+                    Partition = p.Partition,
+                    FetchOffset = _fetchPositions.GetValueOrDefault(p, 0),
+                    PartitionMaxBytes = _options.MaxPartitionFetchBytes
+                },
+                p // Store TopicPartition for reuse in hot path
+            ));
         }
 
         // Build result
         var result = new List<FetchRequestTopic>(topicPartitions.Count);
         foreach (var kvp in topicPartitions)
         {
+            var partitionList = new List<FetchRequestPartition>(kvp.Value.Count);
+            foreach (var item in kvp.Value)
+            {
+                partitionList.Add(item.Partition);
+            }
             result.Add(new FetchRequestTopic
             {
                 Topic = kvp.Key,
-                Partitions = kvp.Value
+                Partitions = partitionList
             });
         }
 
@@ -1881,12 +1885,6 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             {
                 _cachedTopicPartitions = topicPartitions;
                 _cachedPartitionsList = new List<TopicPartition>(partitions);
-                // Build lookup dictionary for fast TopicPartition retrieval in hot path
-                _topicPartitionLookup = new Dictionary<(string Topic, int Partition), TopicPartition>(partitions.Count);
-                foreach (var p in partitions)
-                {
-                    _topicPartitionLookup[(p.Topic, p.Partition)] = p;
-                }
             }
         }
 
@@ -1896,12 +1894,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     /// <summary>
     /// Clones the cached structure with updated fetch offsets.
     /// Must clone because FetchOffset changes between fetch calls.
-    /// Uses pre-cached TopicPartition lookup to avoid per-partition allocations.
+    /// Uses pre-cached TopicPartition stored alongside FetchRequestPartition to avoid allocations.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private List<FetchRequestTopic> CloneCacheWithUpdatedOffsets(
-        Dictionary<string, List<FetchRequestPartition>> cachedDict,
-        Dictionary<(string Topic, int Partition), TopicPartition> tpLookup)
+        Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> cachedDict)
     {
         var result = new List<FetchRequestTopic>(cachedDict.Count);
 
@@ -1911,10 +1908,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             var cachedPartitions = kvp.Value;
             var newPartitions = new List<FetchRequestPartition>(cachedPartitions.Count);
 
-            foreach (var p in cachedPartitions)
+            foreach (var (p, tp) in cachedPartitions)
             {
-                // Use cached TopicPartition to avoid struct allocation per partition
-                var tp = tpLookup[(topic, p.Partition)];
+                // Use cached TopicPartition directly - no allocation needed
                 newPartitions.Add(new FetchRequestPartition
                 {
                     Partition = p.Partition,
@@ -1983,7 +1979,6 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             _cachedTopicPartitions = null;
             _cachedPartitionsList = null;
-            _topicPartitionLookup = null;
         }
     }
 

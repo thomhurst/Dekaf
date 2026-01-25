@@ -778,4 +778,177 @@ public class ProducerTests(KafkaTestContainer kafka)
 
         await Assert.That(resultB.Topic).IsEqualTo(topicB);
     }
+
+    [Test]
+    public async Task Producer_SynchronousProduce_SuccessfullyProducesMessage()
+    {
+        // Test fire-and-forget synchronous produce
+        var topic = await kafka.CreateTestTopicAsync();
+
+        await using var producer = Dekaf.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer-sync")
+            .WithAcks(Acks.Leader)
+            .Build();
+
+        // Act - fire-and-forget produce
+        producer.Produce(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "sync-key",
+            Value = "sync-value"
+        });
+
+        // Flush to ensure delivery
+        await producer.FlushAsync();
+
+        // Verify by consuming
+        await using var consumer = Dekaf.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-consumer-sync-verify")
+            .WithGroupId($"test-group-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .Build();
+
+        consumer.Subscribe(topic);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            await Assert.That(msg.Key).IsEqualTo("sync-key");
+            await Assert.That(msg.Value).IsEqualTo("sync-value");
+            break;
+        }
+    }
+
+    [Test]
+    public async Task Producer_SynchronousProduceWithCallback_InvokesCallbackOnSuccess()
+    {
+        // Test synchronous produce with delivery callback
+        var topic = await kafka.CreateTestTopicAsync();
+        var callbackInvoked = new TaskCompletionSource<(RecordMetadata? Metadata, Exception? Error)>();
+
+        await using var producer = Dekaf.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer-callback")
+            .WithAcks(Acks.Leader)
+            .Build();
+
+        // Act - produce with callback
+        producer.Produce(
+            new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = "callback-key",
+                Value = "callback-value"
+            },
+            (metadata, error) => callbackInvoked.TrySetResult((metadata, error)));
+
+        // Wait for callback
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        cts.Token.Register(() => callbackInvoked.TrySetCanceled());
+
+        var (resultMetadata, resultError) = await callbackInvoked.Task;
+
+        // Assert
+        await Assert.That(resultError).IsNull();
+        await Assert.That(resultMetadata).IsNotNull();
+        await Assert.That(resultMetadata!.Topic).IsEqualTo(topic);
+        await Assert.That(resultMetadata.Offset).IsGreaterThanOrEqualTo(0);
+    }
+
+    [Test]
+    public async Task Producer_SynchronousProduceMultiple_FlushDeliverAll()
+    {
+        // Test multiple fire-and-forget produces followed by flush
+        var topic = await kafka.CreateTestTopicAsync();
+        const int messageCount = 100;
+
+        await using var producer = Dekaf.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer-sync-batch")
+            .WithAcks(Acks.Leader)
+            .WithLingerMs(5)
+            .Build();
+
+        // Act - fire-and-forget multiple messages
+        for (var i = 0; i < messageCount; i++)
+        {
+            producer.Produce(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            });
+        }
+
+        // Flush to ensure all delivered
+        await producer.FlushAsync();
+
+        // Verify by consuming all messages
+        await using var consumer = Dekaf.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-consumer-sync-batch-verify")
+            .WithGroupId($"test-group-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .Build();
+
+        consumer.Subscribe(topic);
+
+        var consumedCount = 0;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            consumedCount++;
+            if (consumedCount >= messageCount)
+                break;
+        }
+
+        await Assert.That(consumedCount).IsEqualTo(messageCount);
+    }
+
+    [Test]
+    public async Task Producer_SynchronousProduceConcurrent_ThreadSafe()
+    {
+        // Test thread-safety of synchronous produce
+        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        const int threadCount = 10;
+        const int messagesPerThread = 50;
+        var deliveredCount = 0;
+
+        await using var producer = Dekaf.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer-sync-concurrent")
+            .WithAcks(Acks.Leader)
+            .Build();
+
+        // Act - concurrent fire-and-forget produces with callbacks
+        var tasks = Enumerable.Range(0, threadCount).Select(threadId => Task.Run(() =>
+        {
+            for (var i = 0; i < messagesPerThread; i++)
+            {
+                producer.Produce(
+                    new ProducerMessage<string, string>
+                    {
+                        Topic = topic,
+                        Key = $"thread-{threadId}-key-{i}",
+                        Value = $"thread-{threadId}-value-{i}"
+                    },
+                    (metadata, error) =>
+                    {
+                        if (error is null)
+                            Interlocked.Increment(ref deliveredCount);
+                    });
+            }
+        })).ToArray();
+
+        await Task.WhenAll(tasks);
+        await producer.FlushAsync();
+
+        // Allow callbacks to complete
+        await Task.Delay(500);
+
+        // Assert
+        await Assert.That(deliveredCount).IsEqualTo(threadCount * messagesPerThread);
+    }
 }
