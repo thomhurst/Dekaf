@@ -39,7 +39,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly Task[] _workerTasks;
     private readonly int _workerCount;
 
-    private volatile short _produceApiVersion = -1;
+    private int _produceApiVersion = -1;
     private volatile bool _disposed;
 
     // Statistics collection
@@ -378,14 +378,23 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         var connection = await _connectionPool.GetConnectionAsync(leader.NodeId, cancellationToken)
             .ConfigureAwait(false);
 
-        // Ensure API version is negotiated
-        if (_produceApiVersion < 0)
+        // Ensure API version is negotiated (thread-safe initialization)
+        var apiVersion = _produceApiVersion;
+        if (apiVersion < 0)
         {
-            _produceApiVersion = _metadataManager.GetNegotiatedApiVersion(
+            apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 ApiKey.Produce,
                 ProduceRequest.LowestSupportedVersion,
                 ProduceRequest.HighestSupportedVersion);
+            // Use Interlocked to avoid racing with other threads
+            Interlocked.CompareExchange(ref _produceApiVersion, apiVersion, -1);
+            // Re-read in case another thread won the race
+            apiVersion = _produceApiVersion;
         }
+
+        // Capture topic name locally to ensure it doesn't change
+        var expectedTopic = batch.TopicPartition.Topic;
+        var expectedPartition = batch.TopicPartition.Partition;
 
         var request = new ProduceRequest
         {
@@ -396,12 +405,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             [
                 new ProduceRequestTopicData
                 {
-                    Name = batch.TopicPartition.Topic,
+                    Name = expectedTopic,
                     PartitionData =
                     [
                         new ProduceRequestPartitionData
                         {
-                            Index = batch.TopicPartition.Partition,
+                            Index = expectedPartition,
                             Records = [batch.RecordBatch],
                             Compression = _options.CompressionType
                         }
@@ -409,6 +418,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 }
             ]
         };
+
+        // Sanity check: verify the request was built correctly
+        System.Diagnostics.Debug.Assert(
+            request.TopicData[0].Name == expectedTopic,
+            $"Request topic mismatch: expected '{expectedTopic}', got '{request.TopicData[0].Name}'");
 
         var messageCount = batch.CompletionSources.Count;
         var requestStartTime = DateTimeOffset.UtcNow;
@@ -421,7 +435,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
                 request,
-                _produceApiVersion,
+                (short)apiVersion,
                 cancellationToken).ConfigureAwait(false);
 
             // Track batch delivered (fire-and-forget assumes success)
@@ -438,7 +452,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         var response = await connection.SendAsync<ProduceRequest, ProduceResponse>(
             request,
-            _produceApiVersion,
+            (short)apiVersion,
             cancellationToken).ConfigureAwait(false);
 
         // Track response received with latency
@@ -449,7 +463,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         ProduceResponseTopicData? topicResponse = null;
         foreach (var topic in response.Responses)
         {
-            if (topic.Name == batch.TopicPartition.Topic)
+            if (topic.Name == expectedTopic)
             {
                 topicResponse = topic;
                 break;
@@ -461,7 +475,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             foreach (var partition in topicResponse.PartitionResponses)
             {
-                if (partition.Index == batch.TopicPartition.Partition)
+                if (partition.Index == expectedPartition)
                 {
                     partitionResponse = partition;
                     break;
@@ -476,7 +490,41 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 batch.TopicPartition.Topic,
                 batch.TopicPartition.Partition,
                 messageCount);
-            throw new InvalidOperationException("No response for partition");
+
+            // Build diagnostic message (avoid LINQ for zero-allocation principle)
+            var sb = new System.Text.StringBuilder();
+            sb.Append("No response for partition. Expected: ");
+            sb.Append(expectedTopic);
+            sb.Append('[');
+            sb.Append(expectedPartition);
+            sb.Append("], Request topic: ");
+            sb.Append(request.TopicData[0].Name);
+            sb.Append('[');
+            sb.Append(request.TopicData[0].PartitionData[0].Index);
+            sb.Append("], Response: ");
+            for (var i = 0; i < response.Responses.Count; i++)
+            {
+                if (i > 0) sb.Append(", ");
+                var t = response.Responses[i];
+                sb.Append(t.Name);
+                sb.Append('[');
+                for (var j = 0; j < t.PartitionResponses.Count; j++)
+                {
+                    if (j > 0) sb.Append(',');
+                    sb.Append(t.PartitionResponses[j].Index);
+                }
+                sb.Append(']');
+            }
+            sb.Append(". API version: ");
+            sb.Append(apiVersion);
+            sb.Append(", Broker: ");
+            sb.Append(connection.Host);
+            sb.Append(':');
+            sb.Append(connection.Port);
+            sb.Append(", Connection #");
+            sb.Append(connection.ConnectionInstanceId);
+
+            throw new InvalidOperationException(sb.ToString());
         }
 
         if (partitionResponse.ErrorCode != ErrorCode.None)

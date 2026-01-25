@@ -32,9 +32,16 @@ public sealed class KafkaConnection : IKafkaConnection
     private PipeReader? _reader;
     private PipeWriter? _writer;
 
-    private int _correlationId;
+    // IMPORTANT: Use global correlation ID counter to prevent TCP port reuse issues.
+    // When connections are rapidly closed and reopened, the OS may reuse local TCP ports.
+    // If a late packet from an old connection arrives on a new connection with matching
+    // correlation ID, it could be incorrectly matched to the wrong pending request.
+    // Using globally unique correlation IDs prevents this issue.
+    private static int s_globalCorrelationId;
     private readonly ConcurrentDictionary<int, PendingRequest> _pendingRequests = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private static int s_connectionCounter;
+    private readonly int _connectionInstanceId = Interlocked.Increment(ref s_connectionCounter);
     private Task? _receiveTask;
     private CancellationTokenSource? _receiveCts;
     private OAuthBearerTokenProvider? _ownedTokenProvider;
@@ -52,6 +59,11 @@ public sealed class KafkaConnection : IKafkaConnection
     public string Host => _host;
     public int Port => _port;
     public bool IsConnected => _socket?.Connected ?? false;
+
+    /// <summary>
+    /// Unique identifier for this connection instance (for debugging).
+    /// </summary>
+    public int ConnectionInstanceId => _connectionInstanceId;
 
     public KafkaConnection(
         string host,
@@ -155,7 +167,7 @@ public sealed class KafkaConnection : IKafkaConnection
         if (!IsConnected)
             throw new InvalidOperationException("Not connected");
 
-        var correlationId = Interlocked.Increment(ref _correlationId);
+        var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
         var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
         var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
 
@@ -229,7 +241,7 @@ public sealed class KafkaConnection : IKafkaConnection
         if (!IsConnected)
             throw new InvalidOperationException("Not connected");
 
-        var correlationId = Interlocked.Increment(ref _correlationId);
+        var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
         var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
 
         // Don't register a pending request - we won't receive a response
@@ -773,7 +785,7 @@ public sealed class KafkaConnection : IKafkaConnection
         if (_stream is null)
             throw new InvalidOperationException("Not connected");
 
-        var correlationId = Interlocked.Increment(ref _correlationId);
+        var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
         var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
 
         // Build the request
@@ -985,32 +997,106 @@ public sealed class KafkaConnection : IKafkaConnection
 
                 // Skip the response header (correlation ID already read, skip tagged fields if flexible)
                 var offset = 4; // Correlation ID already parsed
+                var bufferLength = pooledBuffer.Length;
+
+                // Bounds check: ensure we have at least the correlation ID
+                if (offset > bufferLength)
+                {
+                    _tcs.TrySetException(new InvalidOperationException(
+                        $"Response buffer too small: {bufferLength} bytes, expected at least {offset}"));
+                    _completed = true;
+                    Dispose();
+                    return;
+                }
+
                 if (_responseHeaderVersion >= 1)
                 {
                     // Skip tagged fields - read varint count and skip
+                    if (offset >= bufferLength)
+                    {
+                        _tcs.TrySetException(new InvalidOperationException(
+                            $"Response buffer too small for tagged fields: {bufferLength} bytes at offset {offset}"));
+                        _completed = true;
+                        Dispose();
+                        return;
+                    }
+
                     var span = pooledBuffer.Data.Span[offset..];
                     var (tagCount, bytesRead) = ReadUnsignedVarInt(span);
                     offset += bytesRead;
 
+                    // Sanity check: tag count should be reasonable (< 1000)
+                    if (tagCount > 1000)
+                    {
+                        _tcs.TrySetException(new InvalidOperationException(
+                            $"Unreasonable tag count in response header: {tagCount}. Possible protocol version mismatch."));
+                        _completed = true;
+                        Dispose();
+                        return;
+                    }
+
                     for (var i = 0; i < tagCount; i++)
                     {
+                        if (offset >= bufferLength)
+                        {
+                            _tcs.TrySetException(new InvalidOperationException(
+                                $"Response buffer truncated while parsing tagged fields at tag {i}"));
+                            _completed = true;
+                            Dispose();
+                            return;
+                        }
+
                         span = pooledBuffer.Data.Span[offset..];
                         var (_, tagBytesRead) = ReadUnsignedVarInt(span);
                         offset += tagBytesRead;
 
+                        if (offset >= bufferLength)
+                        {
+                            _tcs.TrySetException(new InvalidOperationException(
+                                $"Response buffer truncated while parsing tag size at tag {i}"));
+                            _completed = true;
+                            Dispose();
+                            return;
+                        }
+
                         span = pooledBuffer.Data.Span[offset..];
                         var (size, sizeBytesRead) = ReadUnsignedVarInt(span);
                         offset += sizeBytesRead + size;
+
+                        if (offset > bufferLength)
+                        {
+                            _tcs.TrySetException(new InvalidOperationException(
+                                $"Response buffer truncated: tag {i} extends past buffer end"));
+                            _completed = true;
+                            Dispose();
+                            return;
+                        }
                     }
                 }
 
+                // Final bounds check
+                if (offset > bufferLength)
+                {
+                    _tcs.TrySetException(new InvalidOperationException(
+                        $"Response header parsing exceeded buffer: offset {offset}, length {bufferLength}"));
+                    _completed = true;
+                    Dispose();
+                    return;
+                }
+
                 // Transfer ownership by creating a new buffer with adjusted offset
-                // The caller (TryReadResponse) should not dispose the original buffer
+                // The caller owns the buffer now - clear _buffer so Dispose() doesn't double-return it to the pool
                 var slicedBuffer = pooledBuffer.Slice(offset);
 
                 if (_tcs.TrySetResult(slicedBuffer))
                 {
                     _completed = true;
+                    // CRITICAL: Clear _buffer to prevent double-dispose.
+                    // The caller now owns the buffer via slicedBuffer and will dispose it.
+                    // If we don't clear _buffer, PendingRequest.Dispose() will return
+                    // the same array to the pool again, potentially causing it to be
+                    // handed to another request while still in use.
+                    _buffer = null;
                 }
                 else
                 {

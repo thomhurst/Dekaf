@@ -199,7 +199,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private CancellationTokenSource? _wakeupCts;
     private CancellationTokenSource? _autoCommitCts;
     private Task? _autoCommitTask;
-    private volatile short _fetchApiVersion = -1;
+    private int _fetchApiVersion = -1;
     private volatile bool _disposed;
     private volatile bool _closed;
 
@@ -691,13 +691,16 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     {
         var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
 
-        // Ensure API version is negotiated
-        if (_fetchApiVersion < 0)
+        // Ensure API version is negotiated (thread-safe initialization)
+        var apiVersion = _fetchApiVersion;
+        if (apiVersion < 0)
         {
-            _fetchApiVersion = _metadataManager.GetNegotiatedApiVersion(
+            apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 ApiKey.Fetch,
                 FetchRequest.LowestSupportedVersion,
                 FetchRequest.HighestSupportedVersion);
+            Interlocked.CompareExchange(ref _fetchApiVersion, apiVersion, -1);
+            apiVersion = _fetchApiVersion;
         }
 
         // Resolve any special offset values
@@ -721,7 +724,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         var response = await connection.SendAsync<FetchRequest, FetchResponse>(
             request,
-            _fetchApiVersion,
+            (short)apiVersion,
             cancellationToken).ConfigureAwait(false);
 
         // Track fetch response received with latency
@@ -1667,13 +1670,16 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     {
         var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
 
-        // Ensure API version is negotiated
-        if (_fetchApiVersion < 0)
+        // Ensure API version is negotiated (thread-safe initialization)
+        var apiVersion = _fetchApiVersion;
+        if (apiVersion < 0)
         {
-            _fetchApiVersion = _metadataManager.GetNegotiatedApiVersion(
+            apiVersion = _metadataManager.GetNegotiatedApiVersion(
                 ApiKey.Fetch,
                 FetchRequest.LowestSupportedVersion,
                 FetchRequest.HighestSupportedVersion);
+            Interlocked.CompareExchange(ref _fetchApiVersion, apiVersion, -1);
+            apiVersion = _fetchApiVersion;
         }
 
         // Resolve any special offset values (-1 for end, -2 for beginning) before fetching
@@ -1697,7 +1703,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         var response = await connection.SendAsync<FetchRequest, FetchResponse>(
             request,
-            _fetchApiVersion,
+            (short)apiVersion,
             cancellationToken).ConfigureAwait(false);
 
         // Track fetch response received with latency

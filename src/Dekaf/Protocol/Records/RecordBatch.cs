@@ -180,7 +180,10 @@ public sealed class RecordBatch
         // Capture the raw record data
         var rawRecordData = reader.ReadMemorySlice(recordsLength);
 
-        // Decompress if needed
+        // Decompress if needed, and ALWAYS copy to owned memory.
+        // IMPORTANT: rawRecordData references the pooled network buffer which will be
+        // returned to the pool after parsing completes. LazyRecordList holds this reference
+        // and parses records lazily, so we must copy to owned memory to avoid use-after-free.
         ReadOnlyMemory<byte> recordData;
         if (compression != CompressionType.None)
         {
@@ -192,7 +195,8 @@ public sealed class RecordBatch
         }
         else
         {
-            recordData = rawRecordData;
+            // Copy to owned memory to avoid use-after-free when the pooled buffer is returned
+            recordData = rawRecordData.ToArray();
         }
 
         // Create a lazy record list that parses on-demand

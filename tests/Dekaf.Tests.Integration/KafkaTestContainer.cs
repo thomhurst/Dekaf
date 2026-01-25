@@ -158,22 +158,27 @@ public class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 
     private async Task CreateTopicViaTestcontainersAsync(string topicName, int partitions, int replicationFactor)
     {
-        // Use the internal broker listener (BROKER://localhost:9093 in Testcontainers.Kafka)
-        // The default Testcontainers.Kafka configuration has:
-        // - PLAINTEXT listener on port 9092 (external)
-        // - BROKER listener on port 9093 (internal inter-broker communication)
-        var result = await _container!.ExecAsync([
-            "kafka-topics",
-            "--bootstrap-server", "localhost:9093",
-            "--create",
-            "--topic", topicName,
-            "--partitions", partitions.ToString(),
-            "--replication-factor", replicationFactor.ToString(),
-            "--if-not-exists"
-        ]);
-        if (result.ExitCode != 0)
+        // Use docker exec directly to avoid Docker.DotNet JSON parsing issues
+        // that occur with certain Docker daemon versions.
+        // The internal broker listener (BROKER://localhost:9093) is used inside the container.
+        var containerId = _container!.Id;
+        var process = new Process
         {
-            Console.WriteLine($"[KafkaTestContainer] Warning: Failed to create topic: {result.Stderr}");
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = "docker",
+                Arguments = $"exec {containerId} kafka-topics --bootstrap-server localhost:9093 --create --topic {topicName} --partitions {partitions} --replication-factor {replicationFactor} --if-not-exists",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            }
+        };
+        process.Start();
+        await process.WaitForExitAsync();
+        var error = await process.StandardError.ReadToEndAsync();
+        if (process.ExitCode != 0)
+        {
+            Console.WriteLine($"[KafkaTestContainer] Warning: Failed to create topic: {error}");
         }
     }
 

@@ -153,19 +153,26 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
 
         if (_kafkaContainer is not null)
         {
-            var result = await _kafkaContainer.ExecAsync([
-                "kafka-topics",
-                "--bootstrap-server", "localhost:9093",
-                "--create",
-                "--topic", topicName,
-                "--partitions", partitions.ToString(),
-                "--replication-factor", replicationFactor.ToString(),
-                "--if-not-exists"
-            ]).ConfigureAwait(false);
-
-            if (result.ExitCode != 0)
+            // Use docker exec directly to avoid Docker.DotNet JSON parsing issues
+            // that occur with certain Docker daemon versions (e.g., 29.x).
+            var containerId = _kafkaContainer.Id;
+            var process = new System.Diagnostics.Process
             {
-                Console.WriteLine($"[KafkaWithSchemaRegistry] Warning: Failed to create topic: {result.Stderr}");
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "docker",
+                    Arguments = $"exec {containerId} kafka-topics --bootstrap-server localhost:9093 --create --topic {topicName} --partitions {partitions} --replication-factor {replicationFactor} --if-not-exists",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false
+                }
+            };
+            process.Start();
+            await process.WaitForExitAsync().ConfigureAwait(false);
+            var error = await process.StandardError.ReadToEndAsync().ConfigureAwait(false);
+            if (process.ExitCode != 0)
+            {
+                Console.WriteLine($"[KafkaWithSchemaRegistry] Warning: Failed to create topic: {error}");
             }
         }
 

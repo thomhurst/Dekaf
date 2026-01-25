@@ -52,4 +52,9 @@ public interface IKafkaConnection : IAsyncDisposable
     /// Connects to the broker.
     /// </summary>
     ValueTask ConnectAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Unique identifier for this connection instance (for debugging).
+    /// </summary>
+    int ConnectionInstanceId { get; }
 }

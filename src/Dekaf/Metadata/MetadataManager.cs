@@ -266,34 +266,42 @@ public sealed class MetadataManager : IAsyncDisposable
             throw new InvalidOperationException($"ApiVersions failed: {response.ErrorCode}");
         }
 
-        // Clear old versions and negotiated cache
-        _brokerApiVersions.Clear();
-        _negotiatedVersionCache.Clear();
+        // IMPORTANT: Build new values locally first, then update shared state atomically.
+        // This prevents a race condition where GetNegotiatedApiVersion could read
+        // partially-cleared state during concurrent refreshes.
 
-        // Store all API versions and find metadata API in one pass (zero-allocation)
-        ApiVersion? metadataApi = null;
+        // Build local map of API versions first
+        short newMetadataVersion = MetadataRequest.LowestSupportedVersion;
+        var newApiVersions = new Dictionary<ApiKey, (short MinVersion, short MaxVersion)>();
+
         foreach (var apiKey in response.ApiKeys)
         {
-            _brokerApiVersions[apiKey.ApiKey] = (apiKey.MinVersion, apiKey.MaxVersion);
+            newApiVersions[apiKey.ApiKey] = (apiKey.MinVersion, apiKey.MaxVersion);
 
             if (apiKey.ApiKey == ApiKey.Metadata)
             {
-                metadataApi = apiKey;
+                newMetadataVersion = Math.Min(apiKey.MaxVersion, MetadataRequest.HighestSupportedVersion);
+                if (newMetadataVersion < MetadataRequest.LowestSupportedVersion)
+                {
+                    newMetadataVersion = MetadataRequest.LowestSupportedVersion;
+                }
             }
         }
 
-        if (metadataApi is not null)
+        // Now update shared state: first add new values, then clear cache, then set version
+        // The order matters: GetNegotiatedApiVersion checks cache first, then _brokerApiVersions.
+        // By updating _brokerApiVersions before clearing cache, we ensure any cache miss
+        // will find valid data in _brokerApiVersions.
+        foreach (var kvp in newApiVersions)
         {
-            _metadataApiVersion = Math.Min(metadataApi.Value.MaxVersion, MetadataRequest.HighestSupportedVersion);
-            if (_metadataApiVersion < MetadataRequest.LowestSupportedVersion)
-            {
-                _metadataApiVersion = MetadataRequest.LowestSupportedVersion;
-            }
+            _brokerApiVersions[kvp.Key] = kvp.Value;
         }
-        else
-        {
-            _metadataApiVersion = MetadataRequest.LowestSupportedVersion;
-        }
+
+        // Clear negotiated cache since broker versions may have changed
+        _negotiatedVersionCache.Clear();
+
+        // Set metadata version last (acts as a signal that negotiation is complete)
+        _metadataApiVersion = newMetadataVersion;
 
         _logger?.LogDebug("Negotiated Metadata API version: {Version}", _metadataApiVersion);
     }

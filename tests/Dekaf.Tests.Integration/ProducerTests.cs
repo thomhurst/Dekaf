@@ -403,4 +403,379 @@ public class ProducerTests(KafkaTestContainer kafka)
             await Assert.That(count).IsEqualTo(3);
         }
     }
+
+    [Test]
+    public async Task Producer_ConcurrentProducesToSameTopic_AllMessagesDelivered()
+    {
+        // Test high-contention scenario: multiple threads producing to the same topic
+        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        const int threadCount = 10;
+        const int messagesPerThread = 50;
+
+        await using var producer = Dekaf.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer-concurrent-same-topic")
+            .WithAcks(Acks.All)
+            .Build();
+
+        var allResults = new System.Collections.Concurrent.ConcurrentBag<RecordMetadata>();
+        var errors = new System.Collections.Concurrent.ConcurrentBag<Exception>();
+
+        // Launch multiple threads producing concurrently
+        var tasks = Enumerable.Range(0, threadCount).Select(async threadId =>
+        {
+            for (var i = 0; i < messagesPerThread; i++)
+            {
+                try
+                {
+                    var result = await producer.ProduceAsync(new ProducerMessage<string, string>
+                    {
+                        Topic = topic,
+                        Key = $"thread-{threadId}-key-{i}",
+                        Value = $"thread-{threadId}-value-{i}"
+                    });
+                    allResults.Add(result);
+                }
+                catch (Exception ex)
+                {
+                    errors.Add(ex);
+                }
+            }
+        }).ToArray();
+
+        await Task.WhenAll(tasks);
+
+        // Assert
+        await Assert.That(errors).Count().IsEqualTo(0).Because($"No errors should occur, but got: {string.Join("; ", errors.Take(5).Select(e => e.Message))}");
+        await Assert.That(allResults).Count().IsEqualTo(threadCount * messagesPerThread);
+
+        // Verify all results reference the correct topic
+        foreach (var result in allResults)
+        {
+            await Assert.That(result.Topic).IsEqualTo(topic);
+            await Assert.That(result.Offset).IsGreaterThanOrEqualTo(0);
+        }
+    }
+
+    [Test]
+    public async Task Producer_ConcurrentProducersToDifferentTopics_ResponsesMatchRequests()
+    {
+        // Test isolation: multiple producers to different topics should never get mixed responses
+        const int producerCount = 5;
+        const int messagesPerProducer = 20;
+
+        var topics = new string[producerCount];
+        var producers = new IKafkaProducer<string, string>[producerCount];
+
+        // Create topics and producers
+        for (var i = 0; i < producerCount; i++)
+        {
+            topics[i] = await kafka.CreateTestTopicAsync();
+            producers[i] = Dekaf.CreateProducer<string, string>()
+                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithClientId($"test-producer-isolation-{i}")
+                .WithAcks(Acks.All)
+                .Build();
+        }
+
+        try
+        {
+            var allResults = new System.Collections.Concurrent.ConcurrentDictionary<int, List<RecordMetadata>>();
+            var errors = new System.Collections.Concurrent.ConcurrentBag<(int ProducerId, string ExpectedTopic, string ActualTopic)>();
+
+            // Launch all producers concurrently
+            var tasks = Enumerable.Range(0, producerCount).Select(async producerId =>
+            {
+                var results = new List<RecordMetadata>();
+                var expectedTopic = topics[producerId];
+                var producer = producers[producerId];
+
+                for (var i = 0; i < messagesPerProducer; i++)
+                {
+                    var result = await producer.ProduceAsync(new ProducerMessage<string, string>
+                    {
+                        Topic = expectedTopic,
+                        Key = $"producer-{producerId}-key-{i}",
+                        Value = $"producer-{producerId}-value-{i}"
+                    });
+
+                    // Critical check: response topic must match what we sent
+                    if (result.Topic != expectedTopic)
+                    {
+                        errors.Add((producerId, expectedTopic, result.Topic));
+                    }
+
+                    results.Add(result);
+                }
+
+                allResults[producerId] = results;
+            }).ToArray();
+
+            await Task.WhenAll(tasks);
+
+            // Assert no response mismatches
+            await Assert.That(errors).IsEmpty().Because(
+                $"Response topic mismatches: {string.Join("; ", errors.Take(5).Select(e => $"Producer {e.ProducerId}: expected '{e.ExpectedTopic}', got '{e.ActualTopic}'"))}");
+
+            // Verify all producers got all their messages
+            for (var i = 0; i < producerCount; i++)
+            {
+                await Assert.That(allResults[i]).Count().IsEqualTo(messagesPerProducer);
+            }
+        }
+        finally
+        {
+            foreach (var producer in producers)
+            {
+                await producer.DisposeAsync();
+            }
+        }
+    }
+
+    [Test]
+    public async Task Producer_HighThroughput_HandlesLoadWithoutErrors()
+    {
+        // Stress test: high message volume from single producer
+        var topic = await kafka.CreateTestTopicAsync(partitions: 6);
+        const int totalMessages = 1000;
+
+        await using var producer = Dekaf.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer-high-throughput")
+            .WithAcks(Acks.Leader) // Faster acks for throughput test
+            .WithLingerMs(5) // Small linger for batching
+            .WithBatchSize(65536) // Larger batches
+            .Build();
+
+        var pendingTasks = new List<ValueTask<RecordMetadata>>(totalMessages);
+        var errors = new List<Exception>();
+
+        // Fire all messages as fast as possible
+        for (var i = 0; i < totalMessages; i++)
+        {
+            pendingTasks.Add(producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i:D6}"
+            }));
+        }
+
+        // Await all results
+        var results = new List<RecordMetadata>(totalMessages);
+        foreach (var task in pendingTasks)
+        {
+            try
+            {
+                results.Add(await task);
+            }
+            catch (Exception ex)
+            {
+                errors.Add(ex);
+            }
+        }
+
+        // Assert
+        await Assert.That(errors).Count().IsEqualTo(0).Because($"Errors: {string.Join("; ", errors.Take(5).Select(e => e.Message))}");
+        await Assert.That(results).Count().IsEqualTo(totalMessages);
+
+        // All results should have valid offsets and correct topic
+        foreach (var result in results)
+        {
+            await Assert.That(result.Topic).IsEqualTo(topic);
+            await Assert.That(result.Offset).IsGreaterThanOrEqualTo(0);
+        }
+    }
+
+    [Test]
+    public async Task Producer_BurstTraffic_RecoversBetweenBursts()
+    {
+        // Test burst traffic pattern: bursts followed by idle periods
+        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        const int burstCount = 5;
+        const int messagesPerBurst = 100;
+
+        await using var producer = Dekaf.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer-burst")
+            .WithAcks(Acks.All)
+            .Build();
+
+        var allResults = new List<RecordMetadata>();
+
+        for (var burst = 0; burst < burstCount; burst++)
+        {
+            var burstTasks = new List<ValueTask<RecordMetadata>>();
+
+            // Send burst of messages
+            for (var i = 0; i < messagesPerBurst; i++)
+            {
+                burstTasks.Add(producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = $"burst-{burst}-key-{i}",
+                    Value = $"burst-{burst}-value-{i}"
+                }));
+            }
+
+            // Wait for all burst messages
+            foreach (var task in burstTasks)
+            {
+                var result = await task;
+                await Assert.That(result.Topic).IsEqualTo(topic);
+                allResults.Add(result);
+            }
+
+            // Short idle period between bursts
+            await Task.Delay(50);
+        }
+
+        await Assert.That(allResults).Count().IsEqualTo(burstCount * messagesPerBurst);
+    }
+
+    [Test]
+    public async Task Producer_ParallelProducersSharedBootstrap_NoResponseCrossContamination()
+    {
+        // Critical test: verify responses never get mixed between producers sharing same broker
+        const int iterations = 10;
+        const int messagesPerIteration = 10;
+
+        for (var iteration = 0; iteration < iterations; iteration++)
+        {
+            var topicA = await kafka.CreateTestTopicAsync();
+            var topicB = await kafka.CreateTestTopicAsync();
+
+            await using var producerA = Dekaf.CreateProducer<string, string>()
+                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithClientId($"producer-a-{iteration}")
+                .WithAcks(Acks.All)
+                .Build();
+
+            await using var producerB = Dekaf.CreateProducer<string, string>()
+                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithClientId($"producer-b-{iteration}")
+                .WithAcks(Acks.All)
+                .Build();
+
+            var tasksA = new List<ValueTask<RecordMetadata>>();
+            var tasksB = new List<ValueTask<RecordMetadata>>();
+
+            // Interleave messages from both producers
+            for (var i = 0; i < messagesPerIteration; i++)
+            {
+                tasksA.Add(producerA.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topicA,
+                    Key = $"a-key-{i}",
+                    Value = $"a-value-{i}"
+                }));
+
+                tasksB.Add(producerB.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topicB,
+                    Key = $"b-key-{i}",
+                    Value = $"b-value-{i}"
+                }));
+            }
+
+            // Verify producer A results all have topicA
+            foreach (var task in tasksA)
+            {
+                var result = await task;
+                await Assert.That(result.Topic).IsEqualTo(topicA)
+                    .Because($"Producer A should only receive responses for topicA, but got {result.Topic}");
+            }
+
+            // Verify producer B results all have topicB
+            foreach (var task in tasksB)
+            {
+                var result = await task;
+                await Assert.That(result.Topic).IsEqualTo(topicB)
+                    .Because($"Producer B should only receive responses for topicB, but got {result.Topic}");
+            }
+        }
+    }
+
+    [Test]
+    public async Task Producer_MinimalCrossContaminationTest_SingleIteration()
+    {
+        // Minimal test: just two producers, one message each
+        var topicA = await kafka.CreateTestTopicAsync();
+        var topicB = await kafka.CreateTestTopicAsync();
+
+        await using var producerA = Dekaf.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("producer-a-minimal")
+            .WithAcks(Acks.All)
+            .Build();
+
+        await using var producerB = Dekaf.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("producer-b-minimal")
+            .WithAcks(Acks.All)
+            .Build();
+
+        // Send one message from each producer concurrently
+        var taskA = producerA.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topicA,
+            Key = "a-key",
+            Value = "a-value"
+        });
+
+        var taskB = producerB.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topicB,
+            Key = "b-key",
+            Value = "b-value"
+        });
+
+        var resultA = await taskA;
+        var resultB = await taskB;
+
+        await Assert.That(resultA.Topic).IsEqualTo(topicA)
+            .Because($"Producer A should receive response for topicA, but got {resultA.Topic}");
+        await Assert.That(resultB.Topic).IsEqualTo(topicB)
+            .Because($"Producer B should receive response for topicB, but got {resultB.Topic}");
+    }
+
+    [Test]
+    public async Task Producer_SequentialProducers_NoContamination()
+    {
+        // Test without any concurrency - should always pass
+        var topicA = await kafka.CreateTestTopicAsync();
+        var topicB = await kafka.CreateTestTopicAsync();
+
+        await using var producerA = Dekaf.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("producer-a-sequential")
+            .WithAcks(Acks.All)
+            .Build();
+
+        // Send from producer A first, wait for result
+        var resultA = await producerA.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topicA,
+            Key = "a-key",
+            Value = "a-value"
+        });
+
+        await Assert.That(resultA.Topic).IsEqualTo(topicA);
+
+        // Now create producer B and send
+        await using var producerB = Dekaf.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("producer-b-sequential")
+            .WithAcks(Acks.All)
+            .Build();
+
+        var resultB = await producerB.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topicB,
+            Key = "b-key",
+            Value = "b-value"
+        });
+
+        await Assert.That(resultB.Topic).IsEqualTo(topicB);
+    }
 }
