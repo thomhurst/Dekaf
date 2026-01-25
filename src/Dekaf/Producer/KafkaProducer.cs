@@ -167,13 +167,77 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         };
     }
 
-    public async ValueTask<RecordMetadata> ProduceAsync(
+    public ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken = default)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
+        // Fast path: Try synchronous produce if metadata is initialized and cached.
+        // This bypasses channel overhead for 99%+ of calls after warmup.
+        if (TryProduceSyncForAsync(message, out var completion))
+        {
+            // Return the ValueTask directly - no async state machine needed
+            return completion!.Task;
+        }
+
+        // Slow path: Fall back to channel-based async processing.
+        // This handles first-time metadata initialization or cache misses.
+        return ProduceAsyncSlow(message, cancellationToken);
+    }
+
+    /// <summary>
+    /// Attempts synchronous produce for awaited ProduceAsync when metadata is cached.
+    /// Returns true if successful with the completion source to await.
+    /// Unlike TryProduceSync, this version throws exceptions for awaited callers.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryProduceSyncForAsync(ProducerMessage<TKey, TValue> message, out PooledValueTaskSource<RecordMetadata>? completion)
+    {
+        completion = null;
+
+        // Check if metadata is initialized (sync check)
+        if (_metadataManager.Metadata.LastRefreshed == default)
+        {
+            return false; // Need async initialization
+        }
+
+        // Try to get topic metadata from cache
+        if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out var topicInfo) || topicInfo is null)
+        {
+            return false; // Cache miss, need async refresh
+        }
+
+        if (topicInfo.PartitionCount == 0)
+        {
+            return false; // Invalid topic state, let async path handle error
+        }
+
+        // All checks passed - we can proceed synchronously
+        completion = _valueTaskSourcePool.Rent();
+        try
+        {
+            ProduceSyncCore(message, topicInfo, completion);
+        }
+        catch (Exception ex)
+        {
+            // If ProduceSyncCore throws before setting result/exception on completion,
+            // the rented completion would be leaked (never awaited = never returned to pool).
+            // Set the exception on the completion so the caller can await it and it gets
+            // properly returned to the pool.
+            // Note: ProduceSyncCore may have already called TrySetException, so use Try variant.
+            // Don't re-throw here - let the caller await the ValueTask and get the exception.
+            completion.TrySetException(ex);
+        }
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private async ValueTask<RecordMetadata> ProduceAsyncSlow(
+        ProducerMessage<TKey, TValue> message,
+        CancellationToken cancellationToken)
+    {
         // Rent completion source from pool - it will auto-return when awaited
         var completion = _valueTaskSourcePool.Rent();
 
@@ -214,6 +278,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// <summary>
     /// Attempts synchronous produce when metadata is initialized and cached.
     /// Returns true if successful, false if async path is needed.
+    /// For fire-and-forget, exceptions are captured in the completion source, not thrown.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryProduceSync(ProducerMessage<TKey, TValue> message)
@@ -237,7 +302,17 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         // All checks passed - we can proceed synchronously
         var completion = _valueTaskSourcePool.Rent();
-        ProduceSyncCore(message, topicInfo, completion);
+        try
+        {
+            ProduceSyncCore(message, topicInfo, completion);
+        }
+        catch (Exception ex)
+        {
+            // Fire-and-forget: capture exception in completion source, don't throw
+            // This matches Confluent.Kafka behavior where Produce() doesn't throw
+            // for production errors - they're delivered via delivery report callback
+            completion.TrySetException(ex);
+        }
         return true;
     }
 
@@ -352,6 +427,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// <summary>
     /// Attempts synchronous produce with delivery handler when metadata is initialized and cached.
     /// Returns true if successful, false if async path is needed.
+    /// For fire-and-forget, exceptions are delivered via the callback, not thrown.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryProduceSyncWithHandler(ProducerMessage<TKey, TValue> message, Action<RecordMetadata?, Exception?> deliveryHandler)
@@ -378,7 +454,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         completion.SetDeliveryHandler(deliveryHandler);
         _ = AwaitDeliveryAsync(completion);
 
-        ProduceSyncCore(message, topicInfo, completion);
+        try
+        {
+            ProduceSyncCore(message, topicInfo, completion);
+        }
+        catch (Exception ex)
+        {
+            // Fire-and-forget: capture exception in completion source
+            // The delivery handler will be invoked with the exception
+            completion.TrySetException(ex);
+        }
         return true;
     }
 
