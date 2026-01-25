@@ -17,10 +17,10 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
 jobs:
-  benchmarks:
-    name: Run Benchmarks
+  memory-benchmarks:
+    name: Memory Benchmarks
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -39,20 +39,77 @@ jobs:
         with:
           versionSpec: '6.x'
 
-      - name: Run Serialization Benchmarks (No Docker Required)
-        id: serialization_benchmarks
+      - name: Run Memory Benchmarks
+        run: |
+          dotnet build --configuration Release
+          cd tools/Dekaf.Benchmarks
+          dotnet run -c Release -- --filter "*Memory*" --exporters json --artifacts ./BenchmarkResults/Memory
+        continue-on-error: true
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-memory
+          path: tools/Dekaf.Benchmarks/BenchmarkResults/
+          retention-days: 30
+
+  serialization-benchmarks:
+    name: Serialization Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-quality: 'preview'
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v3
+        with:
+          versionSpec: '6.x'
+
+      - name: Run Serialization Benchmarks
         run: |
           dotnet build --configuration Release
           cd tools/Dekaf.Benchmarks
           dotnet run -c Release -- --filter "*Serialization*" --exporters json --artifacts ./BenchmarkResults/Serialization
         continue-on-error: true
 
-      - name: Run Memory Benchmarks (No Docker Required)
-        id: memory_benchmarks
-        run: |
-          cd tools/Dekaf.Benchmarks
-          dotnet run -c Release -- --filter "*Memory*" --exporters json --artifacts ./BenchmarkResults/Memory
-        continue-on-error: true
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-serialization
+          path: tools/Dekaf.Benchmarks/BenchmarkResults/
+          retention-days: 30
+
+  producer-benchmarks:
+    name: Producer Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-quality: 'preview'
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v3
+        with:
+          versionSpec: '6.x'
 
       - name: Start Kafka
         run: |
@@ -71,19 +128,68 @@ jobs:
           done
 
       - name: Run Producer Benchmarks
-        id: producer_benchmarks
         env:
           KAFKA_BOOTSTRAP_SERVERS: localhost:9092
         run: |
+          dotnet build --configuration Release
           cd tools/Dekaf.Benchmarks
           dotnet run -c Release -- --filter "*Producer*" --exporters json --artifacts ./BenchmarkResults/Producer
         continue-on-error: true
 
+      - name: Stop Kafka
+        if: always()
+        run: docker rm -f kafka || true
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-producer
+          path: tools/Dekaf.Benchmarks/BenchmarkResults/
+          retention-days: 30
+
+  consumer-benchmarks:
+    name: Consumer Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-quality: 'preview'
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v3
+        with:
+          versionSpec: '6.x'
+
+      - name: Start Kafka
+        run: |
+          docker run -d --name kafka \
+            -p 9092:9092 \
+            apache/kafka:latest
+
+          echo "Waiting for Kafka to start..."
+          for i in {1..30}; do
+            if docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list 2>/dev/null; then
+              echo "Kafka is ready"
+              break
+            fi
+            echo "Attempt $i: Kafka not ready yet..."
+            sleep 2
+          done
+
       - name: Run Consumer Benchmarks
-        id: consumer_benchmarks
         env:
           KAFKA_BOOTSTRAP_SERVERS: localhost:9092
         run: |
+          dotnet build --configuration Release
           cd tools/Dekaf.Benchmarks
           dotnet run -c Release -- --filter "*Consumer*" --exporters json --artifacts ./BenchmarkResults/Consumer
         continue-on-error: true
@@ -92,12 +198,26 @@ jobs:
         if: always()
         run: docker rm -f kafka || true
 
-      - name: Upload Benchmark Results
+      - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-results
+          name: benchmark-results-consumer
           path: tools/Dekaf.Benchmarks/BenchmarkResults/
           retention-days: 30
+
+  benchmark-summary:
+    name: Generate Summary
+    runs-on: ubuntu-latest
+    needs: [memory-benchmarks, serialization-benchmarks, producer-benchmarks, consumer-benchmarks]
+    if: always()
+
+    steps:
+      - name: Download All Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: benchmark-results-*
+          path: benchmark-results
+          merge-multiple: true
 
       - name: Generate Benchmark Summary
         run: |
@@ -131,7 +251,7 @@ jobs:
 
           def load_benchmarks(category):
               """Load benchmarks from a category folder"""
-              path = f"tools/Dekaf.Benchmarks/BenchmarkResults/{category}/results"
+              path = f"benchmark-results/{category}/results"
               benchmarks = []
               if os.path.isdir(path):
                   for f in os.listdir(path):
@@ -262,7 +382,7 @@ jobs:
   benchmark-comparison:
     name: Store Benchmark History
     runs-on: ubuntu-latest
-    needs: benchmarks
+    needs: [memory-benchmarks, serialization-benchmarks, producer-benchmarks, consumer-benchmarks]
     if: github.ref == 'refs/heads/main'
 
     permissions:
@@ -275,8 +395,9 @@ jobs:
       - name: Download Benchmark Results
         uses: actions/download-artifact@v4
         with:
-          name: benchmark-results
+          pattern: benchmark-results-*
           path: benchmark-results
+          merge-multiple: true
 
       - name: Combine Benchmark Results
         run: |

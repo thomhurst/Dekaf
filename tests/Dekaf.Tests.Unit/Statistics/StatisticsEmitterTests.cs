@@ -8,9 +8,9 @@ public class StatisticsEmitterTests
     public async Task Emitter_CallsHandler_AtInterval()
     {
         var callCount = 0;
-        var tcs = new TaskCompletionSource<bool>();
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var emitter = new StatisticsEmitter<int>(
-            TimeSpan.FromMilliseconds(50),
+            TimeSpan.FromMilliseconds(100),
             () => 42,
             _ =>
             {
@@ -21,8 +21,8 @@ public class StatisticsEmitterTests
                 }
             });
 
-        // Wait for at least 2 emissions with timeout (event-based, not timing-based)
-        var completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(5))) == tcs.Task;
+        // Wait for at least 2 emissions with generous timeout for CI
+        var completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(10))) == tcs.Task;
         await Assert.That(completed).IsTrue();
 
         await emitter.DisposeAsync().ConfigureAwait(false);
@@ -36,9 +36,9 @@ public class StatisticsEmitterTests
     {
         var receivedValues = new List<string>();
         var counter = 0;
-        var tcs = new TaskCompletionSource<bool>();
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var emitter = new StatisticsEmitter<string>(
-            TimeSpan.FromMilliseconds(50),
+            TimeSpan.FromMilliseconds(100),
             () => $"stats-{Interlocked.Increment(ref counter)}",
             value =>
             {
@@ -52,8 +52,8 @@ public class StatisticsEmitterTests
                 }
             });
 
-        // Wait for at least 2 emissions with timeout
-        var completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(3))) == tcs.Task;
+        // Wait for at least 2 emissions with generous timeout for CI
+        var completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(10))) == tcs.Task;
         await Assert.That(completed).IsTrue();
 
         await emitter.DisposeAsync().ConfigureAwait(false);
@@ -67,18 +67,26 @@ public class StatisticsEmitterTests
     public async Task Emitter_StopsEmitting_AfterDisposal()
     {
         var callCount = 0;
+        var firstCallTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var emitter = new StatisticsEmitter<int>(
-            TimeSpan.FromMilliseconds(20),
+            TimeSpan.FromMilliseconds(50),
             () => 1,
-            _ => Interlocked.Increment(ref callCount));
+            _ =>
+            {
+                Interlocked.Increment(ref callCount);
+                firstCallTcs.TrySetResult(true);
+            });
 
-        await Task.Delay(80);
+        // Wait for at least one emission to confirm emitter is working
+        var gotFirstCall = await Task.WhenAny(firstCallTcs.Task, Task.Delay(TimeSpan.FromSeconds(5))) == firstCallTcs.Task;
+        await Assert.That(gotFirstCall).IsTrue();
+
         await emitter.DisposeAsync().ConfigureAwait(false);
 
         var countAfterDispose = callCount;
 
         // Wait more and verify no additional calls
-        await Task.Delay(100);
+        await Task.Delay(500);
 
         await Assert.That(callCount).IsEqualTo(countAfterDispose);
     }
@@ -87,23 +95,23 @@ public class StatisticsEmitterTests
     public async Task Emitter_SwallowsExceptions_InHandler()
     {
         var successCount = 0;
-        var countEvent = new ManualResetEventSlim(false);
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var emitter = new StatisticsEmitter<int>(
-            TimeSpan.FromMilliseconds(50),
+            TimeSpan.FromMilliseconds(100),
             () =>
             {
                 var count = Interlocked.Increment(ref successCount);
                 if (count >= 2)
                 {
-                    countEvent.Set();
+                    tcs.TrySetResult(true);
                 }
                 return count;
             },
             _ => throw new InvalidOperationException("Test exception"));
 
-        // Wait for at least 2 collector calls with timeout
-        var signaled = countEvent.Wait(TimeSpan.FromSeconds(3));
-        await Assert.That(signaled).IsTrue();
+        // Wait for at least 2 collector calls with generous timeout for CI
+        var completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(10))) == tcs.Task;
+        await Assert.That(completed).IsTrue();
 
         await emitter.DisposeAsync().ConfigureAwait(false);
 
@@ -116,15 +124,15 @@ public class StatisticsEmitterTests
     {
         var handlerCallCount = 0;
         var collectorCallCount = 0;
-        var countEvent = new ManualResetEventSlim(false);
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var emitter = new StatisticsEmitter<int>(
-            TimeSpan.FromMilliseconds(50),
+            TimeSpan.FromMilliseconds(100),
             () =>
             {
                 var count = Interlocked.Increment(ref collectorCallCount);
                 if (count >= 3)
                 {
-                    countEvent.Set();
+                    tcs.TrySetResult(true);
                 }
                 if (count % 2 == 0)
                 {
@@ -134,9 +142,9 @@ public class StatisticsEmitterTests
             },
             _ => Interlocked.Increment(ref handlerCallCount));
 
-        // Wait for at least 3 collector calls with timeout
-        var signaled = countEvent.Wait(TimeSpan.FromSeconds(3));
-        await Assert.That(signaled).IsTrue();
+        // Wait for at least 3 collector calls with generous timeout for CI
+        var completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(10))) == tcs.Task;
+        await Assert.That(completed).IsTrue();
 
         await emitter.DisposeAsync().ConfigureAwait(false);
 
@@ -154,7 +162,7 @@ public class StatisticsEmitterTests
 
         // Should complete quickly without waiting for the 10-second interval
         var disposeTask = emitter.DisposeAsync().AsTask();
-        var completedInTime = await Task.WhenAny(disposeTask, Task.Delay(500)) == disposeTask;
+        var completedInTime = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(5))) == disposeTask;
 
         await Assert.That(completedInTime).IsTrue();
     }
@@ -163,7 +171,7 @@ public class StatisticsEmitterTests
     public async Task Emitter_CanBeDisposed_MultipleTimes()
     {
         var emitter = new StatisticsEmitter<int>(
-            TimeSpan.FromMilliseconds(50),
+            TimeSpan.FromMilliseconds(100),
             () => 1,
             _ => { });
 
