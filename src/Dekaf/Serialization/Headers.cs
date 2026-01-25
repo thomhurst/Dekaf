@@ -71,7 +71,13 @@ public sealed class Headers : IEnumerable<Header>
     /// </summary>
     public Header? GetFirst(string key)
     {
-        return _headers.Find(h => h.Key == key);
+        // Manual loop to avoid closure allocation from lambda predicate
+        foreach (var header in _headers)
+        {
+            if (header.Key == key)
+                return header;
+        }
+        return null;
     }
 
     /// <summary>
@@ -79,7 +85,14 @@ public sealed class Headers : IEnumerable<Header>
     /// </summary>
     public IEnumerable<Header> GetAll(string key)
     {
-        return _headers.Where(h => h.Key == key);
+        // Manual loop to avoid closure allocation from LINQ Where predicate
+        var results = new List<Header>();
+        foreach (var header in _headers)
+        {
+            if (header.Key == key)
+                results.Add(header);
+        }
+        return results;
     }
 
     /// <summary>
@@ -96,7 +109,12 @@ public sealed class Headers : IEnumerable<Header>
     /// </summary>
     public Headers Remove(string key)
     {
-        _headers.RemoveAll(h => h.Key == key);
+        // Manual loop to avoid closure allocation from RemoveAll predicate
+        for (var i = _headers.Count - 1; i >= 0; i--)
+        {
+            if (_headers[i].Key == key)
+                _headers.RemoveAt(i);
+        }
         return this;
     }
 

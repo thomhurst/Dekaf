@@ -36,7 +36,10 @@ public sealed class ClusterMetadata
         _lock.EnterReadLock();
         try
         {
-            return _brokers.Values.ToList();
+            // Pre-allocate exact size to avoid list resizing allocations
+            var result = new BrokerNode[_brokers.Count];
+            _brokers.Values.CopyTo(result, 0);
+            return result;
         }
         finally
         {
@@ -68,7 +71,10 @@ public sealed class ClusterMetadata
         _lock.EnterReadLock();
         try
         {
-            return _topics.Values.ToList();
+            // Pre-allocate exact size to avoid list resizing allocations
+            var result = new TopicInfo[_topics.Count];
+            _topics.Values.CopyTo(result, 0);
+            return result;
         }
         finally
         {
@@ -119,7 +125,17 @@ public sealed class ClusterMetadata
             if (!_topics.TryGetValue(topicName, out var topic))
                 return null;
 
-            var partitionInfo = topic.Partitions.FirstOrDefault(p => p.PartitionIndex == partition);
+            // Manual loop to avoid closure allocation from FirstOrDefault lambda
+            PartitionInfo? partitionInfo = null;
+            foreach (var p in topic.Partitions)
+            {
+                if (p.PartitionIndex == partition)
+                {
+                    partitionInfo = p;
+                    break;
+                }
+            }
+
             if (partitionInfo is null)
                 return null;
 

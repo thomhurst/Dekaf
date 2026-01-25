@@ -33,27 +33,28 @@ public sealed class DefaultPartitioner : IPartitioner
 
 /// <summary>
 /// Sticky partitioner - sticks to a partition for null keys until batch is full.
+/// Uses ConcurrentDictionary for lock-free read access in the hot path.
 /// </summary>
 public sealed class StickyPartitioner : IPartitioner
 {
-    private readonly Dictionary<string, int> _stickyPartitions = new(capacity: 16);
-    private readonly object _lock = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _stickyPartitions = new();
     private uint _counter;
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         if (keyIsNull || key.Length == 0)
         {
-            lock (_lock)
+            // Hot path: TryGetValue is lock-free for reads in ConcurrentDictionary
+            if (_stickyPartitions.TryGetValue(topic, out var partition))
             {
-                if (!_stickyPartitions.TryGetValue(topic, out var partition))
-                {
-                    // Use uint to avoid overflow to negative values
-                    partition = (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount);
-                    _stickyPartitions[topic] = partition;
-                }
                 return partition;
             }
+
+            // Cold path: topic not yet seen, compute and add a partition.
+            // Use uint to avoid overflow to negative values.
+            // GetOrAdd handles the race condition - if another thread added first, we use their value.
+            var newPartition = (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount);
+            return _stickyPartitions.GetOrAdd(topic, newPartition);
         }
 
         return (int)(Murmur2.Hash(key) % partitionCount);
@@ -64,11 +65,8 @@ public sealed class StickyPartitioner : IPartitioner
     /// </summary>
     public void OnBatchComplete(string topic, int partitionCount)
     {
-        lock (_lock)
-        {
-            // Use uint to avoid overflow to negative values
-            _stickyPartitions[topic] = (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount);
-        }
+        // Use uint to avoid overflow to negative values
+        _stickyPartitions[topic] = (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount);
     }
 }
 

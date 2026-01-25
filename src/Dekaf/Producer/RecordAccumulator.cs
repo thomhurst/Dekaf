@@ -152,7 +152,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // - Loop retries with the new batch (created by us or another thread)
         while (true)
         {
-            var batch = _batches.GetOrAdd(topicPartition, tp => new PartitionBatch(tp, _options));
+            // Use static lambda with explicit state parameter to avoid closure allocation.
+            // The captured _options would create a closure on every call otherwise.
+            var batch = _batches.GetOrAdd(topicPartition, static (tp, options) => new PartitionBatch(tp, options), _options);
 
             var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
 
