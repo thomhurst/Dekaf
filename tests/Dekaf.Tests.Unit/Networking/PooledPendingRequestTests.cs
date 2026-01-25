@@ -364,27 +364,4 @@ public class PooledPendingRequestTests
         pool.Return(request);
     }
 
-    [Test]
-    public async Task RegisterCancellation_CancelsRequest()
-    {
-        var pool = new PendingRequestPool();
-        var request = pool.Rent();
-        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
-
-        var cts = new CancellationTokenSource();
-        request.RegisterCancellation(cts.Token);
-
-        // Cancel via registered token
-        cts.Cancel();
-
-        // Small delay to allow cancellation registration to fire
-        await Task.Delay(10).ConfigureAwait(false);
-
-        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
-        {
-            await request.AsValueTask().ConfigureAwait(false);
-        });
-
-        pool.Return(request);
-    }
 }

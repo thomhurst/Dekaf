@@ -42,7 +42,6 @@ public sealed class KafkaConnection : IKafkaConnection
     private static int s_globalCorrelationId;
     private readonly ConcurrentDictionary<int, PooledPendingRequest> _pendingRequests = new();
     private readonly PendingRequestPool _pendingRequestPool = new();
-    private readonly CancellationTokenSourcePool _timeoutCtsPool = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private static int s_connectionCounter;
     private readonly int _connectionInstanceId = Interlocked.Increment(ref s_connectionCounter);
@@ -197,46 +196,20 @@ public sealed class KafkaConnection : IKafkaConnection
 
             _logger?.LogDebug("Request sent, waiting for response (correlation {CorrelationId})", correlationId);
 
-            // Apply request timeout with fast-path pooling when no user cancellation token
+            // Apply request timeout
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(_options.RequestTimeout);
+
             PooledResponseBuffer pooledBuffer;
-            if (!cancellationToken.CanBeCanceled)
+            try
             {
-                // Fast path: pool CTS for timeout only (no linked source needed)
-                var timeoutCts = _timeoutCtsPool.Rent();
-                try
-                {
-                    timeoutCts.CancelAfter(_options.RequestTimeout);
-                    pending.RegisterCancellation(timeoutCts.Token);
-
-                    try
-                    {
-                        pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
-                    {
-                        throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
-                    }
-                }
-                finally
-                {
-                    _timeoutCtsPool.Return(timeoutCts);
-                }
+                // Use AsTask().WaitAsync() for reliable timeout handling
+                // The small Task allocation is acceptable for correctness
+                pooledBuffer = await pending.AsValueTask().AsTask().WaitAsync(timeoutCts.Token).ConfigureAwait(false);
             }
-            else
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
-                // Slow path: must use linked source (can't pool)
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeoutCts.CancelAfter(_options.RequestTimeout);
-                pending.RegisterCancellation(timeoutCts.Token);
-
-                try
-                {
-                    pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                {
-                    throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
-                }
+                throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
             }
 
             _logger?.LogDebug("Response received for correlation {CorrelationId}", correlationId);
@@ -1294,24 +1267,6 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
             _cancellationRegistration = cancellationToken.Register(
                 static state => ((PooledPendingRequest)state!).OnCancelled(),
                 this);
-        }
-    }
-
-    /// <summary>
-    /// Registers an additional cancellation token (e.g., for timeout).
-    /// </summary>
-    public void RegisterCancellation(CancellationToken cancellationToken)
-    {
-        if (cancellationToken.CanBeCanceled)
-        {
-            var newRegistration = cancellationToken.Register(
-                static state => ((PooledPendingRequest)state!).OnCancelled(),
-                this);
-
-            // Dispose old registration and replace with new one
-            var oldRegistration = _cancellationRegistration;
-            _cancellationRegistration = newRegistration;
-            oldRegistration.Dispose();
         }
     }
 
