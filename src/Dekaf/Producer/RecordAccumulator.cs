@@ -602,6 +602,10 @@ public sealed class ReadyBatch
 
     public void Complete(long baseOffset, DateTimeOffset timestamp)
     {
+        // Guard against calling Complete after Cleanup has been performed
+        if (Volatile.Read(ref _cleanedUp) != 0)
+            return;
+
         try
         {
             for (var i = 0; i < _completionSourcesCount; i++)
@@ -627,6 +631,10 @@ public sealed class ReadyBatch
 
     public void Fail(Exception exception)
     {
+        // Guard against calling Fail after Cleanup has been performed
+        if (Volatile.Read(ref _cleanedUp) != 0)
+            return;
+
         try
         {
             for (var i = 0; i < _completionSourcesCount; i++)
