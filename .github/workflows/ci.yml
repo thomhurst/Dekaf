@@ -46,7 +46,7 @@ jobs:
 
       - name: Run Pipeline
         env:
-          NuGet__ShouldPublish: ${{ (runner.os == 'Linux' && (github.ref == 'refs/heads/main' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && inputs.publish_nuget == true)) && 'true' || 'false' }}
+          NuGet__ShouldPublish: ${{ inputs.publish_nuget }}
           NuGet__ApiKey: ${{ secrets.NUGET__APIKEY }}
         run: dotnet run --project tools/Dekaf.Pipeline
 
