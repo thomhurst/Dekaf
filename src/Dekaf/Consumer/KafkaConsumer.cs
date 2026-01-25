@@ -79,11 +79,17 @@ internal sealed class CancellationTokenSourcePool
 /// Holds pending fetch data for lazy record iteration.
 /// Records are only parsed and deserialized when accessed.
 /// </summary>
-internal sealed class PendingFetchData
+/// <remarks>
+/// Implements IDisposable to release pooled memory from the network buffer.
+/// When using zero-copy parsing, the RecordBatches hold references to the pooled network buffer.
+/// Dispose must be called after consuming all records to return the buffer to the pool.
+/// </remarks>
+internal sealed class PendingFetchData : IDisposable
 {
     private readonly IReadOnlyList<RecordBatch> _batches;
     private int _batchIndex = -1;
     private int _recordIndex = -1;
+    private bool _disposed;
 
     public string Topic { get; }
     public int PartitionIndex { get; }
@@ -115,6 +121,9 @@ internal sealed class PendingFetchData
     /// </summary>
     public bool MoveNext()
     {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(PendingFetchData));
+
         // First call - start at first batch, first record
         if (_batchIndex < 0)
         {
@@ -145,6 +154,23 @@ internal sealed class PendingFetchData
             _recordIndex = 0;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Disposes all record batches, releasing any pooled network buffer memory.
+    /// </summary>
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        // Dispose all batches to release pooled memory
+        foreach (var batch in _batches)
+        {
+            batch.Dispose();
+        }
     }
 }
 
@@ -597,8 +623,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     yield return result;
                 }
 
-                // This pending fetch is exhausted, remove it
-                _pendingFetches.Dequeue();
+                // This pending fetch is exhausted, remove and dispose it
+                // Disposing releases the pooled network buffer memory
+                _pendingFetches.Dequeue().Dispose();
             }
 
             // Yield any pending EOF events (thread-safe with ConcurrentQueue)
@@ -1089,8 +1116,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     private void ClearFetchBuffer()
     {
-        // Clear pending fetches to discard stale records
-        _pendingFetches.Clear();
+        // Dispose and clear pending fetches to release pooled memory
+        while (_pendingFetches.TryDequeue(out var pending))
+        {
+            pending.Dispose();
+        }
         // Clear pending EOF events as they are stale after buffer clear
         _pendingEofEvents.Clear();
     }
@@ -1120,7 +1150,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 // Keep this item by re-enqueueing it
                 _pendingFetches.Enqueue(pending);
             }
-            // Items in removeSet are simply dropped
+            else
+            {
+                // Dispose removed items to release pooled memory
+                pending.Dispose();
+            }
         }
     }
 
@@ -2090,11 +2124,14 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         // Step 6: Wake up any blocked operations
         _wakeupCts?.Cancel();
 
-        // Step 7: Clear pending fetch data
-        _pendingFetches.Clear();
-        while (_prefetchChannel.Reader.TryRead(out _))
+        // Step 7: Clear pending fetch data and dispose to release pooled memory
+        while (_pendingFetches.TryDequeue(out var pending))
         {
-            // Discard prefetched data
+            pending.Dispose();
+        }
+        while (_prefetchChannel.Reader.TryRead(out var prefetched))
+        {
+            prefetched.Dispose();
         }
 
         _logger?.LogInformation("Consumer closed gracefully");
@@ -2284,13 +2321,16 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         // Note: _wakeupCts is managed by the pool and should not be disposed here
         _ctsPool.Clear();
 
-        // Clear any pending fetch data
-        _pendingFetches.Clear();
-
-        // Drain prefetch channel
-        while (_prefetchChannel.Reader.TryRead(out _))
+        // Clear and dispose any pending fetch data to release pooled memory
+        while (_pendingFetches.TryDequeue(out var pending))
         {
-            // Discard
+            pending.Dispose();
+        }
+
+        // Drain and dispose prefetch channel items
+        while (_prefetchChannel.Reader.TryRead(out var prefetched))
+        {
+            prefetched.Dispose();
         }
 
         // Dispose statistics emitter

@@ -269,4 +269,198 @@ public class RecordBatchTests
     }
 
     #endregion
+
+    #region Zero-Copy Memory Management Tests
+
+    [Test]
+    public async Task RecordBatch_Dispose_DisposesLazyRecordList()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+
+        var originalBatch = new RecordBatch
+        {
+            BaseOffset = 0,
+            BaseTimestamp = 0,
+            MaxTimestamp = 0,
+            Records =
+            [
+                new Record
+                {
+                    OffsetDelta = 0,
+                    TimestampDelta = 0,
+                    Key = "key"u8.ToArray(),
+                    Value = "value"u8.ToArray()
+                }
+            ]
+        };
+
+        originalBatch.Write(buffer);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var parsedBatch = RecordBatch.Read(ref reader);
+
+        // Access record before dispose
+        var record = parsedBatch.Records[0];
+        await Assert.That(record.Key.ToArray()).IsEquivalentTo("key"u8.ToArray());
+
+        // Dispose the batch
+        parsedBatch.Dispose();
+
+        // Accessing records after dispose should throw
+        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+        {
+            _ = parsedBatch.Records[0];
+            return Task.CompletedTask;
+        });
+    }
+
+    [Test]
+    public async Task RecordBatch_Dispose_IsIdempotent()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+
+        var originalBatch = new RecordBatch
+        {
+            BaseOffset = 0,
+            BaseTimestamp = 0,
+            MaxTimestamp = 0,
+            Records = [new Record { OffsetDelta = 0, TimestampDelta = 0, IsKeyNull = true, Value = "v"u8.ToArray() }]
+        };
+
+        originalBatch.Write(buffer);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var parsedBatch = RecordBatch.Read(ref reader);
+
+        // Multiple disposes should not throw
+        parsedBatch.Dispose();
+        parsedBatch.Dispose();
+        parsedBatch.Dispose();
+
+        // If we get here without exception, the test passed
+        await Task.CompletedTask;
+    }
+
+    [Test]
+    public async Task RecordBatch_WithPooledMemoryContext_TakesOwnership()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+
+        var originalBatch = new RecordBatch
+        {
+            BaseOffset = 0,
+            BaseTimestamp = 0,
+            MaxTimestamp = 0,
+            Records = [new Record { OffsetDelta = 0, TimestampDelta = 0, IsKeyNull = true, Value = "test"u8.ToArray() }]
+        };
+
+        originalBatch.Write(buffer);
+
+        // Create a mock pooled memory
+        var mockMemory = new MockPooledMemory(buffer.WrittenMemory.ToArray());
+
+        // Set up the parsing context
+        ResponseParsingContext.SetPooledMemory(mockMemory);
+        try
+        {
+            var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+            var parsedBatch = RecordBatch.Read(ref reader);
+
+            // Memory should have been taken
+            await Assert.That(ResponseParsingContext.WasMemoryTaken).IsTrue();
+
+            // Disposing the batch should dispose the mock memory
+            parsedBatch.Dispose();
+            await Assert.That(mockMemory.IsDisposed).IsTrue();
+        }
+        finally
+        {
+            ResponseParsingContext.Reset();
+        }
+    }
+
+    [Test]
+    public async Task RecordBatch_WithoutPooledMemoryContext_CopiesData()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+
+        var originalBatch = new RecordBatch
+        {
+            BaseOffset = 0,
+            BaseTimestamp = 0,
+            MaxTimestamp = 0,
+            Records = [new Record { OffsetDelta = 0, TimestampDelta = 0, IsKeyNull = true, Value = "test"u8.ToArray() }]
+        };
+
+        originalBatch.Write(buffer);
+
+        // Parse without any context - should copy data
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var parsedBatch = RecordBatch.Read(ref reader);
+
+        // Access records to trigger lazy parsing
+        var record = parsedBatch.Records[0];
+        await Assert.That(record.Value.ToArray()).IsEquivalentTo("test"u8.ToArray());
+
+        // Dispose should not throw even without memory owner
+        parsedBatch.Dispose();
+
+        // If we get here without exception, the test passed
+        await Task.CompletedTask;
+    }
+
+    [Test]
+    public async Task ResponseParsingContext_TakePooledMemory_OnlyTakesOnce()
+    {
+        var mockMemory = new MockPooledMemory(new byte[100]);
+
+        ResponseParsingContext.SetPooledMemory(mockMemory);
+        try
+        {
+            // First take should succeed
+            var taken1 = ResponseParsingContext.TakePooledMemory();
+            await Assert.That(taken1).IsNotNull();
+            await Assert.That(ResponseParsingContext.WasMemoryTaken).IsTrue();
+
+            // Second take should return null
+            var taken2 = ResponseParsingContext.TakePooledMemory();
+            await Assert.That(taken2).IsNull();
+        }
+        finally
+        {
+            ResponseParsingContext.Reset();
+        }
+    }
+
+    [Test]
+    public async Task ResponseParsingContext_Reset_ClearsState()
+    {
+        var mockMemory = new MockPooledMemory(new byte[100]);
+
+        ResponseParsingContext.SetPooledMemory(mockMemory);
+        ResponseParsingContext.TakePooledMemory();
+        await Assert.That(ResponseParsingContext.WasMemoryTaken).IsTrue();
+
+        ResponseParsingContext.Reset();
+
+        await Assert.That(ResponseParsingContext.WasMemoryTaken).IsFalse();
+        await Assert.That(ResponseParsingContext.CurrentMemory).IsNull();
+    }
+
+    /// <summary>
+    /// Mock implementation of IPooledMemory for testing.
+    /// </summary>
+    private sealed class MockPooledMemory : IPooledMemory
+    {
+        private readonly byte[] _data;
+
+        public MockPooledMemory(byte[] data) => _data = data;
+
+        public ReadOnlyMemory<byte> Memory => _data;
+        public bool IsDisposed { get; private set; }
+
+        public void Dispose() => IsDisposed = true;
+    }
+
+    #endregion
 }
