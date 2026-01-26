@@ -1226,7 +1226,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// </summary>
     private PooledMemory SerializeKeyToPooled(TKey key, string topic, Headers? headers)
     {
-        var writer = new PooledBufferWriter(initialCapacity: 256);
+        // Keys are typically small (UUIDs, IDs), but 512 avoids growth for most cases
+        var writer = new PooledBufferWriter(initialCapacity: 512);
         try
         {
             // Reuse thread-local context by updating fields (zero-allocation)
@@ -1252,7 +1253,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// </summary>
     private PooledMemory SerializeValueToPooled(TValue value, string topic, Headers? headers)
     {
-        var writer = new PooledBufferWriter(initialCapacity: 256);
+        // Values are typically larger; 1024 handles most messages without buffer growth
+        var writer = new PooledBufferWriter(initialCapacity: 1024);
         try
         {
             // Reuse thread-local context by updating fields (zero-allocation)
@@ -1321,10 +1323,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             pooledArray = result; // Track for returning to pool later
         }
 
-        var index = 0;
-        foreach (var h in headers)
+        // Use index-based iteration to avoid enumerator boxing allocation
+        for (var i = 0; i < count; i++)
         {
-            result[index++] = new RecordHeader
+            var h = headers[i];
+            result[i] = new RecordHeader
             {
                 Key = h.Key,
                 Value = h.Value,
