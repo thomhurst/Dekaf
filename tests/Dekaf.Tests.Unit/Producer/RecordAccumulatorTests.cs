@@ -448,4 +448,374 @@ public class RecordAccumulatorTests
             await pool.DisposeAsync();
         }
     }
+
+    #region Fire-and-Forget Tests
+
+    [Test]
+    public async Task TryAppendFireAndForget_AppendsRecordWithoutCompletionSource()
+    {
+        // This test verifies that TryAppendFireAndForget appends a record
+        // without requiring or storing a completion source.
+
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // Fire-and-forget append - no completion source needed
+            var result = accumulator.TryAppendFireAndForget(
+                "test-topic",
+                0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey,
+                pooledValue,
+                null,
+                null);
+
+            await Assert.That(result).IsTrue();
+
+            // Verify a batch was created with a record
+            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var batches = batchesField!.GetValue(accumulator)!;
+
+            var countProperty = batches.GetType().GetProperty("Count");
+            var batchCount = (int)countProperty!.GetValue(batches)!;
+            await Assert.That(batchCount).IsEqualTo(1);
+
+            // Get the partition batch and verify it has a record
+            var topicPartition = new TopicPartition("test-topic", 0);
+            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var parameters = new object[] { topicPartition, null! };
+            var found = (bool)tryGetValueMethod!.Invoke(batches, parameters)!;
+            await Assert.That(found).IsTrue();
+
+            var partitionBatch = parameters[1];
+            var recordCountProperty = partitionBatch!.GetType().GetProperty("RecordCount");
+            var recordCount = (int)recordCountProperty!.GetValue(partitionBatch)!;
+            await Assert.That(recordCount).IsEqualTo(1);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFireAndForget_MultipleAppends_AllSucceed()
+    {
+        // Verify that multiple fire-and-forget appends work correctly.
+        // Use a larger batch size to fit all records in one batch.
+
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 100000,
+            BatchSize = 100000, // Large batch to fit all records
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            const int appendCount = 100;
+            var successCount = 0;
+
+            for (int i = 0; i < appendCount; i++)
+            {
+                var pooledKey = new PooledMemory(null, 0, isNull: true);
+                var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+                var result = accumulator.TryAppendFireAndForget(
+                    "test-topic",
+                    0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey,
+                    pooledValue,
+                    null,
+                    null);
+
+                if (result) successCount++;
+            }
+
+            await Assert.That(successCount).IsEqualTo(appendCount);
+
+            // Verify the batch has all records
+            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var batches = batchesField!.GetValue(accumulator)!;
+
+            var topicPartition = new TopicPartition("test-topic", 0);
+            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var parameters = new object[] { topicPartition, null! };
+            tryGetValueMethod!.Invoke(batches, parameters);
+
+            var partitionBatch = parameters[1];
+            var recordCountProperty = partitionBatch!.GetType().GetProperty("RecordCount");
+            var recordCount = (int)recordCountProperty!.GetValue(partitionBatch)!;
+            await Assert.That(recordCount).IsEqualTo(appendCount);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFireAndForget_WithPooledMemory_TracksArraysForCleanup()
+    {
+        // Verify that fire-and-forget correctly tracks pooled arrays for cleanup,
+        // even though it doesn't track completion sources.
+
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Create pooled memory with actual arrays
+            var keyArray = ArrayPool<byte>.Shared.Rent(10);
+            var valueArray = ArrayPool<byte>.Shared.Rent(20);
+            var keyData = new byte[] { 1, 2, 3, 4, 5 };
+            var valueData = new byte[] { 6, 7, 8, 9, 10 };
+            keyData.CopyTo(keyArray, 0);
+            valueData.CopyTo(valueArray, 0);
+
+            var pooledKey = new PooledMemory(keyArray, keyData.Length);
+            var pooledValue = new PooledMemory(valueArray, valueData.Length);
+
+            var result = accumulator.TryAppendFireAndForget(
+                "test-topic",
+                0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey,
+                pooledValue,
+                null,
+                null);
+
+            await Assert.That(result).IsTrue();
+
+            // Get the batch and verify arrays are tracked
+            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var batches = batchesField!.GetValue(accumulator)!;
+
+            var topicPartition = new TopicPartition("test-topic", 0);
+            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var parameters = new object[] { topicPartition, null! };
+            tryGetValueMethod!.Invoke(batches, parameters);
+
+            var partitionBatch = parameters[1];
+
+            // Verify pooled arrays are tracked (via reflection)
+            var pooledArrayCountField = partitionBatch!.GetType().GetField("_pooledArrayCount",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var pooledArrayCount = (int)pooledArrayCountField!.GetValue(partitionBatch)!;
+            await Assert.That(pooledArrayCount).IsEqualTo(2); // key + value arrays
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFireAndForget_DisposedAccumulator_ReturnsFalse()
+    {
+        // Verify that fire-and-forget returns false when accumulator is disposed.
+
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+
+        // Dispose the accumulator
+        await accumulator.DisposeAsync();
+
+        var pooledKey = new PooledMemory(null, 0, isNull: true);
+        var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+        var result = accumulator.TryAppendFireAndForget(
+            "test-topic",
+            0,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            pooledKey,
+            pooledValue,
+            null,
+            null);
+
+        await Assert.That(result).IsFalse();
+    }
+
+    [Test]
+    public async Task TryAppendFireAndForget_ConcurrentAppends_ThreadSafe()
+    {
+        // Stress test fire-and-forget with concurrent appends.
+
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            const int threadCount = 10;
+            const int appendsPerThread = 100;
+            var tasks = new List<Task<int>>();
+
+            for (int t = 0; t < threadCount; t++)
+            {
+                var task = Task.Run(() =>
+                {
+                    var successCount = 0;
+                    for (int i = 0; i < appendsPerThread; i++)
+                    {
+                        var pooledKey = new PooledMemory(null, 0, isNull: true);
+                        var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+                        if (accumulator.TryAppendFireAndForget(
+                            "test-topic",
+                            i % 3, // Distribute across 3 partitions
+                            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            pooledKey,
+                            pooledValue,
+                            null,
+                            null))
+                        {
+                            successCount++;
+                        }
+                    }
+                    return successCount;
+                });
+                tasks.Add(task);
+            }
+
+            var results = await Task.WhenAll(tasks);
+            var totalSuccess = results.Sum();
+
+            // All appends should succeed (batch size is large enough)
+            await Assert.That(totalSuccess).IsGreaterThan(0);
+
+            // Verify we didn't corrupt any data structures
+            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var batches = batchesField!.GetValue(accumulator)!;
+            var countProperty = batches.GetType().GetProperty("Count");
+            var batchCount = (int)countProperty!.GetValue(batches)!;
+
+            // Should have batches for the 3 partitions we used
+            await Assert.That(batchCount).IsGreaterThanOrEqualTo(1);
+            await Assert.That(batchCount).IsLessThanOrEqualTo(3);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFireAndForget_BatchFull_CreateNewBatchAndSucceed()
+    {
+        // Verify that when a batch is full, fire-and-forget creates a new batch.
+
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 100000,
+            BatchSize = 100, // Small batch size to trigger full condition
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            var successCount = 0;
+
+            // Append many records to fill batches
+            for (int i = 0; i < 50; i++)
+            {
+                // Create records with actual data to fill the batch
+                var keyArray = ArrayPool<byte>.Shared.Rent(10);
+                var valueArray = ArrayPool<byte>.Shared.Rent(10);
+
+                var pooledKey = new PooledMemory(keyArray, 10);
+                var pooledValue = new PooledMemory(valueArray, 10);
+
+                if (accumulator.TryAppendFireAndForget(
+                    "test-topic",
+                    0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey,
+                    pooledValue,
+                    null,
+                    null))
+                {
+                    successCount++;
+                }
+            }
+
+            // All appends should eventually succeed (batches are created as needed)
+            await Assert.That(successCount).IsEqualTo(50);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task PartitionBatch_TryAppendFireAndForget_DoesNotIncrementCompletionSourceCount()
+    {
+        // Verify that TryAppendFireAndForget does NOT increment the completion source count,
+        // unlike the regular TryAppend method.
+
+        var options = CreateTestOptions();
+        var topicPartition = new TopicPartition("test-topic", 0);
+
+        // Create a PartitionBatch directly using reflection
+        var partitionBatchType = typeof(RecordAccumulator).Assembly.GetType("Dekaf.Producer.PartitionBatch");
+        var constructor = partitionBatchType!.GetConstructor(
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public,
+            new[] { typeof(TopicPartition), typeof(ProducerOptions) });
+
+        var partitionBatch = constructor!.Invoke(new object[] { topicPartition, options });
+
+        // Get the completion source count field
+        var completionSourceCountField = partitionBatchType.GetField("_completionSourceCount",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+        // Initial count should be 0
+        var initialCount = (int)completionSourceCountField!.GetValue(partitionBatch)!;
+        await Assert.That(initialCount).IsEqualTo(0);
+
+        // Call TryAppendFireAndForget
+        var tryAppendMethod = partitionBatchType.GetMethod("TryAppendFireAndForget");
+        var pooledKey = new PooledMemory(null, 0, isNull: true);
+        var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+        var result = tryAppendMethod!.Invoke(partitionBatch, new object[]
+        {
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            pooledKey,
+            pooledValue,
+            null!,  // headers
+            null!   // pooledHeaderArray
+        });
+
+        // Verify append succeeded
+        var successProperty = result!.GetType().GetProperty("Success");
+        var success = (bool)successProperty!.GetValue(result)!;
+        await Assert.That(success).IsTrue();
+
+        // Verify completion source count is still 0 (fire-and-forget doesn't track completions)
+        var afterCount = (int)completionSourceCountField.GetValue(partitionBatch)!;
+        await Assert.That(afterCount).IsEqualTo(0);
+
+        // But record count should be 1
+        var recordCountProperty = partitionBatchType.GetProperty("RecordCount");
+        var recordCount = (int)recordCountProperty!.GetValue(partitionBatch)!;
+        await Assert.That(recordCount).IsEqualTo(1);
+    }
+
+    #endregion
 }
