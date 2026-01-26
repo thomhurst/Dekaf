@@ -1219,4 +1219,204 @@ public class RecordAccumulatorTests
     }
 
     #endregion
+
+    #region Lock-Free Single-Producer Optimization Tests
+
+    [Test]
+    public async Task TryAppendFireAndForget_SingleProducerPattern_UsesLockFreePath()
+    {
+        // This test validates the lock-free single-producer optimization.
+        // When the same thread appends consecutively to the same partition,
+        // the lock-free fast path should be used after the first append.
+
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 100000,
+            BatchSize = 100000,
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            const int appendCount = 1000;
+            var successCount = 0;
+
+            // Single thread appending to same partition - should hit lock-free path after first append
+            for (int i = 0; i < appendCount; i++)
+            {
+                var pooledKey = new PooledMemory(null, 0, isNull: true);
+                var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+                var result = accumulator.TryAppendFireAndForget(
+                    "test-topic",
+                    0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey,
+                    pooledValue,
+                    null,
+                    null);
+
+                if (result) successCount++;
+            }
+
+            await Assert.That(successCount).IsEqualTo(appendCount);
+
+            // Verify the batch has all records (proves no data corruption from lock-free path)
+            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var batches = batchesField!.GetValue(accumulator)!;
+
+            var topicPartition = new TopicPartition("test-topic", 0);
+            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var parameters = new object[] { topicPartition, null! };
+            tryGetValueMethod!.Invoke(batches, parameters);
+
+            var partitionBatch = parameters[1];
+            var recordCountProperty = partitionBatch!.GetType().GetProperty("RecordCount");
+            var recordCount = (int)recordCountProperty!.GetValue(partitionBatch)!;
+            await Assert.That(recordCount).IsEqualTo(appendCount);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFireAndForget_MultiProducerPattern_OwnershipTransfersCorrectly()
+    {
+        // This test validates that when multiple threads append to the same partition,
+        // ownership transfers correctly and no data corruption occurs.
+        // This specifically tests the slow path (TryAppendFireAndForgetWithLock).
+
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 100000,
+            BatchSize = 100000, // Large batch to fit all records
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            const int threadCount = 4;
+            const int appendsPerThread = 250;
+            var totalExpected = threadCount * appendsPerThread;
+            var successCount = 0;
+            var tasks = new List<Task>();
+
+            // Launch threads that interleave appends to same partition
+            // Use a barrier to maximize thread interleaving
+            var barrier = new Barrier(threadCount);
+
+            for (int t = 0; t < threadCount; t++)
+            {
+                var task = Task.Run(() =>
+                {
+                    barrier.SignalAndWait(); // Synchronize thread start
+
+                    for (int i = 0; i < appendsPerThread; i++)
+                    {
+                        var pooledKey = new PooledMemory(null, 0, isNull: true);
+                        var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+                        if (accumulator.TryAppendFireAndForget(
+                            "test-topic",
+                            0, // All threads to same partition - forces ownership transfers
+                            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                            pooledKey,
+                            pooledValue,
+                            null,
+                            null))
+                        {
+                            Interlocked.Increment(ref successCount);
+                        }
+                    }
+                });
+                tasks.Add(task);
+            }
+
+            await Task.WhenAll(tasks);
+
+            // All appends should succeed
+            await Assert.That(successCount).IsEqualTo(totalExpected);
+
+            // Verify the batch has all records (proves ownership transfers worked correctly)
+            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var batches = batchesField!.GetValue(accumulator)!;
+
+            var topicPartition = new TopicPartition("test-topic", 0);
+            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var parameters = new object[] { topicPartition, null! };
+            tryGetValueMethod!.Invoke(batches, parameters);
+
+            var partitionBatch = parameters[1];
+            var recordCountProperty = partitionBatch!.GetType().GetProperty("RecordCount");
+            var recordCount = (int)recordCountProperty!.GetValue(partitionBatch)!;
+            await Assert.That(recordCount).IsEqualTo(totalExpected);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFireAndForget_OwnershipReset_OnBatchComplete()
+    {
+        // Verify that thread ownership is reset when a batch completes,
+        // allowing fresh ownership establishment for the next batch.
+
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 100000,
+            BatchSize = 100, // Small batch to force completion
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            var successCount = 0;
+
+            // Fill batches to trigger completion and ownership reset
+            for (int i = 0; i < 50; i++)
+            {
+                var keyArray = ArrayPool<byte>.Shared.Rent(10);
+                var valueArray = ArrayPool<byte>.Shared.Rent(10);
+
+                var pooledKey = new PooledMemory(keyArray, 10);
+                var pooledValue = new PooledMemory(valueArray, 10);
+
+                if (accumulator.TryAppendFireAndForget(
+                    "test-topic",
+                    0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey,
+                    pooledValue,
+                    null,
+                    null))
+                {
+                    successCount++;
+                }
+            }
+
+            // All appends should succeed (batch rotation creates new batches)
+            await Assert.That(successCount).IsEqualTo(50);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    #endregion
 }

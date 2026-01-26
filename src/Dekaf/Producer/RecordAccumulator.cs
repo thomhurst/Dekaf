@@ -604,12 +604,25 @@ internal sealed class PartitionBatch
     // IMPORTANT: SpinLock is a struct, must never be copied. Access via ref only.
     private SpinLock _spinLock = new(enableThreadOwnerTracking: false);
 
-    // Lock-free single-producer optimization: tracks the thread that owns this batch.
-    // Most producers send to the same partition from a single thread, so we can skip
-    // locking entirely when the same thread appends consecutively. When a different
-    // thread appends, we fall back to locking and transfer ownership.
-    // Value of -1 means no owner (initial state or after contention).
-    private volatile int _ownerThreadId = -1;
+    // Exclusive access flag for lock-free single-producer optimization.
+    // Uses Interlocked.CompareExchange for atomic claim/release:
+    // - 0 = no one is currently appending (available)
+    // - Non-zero = a thread is currently appending (busy)
+    //
+    // This replaces the previous ownership-based optimization which had a race condition
+    // where the fast path (checking ownership) could run concurrently with the slow path
+    // (acquiring SpinLock and claiming ownership).
+    //
+    // The new approach uses CAS to atomically claim exclusive access:
+    // 1. CAS(0 -> 1): If success, we have exclusive access, proceed without SpinLock
+    // 2. CAS fails: Someone else is appending, fall back to SpinWait loop
+    // 3. After append, set back to 0 to release
+    //
+    // This is correct because:
+    // - Only one thread can win the CAS at a time
+    // - The winner has exclusive access until it releases
+    // - Losers spin until the winner releases
+    private int _exclusiveAccess;
 
     private long _baseTimestamp;
     private int _estimatedSize;
@@ -738,8 +751,9 @@ internal sealed class PartitionBatch
     /// 2. Storing the completion source in the batch
     /// 3. Setting the result when the batch completes
     ///
-    /// Additionally uses lock-free single-producer optimization: when the same thread
-    /// appends consecutively (common pattern), we skip locking entirely.
+    /// Uses lock-free CAS-based synchronization for exclusive access, which is faster
+    /// than SpinLock for the common single-producer case while remaining correct under
+    /// multi-producer contention.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public RecordAppendResult TryAppendFireAndForget(
@@ -752,18 +766,24 @@ internal sealed class PartitionBatch
         // Pre-compute record size outside the lock - depends only on input parameters
         var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
 
-        var currentThreadId = Environment.CurrentManagedThreadId;
-
-        // FAST PATH: Lock-free single-producer optimization.
-        // If the same thread that last appended is appending again, we can skip locking.
-        // This is the common case for producers sending multiple messages in a loop.
-        if (_ownerThreadId == currentThreadId)
+        // FAST PATH: Try to atomically claim exclusive access via CAS.
+        // If we win (exchange 0 -> 1), we have exclusive access and can proceed without spinning.
+        // This is the common case for single-producer patterns.
+        if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
         {
-            return TryAppendFireAndForgetCore(timestamp, key, value, headers, pooledHeaderArray, recordSize);
+            try
+            {
+                return TryAppendFireAndForgetCore(timestamp, key, value, headers, pooledHeaderArray, recordSize);
+            }
+            finally
+            {
+                // Release exclusive access
+                Volatile.Write(ref _exclusiveAccess, 0);
+            }
         }
 
-        // SLOW PATH: Different thread or first append - acquire lock and claim ownership.
-        return TryAppendFireAndForgetWithLock(timestamp, key, value, headers, pooledHeaderArray, recordSize, currentThreadId);
+        // SLOW PATH: CAS failed - another thread is appending. Spin until we can claim access.
+        return TryAppendFireAndForgetWithSpinWait(timestamp, key, value, headers, pooledHeaderArray, recordSize);
     }
 
     /// <summary>
@@ -838,32 +858,39 @@ internal sealed class PartitionBatch
     }
 
     /// <summary>
-    /// Slow path: acquires lock, claims ownership, then appends.
-    /// Called when a different thread is appending or on first append.
+    /// Slow path: spins until exclusive access is available, then appends.
+    /// Called when CAS failed because another thread is currently appending.
+    /// Uses SpinWait for efficient spinning that adapts to contention level.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private RecordAppendResult TryAppendFireAndForgetWithLock(
+    private RecordAppendResult TryAppendFireAndForgetWithSpinWait(
         long timestamp,
         PooledMemory key,
         PooledMemory value,
         IReadOnlyList<RecordHeader>? headers,
         RecordHeader[]? pooledHeaderArray,
-        int recordSize,
-        int currentThreadId)
+        int recordSize)
     {
-        var lockTaken = false;
-        try
-        {
-            _spinLock.Enter(ref lockTaken);
+        var spin = new SpinWait();
 
-            // Claim ownership for future lock-free appends from this thread
-            _ownerThreadId = currentThreadId;
-
-            return TryAppendFireAndForgetCore(timestamp, key, value, headers, pooledHeaderArray, recordSize);
-        }
-        finally
+        while (true)
         {
-            if (lockTaken) _spinLock.Exit();
+            // Try to claim exclusive access
+            if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
+            {
+                try
+                {
+                    return TryAppendFireAndForgetCore(timestamp, key, value, headers, pooledHeaderArray, recordSize);
+                }
+                finally
+                {
+                    // Release exclusive access
+                    Volatile.Write(ref _exclusiveAccess, 0);
+                }
+            }
+
+            // Someone else has access, spin and retry
+            spin.SpinOnce();
         }
     }
 
