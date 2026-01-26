@@ -296,7 +296,7 @@ internal sealed class ConsumerStatisticsCollector
     /// Inspired by librdkafka's batch-level accounting.
     /// </summary>
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    public void RecordMessagesConsumedBatch(string topic, int partition, int messageCount, long bytes)
+    public void RecordMessagesConsumedBatch(string topic, int partition, long messageCount, long bytes)
     {
         Interlocked.Add(ref _messagesConsumed, messageCount);
         Interlocked.Add(ref _bytesConsumed, bytes);
@@ -416,7 +416,7 @@ internal sealed class ConsumerStatisticsCollector
             Interlocked.Add(ref _bytes, bytes);
         }
 
-        public void AddConsumed(int count, long bytes)
+        public void AddConsumed(long count, long bytes)
         {
             Interlocked.Add(ref _consumed, count);
             Interlocked.Add(ref _bytes, bytes);
@@ -438,7 +438,7 @@ internal sealed class ConsumerStatisticsCollector
             Interlocked.Add(ref _bytes, bytes);
         }
 
-        public void AddConsumed(int count, long bytes)
+        public void AddConsumed(long count, long bytes)
         {
             Interlocked.Add(ref _consumed, count);
             Interlocked.Add(ref _bytes, bytes);

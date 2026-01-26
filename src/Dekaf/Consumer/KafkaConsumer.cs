@@ -46,6 +46,10 @@ internal sealed class PendingFetchData : IDisposable
     /// Updated as records are consumed, used for final position update when fetch is exhausted.
     /// Inspired by librdkafka's batch-level position tracking.
     /// </summary>
+    /// <remarks>
+    /// Thread-safety: Not required. PendingFetchData is consumed sequentially by the single
+    /// consumer poll loop thread. Each instance handles one partition's fetch response.
+    /// </remarks>
     public long LastYieldedOffset { get; private set; } = -1;
 
     /// <summary>
@@ -55,8 +59,9 @@ internal sealed class PendingFetchData : IDisposable
 
     /// <summary>
     /// Tracks message count for batch statistics update.
+    /// Using long to prevent overflow in long-running scenarios with large fetches.
     /// </summary>
-    public int MessageCount { get; private set; }
+    public long MessageCount { get; private set; }
 
     public PendingFetchData(string topic, int partitionIndex, IReadOnlyList<RecordBatch> batches, Protocol.IPooledMemory? memoryOwner = null)
     {

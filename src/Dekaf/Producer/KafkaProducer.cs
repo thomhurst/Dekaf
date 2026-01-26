@@ -367,14 +367,22 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
             }
 
-            // Track message produced using fast path (global counters only)
-            // Skips per-topic/partition dictionary lookups for maximum fire-and-forget throughput
+            // SUCCESS: Memory ownership transferred to batch.
+            // Clear local references to prevent double-return if catch block executes.
+            // The batch now owns these arrays and will return them to the pool.
             var messageBytes = key.Length + value.Length;
+            key = PooledMemory.Null;
+            value = PooledMemory.Null;
+            pooledHeaderArray = null;
+
+            // Track message produced using fast path (global counters only)
             _statisticsCollector.RecordMessageProducedFast(messageBytes);
         }
-        catch (Exception ex) when (ex is not ObjectDisposedException)
+        catch
         {
-            // Cleanup resources on any exception (except ObjectDisposedException which already cleaned up)
+            // Cleanup pooled resources on ANY exception to prevent leaks.
+            // After successful append, key/value/pooledHeaderArray are cleared above,
+            // so this is a no-op in the success case (prevents double-return to pool).
             CleanupPooledResources(key, value, pooledHeaderArray);
             throw;
         }
