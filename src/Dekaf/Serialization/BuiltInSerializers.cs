@@ -45,6 +45,31 @@ public static class Serializers
     public static ISerde<double> Double { get; } = new DoubleSerde();
 
     /// <summary>
+    /// Zero-copy deserializer that returns raw bytes as ReadOnlyMemory.
+    /// </summary>
+    /// <remarks>
+    /// <para>This deserializer avoids all allocations by returning a slice of the underlying
+    /// network buffer directly. This is ideal for high-throughput scenarios where you need
+    /// to process raw bytes without string conversion overhead.</para>
+    ///
+    /// <para><b>Important lifetime considerations:</b></para>
+    /// <list type="bullet">
+    /// <item>The returned memory is only valid while consuming the current message batch</item>
+    /// <item>If you need to keep the data longer, copy it: <c>data.ToArray()</c></item>
+    /// <item>Do not store references to the returned memory across consume iterations</item>
+    /// </list>
+    ///
+    /// <para><b>Usage example:</b></para>
+    /// <code>
+    /// var consumer = Dekaf.CreateConsumer&lt;ReadOnlyMemory&lt;byte&gt;, ReadOnlyMemory&lt;byte&gt;&gt;()
+    ///     .WithBootstrapServers("localhost:9092")
+    ///     .WithGroupId("my-group")
+    ///     .Build();
+    /// </code>
+    /// </remarks>
+    public static ISerde<ReadOnlyMemory<byte>> RawBytes { get; } = new RawBytesSerde();
+
+    /// <summary>
     /// Creates a null serializer that returns default values.
     /// </summary>
     public static ISerde<T?> Null<T>() where T : class => new NullSerde<T>();
@@ -236,5 +261,31 @@ internal sealed class IgnoreSerde : ISerde<Ignore>
     public Ignore Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
     {
         return default;
+    }
+}
+
+/// <summary>
+/// Zero-copy serde that works directly with ReadOnlyMemory without allocations.
+/// </summary>
+internal sealed class RawBytesSerde : ISerde<ReadOnlyMemory<byte>>
+{
+    public void Serialize(ReadOnlyMemory<byte> value, IBufferWriter<byte> destination, SerializationContext context)
+    {
+        var span = destination.GetSpan(value.Length);
+        value.Span.CopyTo(span);
+        destination.Advance(value.Length);
+    }
+
+    public ReadOnlyMemory<byte> Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    {
+        // Fast path: single segment - return memory slice directly (zero-copy)
+        if (data.IsSingleSegment)
+        {
+            return data.First;
+        }
+
+        // Slow path: multi-segment - must copy to contiguous memory
+        // This is rare in practice since consumer data is typically single-segment
+        return data.ToArray();
     }
 }

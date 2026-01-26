@@ -278,15 +278,20 @@ public sealed class RecordBatch : IDisposable
 /// <summary>
 /// A lazy list that parses records on-demand from raw byte data.
 /// Records are only parsed when accessed, avoiding allocations for unconsumed records.
-/// Uses incremental list growth instead of pre-allocating full array.
+/// Uses pooled lists to avoid per-batch allocations.
 /// </summary>
 /// <remarks>
 /// When used with zero-copy parsing, the raw data references the pooled network buffer.
 /// The memory ownership is managed at the PendingFetchData level, not here.
-/// Dispose marks the list as disposed to prevent access after the buffer is released.
+/// Dispose marks the list as disposed and returns the pooled list for reuse.
 /// </remarks>
 internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 {
+    // Pool for reusing List<Record> instances to reduce GC pressure
+    // Using ConcurrentBag for thread-safe pooling with good performance
+    private static readonly System.Collections.Concurrent.ConcurrentBag<List<Record>> s_listPool = new();
+    private const int MaxPooledLists = 64; // Limit pool size to prevent unbounded growth
+
     private readonly ReadOnlyMemory<byte> _rawData;
     private readonly int _count;
     private List<Record>? _parsedRecords;
@@ -332,12 +337,25 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 
     private void EnsureParsedUpTo(int index)
     {
-        // Pre-allocate list with known count to avoid repeated growth allocations.
-        // We know exactly how many records are in the batch from the record count field.
-        // This eliminates List capacity growth overhead during iteration.
-        // Validate count to prevent OOM from malformed batch data.
-        var capacityToAllocate = _count > MaxReasonableRecordCount ? 0 : _count;
-        _parsedRecords ??= new List<Record>(capacityToAllocate);
+        if (_parsedRecords is null)
+        {
+            // Try to get a pooled list, otherwise create new
+            if (!s_listPool.TryTake(out _parsedRecords))
+            {
+                // Pre-allocate with known count to avoid growth allocations
+                var capacityToAllocate = _count > MaxReasonableRecordCount ? 0 : _count;
+                _parsedRecords = new List<Record>(capacityToAllocate);
+            }
+            else
+            {
+                // Ensure pooled list has enough capacity
+                var capacityNeeded = _count > MaxReasonableRecordCount ? 0 : _count;
+                if (_parsedRecords.Capacity < capacityNeeded)
+                {
+                    _parsedRecords.Capacity = capacityNeeded;
+                }
+            }
+        }
 
         while (_parsedRecords.Count <= index && _parsedRecords.Count < _count)
         {
@@ -350,12 +368,21 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     }
 
     /// <summary>
-    /// Marks the list as disposed. After disposal, accessing records will throw ObjectDisposedException.
+    /// Marks the list as disposed and returns the pooled list for reuse.
+    /// After disposal, accessing records will throw ObjectDisposedException.
     /// Note: Memory ownership is managed at PendingFetchData level, not here.
     /// </summary>
     public void Dispose()
     {
         _disposed = true;
+
+        // Return list to pool for reuse (if pool isn't full)
+        if (_parsedRecords is not null && s_listPool.Count < MaxPooledLists)
+        {
+            _parsedRecords.Clear();
+            s_listPool.Add(_parsedRecords);
+        }
+        _parsedRecords = null;
     }
 }
 
