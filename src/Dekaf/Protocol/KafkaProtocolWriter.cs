@@ -197,9 +197,9 @@ public ref struct KafkaProtocolWriter
         // Avoids double-pass of GetByteCount + GetBytes by using stackalloc buffer
         if (value.Length <= 128)
         {
-            // Max UTF-8 expansion is 3 bytes per char for BMP, 4 for surrogate pairs
-            // For 128 chars, 384 bytes covers all BMP characters safely
-            Span<byte> buffer = stackalloc byte[384];
+            // Max UTF-8 expansion is 4 bytes per char (surrogate pairs)
+            // For 128 chars, 512 bytes covers all cases including emojis
+            Span<byte> buffer = stackalloc byte[512];
             var actualBytes = Encoding.UTF8.GetBytes(value, buffer);
             WriteInt16((short)actualBytes);
             if (actualBytes > 0)
@@ -235,7 +235,8 @@ public ref struct KafkaProtocolWriter
         // Avoids double-pass of GetByteCount + GetBytes by using stackalloc buffer
         if (value.Length <= 128)
         {
-            Span<byte> buffer = stackalloc byte[384];
+            // Max UTF-8 expansion is 4 bytes per char (surrogate pairs)
+            Span<byte> buffer = stackalloc byte[512];
             var actualBytes = Encoding.UTF8.GetBytes(value, buffer);
             if (actualBytes > 0)
             {
@@ -291,9 +292,9 @@ public ref struct KafkaProtocolWriter
         // Avoids double-pass of GetByteCount + GetBytes by using stackalloc buffer
         if (value.Length <= 128)
         {
-            // Max UTF-8 expansion is 3 bytes per char for BMP, 4 for surrogate pairs
-            // For 128 chars, 384 bytes covers all BMP characters safely
-            Span<byte> buffer = stackalloc byte[384];
+            // Max UTF-8 expansion is 4 bytes per char (surrogate pairs)
+            // For 128 chars, 512 bytes covers all cases including emojis
+            Span<byte> buffer = stackalloc byte[512];
             var actualBytes = Encoding.UTF8.GetBytes(value, buffer);
             WriteUnsignedVarInt(actualBytes + 1);
             if (actualBytes > 0)

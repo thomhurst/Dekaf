@@ -320,13 +320,15 @@ public sealed class ConnectionPool : IConnectionPool
         {
             var tasks = new List<ValueTask>();
 
-            // Close single connections
+            // Close single connections (used when _connectionsPerBroker == 1)
+            // Note: Single connections and connection groups are mutually exclusive -
+            // GetConnectionAsync uses one path or the other based on _connectionsPerBroker
             foreach (var connection in _connectionsByEndpoint.Values)
             {
                 tasks.Add(connection.DisposeAsync());
             }
 
-            // Close connection groups
+            // Close connection groups (used when _connectionsPerBroker > 1)
             foreach (var connectionGroup in _connectionGroupsById.Values)
             {
                 foreach (var connection in connectionGroup)
