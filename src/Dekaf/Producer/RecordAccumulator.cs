@@ -675,6 +675,14 @@ internal sealed class PartitionBatch
         {
             _spinLock.Enter(ref lockTaken);
 
+            // Check if batch was completed while we were waiting for the lock.
+            // Complete() sets _isCompleted and nulls out arrays without holding the lock,
+            // so we must check this before accessing any arrays.
+            if (Volatile.Read(ref _isCompleted) != 0)
+            {
+                return new RecordAppendResult(false);
+            }
+
             if (_recordCount == 0)
             {
                 _baseTimestamp = timestamp;
@@ -799,6 +807,13 @@ internal sealed class PartitionBatch
         RecordHeader[]? pooledHeaderArray,
         int recordSize)
     {
+        // Check if batch was completed - Complete() nulls out arrays without synchronization,
+        // so we must check this before accessing any arrays.
+        if (Volatile.Read(ref _isCompleted) != 0)
+        {
+            return new RecordAppendResult(false);
+        }
+
         if (_recordCount == 0)
         {
             _baseTimestamp = timestamp;
@@ -910,6 +925,12 @@ internal sealed class PartitionBatch
         try
         {
             _spinLock.Enter(ref lockTaken);
+
+            // Check if batch was completed while we were waiting for the lock.
+            if (Volatile.Read(ref _isCompleted) != 0)
+            {
+                return 0;
+            }
 
             var appended = 0;
 
