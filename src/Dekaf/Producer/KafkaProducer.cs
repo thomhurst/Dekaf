@@ -48,13 +48,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     // Pool for PooledValueTaskSource to avoid per-message allocations
     // Unlike TaskCompletionSource, these can be reset and reused
-    private readonly ValueTaskSourcePool<RecordMetadata> _valueTaskSourcePool = new();
-
-    // Thread-local reusable buffers for serialization to avoid per-message allocations
-    [ThreadStatic]
-    private static ArrayBufferWriter<byte>? t_keySerializationBuffer;
-    [ThreadStatic]
-    private static ArrayBufferWriter<byte>? t_valueSerializationBuffer;
+    private readonly ValueTaskSourcePool<RecordMetadata> _valueTaskSourcePool;
 
     // Thread-local reusable SerializationContext to avoid per-message allocations
     // Since SerializationContext contains reference types (Topic, Headers), copying it
@@ -77,6 +71,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _keySerializer = keySerializer;
         _valueSerializer = valueSerializer;
         _logger = loggerFactory?.CreateLogger<KafkaProducer<TKey, TValue>>();
+
+        // Initialize ValueTaskSource pool with configured size
+        _valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>(options.ValueTaskSourcePoolSize);
 
         _partitioner = options.Partitioner switch
         {
@@ -273,6 +270,139 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
+    }
+
+    /// <inheritdoc />
+    public void Produce(string topic, TKey? key, TValue value)
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
+        // Fast path: Try synchronous fire-and-forget produce if metadata is cached
+        // This bypasses both ProducerMessage allocation and PooledValueTaskSource rental
+        if (TryProduceSyncFireAndForgetDirect(topic, key, value, partition: null, timestamp: null, headers: null))
+        {
+            return;
+        }
+
+        // Slow path: Fall back to the message-based overload
+        // This allocates a ProducerMessage but handles metadata initialization
+        Produce(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
+    }
+
+    /// <summary>
+    /// Attempts synchronous fire-and-forget produce directly from parameters when metadata is cached.
+    /// This is the fastest path as it avoids both ProducerMessage and PooledValueTaskSource allocation.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryProduceSyncFireAndForgetDirect(
+        string topic,
+        TKey? key,
+        TValue value,
+        int? partition,
+        DateTimeOffset? timestamp,
+        Headers? headers)
+    {
+        // Check if metadata is initialized (sync check)
+        if (_metadataManager.Metadata.LastRefreshed == default)
+        {
+            return false; // Need async initialization
+        }
+
+        // Try to get topic metadata from cache
+        if (!_metadataManager.TryGetCachedTopicMetadata(topic, out var topicInfo) || topicInfo is null)
+        {
+            return false; // Cache miss, need async refresh
+        }
+
+        if (topicInfo.PartitionCount == 0)
+        {
+            return false; // Invalid topic state, let async path handle error
+        }
+
+        // All checks passed - we can proceed synchronously without completion tracking
+        try
+        {
+            ProduceSyncCoreFireAndForgetDirect(topic, key, value, partition, timestamp, headers, topicInfo);
+        }
+        catch
+        {
+            // Fire-and-forget: swallow exception silently
+            // This matches Confluent.Kafka behavior where Produce() doesn't throw
+            // for production errors in fire-and-forget mode
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Core synchronous fire-and-forget produce logic that works directly from parameters.
+    /// Avoids ProducerMessage allocation entirely.
+    /// </summary>
+    private void ProduceSyncCoreFireAndForgetDirect(
+        string topic,
+        TKey? keyObj,
+        TValue value,
+        int? partitionOverride,
+        DateTimeOffset? timestampOverride,
+        Headers? headers,
+        TopicInfo topicInfo)
+    {
+        var key = PooledMemory.Null;
+        var valueMemory = PooledMemory.Null;
+        RecordHeader[]? pooledHeaderArray = null;
+
+        try
+        {
+            // Serialize key and value
+            var keyIsNull = keyObj is null;
+            key = keyIsNull ? PooledMemory.Null : SerializeKeyToPooled(keyObj!, topic, headers);
+            valueMemory = SerializeValueToPooled(value, topic, headers);
+
+            // Determine partition
+            var partition = partitionOverride
+                ?? _partitioner.Partition(topic, key.Span, keyIsNull, topicInfo.PartitionCount);
+
+            // Get timestamp
+            var timestamp = timestampOverride ?? DateTimeOffset.UtcNow;
+            var timestampMs = timestamp.ToUnixTimeMilliseconds();
+
+            // Convert headers
+            IReadOnlyList<RecordHeader>? recordHeaders = null;
+            if (headers is not null && headers.Count > 0)
+            {
+                recordHeaders = ConvertHeaders(headers, out pooledHeaderArray);
+            }
+
+            // Append to accumulator synchronously - no completion source needed
+            if (!_accumulator.TryAppendFireAndForget(
+                topic,
+                partition,
+                timestampMs,
+                key,
+                valueMemory,
+                recordHeaders,
+                pooledHeaderArray))
+            {
+                // Accumulator is disposed - cleanup and throw
+                CleanupPooledResources(key, valueMemory, pooledHeaderArray);
+                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+            }
+
+            // SUCCESS: Memory ownership transferred to batch.
+            var messageBytes = key.Length + valueMemory.Length;
+            key = PooledMemory.Null;
+            valueMemory = PooledMemory.Null;
+            pooledHeaderArray = null;
+
+            // Track message produced using fast path (global counters only)
+            _statisticsCollector.RecordMessageProducedFast(messageBytes);
+        }
+        catch
+        {
+            // Cleanup pooled resources on ANY exception to prevent leaks.
+            CleanupPooledResources(key, valueMemory, pooledHeaderArray);
+            throw;
         }
     }
 
@@ -986,76 +1116,56 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         return _metadataManager.InitializeAsync(cancellationToken);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ArrayBufferWriter<byte> GetKeySerializationBuffer()
-    {
-        var buffer = t_keySerializationBuffer;
-        if (buffer is null)
-        {
-            buffer = new ArrayBufferWriter<byte>(256);
-            t_keySerializationBuffer = buffer;
-        }
-        else
-        {
-            buffer.Clear();
-        }
-        return buffer;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ArrayBufferWriter<byte> GetValueSerializationBuffer()
-    {
-        var buffer = t_valueSerializationBuffer;
-        if (buffer is null)
-        {
-            buffer = new ArrayBufferWriter<byte>(256);
-            t_valueSerializationBuffer = buffer;
-        }
-        else
-        {
-            buffer.Clear();
-        }
-        return buffer;
-    }
-
     /// <summary>
-    /// Serializes the key into pooled memory that will be returned to the pool when the batch completes.
+    /// Serializes the key directly into pooled memory using PooledBufferWriter.
+    /// This eliminates the double-copy overhead of the previous ArrayBufferWriter approach.
     /// </summary>
     private PooledMemory SerializeKeyToPooled(TKey key, string topic, Headers? headers)
     {
-        var buffer = GetKeySerializationBuffer();
+        var writer = new PooledBufferWriter(initialCapacity: 256);
+        try
+        {
+            // Reuse thread-local context by updating fields (zero-allocation)
+            t_serializationContext.Topic = topic;
+            t_serializationContext.Component = SerializationComponent.Key;
+            t_serializationContext.Headers = headers;
+            _keySerializer.Serialize(key, writer, t_serializationContext);
 
-        // Reuse thread-local context by updating fields (zero-allocation)
-        t_serializationContext.Topic = topic;
-        t_serializationContext.Component = SerializationComponent.Key;
-        t_serializationContext.Headers = headers;
-        _keySerializer.Serialize(key, buffer, t_serializationContext);
-
-        // Rent from pool and copy serialized data
-        var length = buffer.WrittenCount;
-        var array = ArrayPool<byte>.Shared.Rent(length);
-        buffer.WrittenSpan.CopyTo(array);
-        return new PooledMemory(array, length);
+            // Transfer ownership - no copy needed
+            return writer.ToPooledMemory();
+        }
+        catch
+        {
+            // Return buffer to pool on error to prevent leaks
+            writer.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
-    /// Serializes the value into pooled memory that will be returned to the pool when the batch completes.
+    /// Serializes the value directly into pooled memory using PooledBufferWriter.
+    /// This eliminates the double-copy overhead of the previous ArrayBufferWriter approach.
     /// </summary>
     private PooledMemory SerializeValueToPooled(TValue value, string topic, Headers? headers)
     {
-        var buffer = GetValueSerializationBuffer();
+        var writer = new PooledBufferWriter(initialCapacity: 256);
+        try
+        {
+            // Reuse thread-local context by updating fields (zero-allocation)
+            t_serializationContext.Topic = topic;
+            t_serializationContext.Component = SerializationComponent.Value;
+            t_serializationContext.Headers = headers;
+            _valueSerializer.Serialize(value, writer, t_serializationContext);
 
-        // Reuse thread-local context by updating fields (zero-allocation)
-        t_serializationContext.Topic = topic;
-        t_serializationContext.Component = SerializationComponent.Value;
-        t_serializationContext.Headers = headers;
-        _valueSerializer.Serialize(value, buffer, t_serializationContext);
-
-        // Rent from pool and copy serialized data
-        var length = buffer.WrittenCount;
-        var array = ArrayPool<byte>.Shared.Rent(length);
-        buffer.WrittenSpan.CopyTo(array);
-        return new PooledMemory(array, length);
+            // Transfer ownership - no copy needed
+            return writer.ToPooledMemory();
+        }
+        catch
+        {
+            // Return buffer to pool on error to prevent leaks
+            writer.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
@@ -1282,6 +1392,121 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
             return AbortAsync();
         }
         return ValueTask.CompletedTask;
+    }
+}
+
+/// <summary>
+/// A buffer writer that writes directly to an ArrayPool-rented array.
+/// Eliminates the double-copy overhead of using ArrayBufferWriter followed by pool rental.
+/// </summary>
+/// <remarks>
+/// This struct implements IBufferWriter&lt;byte&gt; and manages its own pooled array.
+/// When serialization is complete, call ToPooledMemory() to get ownership of the array.
+/// The caller is responsible for returning the array to the pool (via PooledMemory.Return()).
+/// </remarks>
+internal struct PooledBufferWriter : IBufferWriter<byte>
+{
+    private byte[] _buffer;
+    private int _written;
+
+    /// <summary>
+    /// Creates a new PooledBufferWriter with the specified initial capacity.
+    /// </summary>
+    /// <param name="initialCapacity">Initial buffer size. Defaults to 256 bytes.</param>
+    public PooledBufferWriter(int initialCapacity = 256)
+    {
+        _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
+        _written = 0;
+    }
+
+    /// <summary>
+    /// Gets the number of bytes written to the buffer.
+    /// </summary>
+    public readonly int WrittenCount => _written;
+
+    /// <inheritdoc />
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Advance(int count)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+
+        if (_written + count > _buffer.Length)
+            throw new InvalidOperationException("Cannot advance past the end of the buffer");
+
+        _written += count;
+    }
+
+    /// <inheritdoc />
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Memory<byte> GetMemory(int sizeHint = 0)
+    {
+        EnsureCapacity(sizeHint);
+        return _buffer.AsMemory(_written);
+    }
+
+    /// <inheritdoc />
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Span<byte> GetSpan(int sizeHint = 0)
+    {
+        EnsureCapacity(sizeHint);
+        return _buffer.AsSpan(_written);
+    }
+
+    /// <summary>
+    /// Converts the written data to a PooledMemory and transfers ownership of the buffer.
+    /// After calling this method, this PooledBufferWriter instance should not be used.
+    /// </summary>
+    /// <returns>A PooledMemory containing the serialized data.</returns>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public PooledMemory ToPooledMemory()
+    {
+        var result = new PooledMemory(_buffer, _written);
+        // Clear reference - ownership transferred to caller
+        _buffer = null!;
+        _written = 0;
+        return result;
+    }
+
+    /// <summary>
+    /// Returns the buffer to the pool without creating a PooledMemory.
+    /// Use this in error paths to prevent leaks.
+    /// </summary>
+    public void Dispose()
+    {
+        if (_buffer is not null)
+        {
+            ArrayPool<byte>.Shared.Return(_buffer, clearArray: true);
+            _buffer = null!;
+            _written = 0;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void EnsureCapacity(int sizeHint)
+    {
+        if (sizeHint < 1)
+            sizeHint = 1;
+
+        var remaining = _buffer.Length - _written;
+        if (remaining < sizeHint)
+        {
+            Grow(sizeHint);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void Grow(int sizeHint)
+    {
+        // Calculate new size: at least double, but ensure it fits the requested size
+        var newSize = Math.Max(_buffer.Length * 2, _written + sizeHint);
+        var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
+
+        // Copy existing data
+        _buffer.AsSpan(0, _written).CopyTo(newBuffer);
+
+        // Return old buffer
+        ArrayPool<byte>.Shared.Return(_buffer, clearArray: true);
+        _buffer = newBuffer;
     }
 }
 

@@ -203,10 +203,10 @@ public class ValueTaskSourcePoolTests
     }
 
     [Test]
-    public async Task DefaultMaxPoolSize_Is1024()
+    public async Task DefaultMaxPoolSize_Is4096()
     {
         var defaultSize = ValueTaskSourcePool<int>.DefaultMaxPoolSize;
-        await Assert.That(defaultSize).IsEqualTo(1024);
+        await Assert.That(defaultSize).IsEqualTo(4096);
     }
 
     [Test]

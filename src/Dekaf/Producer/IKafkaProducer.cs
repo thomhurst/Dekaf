@@ -72,6 +72,23 @@ public interface IKafkaProducer<TKey, TValue> : IAsyncDisposable
     void Produce(ProducerMessage<TKey, TValue> message);
 
     /// <summary>
+    /// Produces a message to the specified topic without waiting for acknowledgment (fire-and-forget).
+    /// </summary>
+    /// <remarks>
+    /// <para>This is an optimized overload that avoids allocating a <see cref="ProducerMessage{TKey, TValue}"/>
+    /// object, making it ideal for high-throughput fire-and-forget scenarios.</para>
+    ///
+    /// <para>To ensure all messages are delivered, call <see cref="FlushAsync"/> before disposing the producer.</para>
+    ///
+    /// <para>Errors during delivery will be logged but not thrown. For reliable delivery with error handling,
+    /// use the callback overload or <see cref="ProduceAsync"/>.</para>
+    /// </remarks>
+    /// <param name="topic">The topic to produce to.</param>
+    /// <param name="key">The message key (can be null).</param>
+    /// <param name="value">The message value.</param>
+    void Produce(string topic, TKey? key, TValue value);
+
+    /// <summary>
     /// Produces a message without waiting for acknowledgment, with a delivery callback.
     /// </summary>
     /// <remarks>

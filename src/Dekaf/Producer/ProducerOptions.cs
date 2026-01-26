@@ -177,6 +177,13 @@ public sealed class ProducerOptions
     /// Handler for statistics events. Called periodically based on StatisticsInterval.
     /// </summary>
     public Action<Statistics.ProducerStatistics>? StatisticsHandler { get; init; }
+
+    /// <summary>
+    /// Maximum size of the internal ValueTaskSource pool.
+    /// Higher values reduce allocations in high-throughput scenarios but use more memory.
+    /// Default is 4096.
+    /// </summary>
+    public int ValueTaskSourcePoolSize { get; init; } = ValueTaskSourcePool<RecordMetadata>.DefaultMaxPoolSize;
 }
 
 /// <summary>
