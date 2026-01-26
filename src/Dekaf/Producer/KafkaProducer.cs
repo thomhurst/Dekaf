@@ -326,11 +326,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             ProduceSyncCoreFireAndForgetDirect(topic, key, value, partition, timestamp, headers, topicInfo);
         }
-        catch
+        catch (Exception ex)
         {
-            // Fire-and-forget: swallow exception silently
+            // Fire-and-forget: swallow exception but log for diagnostics
             // This matches Confluent.Kafka behavior where Produce() doesn't throw
             // for production errors in fire-and-forget mode
+            _logger?.LogDebug(ex, "Fire-and-forget produce failed for topic {Topic}", topic);
         }
         return true;
     }
@@ -1400,14 +1401,24 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 /// Eliminates the double-copy overhead of using ArrayBufferWriter followed by pool rental.
 /// </summary>
 /// <remarks>
+/// <para>
 /// This struct implements IBufferWriter&lt;byte&gt; and manages its own pooled array.
 /// When serialization is complete, call ToPooledMemory() to get ownership of the array.
 /// The caller is responsible for returning the array to the pool (via PooledMemory.Return()).
+/// </para>
+/// <para>
+/// Note: This is intentionally not a ref struct because it must be passable to
+/// ISerializer&lt;T&gt;.Serialize(T, IBufferWriter&lt;byte&gt;, ...) which expects an interface.
+/// Ref structs cannot be boxed for interface dispatch without changing the public API.
+/// To prevent misuse, this struct tracks ownership state and throws ObjectDisposedException
+/// if methods are called after ToPooledMemory() or Dispose().
+/// </para>
 /// </remarks>
 internal struct PooledBufferWriter : IBufferWriter<byte>
 {
-    private byte[] _buffer;
+    private byte[]? _buffer;
     private int _written;
+    private bool _ownershipTransferred;
 
     /// <summary>
     /// Creates a new PooledBufferWriter with the specified initial capacity.
@@ -1417,6 +1428,7 @@ internal struct PooledBufferWriter : IBufferWriter<byte>
     {
         _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
         _written = 0;
+        _ownershipTransferred = false;
     }
 
     /// <summary>
@@ -1424,13 +1436,21 @@ internal struct PooledBufferWriter : IBufferWriter<byte>
     /// </summary>
     public readonly int WrittenCount => _written;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private readonly void ThrowIfDisposed()
+    {
+        if (_ownershipTransferred || _buffer is null)
+            throw new ObjectDisposedException(nameof(PooledBufferWriter), "Buffer ownership has been transferred or disposed.");
+    }
+
     /// <inheritdoc />
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Advance(int count)
     {
+        ThrowIfDisposed();
         ArgumentOutOfRangeException.ThrowIfNegative(count);
 
-        if (_written + count > _buffer.Length)
+        if (_written + count > _buffer!.Length)
             throw new InvalidOperationException("Cannot advance past the end of the buffer");
 
         _written += count;
@@ -1440,16 +1460,18 @@ internal struct PooledBufferWriter : IBufferWriter<byte>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public Memory<byte> GetMemory(int sizeHint = 0)
     {
+        ThrowIfDisposed();
         EnsureCapacity(sizeHint);
-        return _buffer.AsMemory(_written);
+        return _buffer!.AsMemory(_written);
     }
 
     /// <inheritdoc />
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public Span<byte> GetSpan(int sizeHint = 0)
     {
+        ThrowIfDisposed();
         EnsureCapacity(sizeHint);
-        return _buffer.AsSpan(_written);
+        return _buffer!.AsSpan(_written);
     }
 
     /// <summary>
@@ -1457,12 +1479,15 @@ internal struct PooledBufferWriter : IBufferWriter<byte>
     /// After calling this method, this PooledBufferWriter instance should not be used.
     /// </summary>
     /// <returns>A PooledMemory containing the serialized data.</returns>
+    /// <exception cref="ObjectDisposedException">Thrown if ownership has already been transferred or disposed.</exception>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public PooledMemory ToPooledMemory()
     {
-        var result = new PooledMemory(_buffer, _written);
-        // Clear reference - ownership transferred to caller
-        _buffer = null!;
+        ThrowIfDisposed();
+        var result = new PooledMemory(_buffer!, _written);
+        // Mark ownership transferred and clear reference
+        _ownershipTransferred = true;
+        _buffer = null;
         _written = 0;
         return result;
     }
@@ -1473,11 +1498,12 @@ internal struct PooledBufferWriter : IBufferWriter<byte>
     /// </summary>
     public void Dispose()
     {
-        if (_buffer is not null)
+        if (_buffer is not null && !_ownershipTransferred)
         {
             ArrayPool<byte>.Shared.Return(_buffer, clearArray: true);
-            _buffer = null!;
+            _buffer = null;
             _written = 0;
+            _ownershipTransferred = true;
         }
     }
 
@@ -1487,7 +1513,7 @@ internal struct PooledBufferWriter : IBufferWriter<byte>
         if (sizeHint < 1)
             sizeHint = 1;
 
-        var remaining = _buffer.Length - _written;
+        var remaining = _buffer!.Length - _written;
         if (remaining < sizeHint)
         {
             Grow(sizeHint);
@@ -1498,7 +1524,29 @@ internal struct PooledBufferWriter : IBufferWriter<byte>
     private void Grow(int sizeHint)
     {
         // Calculate new size: at least double, but ensure it fits the requested size
-        var newSize = Math.Max(_buffer.Length * 2, _written + sizeHint);
+        // Use checked arithmetic to detect overflow and cap at Array.MaxLength
+        var currentLength = _buffer!.Length;
+        int newSize;
+        try
+        {
+            var doubled = checked(currentLength * 2);
+            var required = checked(_written + sizeHint);
+            newSize = Math.Max(doubled, required);
+        }
+        catch (OverflowException)
+        {
+            // On overflow, use the maximum array size
+            newSize = Array.MaxLength;
+        }
+
+        // Ensure we don't exceed the maximum array size
+        if (newSize > Array.MaxLength)
+            newSize = Array.MaxLength;
+
+        // If we can't grow anymore and current capacity isn't enough, throw
+        if (newSize <= currentLength)
+            throw new InvalidOperationException("Cannot grow buffer: maximum size reached.");
+
         var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
 
         // Copy existing data

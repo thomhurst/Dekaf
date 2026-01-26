@@ -10,6 +10,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Dekaf.Tests.Unit" />
     <InternalsVisibleTo Include="Dekaf.Tests.Integration" />
+    <InternalsVisibleTo Include="Dekaf.Benchmarks" />
   </ItemGroup>
 
   <ItemGroup>
