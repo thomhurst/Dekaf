@@ -1,4 +1,3 @@
-using ModularPipelines.Attributes;
 using ModularPipelines.Context;
 using ModularPipelines.DotNet.Extensions;
 using ModularPipelines.DotNet.Options;
@@ -8,31 +7,23 @@ using ModularPipelines.Modules;
 
 namespace Dekaf.Pipeline.Modules;
 
-[DependsOn<GenerateVersionModule>]
-[DependsOn<RestoreModule>]
-public class BuildModule : Module<CommandResult>
+/// <summary>
+/// Restores NuGet packages for the solution.
+/// This must run first to avoid parallel restore conflicts.
+/// </summary>
+public class RestoreModule : Module<CommandResult>
 {
     protected override async Task<CommandResult?> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)
     {
-        var versionModule = await context.GetModule<GenerateVersionModule>();
-        var version = versionModule.ValueOrDefault?.SemVer ?? "1.0.0";
-
         var solutionFile = context.Git().RootDirectory.FindFile(x => x.Name == "Dekaf.sln");
         if (solutionFile is null)
         {
             throw new InvalidOperationException("Dekaf.sln not found");
         }
 
-        return await context.DotNet().Build(new DotNetBuildOptions
+        return await context.DotNet().Restore(new DotNetRestoreOptions
         {
-            ProjectSolution = solutionFile.Path,
-            Configuration = "Release",
-            NoRestore = true,
-            Properties =
-            [
-                new KeyValue("Version", version),
-                new KeyValue("TreatWarningsAsErrors", "true")
-            ]
+            ProjectSolution = solutionFile.Path
         }, null, cancellationToken);
     }
 }
