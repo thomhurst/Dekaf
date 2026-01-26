@@ -287,10 +287,13 @@ public sealed class RecordBatch : IDisposable
 /// </remarks>
 internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 {
-    // Pool for reusing List<Record> instances to reduce GC pressure
-    // Using ConcurrentBag for thread-safe pooling with good performance
+    // Pool for reusing List<Record> instances to reduce GC pressure.
+    // Using ConcurrentBag for thread-safe pooling with good performance.
+    // Note: MaxPooledLists is a soft limit because ConcurrentBag.Count is not atomic with Add().
+    // Under high concurrency, the pool may temporarily exceed MaxPooledLists, but this is acceptable
+    // as it only affects memory usage slightly and avoids the overhead of stricter synchronization.
     private static readonly System.Collections.Concurrent.ConcurrentBag<List<Record>> s_listPool = new();
-    private const int MaxPooledLists = 64; // Limit pool size to prevent unbounded growth
+    private const int MaxPooledLists = 64;
 
     private readonly ReadOnlyMemory<byte> _rawData;
     private readonly int _count;
@@ -376,7 +379,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     {
         _disposed = true;
 
-        // Return list to pool for reuse (if pool isn't full)
+        // Return list to pool for reuse (soft limit - see MaxPooledLists comment)
         if (_parsedRecords is not null && s_listPool.Count < MaxPooledLists)
         {
             _parsedRecords.Clear();
