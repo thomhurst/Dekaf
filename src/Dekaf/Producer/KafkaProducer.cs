@@ -389,12 +389,17 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     {
         topicInfo = null;
 
+        // Early exit if disposed - prevents using stale cache from disposed producer
+        if (_disposed)
+            return false;
+
         // Check if cache is for this metadata manager, topic, and still valid
+        // Use signed comparison to handle TickCount64 wraparound (every ~292 million years)
         var currentTicks = Environment.TickCount64;
         if (t_cachedMetadataManager == _metadataManager &&
             t_cachedTopicName == topic &&
             t_cachedTopicInfo is not null &&
-            currentTicks < t_cachedTopicValidUntilTicks)
+            (t_cachedTopicValidUntilTicks - currentTicks) > 0)
         {
             topicInfo = t_cachedTopicInfo;
             return true;

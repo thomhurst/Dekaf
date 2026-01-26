@@ -71,6 +71,19 @@ public readonly struct PooledMemory
 /// Data for a single record in batch append operations.
 /// This is a readonly struct to enable passing via ReadOnlySpan for batch operations.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <b>Ownership Semantics:</b> When passed to <see cref="RecordAccumulator.TryAppendFireAndForgetBatch"/>,
+/// ownership of pooled resources (Key.Array, Value.Array, PooledHeaderArray) transfers to the accumulator
+/// for successfully appended records. The accumulator will return these arrays to their pools when the
+/// batch completes or fails.
+/// </para>
+/// <para>
+/// <b>Partial Failure:</b> If the batch operation fails partway through (e.g., accumulator disposed),
+/// the caller is responsible for returning pooled resources for records that were NOT appended.
+/// The return value indicates how many records were successfully appended.
+/// </para>
+/// </remarks>
 public readonly struct ProducerRecordData
 {
     public long Timestamp { get; init; }

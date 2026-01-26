@@ -252,6 +252,17 @@ public class AccumulatorBenchmarks
 
         // Single batch append with one lock acquisition
         const int partition = 0;
-        _accumulator.TryAppendFireAndForgetBatch(_topic, partition, records);
+        var success = _accumulator.TryAppendFireAndForgetBatch(_topic, partition, records);
+
+        // If batch append failed (accumulator disposed), clean up pooled resources
+        // Ownership of appended records transferred to accumulator; we only clean up on failure
+        if (!success)
+        {
+            foreach (var record in records)
+            {
+                record.Key.Return();
+                record.Value.Return();
+            }
+        }
     }
 }
