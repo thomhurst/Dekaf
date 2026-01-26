@@ -92,7 +92,8 @@ public sealed class AvroSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     /// for the same subject will use the cached value without blocking.
     /// For best performance, use <see cref="WarmupAsync"/> before starting production.
     /// </remarks>
-    public void Serialize(T value, IBufferWriter<byte> destination, SerializationContext context)
+    public void Serialize<TWriter>(T value, TWriter destination, SerializationContext context)
+        where TWriter : IBufferWriter<byte>, allows ref struct
     {
         ArgumentNullException.ThrowIfNull(value);
 

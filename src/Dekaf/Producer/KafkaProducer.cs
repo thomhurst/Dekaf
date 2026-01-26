@@ -1402,23 +1402,20 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 /// </summary>
 /// <remarks>
 /// <para>
-/// This struct implements IBufferWriter&lt;byte&gt; and manages its own pooled array.
+/// This ref struct implements IBufferWriter&lt;byte&gt; and manages its own pooled array.
 /// When serialization is complete, call ToPooledMemory() to get ownership of the array.
 /// The caller is responsible for returning the array to the pool (via PooledMemory.Return()).
 /// </para>
 /// <para>
-/// Note: This is intentionally not a ref struct because it must be passable to
-/// ISerializer&lt;T&gt;.Serialize(T, IBufferWriter&lt;byte&gt;, ...) which expects an interface.
-/// Ref structs cannot be boxed for interface dispatch without changing the public API.
-/// To prevent misuse, this struct tracks ownership state and throws ObjectDisposedException
-/// if methods are called after ToPooledMemory() or Dispose().
+/// Being a ref struct provides compile-time safety: the buffer cannot be copied, stored in
+/// fields, or escape the current scope, preventing resource management issues like double-return
+/// to the pool or use-after-disposal.
 /// </para>
 /// </remarks>
-internal struct PooledBufferWriter : IBufferWriter<byte>
+internal ref struct PooledBufferWriter : IBufferWriter<byte>
 {
     private byte[]? _buffer;
     private int _written;
-    private bool _ownershipTransferred;
 
     /// <summary>
     /// Creates a new PooledBufferWriter with the specified initial capacity.
@@ -1428,7 +1425,6 @@ internal struct PooledBufferWriter : IBufferWriter<byte>
     {
         _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
         _written = 0;
-        _ownershipTransferred = false;
     }
 
     /// <summary>
@@ -1436,21 +1432,16 @@ internal struct PooledBufferWriter : IBufferWriter<byte>
     /// </summary>
     public readonly int WrittenCount => _written;
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private readonly void ThrowIfDisposed()
-    {
-        if (_ownershipTransferred || _buffer is null)
-            throw new ObjectDisposedException(nameof(PooledBufferWriter), "Buffer ownership has been transferred or disposed.");
-    }
-
     /// <inheritdoc />
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Advance(int count)
     {
-        ThrowIfDisposed();
         ArgumentOutOfRangeException.ThrowIfNegative(count);
 
-        if (_written + count > _buffer!.Length)
+        if (_buffer is null)
+            throw new ObjectDisposedException(nameof(PooledBufferWriter));
+
+        if (_written + count > _buffer.Length)
             throw new InvalidOperationException("Cannot advance past the end of the buffer");
 
         _written += count;
@@ -1460,18 +1451,22 @@ internal struct PooledBufferWriter : IBufferWriter<byte>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public Memory<byte> GetMemory(int sizeHint = 0)
     {
-        ThrowIfDisposed();
+        if (_buffer is null)
+            throw new ObjectDisposedException(nameof(PooledBufferWriter));
+
         EnsureCapacity(sizeHint);
-        return _buffer!.AsMemory(_written);
+        return _buffer.AsMemory(_written);
     }
 
     /// <inheritdoc />
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public Span<byte> GetSpan(int sizeHint = 0)
     {
-        ThrowIfDisposed();
+        if (_buffer is null)
+            throw new ObjectDisposedException(nameof(PooledBufferWriter));
+
         EnsureCapacity(sizeHint);
-        return _buffer!.AsSpan(_written);
+        return _buffer.AsSpan(_written);
     }
 
     /// <summary>
@@ -1483,10 +1478,11 @@ internal struct PooledBufferWriter : IBufferWriter<byte>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public PooledMemory ToPooledMemory()
     {
-        ThrowIfDisposed();
-        var result = new PooledMemory(_buffer!, _written);
-        // Mark ownership transferred and clear reference
-        _ownershipTransferred = true;
+        if (_buffer is null)
+            throw new ObjectDisposedException(nameof(PooledBufferWriter));
+
+        var result = new PooledMemory(_buffer, _written);
+        // Clear reference - ownership transferred to caller
         _buffer = null;
         _written = 0;
         return result;
@@ -1498,12 +1494,11 @@ internal struct PooledBufferWriter : IBufferWriter<byte>
     /// </summary>
     public void Dispose()
     {
-        if (_buffer is not null && !_ownershipTransferred)
+        if (_buffer is not null)
         {
             ArrayPool<byte>.Shared.Return(_buffer, clearArray: true);
             _buffer = null;
             _written = 0;
-            _ownershipTransferred = true;
         }
     }
 

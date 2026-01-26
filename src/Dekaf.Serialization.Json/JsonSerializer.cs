@@ -21,10 +21,16 @@ public sealed class JsonSerializer<T> : ISerde<T>
         };
     }
 
-    public void Serialize(T value, IBufferWriter<byte> destination, SerializationContext context)
+    public void Serialize<TWriter>(T value, TWriter destination, SerializationContext context)
+        where TWriter : IBufferWriter<byte>, allows ref struct
     {
-        using var writer = new Utf8JsonWriter(destination);
-        System.Text.Json.JsonSerializer.Serialize(writer, value, _options);
+        // Note: Utf8JsonWriter requires IBufferWriter<byte> directly, which is incompatible
+        // with the allows ref struct constraint. We use SerializeToUtf8Bytes as a workaround.
+        // For non-ref struct writers, this adds a copy but maintains compatibility.
+        var jsonBytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(value, _options);
+        var span = destination.GetSpan(jsonBytes.Length);
+        jsonBytes.AsSpan().CopyTo(span);
+        destination.Advance(jsonBytes.Length);
     }
 
     public T Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
