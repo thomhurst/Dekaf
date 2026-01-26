@@ -604,6 +604,13 @@ internal sealed class PartitionBatch
     // IMPORTANT: SpinLock is a struct, must never be copied. Access via ref only.
     private SpinLock _spinLock = new(enableThreadOwnerTracking: false);
 
+    // Lock-free single-producer optimization: tracks the thread that owns this batch.
+    // Most producers send to the same partition from a single thread, so we can skip
+    // locking entirely when the same thread appends consecutively. When a different
+    // thread appends, we fall back to locking and transfer ownership.
+    // Value of -1 means no owner (initial state or after contention).
+    private volatile int _ownerThreadId = -1;
+
     private long _baseTimestamp;
     private int _estimatedSize;
     // Note: _offsetDelta removed - it always equals _recordCount at assignment time
@@ -730,6 +737,9 @@ internal sealed class PartitionBatch
     /// 1. Renting a PooledValueTaskSource
     /// 2. Storing the completion source in the batch
     /// 3. Setting the result when the batch completes
+    ///
+    /// Additionally uses lock-free single-producer optimization: when the same thread
+    /// appends consecutively (common pattern), we skip locking entirely.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public RecordAppendResult TryAppendFireAndForget(
@@ -742,70 +752,114 @@ internal sealed class PartitionBatch
         // Pre-compute record size outside the lock - depends only on input parameters
         var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
 
+        var currentThreadId = Environment.CurrentManagedThreadId;
+
+        // FAST PATH: Lock-free single-producer optimization.
+        // If the same thread that last appended is appending again, we can skip locking.
+        // This is the common case for producers sending multiple messages in a loop.
+        if (_ownerThreadId == currentThreadId)
+        {
+            return TryAppendFireAndForgetCore(timestamp, key, value, headers, pooledHeaderArray, recordSize);
+        }
+
+        // SLOW PATH: Different thread or first append - acquire lock and claim ownership.
+        return TryAppendFireAndForgetWithLock(timestamp, key, value, headers, pooledHeaderArray, recordSize, currentThreadId);
+    }
+
+    /// <summary>
+    /// Core append logic without locking. Called when we've verified single-producer pattern
+    /// or when we already hold the lock.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private RecordAppendResult TryAppendFireAndForgetCore(
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
+        int recordSize)
+    {
+        if (_recordCount == 0)
+        {
+            _baseTimestamp = timestamp;
+        }
+
+        // Check size limit
+        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        // Grow arrays if needed (rare - only happens if batch fills beyond initial capacity)
+        if (_recordCount >= _records.Length)
+        {
+            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
+        }
+        // Note: No need to grow _completionSources for fire-and-forget
+        if (_pooledArrayCount + 2 >= _pooledArrays.Length) // +2 for key and value
+        {
+            GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
+        }
+        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
+        {
+            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
+        }
+
+        // Track pooled arrays for returning to pool later
+        if (key.Array is not null)
+        {
+            _pooledArrays[_pooledArrayCount++] = key.Array;
+        }
+        if (value.Array is not null)
+        {
+            _pooledArrays[_pooledArrayCount++] = value.Array;
+        }
+        if (pooledHeaderArray is not null)
+        {
+            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
+        }
+
+        var timestampDelta = (int)(timestamp - _baseTimestamp);
+        var record = new Record
+        {
+            TimestampDelta = timestampDelta,
+            OffsetDelta = _recordCount,
+            Key = key.Memory,
+            IsKeyNull = key.IsNull,
+            Value = value.Memory,
+            IsValueNull = false,
+            Headers = headers
+        };
+
+        _records[_recordCount++] = record;
+        _estimatedSize += recordSize;
+
+        return new RecordAppendResult(true);
+    }
+
+    /// <summary>
+    /// Slow path: acquires lock, claims ownership, then appends.
+    /// Called when a different thread is appending or on first append.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private RecordAppendResult TryAppendFireAndForgetWithLock(
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
+        int recordSize,
+        int currentThreadId)
+    {
         var lockTaken = false;
         try
         {
             _spinLock.Enter(ref lockTaken);
 
-            if (_recordCount == 0)
-            {
-                _baseTimestamp = timestamp;
-            }
+            // Claim ownership for future lock-free appends from this thread
+            _ownerThreadId = currentThreadId;
 
-            // Check size limit
-            if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
-            {
-                return new RecordAppendResult(false);
-            }
-
-            // Grow arrays if needed (rare - only happens if batch fills beyond initial capacity)
-            if (_recordCount >= _records.Length)
-            {
-                GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
-            }
-            // Note: No need to grow _completionSources for fire-and-forget
-            if (_pooledArrayCount + 2 >= _pooledArrays.Length) // +2 for key and value
-            {
-                GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
-            }
-            if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
-            {
-                GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
-            }
-
-            // Track pooled arrays for returning to pool later
-            if (key.Array is not null)
-            {
-                _pooledArrays[_pooledArrayCount++] = key.Array;
-            }
-            if (value.Array is not null)
-            {
-                _pooledArrays[_pooledArrayCount++] = value.Array;
-            }
-            if (pooledHeaderArray is not null)
-            {
-                _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
-            }
-
-            var timestampDelta = (int)(timestamp - _baseTimestamp);
-            var record = new Record
-            {
-                TimestampDelta = timestampDelta,
-                OffsetDelta = _recordCount,
-                Key = key.Memory,
-                IsKeyNull = key.IsNull,
-                Value = value.Memory,
-                IsValueNull = false,
-                Headers = headers
-            };
-
-            _records[_recordCount++] = record;
-            _estimatedSize += recordSize;
-
-            // Fire-and-forget: Skip completion source tracking entirely
-            // This is the key optimization - no PooledValueTaskSource rental or storage
-
-            return new RecordAppendResult(true);
+            return TryAppendFireAndForgetCore(timestamp, key, value, headers, pooledHeaderArray, recordSize);
         }
         finally
         {
