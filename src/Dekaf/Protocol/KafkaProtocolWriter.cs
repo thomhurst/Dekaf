@@ -134,18 +134,17 @@ public ref struct KafkaProtocolWriter
     private void WriteVarUInt(uint value)
     {
         // Maximum 5 bytes for a 32-bit varint
-        Span<byte> buffer = stackalloc byte[5];
+        // Write directly to output span to avoid stackalloc + copy overhead
+        var span = _output.GetSpan(5);
         var pos = 0;
 
         while (value >= 0x80)
         {
-            buffer[pos++] = (byte)(value | 0x80);
+            span[pos++] = (byte)(value | 0x80);
             value >>= 7;
         }
-        buffer[pos++] = (byte)value;
+        span[pos++] = (byte)value;
 
-        var span = _output.GetSpan(pos);
-        buffer[..pos].CopyTo(span);
         _output.Advance(pos);
         _bytesWritten += pos;
     }
@@ -153,18 +152,17 @@ public ref struct KafkaProtocolWriter
     private void WriteVarULong(ulong value)
     {
         // Maximum 10 bytes for a 64-bit varint
-        Span<byte> buffer = stackalloc byte[10];
+        // Write directly to output span to avoid stackalloc + copy overhead
+        var span = _output.GetSpan(10);
         var pos = 0;
 
         while (value >= 0x80)
         {
-            buffer[pos++] = (byte)(value | 0x80);
+            span[pos++] = (byte)(value | 0x80);
             value >>= 7;
         }
-        buffer[pos++] = (byte)value;
+        span[pos++] = (byte)value;
 
-        var span = _output.GetSpan(pos);
-        buffer[..pos].CopyTo(span);
         _output.Advance(pos);
         _bytesWritten += pos;
     }
@@ -195,6 +193,26 @@ public ref struct KafkaProtocolWriter
             return;
         }
 
+        // Fast path for short strings (topic names, client IDs, etc.)
+        // Avoids double-pass of GetByteCount + GetBytes by using stackalloc buffer
+        if (value.Length <= 128)
+        {
+            // Max UTF-8 expansion is 3 bytes per char for BMP, 4 for surrogate pairs
+            // For 128 chars, 384 bytes covers all BMP characters safely
+            Span<byte> buffer = stackalloc byte[384];
+            var actualBytes = Encoding.UTF8.GetBytes(value, buffer);
+            WriteInt16((short)actualBytes);
+            if (actualBytes > 0)
+            {
+                var outputSpan = _output.GetSpan(actualBytes);
+                buffer[..actualBytes].CopyTo(outputSpan);
+                _output.Advance(actualBytes);
+                _bytesWritten += actualBytes;
+            }
+            return;
+        }
+
+        // Slow path for long strings
         var byteCount = Encoding.UTF8.GetByteCount(value);
         WriteInt16((short)byteCount);
 
@@ -213,6 +231,23 @@ public ref struct KafkaProtocolWriter
     /// </summary>
     public void WriteStringContent(string value)
     {
+        // Fast path for short strings
+        // Avoids double-pass of GetByteCount + GetBytes by using stackalloc buffer
+        if (value.Length <= 128)
+        {
+            Span<byte> buffer = stackalloc byte[384];
+            var actualBytes = Encoding.UTF8.GetBytes(value, buffer);
+            if (actualBytes > 0)
+            {
+                var outputSpan = _output.GetSpan(actualBytes);
+                buffer[..actualBytes].CopyTo(outputSpan);
+                _output.Advance(actualBytes);
+                _bytesWritten += actualBytes;
+            }
+            return;
+        }
+
+        // Slow path for long strings
         var byteCount = Encoding.UTF8.GetByteCount(value);
         if (byteCount > 0)
         {
@@ -252,6 +287,26 @@ public ref struct KafkaProtocolWriter
             return;
         }
 
+        // Fast path for short strings (topic names, header keys, etc.)
+        // Avoids double-pass of GetByteCount + GetBytes by using stackalloc buffer
+        if (value.Length <= 128)
+        {
+            // Max UTF-8 expansion is 3 bytes per char for BMP, 4 for surrogate pairs
+            // For 128 chars, 384 bytes covers all BMP characters safely
+            Span<byte> buffer = stackalloc byte[384];
+            var actualBytes = Encoding.UTF8.GetBytes(value, buffer);
+            WriteUnsignedVarInt(actualBytes + 1);
+            if (actualBytes > 0)
+            {
+                var outputSpan = _output.GetSpan(actualBytes);
+                buffer[..actualBytes].CopyTo(outputSpan);
+                _output.Advance(actualBytes);
+                _bytesWritten += actualBytes;
+            }
+            return;
+        }
+
+        // Slow path for long strings
         var byteCount = Encoding.UTF8.GetByteCount(value);
         WriteUnsignedVarInt(byteCount + 1);
 

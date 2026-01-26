@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using Dekaf.Compression;
 
 namespace Dekaf.Protocol.Records;
@@ -19,7 +20,7 @@ public sealed class RecordBatch : IDisposable
     [ThreadStatic]
     private static ArrayBufferWriter<byte>? t_recordsBuffer;
     [ThreadStatic]
-    private static ArrayBufferWriter<byte>? t_crcBuffer;
+    private static ArrayBufferWriter<byte>? t_compressedBuffer;
 
     private static ArrayBufferWriter<byte> GetRecordsBuffer()
     {
@@ -36,13 +37,13 @@ public sealed class RecordBatch : IDisposable
         return buffer;
     }
 
-    private static ArrayBufferWriter<byte> GetCrcBuffer()
+    private static ArrayBufferWriter<byte> GetCompressedBuffer()
     {
-        var buffer = t_crcBuffer;
+        var buffer = t_compressedBuffer;
         if (buffer is null)
         {
             buffer = new ArrayBufferWriter<byte>(4096);
-            t_crcBuffer = buffer;
+            t_compressedBuffer = buffer;
         }
         else
         {
@@ -109,7 +110,8 @@ public sealed class RecordBatch : IDisposable
         {
             var registry = codecs ?? CompressionCodecRegistry.Default;
             var codec = registry.GetCodec(compression);
-            compressedBuffer = new ArrayBufferWriter<byte>(recordsData.Length);
+            // Use thread-local buffer to avoid per-batch allocation
+            compressedBuffer = GetCompressedBuffer();
             // Use WrittenMemory instead of ToArray() to avoid heap allocation
             codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), compressedBuffer);
             compressedRecords = compressedBuffer.WrittenSpan;
@@ -135,10 +137,16 @@ public sealed class RecordBatch : IDisposable
         // Write magic byte
         writer.WriteUInt8(Magic);
 
-        // Calculate CRC32C over everything after the CRC field
-        // Use thread-local buffer to avoid per-batch allocation
-        var crcBuffer = GetCrcBuffer();
-        var crcWriter = new KafkaProtocolWriter(crcBuffer);
+        // CRC content size: 2 (attributes) + 4 (lastOffsetDelta) + 8 (baseTimestamp) +
+        // 8 (maxTimestamp) + 8 (producerId) + 2 (producerEpoch) + 4 (baseSequence) +
+        // 4 (recordsCount) + compressedRecords = 40 + records
+        const int crcContentFixedSize = 40;
+        var crcContentSize = crcContentFixedSize + compressedRecords.Length;
+
+        // Get a span for CRC (4 bytes) + content, write content directly, calculate CRC, backpatch
+        // This eliminates the need for crcBuffer intermediate copy
+        var crcAndContentSpan = output.GetSpan(4 + crcContentSize);
+        var contentSpan = crcAndContentSpan.Slice(4); // Content starts after CRC
 
         var attributes = (short)Attributes;
         if (compression != CompressionType.None)
@@ -146,21 +154,34 @@ public sealed class RecordBatch : IDisposable
             attributes = (short)((attributes & ~0x07) | (int)compression);
         }
 
-        crcWriter.WriteInt16(attributes);
-        crcWriter.WriteInt32(LastOffsetDelta);
-        crcWriter.WriteInt64(BaseTimestamp);
-        crcWriter.WriteInt64(MaxTimestamp);
-        crcWriter.WriteInt64(ProducerId);
-        crcWriter.WriteInt16(ProducerEpoch);
-        crcWriter.WriteInt32(BaseSequence);
-        crcWriter.WriteInt32(Records.Count);
-        crcWriter.WriteRawBytes(compressedRecords);
+        // Write content directly using BinaryPrimitives
+        var offset = 0;
+        BinaryPrimitives.WriteInt16BigEndian(contentSpan[offset..], attributes);
+        offset += 2;
+        BinaryPrimitives.WriteInt32BigEndian(contentSpan[offset..], LastOffsetDelta);
+        offset += 4;
+        BinaryPrimitives.WriteInt64BigEndian(contentSpan[offset..], BaseTimestamp);
+        offset += 8;
+        BinaryPrimitives.WriteInt64BigEndian(contentSpan[offset..], MaxTimestamp);
+        offset += 8;
+        BinaryPrimitives.WriteInt64BigEndian(contentSpan[offset..], ProducerId);
+        offset += 8;
+        BinaryPrimitives.WriteInt16BigEndian(contentSpan[offset..], ProducerEpoch);
+        offset += 2;
+        BinaryPrimitives.WriteInt32BigEndian(contentSpan[offset..], BaseSequence);
+        offset += 4;
+        BinaryPrimitives.WriteInt32BigEndian(contentSpan[offset..], Records.Count);
+        offset += 4;
+        compressedRecords.CopyTo(contentSpan[offset..]);
 
-        var crc = Crc32C.Compute(crcBuffer.WrittenSpan);
-        writer.WriteInt32((int)crc);
+        // Calculate CRC over the content we just wrote
+        var crc = Crc32C.Compute(contentSpan[..crcContentSize]);
 
-        // Write the content
-        writer.WriteRawBytes(crcBuffer.WrittenSpan);
+        // Backpatch CRC at the beginning
+        BinaryPrimitives.WriteInt32BigEndian(crcAndContentSpan, (int)crc);
+
+        // Advance the output by the full amount written
+        output.Advance(4 + crcContentSize);
     }
 
     /// <summary>

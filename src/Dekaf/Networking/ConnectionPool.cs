@@ -5,6 +5,7 @@ namespace Dekaf.Networking;
 
 /// <summary>
 /// Connection pool for managing connections to Kafka brokers.
+/// Supports multiple connections per broker for parallel request handling.
 /// </summary>
 public sealed class ConnectionPool : IConnectionPool
 {
@@ -12,23 +13,33 @@ public sealed class ConnectionPool : IConnectionPool
     private readonly ConnectionOptions _connectionOptions;
     private readonly ILoggerFactory? _loggerFactory;
     private readonly ILogger<ConnectionPool>? _logger;
+    private readonly int _connectionsPerBroker;
 
     private readonly ConcurrentDictionary<int, BrokerInfo> _brokers = new();
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();
     private readonly ConcurrentDictionary<int, IKafkaConnection> _connectionsById = new();
     private readonly ConcurrentDictionary<EndpointKey, Lazy<ValueTask<IKafkaConnection>>> _connectionCreationTasks = new();
+
+    // Multi-connection support: connection groups and round-robin index
+    private readonly ConcurrentDictionary<int, IKafkaConnection[]> _connectionGroupsById = new();
+    private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection[]> _connectionGroupsByEndpoint = new();
+    private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<IKafkaConnection>>> _connectionGroupCreationTasks = new();
+    private int _nextConnectionIndex;
+
     private readonly SemaphoreSlim _disposeLock = new(1, 1);
     private volatile bool _disposed;
 
     public ConnectionPool(
         string? clientId = null,
         ConnectionOptions? connectionOptions = null,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null,
+        int connectionsPerBroker = 1)
     {
         _clientId = clientId;
         _connectionOptions = connectionOptions ?? new ConnectionOptions();
         _loggerFactory = loggerFactory;
         _logger = loggerFactory?.CreateLogger<ConnectionPool>();
+        _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
     }
 
     public void RegisterBroker(int brokerId, string host, int port)
@@ -42,6 +53,13 @@ public sealed class ConnectionPool : IConnectionPool
         if (_disposed)
             throw new ObjectDisposedException(nameof(ConnectionPool));
 
+        // Multi-connection path: use connection groups with round-robin selection
+        if (_connectionsPerBroker > 1)
+        {
+            return await GetConnectionFromGroupAsync(brokerId, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Single-connection path (original behavior)
         // Try to get existing connection
         if (_connectionsById.TryGetValue(brokerId, out var existing) && existing.IsConnected)
         {
@@ -56,6 +74,119 @@ public sealed class ConnectionPool : IConnectionPool
 
         return await GetOrCreateConnectionAsync(brokerId, brokerInfo.Host, brokerInfo.Port, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private async ValueTask<IKafkaConnection> GetConnectionFromGroupAsync(int brokerId, CancellationToken cancellationToken)
+    {
+        // Get broker info
+        if (!_brokers.TryGetValue(brokerId, out var brokerInfo))
+        {
+            throw new InvalidOperationException($"Unknown broker ID: {brokerId}");
+        }
+
+        // Try to get existing connection group
+        if (_connectionGroupsById.TryGetValue(brokerId, out var connections))
+        {
+            // Round-robin selection among available connections
+            var index = (uint)Interlocked.Increment(ref _nextConnectionIndex) % (uint)connections.Length;
+            var connection = connections[index];
+
+            if (connection is not null && connection.IsConnected)
+            {
+                return connection;
+            }
+
+            // Connection at this index is invalid, try to replace it
+            return await ReplaceConnectionInGroupAsync(brokerId, brokerInfo, (int)index, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Need to create new connection group
+        return await CreateConnectionGroupAsync(brokerId, brokerInfo, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<IKafkaConnection> CreateConnectionGroupAsync(int brokerId, BrokerInfo brokerInfo, CancellationToken cancellationToken)
+    {
+        // Create all connections for this broker in parallel
+        var connections = new IKafkaConnection[_connectionsPerBroker];
+        var tasks = new Task<IKafkaConnection>[_connectionsPerBroker];
+
+        for (var i = 0; i < _connectionsPerBroker; i++)
+        {
+            var index = i;
+            // Use GetOrAdd pattern for each connection to avoid duplicates
+            var lazyTask = _connectionGroupCreationTasks.GetOrAdd(
+                (brokerId, index),
+                _ => new Lazy<ValueTask<IKafkaConnection>>(() =>
+                    CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, CancellationToken.None)));
+
+            tasks[i] = lazyTask.Value.AsTask();
+        }
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        for (var i = 0; i < _connectionsPerBroker; i++)
+        {
+            connections[i] = tasks[i].Result;
+            _connectionGroupCreationTasks.TryRemove((brokerId, i), out _);
+        }
+
+        // Atomically set the connection group
+        _connectionGroupsById[brokerId] = connections;
+        _connectionGroupsByEndpoint[new EndpointKey(brokerInfo.Host, brokerInfo.Port)] = connections;
+
+        _logger?.LogDebug("Created connection group with {Count} connections to broker {BrokerId}", _connectionsPerBroker, brokerId);
+
+        // Return the first connection
+        return connections[0];
+    }
+
+    private async ValueTask<IKafkaConnection> ReplaceConnectionInGroupAsync(int brokerId, BrokerInfo brokerInfo, int index, CancellationToken cancellationToken)
+    {
+        // Use GetOrAdd pattern to ensure only one replacement happens
+        var lazyTask = _connectionGroupCreationTasks.GetOrAdd(
+            (brokerId, index),
+            _ => new Lazy<ValueTask<IKafkaConnection>>(() =>
+                CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, CancellationToken.None)));
+
+        try
+        {
+            var newConnection = await lazyTask.Value.ConfigureAwait(false);
+
+            // Update the connection in the group
+            if (_connectionGroupsById.TryGetValue(brokerId, out var connections))
+            {
+                var oldConnection = Interlocked.Exchange(ref connections[index], newConnection);
+                if (oldConnection is not null && oldConnection != newConnection)
+                {
+                    await oldConnection.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+
+            _connectionGroupCreationTasks.TryRemove((brokerId, index), out _);
+            return newConnection;
+        }
+        catch
+        {
+            _connectionGroupCreationTasks.TryRemove((brokerId, index), out _);
+            throw;
+        }
+    }
+
+    private async ValueTask<IKafkaConnection> CreateConnectionForGroupAsync(int brokerId, string host, int port, int index, CancellationToken cancellationToken)
+    {
+        var connection = new KafkaConnection(
+            brokerId,
+            host,
+            port,
+            _clientId,
+            _connectionOptions,
+            _loggerFactory?.CreateLogger<KafkaConnection>());
+
+        await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
+
+        _logger?.LogDebug("Created connection {Index} to broker {BrokerId} at {Host}:{Port}", index, brokerId, host, port);
+
+        return connection;
     }
 
     public async ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken cancellationToken = default)
@@ -189,9 +320,22 @@ public sealed class ConnectionPool : IConnectionPool
         {
             var tasks = new List<ValueTask>();
 
+            // Close single connections
             foreach (var connection in _connectionsByEndpoint.Values)
             {
                 tasks.Add(connection.DisposeAsync());
+            }
+
+            // Close connection groups
+            foreach (var connectionGroup in _connectionGroupsById.Values)
+            {
+                foreach (var connection in connectionGroup)
+                {
+                    if (connection is not null)
+                    {
+                        tasks.Add(connection.DisposeAsync());
+                    }
+                }
             }
 
             foreach (var task in tasks)
@@ -209,6 +353,9 @@ public sealed class ConnectionPool : IConnectionPool
             _connectionsByEndpoint.Clear();
             _connectionsById.Clear();
             _connectionCreationTasks.Clear();
+            _connectionGroupsById.Clear();
+            _connectionGroupsByEndpoint.Clear();
+            _connectionGroupCreationTasks.Clear();
         }
         finally
         {

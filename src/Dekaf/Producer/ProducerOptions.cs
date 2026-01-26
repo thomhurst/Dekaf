@@ -57,6 +57,13 @@ public sealed class ProducerOptions
     public int MaxInFlightRequestsPerConnection { get; init; } = 5;
 
     /// <summary>
+    /// Number of connections to maintain per broker for parallel request handling.
+    /// Higher values can improve throughput by reducing contention on the write lock.
+    /// Default is based on processor count (minimum 2).
+    /// </summary>
+    public int ConnectionsPerBroker { get; init; } = Math.Max(2, Environment.ProcessorCount / 2);
+
+    /// <summary>
     /// Number of retries.
     /// </summary>
     public int Retries { get; init; } = int.MaxValue;
