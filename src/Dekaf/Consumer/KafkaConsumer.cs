@@ -41,6 +41,28 @@ internal sealed class PendingFetchData : IDisposable
     /// </summary>
     public TopicPartition TopicPartition { get; }
 
+    /// <summary>
+    /// Tracks the last offset yielded for batch position updates.
+    /// Updated as records are consumed, used for final position update when fetch is exhausted.
+    /// Inspired by librdkafka's batch-level position tracking.
+    /// </summary>
+    /// <remarks>
+    /// Thread-safety: Not required. PendingFetchData is consumed sequentially by the single
+    /// consumer poll loop thread. Each instance handles one partition's fetch response.
+    /// </remarks>
+    public long LastYieldedOffset { get; private set; } = -1;
+
+    /// <summary>
+    /// Tracks total bytes consumed for batch statistics update.
+    /// </summary>
+    public long TotalBytesConsumed { get; private set; }
+
+    /// <summary>
+    /// Tracks message count for batch statistics update.
+    /// Using long to prevent overflow in long-running scenarios with large fetches.
+    /// </summary>
+    public long MessageCount { get; private set; }
+
     public PendingFetchData(string topic, int partitionIndex, IReadOnlyList<RecordBatch> batches, Protocol.IPooledMemory? memoryOwner = null)
     {
         Topic = topic;
@@ -52,6 +74,18 @@ internal sealed class PendingFetchData : IDisposable
 
     public RecordBatch CurrentBatch => _batches[_batchIndex];
     public Record CurrentRecord => _batches[_batchIndex].Records[_recordIndex];
+
+    /// <summary>
+    /// Updates tracking for batch-level position and statistics updates.
+    /// Called after yielding each record.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public void TrackConsumed(long offset, int messageBytes)
+    {
+        LastYieldedOffset = offset;
+        TotalBytesConsumed += messageBytes;
+        MessageCount++;
+    }
 
     /// <summary>
     /// Gets all batches for memory estimation.
@@ -555,18 +589,29 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                         keyDeserializer: _keyDeserializer,
                         valueDeserializer: _valueDeserializer);
 
-                    // Update positions (thread-safe with ConcurrentDictionary)
-                    // Use cached TopicPartition to avoid per-message allocation
+                    // Update position immediately (per-message) to maintain API contract
+                    // Position() must return the next offset to be consumed
                     var nextOffset = offset + 1;
                     _positions[pending.TopicPartition] = nextOffset;
                     _fetchPositions[pending.TopicPartition] = nextOffset;
 
-                    // Track message consumed
+                    // Track consumed for batch-level statistics update (not position)
                     var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
                                        (record.IsValueNull ? 0 : record.Value.Length);
-                    _statisticsCollector.RecordMessageConsumed(pending.Topic, pending.PartitionIndex, messageBytes);
+                    pending.TrackConsumed(offset, messageBytes);
 
                     yield return result;
+                }
+
+                // Batch-level statistics update (once per partition-fetch, not per message)
+                // Position is already updated per-message above to maintain API contract
+                if (pending.MessageCount > 0)
+                {
+                    _statisticsCollector.RecordMessagesConsumedBatch(
+                        pending.Topic,
+                        pending.PartitionIndex,
+                        pending.MessageCount,
+                        pending.TotalBytesConsumed);
                 }
 
                 // This pending fetch is exhausted, remove and dispose it

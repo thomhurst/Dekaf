@@ -25,6 +25,11 @@ internal sealed class ProducerStatisticsCollector
     // Per-partition counters
     private readonly ConcurrentDictionary<(string Topic, int Partition), PartitionCounters> _partitionCounters = new();
 
+    // Reverse index: topic -> set of partitions for O(1) lookup in GetTopicStatistics()
+    // Avoids O(n²) scan of all partitions for each topic
+    // Uses ConcurrentDictionary<int, byte> as a concurrent HashSet (value is unused)
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, byte>> _topicPartitionIndex = new();
+
     public void RecordMessageProduced(string topic, int partition, int bytes)
     {
         Interlocked.Increment(ref _messagesProduced);
@@ -37,6 +42,22 @@ internal sealed class ProducerStatisticsCollector
         var partitionCounters = _partitionCounters.GetOrAdd(partitionKey, static _ => new PartitionCounters());
         partitionCounters.IncrementProduced(bytes);
         partitionCounters.IncrementQueued();
+
+        // Maintain reverse index for O(1) topic->partition lookup
+        var partitionSet = _topicPartitionIndex.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, byte>());
+        partitionSet.TryAdd(partition, 0);
+    }
+
+    /// <summary>
+    /// Fast path for fire-and-forget: only updates global atomic counters.
+    /// Skips per-topic/partition dictionary lookups for maximum throughput.
+    /// Inspired by librdkafka's atomic-only statistics in fire-and-forget mode.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public void RecordMessageProducedFast(int bytes)
+    {
+        Interlocked.Increment(ref _messagesProduced);
+        Interlocked.Add(ref _bytesProduced, bytes);
     }
 
     public void RecordMessageDelivered(string topic, int partition, int bytes)
@@ -136,22 +157,26 @@ internal sealed class ProducerStatisticsCollector
         {
             var (produced, delivered, failed, bytes) = counters.GetStats();
 
-            // Get partition stats for this topic
+            // Get partition stats for this topic using reverse index (O(1) per partition vs O(n) scan)
             var partitionStats = new Dictionary<int, PartitionStatistics>();
-            foreach (var ((t, partition), pCounters) in _partitionCounters)
+            if (_topicPartitionIndex.TryGetValue(topic, out var partitionSet))
             {
-                if (t != topic) continue;
-
-                var (pProduced, pDelivered, pFailed, pBytes, pQueued) = pCounters.GetStats();
-                partitionStats[partition] = new PartitionStatistics
+                foreach (var partition in partitionSet.Keys)
                 {
-                    Partition = partition,
-                    MessagesProduced = pProduced,
-                    MessagesDelivered = pDelivered,
-                    MessagesFailed = pFailed,
-                    BytesProduced = pBytes,
-                    QueuedMessages = pQueued
-                };
+                    if (_partitionCounters.TryGetValue((topic, partition), out var pCounters))
+                    {
+                        var (pProduced, pDelivered, pFailed, pBytes, pQueued) = pCounters.GetStats();
+                        partitionStats[partition] = new PartitionStatistics
+                        {
+                            Partition = partition,
+                            MessagesProduced = pProduced,
+                            MessagesDelivered = pDelivered,
+                            MessagesFailed = pFailed,
+                            BytesProduced = pBytes,
+                            QueuedMessages = pQueued
+                        };
+                    }
+                }
             }
 
             result[topic] = new TopicStatistics
@@ -245,6 +270,9 @@ internal sealed class ConsumerStatisticsCollector
     // Per-partition counters
     private readonly ConcurrentDictionary<(string Topic, int Partition), ConsumerPartitionCounters> _partitionCounters = new();
 
+    // Reverse index: topic -> set of partitions for O(1) lookup in GetTopicStatistics()
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, byte>> _topicPartitionIndex = new();
+
     public void RecordMessageConsumed(string topic, int partition, int bytes)
     {
         Interlocked.Increment(ref _messagesConsumed);
@@ -256,6 +284,33 @@ internal sealed class ConsumerStatisticsCollector
         var partitionKey = (topic, partition);
         var partitionCounters = _partitionCounters.GetOrAdd(partitionKey, static _ => new ConsumerPartitionCounters());
         partitionCounters.IncrementConsumed(bytes);
+
+        // Maintain reverse index for O(1) topic->partition lookup
+        var partitionSet = _topicPartitionIndex.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, byte>());
+        partitionSet.TryAdd(partition, 0);
+    }
+
+    /// <summary>
+    /// Batch version of RecordMessageConsumed for efficient statistics updates.
+    /// Called once per partition-fetch instead of per message.
+    /// Inspired by librdkafka's batch-level accounting.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public void RecordMessagesConsumedBatch(string topic, int partition, long messageCount, long bytes)
+    {
+        Interlocked.Add(ref _messagesConsumed, messageCount);
+        Interlocked.Add(ref _bytesConsumed, bytes);
+
+        var topicCounters = _topicCounters.GetOrAdd(topic, static _ => new ConsumerTopicCounters());
+        topicCounters.AddConsumed(messageCount, bytes);
+
+        var partitionKey = (topic, partition);
+        var partitionCounters = _partitionCounters.GetOrAdd(partitionKey, static _ => new ConsumerPartitionCounters());
+        partitionCounters.AddConsumed(messageCount, bytes);
+
+        // Maintain reverse index for O(1) topic->partition lookup
+        var partitionSet = _topicPartitionIndex.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, byte>());
+        partitionSet.TryAdd(partition, 0);
     }
 
     public void RecordRebalance()
@@ -280,6 +335,10 @@ internal sealed class ConsumerStatisticsCollector
         var partitionKey = (topic, partition);
         var counters = _partitionCounters.GetOrAdd(partitionKey, static _ => new ConsumerPartitionCounters());
         counters.SetHighWatermark(highWatermark);
+
+        // Maintain reverse index for O(1) topic->partition lookup
+        var partitionSet = _topicPartitionIndex.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, byte>());
+        partitionSet.TryAdd(partition, 0);
     }
 
     public (long MessagesConsumed, long BytesConsumed, int RebalanceCount,
@@ -309,25 +368,29 @@ internal sealed class ConsumerStatisticsCollector
         {
             var (consumed, bytes) = counters.GetStats();
 
-            // Get partition stats for this topic
+            // Get partition stats for this topic using reverse index (O(1) per partition vs O(n) scan)
             var partitionStats = new Dictionary<int, ConsumerPartitionStatistics>();
-            foreach (var ((t, partition), pCounters) in _partitionCounters)
+            if (_topicPartitionIndex.TryGetValue(topic, out var partitionSet))
             {
-                if (t != topic) continue;
-
-                var (pConsumed, pBytes, pHighWatermark) = pCounters.GetStats();
-                var (position, committedOffset, isPaused) = getPartitionInfo((t, partition));
-
-                partitionStats[partition] = new ConsumerPartitionStatistics
+                foreach (var partition in partitionSet.Keys)
                 {
-                    Partition = partition,
-                    MessagesConsumed = pConsumed,
-                    BytesConsumed = pBytes,
-                    Position = position,
-                    CommittedOffset = committedOffset,
-                    HighWatermark = pHighWatermark,
-                    IsPaused = isPaused
-                };
+                    if (_partitionCounters.TryGetValue((topic, partition), out var pCounters))
+                    {
+                        var (pConsumed, pBytes, pHighWatermark) = pCounters.GetStats();
+                        var (position, committedOffset, isPaused) = getPartitionInfo((topic, partition));
+
+                        partitionStats[partition] = new ConsumerPartitionStatistics
+                        {
+                            Partition = partition,
+                            MessagesConsumed = pConsumed,
+                            BytesConsumed = pBytes,
+                            Position = position,
+                            CommittedOffset = committedOffset,
+                            HighWatermark = pHighWatermark,
+                            IsPaused = isPaused
+                        };
+                    }
+                }
             }
 
             result[topic] = new ConsumerTopicStatistics
@@ -353,6 +416,12 @@ internal sealed class ConsumerStatisticsCollector
             Interlocked.Add(ref _bytes, bytes);
         }
 
+        public void AddConsumed(long count, long bytes)
+        {
+            Interlocked.Add(ref _consumed, count);
+            Interlocked.Add(ref _bytes, bytes);
+        }
+
         public (long Consumed, long Bytes) GetStats() =>
             (Interlocked.Read(ref _consumed), Interlocked.Read(ref _bytes));
     }
@@ -366,6 +435,12 @@ internal sealed class ConsumerStatisticsCollector
         public void IncrementConsumed(int bytes)
         {
             Interlocked.Increment(ref _consumed);
+            Interlocked.Add(ref _bytes, bytes);
+        }
+
+        public void AddConsumed(long count, long bytes)
+        {
+            Interlocked.Add(ref _consumed, count);
             Interlocked.Add(ref _bytes, bytes);
         }
 

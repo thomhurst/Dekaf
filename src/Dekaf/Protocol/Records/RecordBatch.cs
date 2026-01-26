@@ -325,11 +325,19 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 
     System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 
+    // Maximum reasonable record count per batch to prevent OOM from malformed data.
+    // Kafka's max.message.bytes default is 1MB, with typical records being 1KB+,
+    // so 1M records per batch is extremely conservative.
+    private const int MaxReasonableRecordCount = 1_000_000;
+
     private void EnsureParsedUpTo(int index)
     {
-        // Initialize list on first access - don't pre-allocate full capacity
-        // This avoids allocating space for all records when only a few are needed
-        _parsedRecords ??= new List<Record>();
+        // Pre-allocate list with known count to avoid repeated growth allocations.
+        // We know exactly how many records are in the batch from the record count field.
+        // This eliminates List capacity growth overhead during iteration.
+        // Validate count to prevent OOM from malformed batch data.
+        var capacityToAllocate = _count > MaxReasonableRecordCount ? 0 : _count;
+        _parsedRecords ??= new List<Record>(capacityToAllocate);
 
         while (_parsedRecords.Count <= index && _parsedRecords.Count < _count)
         {
