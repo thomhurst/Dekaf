@@ -589,8 +589,13 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                         keyDeserializer: _keyDeserializer,
                         valueDeserializer: _valueDeserializer);
 
-                    // Track consumed for batch-level position/statistics update
-                    // Inspired by librdkafka: update positions once per fetch, not per message
+                    // Update position immediately (per-message) to maintain API contract
+                    // Position() must return the next offset to be consumed
+                    var nextOffset = offset + 1;
+                    _positions[pending.TopicPartition] = nextOffset;
+                    _fetchPositions[pending.TopicPartition] = nextOffset;
+
+                    // Track consumed for batch-level statistics update (not position)
                     var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
                                        (record.IsValueNull ? 0 : record.Value.Length);
                     pending.TrackConsumed(offset, messageBytes);
@@ -598,15 +603,10 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     yield return result;
                 }
 
-                // Batch-level position update (once per partition-fetch, not per message)
-                // Inspired by librdkafka's efficient position tracking
-                if (pending.LastYieldedOffset >= 0)
+                // Batch-level statistics update (once per partition-fetch, not per message)
+                // Position is already updated per-message above to maintain API contract
+                if (pending.MessageCount > 0)
                 {
-                    var nextOffset = pending.LastYieldedOffset + 1;
-                    _positions[pending.TopicPartition] = nextOffset;
-                    _fetchPositions[pending.TopicPartition] = nextOffset;
-
-                    // Batch-level statistics update
                     _statisticsCollector.RecordMessagesConsumedBatch(
                         pending.Topic,
                         pending.PartitionIndex,
