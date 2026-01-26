@@ -186,6 +186,15 @@ public class ProducerBenchmarks
         }
     }
 
+    [Benchmark(Description = "Dekaf: Fire-and-Forget Direct")]
+    public void FireAndForget_Dekaf_Direct()
+    {
+        for (var i = 0; i < BatchSize; i++)
+        {
+            _dekafProducer.Produce(Topic, $"key-{i}", _messageValue);
+        }
+    }
+
     [Benchmark(Description = "Confluent: Fire-and-Forget Produce")]
     public void FireAndForget_Confluent()
     {

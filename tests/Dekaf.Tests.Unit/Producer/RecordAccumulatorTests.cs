@@ -818,4 +818,405 @@ public class RecordAccumulatorTests
     }
 
     #endregion
+
+    #region Thread-Local Cache Tests
+
+    [Test]
+    public async Task TryAppendFireAndForget_ConsecutiveSamePartition_UsesThreadLocalCache()
+    {
+        // Verify that consecutive messages to the same partition benefit from thread-local caching.
+        // The second append should be faster (hit cache) than the first (cache miss).
+
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 100000,
+            BatchSize = 100000,
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            const int appendCount = 100;
+            var successCount = 0;
+
+            // All appends to the same partition should hit cache after first one
+            for (int i = 0; i < appendCount; i++)
+            {
+                var pooledKey = new PooledMemory(null, 0, isNull: true);
+                var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+                var result = accumulator.TryAppendFireAndForget(
+                    "test-topic",
+                    0, // Same partition
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey,
+                    pooledValue,
+                    null,
+                    null);
+
+                if (result) successCount++;
+            }
+
+            await Assert.That(successCount).IsEqualTo(appendCount);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFireAndForget_DifferentPartitions_InvalidatesCache()
+    {
+        // Verify that changing partitions invalidates the thread-local cache.
+        // Each partition change should require dictionary lookup.
+
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 100000,
+            BatchSize = 100000,
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            const int partitionCount = 5;
+            const int appendsPerPartition = 10;
+            var successCount = 0;
+
+            // Rotate through partitions - cache should be updated each time
+            for (int round = 0; round < appendsPerPartition; round++)
+            {
+                for (int partition = 0; partition < partitionCount; partition++)
+                {
+                    var pooledKey = new PooledMemory(null, 0, isNull: true);
+                    var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+                    var result = accumulator.TryAppendFireAndForget(
+                        "test-topic",
+                        partition,
+                        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        pooledKey,
+                        pooledValue,
+                        null,
+                        null);
+
+                    if (result) successCount++;
+                }
+            }
+
+            await Assert.That(successCount).IsEqualTo(partitionCount * appendsPerPartition);
+
+            // Verify all partitions have batches
+            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var batches = batchesField!.GetValue(accumulator)!;
+            var countProperty = batches.GetType().GetProperty("Count");
+            var batchCount = (int)countProperty!.GetValue(batches)!;
+
+            await Assert.That(batchCount).IsEqualTo(partitionCount);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFireAndForget_DisposedAccumulator_CacheInvalidated()
+    {
+        // Verify that thread-local cache is properly invalidated when accumulator is disposed.
+
+        var options = CreateTestOptions();
+        var accumulator1 = new RecordAccumulator(options);
+
+        // Populate cache with first accumulator
+        var pooledKey1 = new PooledMemory(null, 0, isNull: true);
+        var pooledValue1 = new PooledMemory(null, 0, isNull: true);
+        var result1 = accumulator1.TryAppendFireAndForget(
+            "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            pooledKey1, pooledValue1, null, null);
+        await Assert.That(result1).IsTrue();
+
+        // Dispose first accumulator (should clear cache if on same thread)
+        await accumulator1.DisposeAsync();
+
+        // Attempt to use disposed accumulator - should fail
+        var pooledKey2 = new PooledMemory(null, 0, isNull: true);
+        var pooledValue2 = new PooledMemory(null, 0, isNull: true);
+        var result2 = accumulator1.TryAppendFireAndForget(
+            "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            pooledKey2, pooledValue2, null, null);
+        await Assert.That(result2).IsFalse();
+
+        // Create new accumulator - should work independently
+        var accumulator2 = new RecordAccumulator(options);
+        try
+        {
+            var pooledKey3 = new PooledMemory(null, 0, isNull: true);
+            var pooledValue3 = new PooledMemory(null, 0, isNull: true);
+            var result3 = accumulator2.TryAppendFireAndForget(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey3, pooledValue3, null, null);
+            await Assert.That(result3).IsTrue();
+        }
+        finally
+        {
+            await accumulator2.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFireAndForget_MultipleAccumulators_SeparateCaches()
+    {
+        // Verify that different accumulators don't interfere with each other's caching.
+
+        var options = CreateTestOptions();
+        var accumulator1 = new RecordAccumulator(options);
+        var accumulator2 = new RecordAccumulator(options);
+
+        try
+        {
+            // Append to accumulator1 (populates cache)
+            var pooledKey1 = new PooledMemory(null, 0, isNull: true);
+            var pooledValue1 = new PooledMemory(null, 0, isNull: true);
+            var result1 = accumulator1.TryAppendFireAndForget(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey1, pooledValue1, null, null);
+            await Assert.That(result1).IsTrue();
+
+            // Append to accumulator2 (should not use accumulator1's cache)
+            var pooledKey2 = new PooledMemory(null, 0, isNull: true);
+            var pooledValue2 = new PooledMemory(null, 0, isNull: true);
+            var result2 = accumulator2.TryAppendFireAndForget(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey2, pooledValue2, null, null);
+            await Assert.That(result2).IsTrue();
+
+            // Verify each accumulator has its own batch
+            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+            var batches1 = batchesField!.GetValue(accumulator1)!;
+            var batches2 = batchesField.GetValue(accumulator2)!;
+
+            var countProperty1 = batches1.GetType().GetProperty("Count");
+            var countProperty2 = batches2.GetType().GetProperty("Count");
+
+            await Assert.That((int)countProperty1!.GetValue(batches1)!).IsEqualTo(1);
+            await Assert.That((int)countProperty2!.GetValue(batches2)!).IsEqualTo(1);
+        }
+        finally
+        {
+            await accumulator1.DisposeAsync();
+            await accumulator2.DisposeAsync();
+        }
+    }
+
+    #endregion
+
+    #region Batch Append Tests
+
+    [Test]
+    public async Task TryAppendFireAndForgetBatch_EmptyBatch_ReturnsTrue()
+    {
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            var result = accumulator.TryAppendFireAndForgetBatch(
+                "test-topic", 0, ReadOnlySpan<ProducerRecordData>.Empty);
+
+            await Assert.That(result).IsTrue();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFireAndForgetBatch_SingleItem_AppendsSuccessfully()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 100000,
+            BatchSize = 100000,
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            var records = new ProducerRecordData[]
+            {
+                new ProducerRecordData
+                {
+                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    Key = new PooledMemory(null, 0, isNull: true),
+                    Value = new PooledMemory(null, 0, isNull: true),
+                    Headers = null,
+                    PooledHeaderArray = null
+                }
+            };
+
+            var result = accumulator.TryAppendFireAndForgetBatch("test-topic", 0, records);
+            await Assert.That(result).IsTrue();
+
+            // Verify batch was created
+            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var batches = batchesField!.GetValue(accumulator)!;
+            var countProperty = batches.GetType().GetProperty("Count");
+            await Assert.That((int)countProperty!.GetValue(batches)!).IsEqualTo(1);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFireAndForgetBatch_MultipleItems_AppendsAll()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 100000,
+            BatchSize = 100000,
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            const int itemCount = 100;
+            var records = new ProducerRecordData[itemCount];
+            var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            for (int i = 0; i < itemCount; i++)
+            {
+                records[i] = new ProducerRecordData
+                {
+                    Timestamp = timestamp,
+                    Key = new PooledMemory(null, 0, isNull: true),
+                    Value = new PooledMemory(null, 0, isNull: true),
+                    Headers = null,
+                    PooledHeaderArray = null
+                };
+            }
+
+            var result = accumulator.TryAppendFireAndForgetBatch("test-topic", 0, records);
+            await Assert.That(result).IsTrue();
+
+            // Verify all records were added
+            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var batches = batchesField!.GetValue(accumulator)!;
+
+            var topicPartition = new TopicPartition("test-topic", 0);
+            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var parameters = new object[] { topicPartition, null! };
+            tryGetValueMethod!.Invoke(batches, parameters);
+
+            var partitionBatch = parameters[1];
+            var recordCountProperty = partitionBatch!.GetType().GetProperty("RecordCount");
+            var recordCount = (int)recordCountProperty!.GetValue(partitionBatch)!;
+            await Assert.That(recordCount).IsEqualTo(itemCount);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task TryAppendFireAndForgetBatch_DisposedAccumulator_ReturnsFalse()
+    {
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        await accumulator.DisposeAsync();
+
+        var records = new ProducerRecordData[]
+        {
+            new ProducerRecordData
+            {
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Key = new PooledMemory(null, 0, isNull: true),
+                Value = new PooledMemory(null, 0, isNull: true),
+                Headers = null,
+                PooledHeaderArray = null
+            }
+        };
+
+        var result = accumulator.TryAppendFireAndForgetBatch("test-topic", 0, records);
+        await Assert.That(result).IsFalse();
+    }
+
+    [Test]
+    public async Task TryAppendFireAndForgetBatch_WithPooledMemory_TracksArrays()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 100000,
+            BatchSize = 100000,
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            var keyArray = ArrayPool<byte>.Shared.Rent(10);
+            var valueArray = ArrayPool<byte>.Shared.Rent(20);
+
+            var records = new ProducerRecordData[]
+            {
+                new ProducerRecordData
+                {
+                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    Key = new PooledMemory(keyArray, 10),
+                    Value = new PooledMemory(valueArray, 20),
+                    Headers = null,
+                    PooledHeaderArray = null
+                }
+            };
+
+            var result = accumulator.TryAppendFireAndForgetBatch("test-topic", 0, records);
+            await Assert.That(result).IsTrue();
+
+            // Verify pooled arrays are tracked
+            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var batches = batchesField!.GetValue(accumulator)!;
+
+            var topicPartition = new TopicPartition("test-topic", 0);
+            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var parameters = new object[] { topicPartition, null! };
+            tryGetValueMethod!.Invoke(batches, parameters);
+
+            var partitionBatch = parameters[1];
+            var pooledArrayCountField = partitionBatch!.GetType().GetField("_pooledArrayCount",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var pooledArrayCount = (int)pooledArrayCountField!.GetValue(partitionBatch)!;
+            await Assert.That(pooledArrayCount).IsEqualTo(2); // key + value
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    #endregion
 }

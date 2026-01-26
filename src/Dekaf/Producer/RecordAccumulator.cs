@@ -68,6 +68,32 @@ public readonly struct PooledMemory
 }
 
 /// <summary>
+/// Data for a single record in batch append operations.
+/// This is a readonly struct to enable passing via ReadOnlySpan for batch operations.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>Ownership Semantics:</b> When passed to <see cref="RecordAccumulator.TryAppendFireAndForgetBatch"/>,
+/// ownership of pooled resources (Key.Array, Value.Array, PooledHeaderArray) transfers to the accumulator
+/// for successfully appended records. The accumulator will return these arrays to their pools when the
+/// batch completes or fails.
+/// </para>
+/// <para>
+/// <b>Partial Failure:</b> If the batch operation fails partway through (e.g., accumulator disposed),
+/// the caller is responsible for returning pooled resources for records that were NOT appended.
+/// The return value indicates how many records were successfully appended.
+/// </para>
+/// </remarks>
+public readonly struct ProducerRecordData
+{
+    public long Timestamp { get; init; }
+    public PooledMemory Key { get; init; }
+    public PooledMemory Value { get; init; }
+    public IReadOnlyList<RecordHeader>? Headers { get; init; }
+    public RecordHeader[]? PooledHeaderArray { get; init; }
+}
+
+/// <summary>
 /// Accumulates records into batches for efficient sending.
 /// Provides backpressure through bounded channel capacity (similar to librdkafka's queue.buffering.max.messages).
 /// Simple, reliable, and uses modern C# primitives.
@@ -79,6 +105,21 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private readonly Channel<ReadyBatch> _readyBatches;
     private volatile bool _disposed;
     private volatile bool _closed;
+
+    // Thread-local cache for fast path when consecutive messages go to the same partition.
+    // This eliminates ConcurrentDictionary lookups for the common case of sending multiple
+    // messages to the same topic-partition in sequence (e.g., keyed messages, batch processing).
+    // Each thread maintains its own cache, so there's no contention.
+    [ThreadStatic]
+    private static string? t_cachedTopic;
+    [ThreadStatic]
+    private static int t_cachedPartition;
+    [ThreadStatic]
+    private static TopicPartition t_cachedTopicPartition;
+    [ThreadStatic]
+    private static PartitionBatch? t_cachedBatch;
+    [ThreadStatic]
+    private static RecordAccumulator? t_cachedAccumulator;
 
     // Cache for TopicPartition instances to avoid repeated allocations.
     // Using a nested ConcurrentDictionary: outer key is topic (string), inner key is partition (int).
@@ -259,6 +300,38 @@ public sealed class RecordAccumulator : IAsyncDisposable
         if (_disposed)
             return false;
 
+        // FAST PATH: Check thread-local cache for consecutive messages to same partition.
+        // This is the common case in high-throughput scenarios and avoids all dictionary lookups.
+        if (t_cachedAccumulator == this &&
+            t_cachedTopic == topic &&
+            t_cachedPartition == partition &&
+            t_cachedBatch is { } cachedBatch)
+        {
+            var result = cachedBatch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
+            if (result.Success)
+                return true;
+
+            // Cached batch is full, fall through to slow path to handle batch rotation
+        }
+
+        // SLOW PATH: Dictionary lookups required
+        return TryAppendFireAndForgetSlow(topic, partition, timestamp, key, value, headers, pooledHeaderArray);
+    }
+
+    /// <summary>
+    /// Slow path for TryAppendFireAndForget that handles dictionary lookups and batch rotation.
+    /// Separated from fast path to keep the inlined method small.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool TryAppendFireAndForgetSlow(
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray)
+    {
         // OPTIMIZATION: Use a nested cache to get/create TopicPartition without allocating on hot path.
         var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
         var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
@@ -275,7 +348,15 @@ public sealed class RecordAccumulator : IAsyncDisposable
             var result = batch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
 
             if (result.Success)
+            {
+                // Update thread-local cache for next call
+                t_cachedAccumulator = this;
+                t_cachedTopic = topic;
+                t_cachedPartition = partition;
+                t_cachedTopicPartition = topicPartition;
+                t_cachedBatch = batch;
                 return true;
+            }
 
             // Batch is full, complete it and queue for sending
             var readyBatch = batch.Complete();
@@ -287,13 +368,88 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 {
                     // Channel is closed, fail the batch and return false
                     readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                    // Invalidate cache since batch is invalid
+                    t_cachedBatch = null;
                     return false;
                 }
             }
 
             // Atomically remove the completed batch only if it's still the same instance.
             _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch));
+
+            // Invalidate cache since we removed the batch
+            if (t_cachedBatch == batch)
+            {
+                t_cachedBatch = null;
+            }
         }
+    }
+
+    /// <summary>
+    /// Batch fire-and-forget append for records going to the same topic/partition.
+    /// Amortizes lock acquisition and dictionary lookups over N records.
+    /// Returns true if all records were appended, false if accumulator is disposed.
+    /// </summary>
+    public bool TryAppendFireAndForgetBatch(
+        string topic,
+        int partition,
+        ReadOnlySpan<ProducerRecordData> items)
+    {
+        if (_disposed || items.Length == 0)
+            return !_disposed;
+
+        // Get or create TopicPartition (cached)
+        var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
+        var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
+
+        var startIndex = 0;
+
+        // Loop until all records are appended
+        while (startIndex < items.Length)
+        {
+            // Get or create batch
+            if (!_batches.TryGetValue(topicPartition, out var batch))
+            {
+                batch = _batches.GetOrAdd(topicPartition, static (tp, options) => new PartitionBatch(tp, options), _options);
+            }
+
+            // Try to append remaining records
+            var appended = batch.TryAppendFireAndForgetBatch(items, startIndex);
+
+            if (appended > 0)
+            {
+                startIndex += appended;
+
+                // Update thread-local cache
+                t_cachedAccumulator = this;
+                t_cachedTopic = topic;
+                t_cachedPartition = partition;
+                t_cachedTopicPartition = topicPartition;
+                t_cachedBatch = batch;
+            }
+
+            // If we haven't appended all, batch is full
+            if (startIndex < items.Length)
+            {
+                // Complete and queue the full batch
+                var readyBatch = batch.Complete();
+                if (readyBatch is not null)
+                {
+                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    {
+                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                        t_cachedBatch = null;
+                        return false;
+                    }
+                }
+
+                // Remove the completed batch
+                _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch));
+                t_cachedBatch = null;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -374,6 +530,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         _disposed = true;
 
+        // Invalidate thread-local cache if it points to this accumulator
+        if (t_cachedAccumulator == this)
+        {
+            t_cachedAccumulator = null;
+            t_cachedTopic = null;
+            t_cachedBatch = null;
+        }
+
         // Fail all pending batches that haven't been sent yet
         var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
 
@@ -441,8 +605,8 @@ internal sealed class PartitionBatch
     private SpinLock _spinLock = new(enableThreadOwnerTracking: false);
 
     private long _baseTimestamp;
-    private int _offsetDelta;
     private int _estimatedSize;
+    // Note: _offsetDelta removed - it always equals _recordCount at assignment time
     private readonly DateTimeOffset _createdAt;
     private int _isCompleted; // 0 = not completed, 1 = completed (Interlocked guard for idempotent Complete)
     private ReadyBatch? _completedBatch; // Cached result to ensure Complete() is idempotent
@@ -538,7 +702,7 @@ internal sealed class PartitionBatch
             var record = new Record
             {
                 TimestampDelta = timestampDelta,
-                OffsetDelta = _offsetDelta,
+                OffsetDelta = _recordCount,
                 Key = key.Memory,
                 IsKeyNull = key.IsNull,
                 Value = value.Memory,
@@ -551,8 +715,6 @@ internal sealed class PartitionBatch
 
             // Use the passed-in completion source - no allocation here
             _completionSources[_completionSourceCount++] = completion;
-
-            _offsetDelta++;
 
             return new RecordAppendResult(true);
         }
@@ -629,7 +791,7 @@ internal sealed class PartitionBatch
             var record = new Record
             {
                 TimestampDelta = timestampDelta,
-                OffsetDelta = _offsetDelta,
+                OffsetDelta = _recordCount,
                 Key = key.Memory,
                 IsKeyNull = key.IsNull,
                 Value = value.Memory,
@@ -643,9 +805,97 @@ internal sealed class PartitionBatch
             // Fire-and-forget: Skip completion source tracking entirely
             // This is the key optimization - no PooledValueTaskSource rental or storage
 
-            _offsetDelta++;
-
             return new RecordAppendResult(true);
+        }
+        finally
+        {
+            if (lockTaken) _spinLock.Exit();
+        }
+    }
+
+    /// <summary>
+    /// Batch append for fire-and-forget produces. Appends multiple records with a single lock acquisition.
+    /// Returns the number of records successfully appended before the batch became full.
+    /// This amortizes lock overhead over N messages, providing significant throughput improvement.
+    /// </summary>
+    public int TryAppendFireAndForgetBatch(
+        ReadOnlySpan<ProducerRecordData> items,
+        int startIndex = 0)
+    {
+        if (items.Length == 0 || startIndex >= items.Length)
+            return 0;
+
+        var lockTaken = false;
+        try
+        {
+            _spinLock.Enter(ref lockTaken);
+
+            var appended = 0;
+
+            for (var i = startIndex; i < items.Length; i++)
+            {
+                ref readonly var item = ref items[i];
+                var recordSize = EstimateRecordSize(item.Key.Length, item.Value.Length, item.Headers);
+
+                // Set base timestamp from first record
+                if (_recordCount == 0)
+                {
+                    _baseTimestamp = item.Timestamp;
+                }
+
+                // Check size limit
+                if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
+                {
+                    // Batch is full, return count of appended records
+                    return appended;
+                }
+
+                // Grow arrays if needed
+                if (_recordCount >= _records.Length)
+                {
+                    GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
+                }
+                if (_pooledArrayCount + 2 >= _pooledArrays.Length)
+                {
+                    GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
+                }
+                if (item.PooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
+                {
+                    GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
+                }
+
+                // Track pooled arrays
+                if (item.Key.Array is not null)
+                {
+                    _pooledArrays[_pooledArrayCount++] = item.Key.Array;
+                }
+                if (item.Value.Array is not null)
+                {
+                    _pooledArrays[_pooledArrayCount++] = item.Value.Array;
+                }
+                if (item.PooledHeaderArray is not null)
+                {
+                    _pooledHeaderArrays[_pooledHeaderArrayCount++] = item.PooledHeaderArray;
+                }
+
+                var timestampDelta = (int)(item.Timestamp - _baseTimestamp);
+                _records[_recordCount] = new Record
+                {
+                    TimestampDelta = timestampDelta,
+                    OffsetDelta = _recordCount,
+                    Key = item.Key.Memory,
+                    IsKeyNull = item.Key.IsNull,
+                    Value = item.Value.Memory,
+                    IsValueNull = false,
+                    Headers = item.Headers
+                };
+
+                _recordCount++;
+                _estimatedSize += recordSize;
+                appended++;
+            }
+
+            return appended;
         }
         finally
         {
