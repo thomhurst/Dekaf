@@ -381,6 +381,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             return (ISerializer<T>)(object)Serializers.String;
         if (typeof(T) == typeof(byte[]))
             return (ISerializer<T>)(object)Serializers.ByteArray;
+        if (typeof(T) == typeof(ReadOnlyMemory<byte>))
+            return (ISerializer<T>)(object)Serializers.RawBytes;
         if (typeof(T) == typeof(int))
             return (ISerializer<T>)(object)Serializers.Int32;
         if (typeof(T) == typeof(long))
@@ -793,6 +795,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             return (IDeserializer<T>)(object)Serializers.String;
         if (typeof(T) == typeof(byte[]))
             return (IDeserializer<T>)(object)Serializers.ByteArray;
+        if (typeof(T) == typeof(ReadOnlyMemory<byte>))
+            return (IDeserializer<T>)(object)Serializers.RawBytes;
         if (typeof(T) == typeof(int))
             return (IDeserializer<T>)(object)Serializers.Int32;
         if (typeof(T) == typeof(long))
