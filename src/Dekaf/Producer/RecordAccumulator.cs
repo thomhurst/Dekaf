@@ -967,23 +967,21 @@ internal sealed class PartitionBatch
         array = newArray;
     }
 
+    /// <summary>
+    /// Checks if this batch should be flushed based on linger time.
+    /// Uses volatile read instead of locking since this is a read-only check.
+    /// The worst case of a stale read is harmless - we'll catch it on the next check.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool ShouldFlush(DateTimeOffset now, int lingerMs)
     {
-        var lockTaken = false;
-        try
-        {
-            _spinLock.Enter(ref lockTaken);
+        // Volatile read for thread-safe access without locking.
+        // A stale read that returns 0 when there are records just delays flush to next cycle.
+        // A stale read that returns non-zero for an empty batch results in a no-op Complete().
+        if (Volatile.Read(ref _recordCount) == 0)
+            return false;
 
-            if (_recordCount == 0)
-                return false;
-
-            return (now - _createdAt).TotalMilliseconds >= lingerMs;
-        }
-        finally
-        {
-            if (lockTaken) _spinLock.Exit();
-        }
+        return (now - _createdAt).TotalMilliseconds >= lingerMs;
     }
 
     public ReadyBatch? Complete()
