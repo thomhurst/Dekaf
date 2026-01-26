@@ -1130,7 +1130,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             t_serializationContext.Topic = topic;
             t_serializationContext.Component = SerializationComponent.Key;
             t_serializationContext.Headers = headers;
-            _keySerializer.Serialize(key, writer, t_serializationContext);
+            _keySerializer.Serialize(key, ref writer, t_serializationContext);
 
             // Transfer ownership - no copy needed
             return writer.ToPooledMemory();
@@ -1156,7 +1156,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             t_serializationContext.Topic = topic;
             t_serializationContext.Component = SerializationComponent.Value;
             t_serializationContext.Headers = headers;
-            _valueSerializer.Serialize(value, writer, t_serializationContext);
+            _valueSerializer.Serialize(value, ref writer, t_serializationContext);
 
             // Transfer ownership - no copy needed
             return writer.ToPooledMemory();

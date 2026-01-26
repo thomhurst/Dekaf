@@ -13,9 +13,9 @@ public interface ISerializer<in T>
     /// </summary>
     /// <typeparam name="TWriter">The buffer writer type. Supports ref struct writers for zero-allocation serialization.</typeparam>
     /// <param name="value">The value to serialize.</param>
-    /// <param name="destination">The buffer to write serialized bytes to.</param>
+    /// <param name="destination">The buffer to write serialized bytes to. Passed by ref to support ref struct writers.</param>
     /// <param name="context">Serialization context with topic and header information.</param>
-    void Serialize<TWriter>(T value, TWriter destination, SerializationContext context)
+    void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct;
 }
 

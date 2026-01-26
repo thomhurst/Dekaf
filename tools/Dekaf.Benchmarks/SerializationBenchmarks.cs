@@ -177,7 +177,7 @@ public class SerializationBenchmarks
     {
         var serializer = Serializers.String;
         var context = new SerializationContext { Topic = "test", Component = SerializationComponent.Value };
-        serializer.Serialize(_testString, _buffer, context);
+        serializer.Serialize(_testString, ref _buffer, context);
     }
 
     [Benchmark(Description = "Dekaf Serializer: Int32")]
@@ -185,7 +185,7 @@ public class SerializationBenchmarks
     {
         var serializer = Serializers.Int32;
         var context = new SerializationContext { Topic = "test", Component = SerializationComponent.Value };
-        serializer.Serialize(12345678, _buffer, context);
+        serializer.Serialize(12345678, ref _buffer, context);
     }
 
     [Benchmark(Description = "Dekaf Deserializer: String")]
@@ -224,7 +224,7 @@ public class SerializationBenchmarks
             };
 
             // Simulate passing to serializer (prevents dead code elimination)
-            Serializers.String.Serialize("test", _buffer, context);
+            Serializers.String.Serialize("test", ref _buffer, context);
             _buffer.Clear();
         }
     }
@@ -240,7 +240,7 @@ public class SerializationBenchmarks
             t_reuseContext.Headers = null;
 
             // Pass to serializer (struct is copied by value, so safe)
-            Serializers.String.Serialize("test", _buffer, t_reuseContext);
+            Serializers.String.Serialize("test", ref _buffer, t_reuseContext);
             _buffer.Clear();
         }
     }

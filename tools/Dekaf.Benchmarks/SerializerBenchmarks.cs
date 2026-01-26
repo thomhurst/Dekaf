@@ -39,7 +39,7 @@ public class SerializerBenchmarks
     {
         // Old pattern: serialize to ArrayBufferWriter, then copy to pooled array
         var arrayWriter = new ArrayBufferWriter<byte>(256);
-        Serializers.String.Serialize(TestKey, arrayWriter, KeyContext);
+        Serializers.String.Serialize(TestKey, ref arrayWriter, KeyContext);
 
         // Copy to pooled memory (the old overhead)
         var buffer = ArrayPool<byte>.Shared.Rent(arrayWriter.WrittenCount);
@@ -52,7 +52,7 @@ public class SerializerBenchmarks
     {
         // New pattern: serialize directly to pooled buffer
         var pooledWriter = new PooledBufferWriter(initialCapacity: 256);
-        Serializers.String.Serialize(TestKey, pooledWriter, KeyContext);
+        Serializers.String.Serialize(TestKey, ref pooledWriter, KeyContext);
 
         // Direct transfer - no copy!
         return pooledWriter.ToPooledMemory();
@@ -66,7 +66,7 @@ public class SerializerBenchmarks
         for (int i = 0; i < 100; i++)
         {
             var arrayWriter = new ArrayBufferWriter<byte>(256);
-            Serializers.String.Serialize(TestKey, arrayWriter, KeyContext);
+            Serializers.String.Serialize(TestKey, ref arrayWriter, KeyContext);
 
             var buffer = ArrayPool<byte>.Shared.Rent(arrayWriter.WrittenCount);
             arrayWriter.WrittenSpan.CopyTo(buffer);
@@ -81,7 +81,7 @@ public class SerializerBenchmarks
         for (int i = 0; i < 100; i++)
         {
             var pooledWriter = new PooledBufferWriter(initialCapacity: 256);
-            Serializers.String.Serialize(TestKey, pooledWriter, KeyContext);
+            Serializers.String.Serialize(TestKey, ref pooledWriter, KeyContext);
 
             var result = pooledWriter.ToPooledMemory();
             result.Return();
@@ -95,14 +95,14 @@ public class SerializerBenchmarks
     {
         // Serialize key
         var keyWriter = new ArrayBufferWriter<byte>(256);
-        Serializers.String.Serialize(TestKey, keyWriter, KeyContext);
+        Serializers.String.Serialize(TestKey, ref keyWriter, KeyContext);
         var keyBuffer = ArrayPool<byte>.Shared.Rent(keyWriter.WrittenCount);
         keyWriter.WrittenSpan.CopyTo(keyBuffer);
         var key = new PooledMemory(keyBuffer, keyWriter.WrittenCount);
 
         // Serialize value
         var valueWriter = new ArrayBufferWriter<byte>(256);
-        Serializers.String.Serialize(TestValue, valueWriter, ValueContext);
+        Serializers.String.Serialize(TestValue, ref valueWriter, ValueContext);
         var valueBuffer = ArrayPool<byte>.Shared.Rent(valueWriter.WrittenCount);
         valueWriter.WrittenSpan.CopyTo(valueBuffer);
         var value = new PooledMemory(valueBuffer, valueWriter.WrittenCount);
@@ -115,12 +115,12 @@ public class SerializerBenchmarks
     {
         // Serialize key
         var keyWriter = new PooledBufferWriter(initialCapacity: 256);
-        Serializers.String.Serialize(TestKey, keyWriter, KeyContext);
+        Serializers.String.Serialize(TestKey, ref keyWriter, KeyContext);
         var key = keyWriter.ToPooledMemory();
 
         // Serialize value
         var valueWriter = new PooledBufferWriter(initialCapacity: 256);
-        Serializers.String.Serialize(TestValue, valueWriter, ValueContext);
+        Serializers.String.Serialize(TestValue, ref valueWriter, ValueContext);
         var value = valueWriter.ToPooledMemory();
 
         return (key, value);
@@ -158,7 +158,7 @@ public class SerializerBenchmarks
         for (int i = 0; i < 1000; i++)
         {
             var arrayWriter = new ArrayBufferWriter<byte>(8);
-            Serializers.Int32.Serialize(i, arrayWriter, KeyContext);
+            Serializers.Int32.Serialize(i, ref arrayWriter, KeyContext);
 
             var buffer = ArrayPool<byte>.Shared.Rent(arrayWriter.WrittenCount);
             arrayWriter.WrittenSpan.CopyTo(buffer);
@@ -173,7 +173,7 @@ public class SerializerBenchmarks
         for (int i = 0; i < 1000; i++)
         {
             var pooledWriter = new PooledBufferWriter(initialCapacity: 8);
-            Serializers.Int32.Serialize(i, pooledWriter, KeyContext);
+            Serializers.Int32.Serialize(i, ref pooledWriter, KeyContext);
 
             var result = pooledWriter.ToPooledMemory();
             result.Return();
@@ -188,7 +188,7 @@ public class SerializerBenchmarks
     public PooledMemory LargeSerialize_ArrayBufferWriter()
     {
         var arrayWriter = new ArrayBufferWriter<byte>(16384);
-        Serializers.String.Serialize(LargeValue, arrayWriter, ValueContext);
+        Serializers.String.Serialize(LargeValue, ref arrayWriter, ValueContext);
 
         var buffer = ArrayPool<byte>.Shared.Rent(arrayWriter.WrittenCount);
         arrayWriter.WrittenSpan.CopyTo(buffer);
@@ -199,7 +199,7 @@ public class SerializerBenchmarks
     public PooledMemory LargeSerialize_PooledBufferWriter()
     {
         var pooledWriter = new PooledBufferWriter(initialCapacity: 16384);
-        Serializers.String.Serialize(LargeValue, pooledWriter, ValueContext);
+        Serializers.String.Serialize(LargeValue, ref pooledWriter, ValueContext);
 
         return pooledWriter.ToPooledMemory();
     }

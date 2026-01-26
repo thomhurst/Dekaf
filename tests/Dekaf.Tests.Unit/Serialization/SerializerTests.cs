@@ -15,7 +15,7 @@ public class SerializerTests
         var buffer = new ArrayBufferWriter<byte>();
         var context = CreateContext();
 
-        serializer.Serialize("hello world", buffer, context);
+        serializer.Serialize("hello world", ref buffer, context);
         var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         await Assert.That(result).IsEqualTo("hello world");
@@ -28,7 +28,7 @@ public class SerializerTests
         var buffer = new ArrayBufferWriter<byte>();
         var context = CreateContext();
 
-        serializer.Serialize(42, buffer, context);
+        serializer.Serialize(42, ref buffer, context);
         var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         await Assert.That(result).IsEqualTo(42);
@@ -41,7 +41,7 @@ public class SerializerTests
         var buffer = new ArrayBufferWriter<byte>();
         var context = CreateContext();
 
-        serializer.Serialize(9876543210L, buffer, context);
+        serializer.Serialize(9876543210L, ref buffer, context);
         var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         await Assert.That(result).IsEqualTo(9876543210L);
@@ -55,7 +55,7 @@ public class SerializerTests
         var context = CreateContext();
         var guid = Guid.NewGuid();
 
-        serializer.Serialize(guid, buffer, context);
+        serializer.Serialize(guid, ref buffer, context);
         var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         await Assert.That(result).IsEqualTo(guid);
@@ -69,7 +69,7 @@ public class SerializerTests
         var context = CreateContext();
         var data = new byte[] { 1, 2, 3, 4, 5 };
 
-        serializer.Serialize(data, buffer, context);
+        serializer.Serialize(data, ref buffer, context);
         var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         await Assert.That(result).IsEquivalentTo(data);
@@ -82,7 +82,7 @@ public class SerializerTests
         var buffer = new ArrayBufferWriter<byte>();
         var context = CreateContext();
 
-        serializer.Serialize(3.14159, buffer, context);
+        serializer.Serialize(3.14159, ref buffer, context);
         var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         await Assert.That(result).IsEqualTo(3.14159);
@@ -98,7 +98,7 @@ public class SerializerTests
         var context = CreateContext();
         var data = new byte[] { 1, 2, 3, 4, 5 };
 
-        serializer.Serialize(data, buffer, context);
+        serializer.Serialize(data, ref buffer, context);
         var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         await Assert.That(result.ToArray()).IsEquivalentTo(data);
@@ -159,7 +159,7 @@ public class SerializerTests
         var buffer = new ArrayBufferWriter<byte>();
         var context = CreateContext();
 
-        serializer.Serialize(ReadOnlyMemory<byte>.Empty, buffer, context);
+        serializer.Serialize(ReadOnlyMemory<byte>.Empty, ref buffer, context);
         var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         await Assert.That(result.Length).IsEqualTo(0);
@@ -175,7 +175,7 @@ public class SerializerTests
         var data = new byte[1024];
         Random.Shared.NextBytes(data);
 
-        serializer.Serialize(data, buffer, context);
+        serializer.Serialize(data, ref buffer, context);
         var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         await Assert.That(result.Length).IsEqualTo(1024);
@@ -191,7 +191,7 @@ public class SerializerTests
         var data = new byte[1024 * 1024]; // 1MB
         Random.Shared.NextBytes(data);
 
-        serializer.Serialize(data, buffer, context);
+        serializer.Serialize(data, ref buffer, context);
         var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         await Assert.That(result.Length).IsEqualTo(1024 * 1024);
@@ -209,7 +209,7 @@ public class SerializerTests
         var fullArray = new byte[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
         var slice = new ReadOnlyMemory<byte>(fullArray, 3, 4); // [3, 4, 5, 6]
 
-        serializer.Serialize(slice, buffer, context);
+        serializer.Serialize(slice, ref buffer, context);
         var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         await Assert.That(result.ToArray()).IsEquivalentTo(new byte[] { 3, 4, 5, 6 });

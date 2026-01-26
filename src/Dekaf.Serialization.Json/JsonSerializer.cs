@@ -21,7 +21,7 @@ public sealed class JsonSerializer<T> : ISerde<T>
         };
     }
 
-    public void Serialize<TWriter>(T value, TWriter destination, SerializationContext context)
+    public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
         // Note: Utf8JsonWriter requires IBufferWriter<byte> directly, which is incompatible

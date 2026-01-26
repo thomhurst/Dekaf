@@ -87,7 +87,7 @@ public readonly struct Ignore;
 
 internal sealed class ByteArraySerde : ISerde<byte[]>
 {
-    public void Serialize<TWriter>(byte[] value, TWriter destination, SerializationContext context)
+    public void Serialize<TWriter>(byte[] value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
         var span = destination.GetSpan(value.Length);
@@ -103,7 +103,7 @@ internal sealed class ByteArraySerde : ISerde<byte[]>
 
 internal sealed class StringSerde : ISerde<string>
 {
-    public void Serialize<TWriter>(string value, TWriter destination, SerializationContext context)
+    public void Serialize<TWriter>(string value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
         var byteCount = Encoding.UTF8.GetByteCount(value);
@@ -136,7 +136,7 @@ internal sealed class StringSerde : ISerde<string>
 
 internal sealed class NullableStringSerde : ISerde<string?>
 {
-    public void Serialize<TWriter>(string? value, TWriter destination, SerializationContext context)
+    public void Serialize<TWriter>(string? value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
         if (value is null)
@@ -175,7 +175,7 @@ internal sealed class NullableStringSerde : ISerde<string?>
 
 internal sealed class Int32Serde : ISerde<int>
 {
-    public void Serialize<TWriter>(int value, TWriter destination, SerializationContext context)
+    public void Serialize<TWriter>(int value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
         var span = destination.GetSpan(4);
@@ -193,7 +193,7 @@ internal sealed class Int32Serde : ISerde<int>
 
 internal sealed class Int64Serde : ISerde<long>
 {
-    public void Serialize<TWriter>(long value, TWriter destination, SerializationContext context)
+    public void Serialize<TWriter>(long value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
         var span = destination.GetSpan(8);
@@ -211,7 +211,7 @@ internal sealed class Int64Serde : ISerde<long>
 
 internal sealed class GuidSerde : ISerde<Guid>
 {
-    public void Serialize<TWriter>(Guid value, TWriter destination, SerializationContext context)
+    public void Serialize<TWriter>(Guid value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
         var span = destination.GetSpan(16);
@@ -229,7 +229,7 @@ internal sealed class GuidSerde : ISerde<Guid>
 
 internal sealed class DoubleSerde : ISerde<double>
 {
-    public void Serialize<TWriter>(double value, TWriter destination, SerializationContext context)
+    public void Serialize<TWriter>(double value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
         var span = destination.GetSpan(8);
@@ -247,7 +247,7 @@ internal sealed class DoubleSerde : ISerde<double>
 
 internal sealed class NullSerde<T> : ISerde<T?> where T : class
 {
-    public void Serialize<TWriter>(T? value, TWriter destination, SerializationContext context)
+    public void Serialize<TWriter>(T? value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
         // No-op
@@ -261,7 +261,7 @@ internal sealed class NullSerde<T> : ISerde<T?> where T : class
 
 internal sealed class IgnoreSerde : ISerde<Ignore>
 {
-    public void Serialize<TWriter>(Ignore value, TWriter destination, SerializationContext context)
+    public void Serialize<TWriter>(Ignore value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
         // No-op
@@ -278,7 +278,7 @@ internal sealed class IgnoreSerde : ISerde<Ignore>
 /// </summary>
 internal sealed class RawBytesSerde : ISerde<ReadOnlyMemory<byte>>
 {
-    public void Serialize<TWriter>(ReadOnlyMemory<byte> value, TWriter destination, SerializationContext context)
+    public void Serialize<TWriter>(ReadOnlyMemory<byte> value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
         var span = destination.GetSpan(value.Length);
