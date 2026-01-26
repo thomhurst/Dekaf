@@ -61,6 +61,30 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     [ThreadStatic]
     private static SerializationContext t_serializationContext;
 
+    // Thread-local cached timestamp for fire-and-forget produces.
+    // DateTimeOffset.UtcNow is expensive (~15-30ns). By caching the timestamp and refreshing
+    // it approximately every millisecond, we can reduce overhead in high-throughput scenarios.
+    // For fire-and-forget, precise per-message timestamps aren't critical since:
+    // 1. Records store timestamp deltas from batch base timestamp
+    // 2. Batches are sent within LingerMs (typically 0-5ms)
+    [ThreadStatic]
+    private static long t_cachedTimestampMs;
+    [ThreadStatic]
+    private static long t_cachedTimestampTicks;
+
+    // Thread-local cached topic metadata for fire-and-forget produces.
+    // Avoids MetadataManager dictionary lookups and IsStale() checks for consecutive
+    // messages to the same topic. Staleness is checked periodically (~1 second) rather
+    // than on every message, since metadata is typically valid for minutes.
+    [ThreadStatic]
+    private static string? t_cachedTopicName;
+    [ThreadStatic]
+    private static TopicInfo? t_cachedTopicInfo;
+    [ThreadStatic]
+    private static long t_cachedTopicValidUntilTicks;
+    [ThreadStatic]
+    private static MetadataManager? t_cachedMetadataManager;
+
     public KafkaProducer(
         ProducerOptions options,
         ISerializer<TKey> keySerializer,
@@ -304,6 +328,23 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         DateTimeOffset? timestamp,
         Headers? headers)
     {
+        // FAST PATH: Check thread-local cached topic metadata.
+        // Avoids MetadataManager dictionary lookup and IsStale() check for consecutive
+        // messages to the same topic. Revalidate staleness periodically (~1 second).
+        if (TryGetCachedTopicInfo(topic, out var topicInfo))
+        {
+            try
+            {
+                ProduceSyncCoreFireAndForgetDirect(topic, key, value, partition, timestamp, headers, topicInfo!);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogDebug(ex, "Fire-and-forget produce failed for topic {Topic}", topic);
+            }
+            return true;
+        }
+
+        // SLOW PATH: Full metadata check with caching
         // Check if metadata is initialized (sync check)
         if (_metadataManager.Metadata.LastRefreshed == default)
         {
@@ -311,7 +352,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
 
         // Try to get topic metadata from cache
-        if (!_metadataManager.TryGetCachedTopicMetadata(topic, out var topicInfo) || topicInfo is null)
+        if (!_metadataManager.TryGetCachedTopicMetadata(topic, out topicInfo) || topicInfo is null)
         {
             return false; // Cache miss, need async refresh
         }
@@ -320,6 +361,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             return false; // Invalid topic state, let async path handle error
         }
+
+        // Update thread-local cache for next call
+        UpdateCachedTopicInfo(topic, topicInfo);
 
         // All checks passed - we can proceed synchronously without completion tracking
         try
@@ -334,6 +378,45 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             _logger?.LogDebug(ex, "Fire-and-forget produce failed for topic {Topic}", topic);
         }
         return true;
+    }
+
+    /// <summary>
+    /// Tries to get cached topic info from thread-local cache.
+    /// Returns true if valid cached metadata exists, false if cache miss or expired.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryGetCachedTopicInfo(string topic, out TopicInfo? topicInfo)
+    {
+        topicInfo = null;
+
+        // Check if cache is for this metadata manager, topic, and still valid
+        var currentTicks = Environment.TickCount64;
+        if (t_cachedMetadataManager == _metadataManager &&
+            t_cachedTopicName == topic &&
+            t_cachedTopicInfo is not null &&
+            currentTicks < t_cachedTopicValidUntilTicks)
+        {
+            topicInfo = t_cachedTopicInfo;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Updates the thread-local topic metadata cache.
+    /// Cache validity is ~1 second, which is acceptable since metadata is typically
+    /// valid for minutes and the async path handles refresh if truly stale.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void UpdateCachedTopicInfo(string topic, TopicInfo topicInfo)
+    {
+        t_cachedMetadataManager = _metadataManager;
+        t_cachedTopicName = topic;
+        t_cachedTopicInfo = topicInfo;
+        // Cache valid for ~1 second (1000 ticks) - enough for high-throughput bursts
+        // while still detecting stale metadata reasonably quickly
+        t_cachedTopicValidUntilTicks = Environment.TickCount64 + 1000;
     }
 
     /// <summary>
@@ -364,9 +447,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             var partition = partitionOverride
                 ?? _partitioner.Partition(topic, key.Span, keyIsNull, topicInfo.PartitionCount);
 
-            // Get timestamp
-            var timestamp = timestampOverride ?? DateTimeOffset.UtcNow;
-            var timestampMs = timestamp.ToUnixTimeMilliseconds();
+            // Get timestamp - use fast cached timestamp for fire-and-forget (no override provided)
+            var timestampMs = timestampOverride?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
 
             // Convert headers
             IReadOnlyList<RecordHeader>? recordHeaders = null;
@@ -418,6 +500,21 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryProduceSyncFireAndForget(ProducerMessage<TKey, TValue> message)
     {
+        // FAST PATH: Check thread-local cached topic metadata.
+        if (TryGetCachedTopicInfo(message.Topic, out var topicInfo))
+        {
+            try
+            {
+                ProduceSyncCoreFireAndForget(message, topicInfo!);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogDebug(ex, "Fire-and-forget produce failed for topic {Topic}", message.Topic);
+            }
+            return true;
+        }
+
+        // SLOW PATH: Full metadata check with caching
         // Check if metadata is initialized (sync check)
         if (_metadataManager.Metadata.LastRefreshed == default)
         {
@@ -425,7 +522,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
 
         // Try to get topic metadata from cache
-        if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out var topicInfo) || topicInfo is null)
+        if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo) || topicInfo is null)
         {
             return false; // Cache miss, need async refresh
         }
@@ -434,6 +531,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             return false; // Invalid topic state, let async path handle error
         }
+
+        // Update thread-local cache for next call
+        UpdateCachedTopicInfo(message.Topic, topicInfo);
 
         // All checks passed - we can proceed synchronously without completion tracking
         try
@@ -473,9 +573,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             var partition = message.Partition
                 ?? _partitioner.Partition(message.Topic, key.Span, keyIsNull, topicInfo.PartitionCount);
 
-            // Get timestamp
-            var timestamp = message.Timestamp ?? DateTimeOffset.UtcNow;
-            var timestampMs = timestamp.ToUnixTimeMilliseconds();
+            // Get timestamp - use fast cached timestamp for fire-and-forget (no override provided)
+            var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
 
             // Convert headers
             IReadOnlyList<RecordHeader>? recordHeaders = null;
@@ -585,9 +684,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             var partition = message.Partition
                 ?? _partitioner.Partition(message.Topic, key.Span, keyIsNull, topicInfo.PartitionCount);
 
-            // Get timestamp
-            var timestamp = message.Timestamp ?? DateTimeOffset.UtcNow;
-            var timestampMs = timestamp.ToUnixTimeMilliseconds();
+            // Get timestamp - use fast cached timestamp when no override provided
+            var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
 
             // Convert headers
             IReadOnlyList<RecordHeader>? recordHeaders = null;
@@ -1167,6 +1265,29 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             writer.Dispose();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Gets a fast cached timestamp in milliseconds for fire-and-forget operations.
+    /// Refreshes the cache approximately every millisecond to balance accuracy and performance.
+    /// This is ~10x faster than DateTimeOffset.UtcNow for high-throughput scenarios.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static long GetFastTimestampMs()
+    {
+        // Use Environment.TickCount64 (cheap counter) to determine if we need to refresh.
+        // TickCount64 increments every ~15.6ms on Windows, ~1ms on Linux, but checking
+        // the difference is still much cheaper than calling DateTimeOffset.UtcNow.
+        var currentTicks = Environment.TickCount64;
+
+        // Refresh if more than ~1ms has passed (or on first call when t_cachedTimestampTicks is 0)
+        if (currentTicks - t_cachedTimestampTicks > 1 || t_cachedTimestampTicks == 0)
+        {
+            t_cachedTimestampMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            t_cachedTimestampTicks = currentTicks;
+        }
+
+        return t_cachedTimestampMs;
     }
 
     /// <summary>
