@@ -24,7 +24,12 @@ public sealed class ConnectionPool : IConnectionPool
     private readonly ConcurrentDictionary<int, IKafkaConnection[]> _connectionGroupsById = new();
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection[]> _connectionGroupsByEndpoint = new();
     private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<IKafkaConnection>>> _connectionGroupCreationTasks = new();
-    private int _nextConnectionIndex;
+
+    // Thread-local round-robin counter to eliminate atomic contention on hot path
+    // Each thread maintains its own counter, avoiding Interlocked contention
+    // Inspired by librdkafka's per-thread state to minimize cross-thread synchronization
+    [ThreadStatic]
+    private static int t_nextConnectionIndex;
 
     private readonly SemaphoreSlim _disposeLock = new(1, 1);
     private volatile bool _disposed;
@@ -87,8 +92,8 @@ public sealed class ConnectionPool : IConnectionPool
         // Try to get existing connection group
         if (_connectionGroupsById.TryGetValue(brokerId, out var connections))
         {
-            // Round-robin selection among available connections
-            var index = (uint)Interlocked.Increment(ref _nextConnectionIndex) % (uint)connections.Length;
+            // Round-robin selection using thread-local counter (no atomic contention)
+            var index = (uint)(++t_nextConnectionIndex) % (uint)connections.Length;
             var connection = connections[index];
 
             if (connection is not null && connection.IsConnected)
