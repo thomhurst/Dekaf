@@ -30,8 +30,9 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
 {
     /// <summary>
     /// Default maximum number of pooled instances.
+    /// Increased from 1024 to 4096 to reduce allocations in high-throughput scenarios.
     /// </summary>
-    public const int DefaultMaxPoolSize = 1024;
+    public const int DefaultMaxPoolSize = 4096;
 
     private readonly ConcurrentStack<PooledValueTaskSource<T>> _pool = new();
     private readonly int _maxPoolSize;

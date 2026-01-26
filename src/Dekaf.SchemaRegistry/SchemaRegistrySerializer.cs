@@ -48,7 +48,8 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         _ownsClient = ownsClient;
     }
 
-    public void Serialize(T value, IBufferWriter<byte> destination, SerializationContext context)
+    public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
+        where TWriter : IBufferWriter<byte>, allows ref struct
     {
         var subject = GetSubjectName(context.Topic, context.Component == SerializationComponent.Key);
         var schema = _getSchema(subject);

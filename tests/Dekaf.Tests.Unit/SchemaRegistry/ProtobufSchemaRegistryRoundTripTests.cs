@@ -38,7 +38,7 @@ public class ProtobufSchemaRegistryRoundTripTests
         // Act - serialize
         var buffer = new ArrayBufferWriter<byte>();
         var context = CreateContext("my-topic");
-        serializer.Serialize(originalMessage, buffer, context);
+        serializer.Serialize(originalMessage, ref buffer, context);
 
         // Act - deserialize
         var result = deserializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
@@ -76,7 +76,7 @@ public class ProtobufSchemaRegistryRoundTripTests
         // Act
         var buffer = new ArrayBufferWriter<byte>();
         var context = CreateContext();
-        serializer.Serialize(originalMessage, buffer, context);
+        serializer.Serialize(originalMessage, ref buffer, context);
         var result = deserializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         // Assert - defaults for proto3
@@ -112,7 +112,7 @@ public class ProtobufSchemaRegistryRoundTripTests
         // Act
         var buffer = new ArrayBufferWriter<byte>();
         var context = CreateContext();
-        serializer.Serialize(originalMessage, buffer, context);
+        serializer.Serialize(originalMessage, ref buffer, context);
         var result = deserializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         // Assert
@@ -148,7 +148,7 @@ public class ProtobufSchemaRegistryRoundTripTests
         // Act
         var buffer = new ArrayBufferWriter<byte>();
         var context = CreateContext();
-        serializer.Serialize(originalMessage, buffer, context);
+        serializer.Serialize(originalMessage, ref buffer, context);
         var result = deserializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         // Assert
@@ -184,7 +184,7 @@ public class ProtobufSchemaRegistryRoundTripTests
         foreach (var original in messages)
         {
             var buffer = new ArrayBufferWriter<byte>();
-            serializer.Serialize(original, buffer, context);
+            serializer.Serialize(original, ref buffer, context);
             var result = deserializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
             await Assert.That(result.Id).IsEqualTo(original.Id);

@@ -2,7 +2,7 @@
 <html lang='en'>
 <head>
 <meta charset='utf-8' />
-<title>Dekaf.Benchmarks.MemoryBenchmarks-20260124-173719</title>
+<title>Dekaf.Benchmarks.MemoryBenchmarks-20260126-112845</title>
 
 <style type="text/css">
 	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
@@ -17,31 +17,19 @@ BenchmarkDotNet v0.14.0, Ubuntu 24.04.3 LTS (Noble Numbat)
 12th Gen Intel Core i7-12700K, 1 CPU, 20 logical and 10 physical cores
 .NET SDK 10.0.100
   [Host]     : .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
-  Job-ETBZBA : .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
-  ShortRun   : .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+  Job-TFWKVB : .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
 </code></pre>
-<pre><code>InvocationCount=1  UnrollFactor=1  WarmupCount=3  
+<pre><code>InvocationCount=1  IterationCount=10  UnrollFactor=1  
+WarmupCount=3  
 </code></pre>
 
 <table>
-<thead><tr><th>Method                                  </th><th>Job </th><th>IterationCount</th><th>LaunchCount</th><th>Mean</th><th>Error</th><th>StdDev</th><th>Median</th><th>Allocated</th>
+<thead><tr><th>Method                                               </th><th>Mean</th><th>Error</th><th>StdDev</th><th>Allocated</th>
 </tr>
-</thead><tbody><tr><td>&#39;Protocol Write: 1000 Int32s&#39;</td><td>Job-ETBZBA</td><td>10</td><td>Default</td><td>17.839 &mu;s</td><td>6.6308 &mu;s</td><td>3.9459 &mu;s</td><td>17.241 &mu;s</td><td>-</td>
-</tr><tr><td>&#39;Protocol Write: 100 Strings (100 chars each)&#39;</td><td>Job-ETBZBA</td><td>10</td><td>Default</td><td>10.468 &mu;s</td><td>5.2698 &mu;s</td><td>3.4857 &mu;s</td><td>9.980 &mu;s</td><td>-</td>
-</tr><tr><td>&#39;Protocol Write: 100 CompactStrings&#39;</td><td>Job-ETBZBA</td><td>10</td><td>Default</td><td>7.283 &mu;s</td><td>0.9499 &mu;s</td><td>0.4968 &mu;s</td><td>7.211 &mu;s</td><td>-</td>
-</tr><tr><td>&#39;Protocol Read: 1000 Int32s&#39;</td><td>Job-ETBZBA</td><td>10</td><td>Default</td><td>84.195 &mu;s</td><td>32.2209 &mu;s</td><td>19.1741 &mu;s</td><td>78.461 &mu;s</td><td>-</td>
-</tr><tr><td>&#39;RecordBatch: Write 10 Records&#39;</td><td>Job-ETBZBA</td><td>10</td><td>Default</td><td>13.968 &mu;s</td><td>1.0886 &mu;s</td><td>0.6478 &mu;s</td><td>13.915 &mu;s</td><td>-</td>
-</tr><tr><td>&#39;RecordBatch: Read 10 Records&#39;</td><td>Job-ETBZBA</td><td>10</td><td>Default</td><td>4.622 &mu;s</td><td>3.3501 &mu;s</td><td>1.7522 &mu;s</td><td>4.102 &mu;s</td><td>-</td>
-</tr><tr><td>&#39;VarInt: Write 1000 values&#39;</td><td>Job-ETBZBA</td><td>10</td><td>Default</td><td>20.587 &mu;s</td><td>7.3457 &mu;s</td><td>4.3713 &mu;s</td><td>20.928 &mu;s</td><td>-</td>
-</tr><tr><td>&#39;VarInt: Read 1000 values&#39;</td><td>Job-ETBZBA</td><td>10</td><td>Default</td><td>49.744 &mu;s</td><td>36.3099 &mu;s</td><td>21.6074 &mu;s</td><td>63.583 &mu;s</td><td>-</td>
-</tr><tr><td>&#39;Protocol Write: 1000 Int32s&#39;</td><td>ShortRun</td><td>3</td><td>1</td><td>14.205 &mu;s</td><td>3.9835 &mu;s</td><td>0.2184 &mu;s</td><td>14.272 &mu;s</td><td>-</td>
-</tr><tr><td>&#39;Protocol Write: 100 Strings (100 chars each)&#39;</td><td>ShortRun</td><td>3</td><td>1</td><td>7.969 &mu;s</td><td>4.9457 &mu;s</td><td>0.2711 &mu;s</td><td>7.826 &mu;s</td><td>-</td>
-</tr><tr><td>&#39;Protocol Write: 100 CompactStrings&#39;</td><td>ShortRun</td><td>3</td><td>1</td><td>7.489 &mu;s</td><td>7.3333 &mu;s</td><td>0.4020 &mu;s</td><td>7.266 &mu;s</td><td>-</td>
-</tr><tr><td>&#39;Protocol Read: 1000 Int32s&#39;</td><td>ShortRun</td><td>3</td><td>1</td><td>60.132 &mu;s</td><td>97.4100 &mu;s</td><td>5.3394 &mu;s</td><td>57.770 &mu;s</td><td>-</td>
-</tr><tr><td>&#39;RecordBatch: Write 10 Records&#39;</td><td>ShortRun</td><td>3</td><td>1</td><td>15.540 &mu;s</td><td>16.7290 &mu;s</td><td>0.9170 &mu;s</td><td>15.895 &mu;s</td><td>-</td>
-</tr><tr><td>&#39;RecordBatch: Read 10 Records&#39;</td><td>ShortRun</td><td>3</td><td>1</td><td>8.332 &mu;s</td><td>119.2696 &mu;s</td><td>6.5376 &mu;s</td><td>5.074 &mu;s</td><td>-</td>
-</tr><tr><td>&#39;VarInt: Write 1000 values&#39;</td><td>ShortRun</td><td>3</td><td>1</td><td>19.986 &mu;s</td><td>103.9743 &mu;s</td><td>5.6992 &mu;s</td><td>16.945 &mu;s</td><td>-</td>
-</tr><tr><td>&#39;VarInt: Read 1000 values&#39;</td><td>ShortRun</td><td>3</td><td>1</td><td>65.636 &mu;s</td><td>116.4767 &mu;s</td><td>6.3845 &mu;s</td><td>62.215 &mu;s</td><td>-</td>
+</thead><tbody><tr><td>&#39;Serialization: ArrayBufferWriter + Copy (old pattern)&#39;</td><td>2.603 &mu;s</td><td>0.4519 &mu;s</td><td>0.2689 &mu;s</td><td>-</td>
+</tr><tr><td>&#39;Serialization: PooledBufferWriter Direct (new pattern)&#39;</td><td>2.583 &mu;s</td><td>0.4062 &mu;s</td><td>0.2417 &mu;s</td><td>-</td>
+</tr><tr><td>&#39;Serialization: ArrayBufferWriter + Copy (100 iterations)&#39;</td><td>15.573 &mu;s</td><td>1.6051 &mu;s</td><td>0.9551 &mu;s</td><td>31648 B</td>
+</tr><tr><td>&#39;Serialization: PooledBufferWriter Direct (100 iterations)&#39;</td><td>14.499 &mu;s</td><td>0.2955 &mu;s</td><td>0.1759 &mu;s</td><td>-</td>
 </tr></tbody></table>
 </body>
 </html>

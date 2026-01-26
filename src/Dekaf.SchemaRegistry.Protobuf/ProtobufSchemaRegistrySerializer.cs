@@ -56,7 +56,8 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
     }
 
     /// <inheritdoc />
-    public void Serialize(T value, IBufferWriter<byte> destination, SerializationContext context)
+    public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
+        where TWriter : IBufferWriter<byte>, allows ref struct
     {
         ArgumentNullException.ThrowIfNull(value);
 

@@ -47,7 +47,7 @@ public class AvroSerializerTests
         var context = CreateContext();
 
         // Act
-        serializer.Serialize(record, buffer, context);
+        serializer.Serialize(record, ref buffer, context);
 
         // Assert
         var data = buffer.WrittenMemory;
@@ -124,7 +124,7 @@ public class AvroSerializerTests
         var context = CreateContext();
 
         // Act
-        serializer.Serialize(record, buffer, context);
+        serializer.Serialize(record, ref buffer, context);
         var result = deserializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         // Assert
@@ -153,8 +153,8 @@ public class AvroSerializerTests
         var context = CreateContext();
 
         // Act
-        serializer.Serialize(record1, buffer1, context);
-        serializer.Serialize(record2, buffer2, context);
+        serializer.Serialize(record1, ref buffer1, context);
+        serializer.Serialize(record2, ref buffer2, context);
 
         // Assert - both should have same schema ID
         var schemaId1 = BinaryPrimitives.ReadInt32BigEndian(buffer1.WrittenSpan.Slice(1, 4));
@@ -178,7 +178,7 @@ public class AvroSerializerTests
         var context = CreateContext("my-topic");
 
         // Act
-        serializer.Serialize(record, buffer, context);
+        serializer.Serialize(record, ref buffer, context);
 
         // Assert - schema should be registered under "my-topic-value"
         var subjects = await schemaRegistry.GetAllSubjectsAsync();
@@ -201,7 +201,7 @@ public class AvroSerializerTests
         var context = CreateContext("my-topic", isKey: true);
 
         // Act
-        serializer.Serialize(record, buffer, context);
+        serializer.Serialize(record, ref buffer, context);
 
         // Assert - schema should be registered under "my-topic-key"
         var subjects = await schemaRegistry.GetAllSubjectsAsync();
@@ -279,7 +279,7 @@ public class AvroSerializerTests
         // Serialize using the warmed-up cache
         var buffer = new ArrayBufferWriter<byte>();
         var context = CreateContext("warmup-topic");
-        serializer.Serialize(record, buffer, context);
+        serializer.Serialize(record, ref buffer, context);
 
         // Assert - the schema ID from warmup should match the one used in serialization
         var serializedSchemaId = BinaryPrimitives.ReadInt32BigEndian(buffer.WrittenSpan.Slice(1, 4));

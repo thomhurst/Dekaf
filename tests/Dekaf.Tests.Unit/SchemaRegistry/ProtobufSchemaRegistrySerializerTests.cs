@@ -26,7 +26,7 @@ public class ProtobufSchemaRegistrySerializerTests
         var message = new TestMessage { Id = 1, Name = "Test", Value = 3.14 };
 
         // Act
-        serializer.Serialize(message, buffer, CreateContext());
+        serializer.Serialize(message, ref buffer, CreateContext());
 
         // Assert
         var written = buffer.WrittenMemory.ToArray();
@@ -64,13 +64,13 @@ public class ProtobufSchemaRegistrySerializerTests
 
         // Act - serialize multiple times
         var buffer1 = new ArrayBufferWriter<byte>();
-        serializer.Serialize(message, buffer1, context);
+        serializer.Serialize(message, ref buffer1, context);
 
         var buffer2 = new ArrayBufferWriter<byte>();
-        serializer.Serialize(message, buffer2, context);
+        serializer.Serialize(message, ref buffer2, context);
 
         var buffer3 = new ArrayBufferWriter<byte>();
-        serializer.Serialize(message, buffer3, context);
+        serializer.Serialize(message, ref buffer3, context);
 
         // Assert - schema registry should only be called once
         await Assert.That(callCount).IsEqualTo(1);
@@ -96,7 +96,7 @@ public class ProtobufSchemaRegistrySerializerTests
 
         // Act
         var buffer = new ArrayBufferWriter<byte>();
-        serializer.Serialize(message, buffer, CreateContext("my-topic"));
+        serializer.Serialize(message, ref buffer, CreateContext("my-topic"));
 
         // Assert
         await Assert.That(capturedSubject).IsEqualTo("my-topic-value");
@@ -122,7 +122,7 @@ public class ProtobufSchemaRegistrySerializerTests
 
         // Act
         var buffer = new ArrayBufferWriter<byte>();
-        serializer.Serialize(message, buffer, CreateContext("my-topic"));
+        serializer.Serialize(message, ref buffer, CreateContext("my-topic"));
 
         // Assert - should use full message name
         await Assert.That(capturedSubject).IsEqualTo("dekaf.tests.TestMessage-value");
@@ -147,7 +147,7 @@ public class ProtobufSchemaRegistrySerializerTests
 
         // Act
         var buffer = new ArrayBufferWriter<byte>();
-        serializer.Serialize(message, buffer, CreateContext("my-topic", isKey: true));
+        serializer.Serialize(message, ref buffer, CreateContext("my-topic", isKey: true));
 
         // Assert
         await Assert.That(capturedSubject).IsEqualTo("my-topic-key");
@@ -172,7 +172,7 @@ public class ProtobufSchemaRegistrySerializerTests
 
         // Act
         var buffer = new ArrayBufferWriter<byte>();
-        serializer.Serialize(message, buffer, CreateContext());
+        serializer.Serialize(message, ref buffer, CreateContext());
 
         // Assert
         await Assert.That(capturedSchema).IsNotNull();
@@ -202,7 +202,7 @@ public class ProtobufSchemaRegistrySerializerTests
 
         // Act
         var buffer = new ArrayBufferWriter<byte>();
-        serializer.Serialize(message, buffer, CreateContext());
+        serializer.Serialize(message, ref buffer, CreateContext());
 
         // Assert - should call GetSchemaBySubjectAsync, not GetOrRegisterSchemaAsync
         await schemaRegistry.Received(1).GetSchemaBySubjectAsync(Arg.Any<string>(), "latest", Arg.Any<CancellationToken>());

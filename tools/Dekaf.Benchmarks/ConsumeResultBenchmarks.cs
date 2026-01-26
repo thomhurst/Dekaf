@@ -25,11 +25,11 @@ public class ConsumeResultBenchmarks
     {
         // Create sample key/value data
         var keyBuffer = new ArrayBufferWriter<byte>();
-        _keySerializer.Serialize("test-key-12345", keyBuffer, new SerializationContext());
+        _keySerializer.Serialize("test-key-12345", ref keyBuffer, new SerializationContext());
         _keyData = keyBuffer.WrittenMemory;
 
         var valueBuffer = new ArrayBufferWriter<byte>();
-        _valueSerializer.Serialize("test-value-" + new string('x', 100), valueBuffer, new SerializationContext());
+        _valueSerializer.Serialize("test-value-" + new string('x', 100), ref valueBuffer, new SerializationContext());
         _valueData = valueBuffer.WrittenMemory;
     }
 
