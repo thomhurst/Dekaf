@@ -327,9 +327,10 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 
     private void EnsureParsedUpTo(int index)
     {
-        // Initialize list on first access - don't pre-allocate full capacity
-        // This avoids allocating space for all records when only a few are needed
-        _parsedRecords ??= new List<Record>();
+        // Pre-allocate list with known count to avoid repeated growth allocations.
+        // We know exactly how many records are in the batch from the record count field.
+        // This eliminates List capacity growth overhead during iteration.
+        _parsedRecords ??= new List<Record>(_count);
 
         while (_parsedRecords.Count <= index && _parsedRecords.Count < _count)
         {

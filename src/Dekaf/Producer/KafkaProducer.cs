@@ -257,9 +257,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
-        // Fast path: Try synchronous produce if metadata is initialized and cached
-        // This bypasses channel overhead for fire-and-forget operations
-        if (TryProduceSync(message))
+        // Fast path: Try synchronous fire-and-forget produce if metadata is cached
+        // This bypasses PooledValueTaskSource rental entirely for fire-and-forget operations
+        if (TryProduceSyncFireAndForget(message))
         {
             return;
         }
@@ -273,6 +273,110 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+        }
+    }
+
+    /// <summary>
+    /// Attempts synchronous fire-and-forget produce when metadata is initialized and cached.
+    /// This is the fastest path for fire-and-forget operations as it:
+    /// 1. Does NOT rent a PooledValueTaskSource
+    /// 2. Does NOT store the completion source in the batch
+    /// 3. Completely bypasses result tracking overhead
+    /// Returns true if successful, false if async path is needed.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryProduceSyncFireAndForget(ProducerMessage<TKey, TValue> message)
+    {
+        // Check if metadata is initialized (sync check)
+        if (_metadataManager.Metadata.LastRefreshed == default)
+        {
+            return false; // Need async initialization
+        }
+
+        // Try to get topic metadata from cache
+        if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out var topicInfo) || topicInfo is null)
+        {
+            return false; // Cache miss, need async refresh
+        }
+
+        if (topicInfo.PartitionCount == 0)
+        {
+            return false; // Invalid topic state, let async path handle error
+        }
+
+        // All checks passed - we can proceed synchronously without completion tracking
+        try
+        {
+            ProduceSyncCoreFireAndForget(message, topicInfo);
+        }
+        catch
+        {
+            // Fire-and-forget: swallow exception silently
+            // This matches Confluent.Kafka behavior where Produce() doesn't throw
+            // for production errors in fire-and-forget mode
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Core synchronous fire-and-forget produce logic that skips completion source tracking.
+    /// This eliminates the overhead of PooledValueTaskSource rental and result handling.
+    /// </summary>
+    private void ProduceSyncCoreFireAndForget(
+        ProducerMessage<TKey, TValue> message,
+        TopicInfo topicInfo)
+    {
+        var key = PooledMemory.Null;
+        var value = PooledMemory.Null;
+        RecordHeader[]? pooledHeaderArray = null;
+
+        try
+        {
+            // Serialize key and value
+            var keyIsNull = message.Key is null;
+            key = keyIsNull ? PooledMemory.Null : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
+            value = SerializeValueToPooled(message.Value, message.Topic, message.Headers);
+
+            // Determine partition
+            var partition = message.Partition
+                ?? _partitioner.Partition(message.Topic, key.Span, keyIsNull, topicInfo.PartitionCount);
+
+            // Get timestamp
+            var timestamp = message.Timestamp ?? DateTimeOffset.UtcNow;
+            var timestampMs = timestamp.ToUnixTimeMilliseconds();
+
+            // Convert headers
+            IReadOnlyList<RecordHeader>? recordHeaders = null;
+            if (message.Headers is not null && message.Headers.Count > 0)
+            {
+                recordHeaders = ConvertHeaders(message.Headers, out pooledHeaderArray);
+            }
+
+            // Append to accumulator synchronously - no completion source needed
+            if (!_accumulator.TryAppendFireAndForget(
+                message.Topic,
+                partition,
+                timestampMs,
+                key,
+                value,
+                recordHeaders,
+                pooledHeaderArray))
+            {
+                // Accumulator is disposed - cleanup and throw
+                CleanupPooledResources(key, value, pooledHeaderArray);
+                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+            }
+
+            // Track message produced using fast path (global counters only)
+            // Skips per-topic/partition dictionary lookups for maximum fire-and-forget throughput
+            var messageBytes = key.Length + value.Length;
+            _statisticsCollector.RecordMessageProducedFast(messageBytes);
+        }
+        catch (Exception ex) when (ex is not ObjectDisposedException)
+        {
+            // Cleanup resources on any exception (except ObjectDisposedException which already cleaned up)
+            CleanupPooledResources(key, value, pooledHeaderArray);
+            throw;
         }
     }
 

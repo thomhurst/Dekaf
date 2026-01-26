@@ -241,6 +241,60 @@ public sealed class RecordAccumulator : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Fire-and-forget version of TryAppendSync that skips completion source tracking entirely.
+    /// This eliminates the overhead of renting and storing PooledValueTaskSource for fire-and-forget produces.
+    /// Returns true if appended successfully, false if the accumulator is disposed.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryAppendFireAndForget(
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray)
+    {
+        if (_disposed)
+            return false;
+
+        // OPTIMIZATION: Use a nested cache to get/create TopicPartition without allocating on hot path.
+        var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
+        var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
+
+        // Loop until we successfully append the record.
+        while (true)
+        {
+            // Hot path optimization: TryGetValue first to avoid lambda invocation when batch exists.
+            if (!_batches.TryGetValue(topicPartition, out var batch))
+            {
+                batch = _batches.GetOrAdd(topicPartition, static (tp, options) => new PartitionBatch(tp, options), _options);
+            }
+
+            var result = batch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
+
+            if (result.Success)
+                return true;
+
+            // Batch is full, complete it and queue for sending
+            var readyBatch = batch.Complete();
+            if (readyBatch is not null)
+            {
+                // Non-blocking write to unbounded channel - should always succeed
+                // If it fails (channel completed), the producer is being disposed
+                if (!_readyBatches.Writer.TryWrite(readyBatch))
+                {
+                    // Channel is closed, fail the batch and return false
+                    readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                    return false;
+                }
+            }
+
+            // Atomically remove the completed batch only if it's still the same instance.
+            _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch));
+        }
+    }
 
     /// <summary>
     /// Gets batches that are ready to send.
@@ -361,8 +415,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
 /// </summary>
 internal sealed class PartitionBatch
 {
-    // Initial capacity based on typical batch sizes - avoids array resizing
-    private const int InitialRecordCapacity = 64;
+    // Initial capacity increased to reduce array growth frequency.
+    // Most batches contain 100-500 records, so 256 avoids resizing in common cases.
+    // This reduces SpinLock hold time by eliminating most array growth operations.
+    private const int InitialRecordCapacity = 256;
 
     private readonly TopicPartition _topicPartition;
     private readonly ProducerOptions _options;
@@ -495,6 +551,97 @@ internal sealed class PartitionBatch
 
             // Use the passed-in completion source - no allocation here
             _completionSources[_completionSourceCount++] = completion;
+
+            _offsetDelta++;
+
+            return new RecordAppendResult(true);
+        }
+        finally
+        {
+            if (lockTaken) _spinLock.Exit();
+        }
+    }
+
+    /// <summary>
+    /// Fire-and-forget version of TryAppend that skips completion source tracking.
+    /// This is significantly faster for fire-and-forget produces since it avoids:
+    /// 1. Renting a PooledValueTaskSource
+    /// 2. Storing the completion source in the batch
+    /// 3. Setting the result when the batch completes
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public RecordAppendResult TryAppendFireAndForget(
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray)
+    {
+        // Pre-compute record size outside the lock - depends only on input parameters
+        var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
+
+        var lockTaken = false;
+        try
+        {
+            _spinLock.Enter(ref lockTaken);
+
+            if (_recordCount == 0)
+            {
+                _baseTimestamp = timestamp;
+            }
+
+            // Check size limit
+            if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
+            {
+                return new RecordAppendResult(false);
+            }
+
+            // Grow arrays if needed (rare - only happens if batch fills beyond initial capacity)
+            if (_recordCount >= _records.Length)
+            {
+                GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
+            }
+            // Note: No need to grow _completionSources for fire-and-forget
+            if (_pooledArrayCount + 2 >= _pooledArrays.Length) // +2 for key and value
+            {
+                GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
+            }
+            if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
+            {
+                GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
+            }
+
+            // Track pooled arrays for returning to pool later
+            if (key.Array is not null)
+            {
+                _pooledArrays[_pooledArrayCount++] = key.Array;
+            }
+            if (value.Array is not null)
+            {
+                _pooledArrays[_pooledArrayCount++] = value.Array;
+            }
+            if (pooledHeaderArray is not null)
+            {
+                _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
+            }
+
+            var timestampDelta = (int)(timestamp - _baseTimestamp);
+            var record = new Record
+            {
+                TimestampDelta = timestampDelta,
+                OffsetDelta = _offsetDelta,
+                Key = key.Memory,
+                IsKeyNull = key.IsNull,
+                Value = value.Memory,
+                IsValueNull = false,
+                Headers = headers
+            };
+
+            _records[_recordCount++] = record;
+            _estimatedSize += recordSize;
+
+            // Fire-and-forget: Skip completion source tracking entirely
+            // This is the key optimization - no PooledValueTaskSource rental or storage
 
             _offsetDelta++;
 

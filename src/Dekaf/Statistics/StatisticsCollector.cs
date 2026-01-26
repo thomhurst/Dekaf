@@ -39,6 +39,18 @@ internal sealed class ProducerStatisticsCollector
         partitionCounters.IncrementQueued();
     }
 
+    /// <summary>
+    /// Fast path for fire-and-forget: only updates global atomic counters.
+    /// Skips per-topic/partition dictionary lookups for maximum throughput.
+    /// Inspired by librdkafka's atomic-only statistics in fire-and-forget mode.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public void RecordMessageProducedFast(int bytes)
+    {
+        Interlocked.Increment(ref _messagesProduced);
+        Interlocked.Add(ref _bytesProduced, bytes);
+    }
+
     public void RecordMessageDelivered(string topic, int partition, int bytes)
     {
         Interlocked.Increment(ref _messagesDelivered);
@@ -258,6 +270,25 @@ internal sealed class ConsumerStatisticsCollector
         partitionCounters.IncrementConsumed(bytes);
     }
 
+    /// <summary>
+    /// Batch version of RecordMessageConsumed for efficient statistics updates.
+    /// Called once per partition-fetch instead of per message.
+    /// Inspired by librdkafka's batch-level accounting.
+    /// </summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    public void RecordMessagesConsumedBatch(string topic, int partition, int messageCount, long bytes)
+    {
+        Interlocked.Add(ref _messagesConsumed, messageCount);
+        Interlocked.Add(ref _bytesConsumed, bytes);
+
+        var topicCounters = _topicCounters.GetOrAdd(topic, static _ => new ConsumerTopicCounters());
+        topicCounters.AddConsumed(messageCount, bytes);
+
+        var partitionKey = (topic, partition);
+        var partitionCounters = _partitionCounters.GetOrAdd(partitionKey, static _ => new ConsumerPartitionCounters());
+        partitionCounters.AddConsumed(messageCount, bytes);
+    }
+
     public void RecordRebalance()
     {
         Interlocked.Increment(ref _rebalanceCount);
@@ -353,6 +384,12 @@ internal sealed class ConsumerStatisticsCollector
             Interlocked.Add(ref _bytes, bytes);
         }
 
+        public void AddConsumed(int count, long bytes)
+        {
+            Interlocked.Add(ref _consumed, count);
+            Interlocked.Add(ref _bytes, bytes);
+        }
+
         public (long Consumed, long Bytes) GetStats() =>
             (Interlocked.Read(ref _consumed), Interlocked.Read(ref _bytes));
     }
@@ -366,6 +403,12 @@ internal sealed class ConsumerStatisticsCollector
         public void IncrementConsumed(int bytes)
         {
             Interlocked.Increment(ref _consumed);
+            Interlocked.Add(ref _bytes, bytes);
+        }
+
+        public void AddConsumed(int count, long bytes)
+        {
+            Interlocked.Add(ref _consumed, count);
             Interlocked.Add(ref _bytes, bytes);
         }
 
