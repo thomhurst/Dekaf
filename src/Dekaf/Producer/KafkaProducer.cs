@@ -101,7 +101,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 SendBufferSize = options.SocketSendBufferBytes,
                 ReceiveBufferSize = options.SocketReceiveBufferBytes
             },
-            loggerFactory);
+            loggerFactory,
+            options.ConnectionsPerBroker);
 
         _metadataManager = new MetadataManager(
             _connectionPool,

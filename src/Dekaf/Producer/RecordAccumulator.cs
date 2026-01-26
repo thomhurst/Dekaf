@@ -424,6 +424,9 @@ internal sealed class PartitionBatch
         RecordHeader[]? pooledHeaderArray,
         PooledValueTaskSource<RecordMetadata> completion)
     {
+        // Pre-compute record size outside the lock - depends only on input parameters
+        var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
+
         // SpinLock for short critical section - lower overhead than Monitor for <100ns holds.
         // Multiple threads can call TryAppend concurrently via ConcurrentDictionary.AddOrUpdate.
         // This lock is per-partition, so there is no cross-partition contention.
@@ -437,8 +440,7 @@ internal sealed class PartitionBatch
                 _baseTimestamp = timestamp;
             }
 
-            // Estimate size
-            var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
+            // Check size limit
             if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
             {
                 return new RecordAppendResult(false);
@@ -510,7 +512,7 @@ internal sealed class PartitionBatch
         var newSize = array.Length * 2;
         var newArray = pool.Rent(newSize);
         Array.Copy(array, newArray, count);
-        pool.Return(array, clearArray: true);
+        pool.Return(array, clearArray: false);
         array = newArray;
     }
 
@@ -557,7 +559,7 @@ internal sealed class PartitionBatch
 
         // Return only the records array to pool - we've copied it
         // Other arrays are passed directly to ReadyBatch which will return them to pool
-        ArrayPool<Record>.Shared.Return(_records, clearArray: true);
+        ArrayPool<Record>.Shared.Return(_records, clearArray: false);
         _records = null!;
 
         var batch = new RecordBatch
@@ -593,14 +595,15 @@ internal sealed class PartitionBatch
     private void ReturnBatchArraysToPool()
     {
         // Return all working arrays to pool (with null checks since they may have been transferred)
+        // clearArray: false for internal tracking arrays - they will be overwritten on next use
         if (_records is not null)
-            ArrayPool<Record>.Shared.Return(_records, clearArray: true);
+            ArrayPool<Record>.Shared.Return(_records, clearArray: false);
         if (_completionSources is not null)
-            ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(_completionSources, clearArray: true);
+            ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(_completionSources, clearArray: false);
         if (_pooledArrays is not null)
-            ArrayPool<byte[]>.Shared.Return(_pooledArrays, clearArray: true);
+            ArrayPool<byte[]>.Shared.Return(_pooledArrays, clearArray: false);
         if (_pooledHeaderArrays is not null)
-            ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: true);
+            ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: false);
 
         // Null out references to prevent accidental reuse
         _records = null!;
@@ -741,15 +744,17 @@ public sealed class ReadyBatch
         }
 
         // Return pooled header arrays (large header counts)
+        // clearArray: false - header data is not sensitive
         for (var i = 0; i < _pooledHeaderArraysCount; i++)
         {
-            ArrayPool<RecordHeader>.Shared.Return(_pooledHeaderArrays[i], clearArray: true);
+            ArrayPool<RecordHeader>.Shared.Return(_pooledHeaderArrays[i], clearArray: false);
         }
 
         // Return the working arrays to pool
         // Note: PooledValueTaskSource instances auto-return to their pool when awaited
-        ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(_completionSourcesArray, clearArray: true);
-        ArrayPool<byte[]>.Shared.Return(_pooledDataArrays, clearArray: true);
-        ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: true);
+        // clearArray: false for tracking arrays - they only hold references, not actual data
+        ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(_completionSourcesArray, clearArray: false);
+        ArrayPool<byte[]>.Shared.Return(_pooledDataArrays, clearArray: false);
+        ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: false);
     }
 }
