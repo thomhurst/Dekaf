@@ -309,11 +309,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             ProduceSyncCoreFireAndForget(message, topicInfo);
         }
-        catch
+        catch (Exception ex)
         {
-            // Fire-and-forget: swallow exception silently
+            // Fire-and-forget: swallow exception but log for diagnostics
             // This matches Confluent.Kafka behavior where Produce() doesn't throw
             // for production errors in fire-and-forget mode
+            _logger?.LogDebug(ex, "Fire-and-forget produce failed for topic {Topic}", message.Topic);
         }
         return true;
     }
