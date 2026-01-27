@@ -5,25 +5,20 @@ using Dekaf.Security.Sasl;
 namespace Dekaf.Consumer;
 
 /// <summary>
-/// Specifies how consumer offsets are managed.
+/// Specifies how consumer offsets are committed.
 /// </summary>
 public enum OffsetCommitMode
 {
     /// <summary>
-    /// Offsets are automatically stored as consumed and committed periodically.
-    /// Use for at-most-once processing where occasional message loss is acceptable.
+    /// Offsets are automatically committed periodically in the background.
+    /// This matches Kafka's enable.auto.commit=true behavior.
     /// </summary>
     Auto,
 
     /// <summary>
-    /// Offsets are automatically stored as consumed, but you must call CommitAsync() explicitly.
-    /// Use for at-least-once processing where you want to commit after processing.
-    /// </summary>
-    ManualCommit,
-
-    /// <summary>
-    /// You must call StoreOffset() for each message and CommitAsync() to persist.
-    /// Use for exactly-once or selective offset management.
+    /// You must call CommitAsync() explicitly to commit offsets.
+    /// This matches Kafka's enable.auto.commit=false behavior.
+    /// Use for at-least-once processing where you commit after processing.
     /// </summary>
     Manual
 }

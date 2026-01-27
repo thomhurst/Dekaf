@@ -170,17 +170,6 @@ public class ApiImprovementsTests
     }
 
     [Test]
-    public async Task ConsumerBuilder_WithOffsetCommitMode_ManualCommit_SetsCorrectOptions()
-    {
-        var builder = Dekaf.CreateConsumer<string, string>()
-            .WithBootstrapServers("localhost:9092")
-            .WithGroupId("test-group")
-            .WithOffsetCommitMode(OffsetCommitMode.ManualCommit);
-
-        await Assert.That(builder).IsNotNull();
-    }
-
-    [Test]
     public async Task ConsumerBuilder_WithOffsetCommitMode_Manual_SetsCorrectOptions()
     {
         var builder = Dekaf.CreateConsumer<string, string>()

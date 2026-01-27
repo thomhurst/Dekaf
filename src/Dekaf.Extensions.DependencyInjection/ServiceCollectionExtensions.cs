@@ -200,9 +200,9 @@ public sealed class ConsumerServiceBuilder<TKey, TValue>
         return this;
     }
 
-    public ConsumerServiceBuilder<TKey, TValue> WithAutoCommit(bool enable = true)
+    public ConsumerServiceBuilder<TKey, TValue> WithOffsetCommitMode(OffsetCommitMode mode)
     {
-        _builder.WithAutoCommit(enable);
+        _builder.WithOffsetCommitMode(mode);
         return this;
     }
 

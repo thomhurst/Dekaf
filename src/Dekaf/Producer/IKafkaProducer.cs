@@ -304,6 +304,7 @@ public readonly record struct TopicPartitionOffset(string Topic, int Partition, 
 /// </summary>
 public readonly record struct TopicPartition(string Topic, int Partition);
 
+/// <summary>
 /// Represents a topic, partition, and timestamp for offset lookup.
 /// </summary>
 /// <param name="Topic">The topic name.</param>

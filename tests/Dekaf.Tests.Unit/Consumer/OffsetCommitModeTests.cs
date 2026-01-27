@@ -3,7 +3,7 @@ using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Consumer;
 
-public class StoreOffsetTests
+public class OffsetCommitModeTests
 {
     [Test]
     public async Task ConsumerBuilder_WithOffsetCommitMode_ConfiguresOption()
@@ -45,7 +45,7 @@ public class StoreOffsetTests
     [Test]
     public async Task TopicPartitionOffset_CanBeCreated()
     {
-        // Verify TopicPartitionOffset can be created for use with StoreOffset
+        // Verify TopicPartitionOffset can be created for use with CommitAsync
         var tpo = new TopicPartitionOffset("test-topic", 0, 100);
 
         await Assert.That(tpo.Topic).IsEqualTo("test-topic");
@@ -64,34 +64,21 @@ public class StoreOffsetTests
     }
 
     [Test]
-    public async Task IKafkaConsumer_StoreOffset_MethodExists()
+    public async Task IKafkaConsumer_CommitAsync_MethodExists()
     {
-        // Verify the interface has the StoreOffset methods defined
+        // Verify the interface has the CommitAsync methods defined
         var interfaceType = typeof(IKafkaConsumer<string, string>);
 
-        var storeOffsetTopicPartitionOffset = interfaceType.GetMethod(
-            nameof(IKafkaConsumer<string, string>.StoreOffset),
-            [typeof(TopicPartitionOffset)]);
+        var commitAsyncNoArgs = interfaceType.GetMethod(
+            nameof(IKafkaConsumer<string, string>.CommitAsync),
+            [typeof(CancellationToken)]);
 
-        var storeOffsetConsumeResult = interfaceType.GetMethod(
-            nameof(IKafkaConsumer<string, string>.StoreOffset),
-            [typeof(ConsumeResult<string, string>)]);
+        var commitAsyncWithOffsets = interfaceType.GetMethod(
+            nameof(IKafkaConsumer<string, string>.CommitAsync),
+            [typeof(IEnumerable<TopicPartitionOffset>), typeof(CancellationToken)]);
 
-        await Assert.That(storeOffsetTopicPartitionOffset).IsNotNull();
-        await Assert.That(storeOffsetConsumeResult).IsNotNull();
-    }
-
-    [Test]
-    public async Task IKafkaConsumer_StoreOffset_ReturnType_IsConsumer()
-    {
-        // Verify StoreOffset returns IKafkaConsumer for method chaining
-        var interfaceType = typeof(IKafkaConsumer<string, string>);
-
-        var storeOffsetMethod = interfaceType.GetMethod(
-            nameof(IKafkaConsumer<string, string>.StoreOffset),
-            [typeof(TopicPartitionOffset)]);
-
-        await Assert.That(storeOffsetMethod!.ReturnType).IsEqualTo(typeof(IKafkaConsumer<string, string>));
+        await Assert.That(commitAsyncNoArgs).IsNotNull();
+        await Assert.That(commitAsyncWithOffsets).IsNotNull();
     }
 
     [Test]
@@ -117,13 +104,6 @@ public class StoreOffsetTests
             OffsetCommitMode = OffsetCommitMode.Auto
         };
         await Assert.That(autoOptions.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Auto);
-
-        var manualCommitOptions = new ConsumerOptions
-        {
-            BootstrapServers = ["localhost:9092"],
-            OffsetCommitMode = OffsetCommitMode.ManualCommit
-        };
-        await Assert.That(manualCommitOptions.OffsetCommitMode).IsEqualTo(OffsetCommitMode.ManualCommit);
 
         var manualOptions = new ConsumerOptions
         {

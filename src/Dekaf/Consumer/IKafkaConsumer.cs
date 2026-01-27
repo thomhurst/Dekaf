@@ -86,26 +86,8 @@ public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
     ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneAsync(TimeSpan timeout, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Stores an offset for later commit. Does not commit immediately.
-    /// Use with OffsetCommitMode.Manual for full manual control.
-    /// </summary>
-    /// <param name="offset">The topic-partition-offset to store.</param>
-    /// <returns>The consumer instance for method chaining.</returns>
-    IKafkaConsumer<TKey, TValue> StoreOffset(TopicPartitionOffset offset);
-
-    /// <summary>
-    /// Stores the offset from a consume result for later commit.
-    /// The stored offset is the next offset to consume (result.Offset + 1).
-    /// Use with OffsetCommitMode.Manual for full manual control.
-    /// </summary>
-    /// <param name="result">The consume result whose offset to store.</param>
-    /// <returns>The consumer instance for method chaining.</returns>
-    IKafkaConsumer<TKey, TValue> StoreOffset(ConsumeResult<TKey, TValue> result);
-
-    /// <summary>
-    /// Commits consumed offsets.
-    /// When OffsetCommitMode is Manual, commits the offsets stored via StoreOffset.
-    /// When OffsetCommitMode is Auto or ManualCommit, commits the offsets of all consumed messages.
+    /// Commits the offsets of all consumed messages.
+    /// Use with OffsetCommitMode.Manual to control when offsets are committed.
     /// </summary>
     ValueTask CommitAsync(CancellationToken cancellationToken = default);
 
