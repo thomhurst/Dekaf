@@ -8,7 +8,11 @@ namespace Dekaf.Internal;
 internal sealed class CancellationTokenSourcePool
 {
     private readonly ConcurrentBag<CancellationTokenSource> _pool = new();
-    private const int MaxPoolSize = 16; // Limit pool size to prevent unbounded growth
+    // Pool size must accommodate peak concurrent requests across all connections.
+    // At 250K msg/sec with batching and multiple partitions, concurrent in-flight
+    // requests can spike to 500+ during bursts or when broker responses are slow.
+    // 512 provides headroom for high-throughput scenarios while bounding memory usage.
+    private const int MaxPoolSize = 512;
     private int _count;
 
     public CancellationTokenSource Rent()
