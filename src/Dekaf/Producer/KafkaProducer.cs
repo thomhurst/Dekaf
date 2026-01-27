@@ -35,6 +35,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly Task _lingerTask;
     private readonly PeriodicTimer _lingerTimer;
 
+
     // Channel-based worker pool for thread-safe produce operations
     private readonly Channel<ProduceWorkItem<TKey, TValue>> _workChannel;
     private readonly Task[] _workerTasks;
@@ -148,7 +149,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _compressionCodecs = new CompressionCodecRegistry();
 
         _senderCts = new CancellationTokenSource();
-        _lingerTimer = new PeriodicTimer(TimeSpan.FromMilliseconds(_options.LingerMs > 0 ? _options.LingerMs : 100));
+        // Use 1ms check interval for low-latency awaited produces.
+        // ShouldFlush() is smart: it returns true immediately for batches with completion
+        // sources (awaited produces), but waits for full LingerMs for fire-and-forget batches.
+        // This provides low latency for ProduceAsync while maintaining efficient batching for Send.
+        _lingerTimer = new PeriodicTimer(TimeSpan.FromMilliseconds(1));
         _senderTask = SenderLoopAsync(_senderCts.Token);
         _lingerTask = LingerLoopAsync(_senderCts.Token);
 
@@ -228,6 +233,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// Attempts synchronous produce for awaited ProduceAsync when metadata is cached.
     /// Returns true if successful with the completion source to await.
     /// Unlike TryProduceSync, this version throws exceptions for awaited callers.
+    /// Uses thread-local metadata cache for maximum performance on hot path.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryProduceSyncForAsync(ProducerMessage<TKey, TValue> message, out PooledValueTaskSource<RecordMetadata>? completion)
@@ -240,13 +246,22 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             return false; // Need async initialization
         }
 
-        // Try to get topic metadata from cache
-        if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out var topicInfo) || topicInfo is null)
+        // FAST PATH: Check thread-local cached topic metadata first.
+        // Avoids MetadataManager dictionary lookup for consecutive messages to the same topic.
+        TopicInfo? topicInfo;
+        if (!TryGetCachedTopicInfo(message.Topic, out topicInfo))
         {
-            return false; // Cache miss, need async refresh
+            // Cache miss - try MetadataManager
+            if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo) || topicInfo is null)
+            {
+                return false; // Cache miss, need async refresh
+            }
+
+            // Update thread-local cache for next call
+            UpdateCachedTopicInfo(message.Topic, topicInfo);
         }
 
-        if (topicInfo.PartitionCount == 0)
+        if (topicInfo!.PartitionCount == 0)
         {
             return false; // Invalid topic state, let async path handle error
         }
