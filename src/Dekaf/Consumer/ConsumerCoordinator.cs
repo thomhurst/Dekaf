@@ -581,6 +581,10 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return new Dictionary<TopicPartition, long>();
 
+        // If coordinator hasn't been discovered yet, return empty (no committed offsets known)
+        if (_coordinatorId < 0)
+            return new Dictionary<TopicPartition, long>();
+
         await _fetchLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
