@@ -184,6 +184,14 @@ public sealed class ProducerOptions
     /// Default is 4096.
     /// </summary>
     public int ValueTaskSourcePoolSize { get; init; } = ValueTaskSourcePool<RecordMetadata>.DefaultMaxPoolSize;
+
+    /// <summary>
+    /// Capacity of the arena buffer for zero-copy serialization in bytes.
+    /// Larger arenas reduce fallback allocations when messages are larger than expected.
+    /// Default is 64KB which handles most message sizes efficiently.
+    /// Set to 0 to use BatchSize as the arena capacity.
+    /// </summary>
+    public int ArenaCapacity { get; init; } = 65536;
 }
 
 /// <summary>

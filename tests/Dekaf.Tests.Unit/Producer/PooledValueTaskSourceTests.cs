@@ -169,7 +169,7 @@ public class PooledValueTaskSourceTests
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var source = pool.Rent();
 
-        RecordMetadata? receivedMetadata = null;
+        RecordMetadata receivedMetadata = default;
         Exception? receivedException = null;
 
         source.SetDeliveryHandler((metadata, ex) =>
@@ -189,8 +189,7 @@ public class PooledValueTaskSourceTests
         source.SetResult(expectedMetadata);
         await source.Task.ConfigureAwait(false);
 
-        await Assert.That(receivedMetadata).IsNotNull();
-        await Assert.That(receivedMetadata!.Topic).IsEqualTo("test");
+        await Assert.That(receivedMetadata.Topic).IsEqualTo("test");
         await Assert.That(receivedMetadata.Offset).IsEqualTo(42);
         await Assert.That(receivedException).IsNull();
     }
@@ -201,7 +200,7 @@ public class PooledValueTaskSourceTests
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var source = pool.Rent();
 
-        RecordMetadata? receivedMetadata = null;
+        RecordMetadata receivedMetadata = default;
         Exception? receivedException = null;
 
         source.SetDeliveryHandler((metadata, ex) =>
@@ -222,7 +221,9 @@ public class PooledValueTaskSourceTests
             // Expected
         }
 
-        await Assert.That(receivedMetadata).IsNull();
+        // On exception, the handler receives default (empty struct) for the metadata
+        await Assert.That(receivedMetadata.Topic).IsNull();
+        await Assert.That(receivedMetadata.Offset).IsEqualTo(0);
         await Assert.That(receivedException).IsNotNull();
         await Assert.That(receivedException).IsSameReferenceAs(expectedException);
     }

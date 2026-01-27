@@ -19,7 +19,7 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
 {
     private ManualResetValueTaskSourceCore<T> _core;
     private ValueTaskSourcePool<T>? _pool;
-    private Action<T?, Exception?>? _deliveryHandler;
+    private Action<T, Exception?>? _deliveryHandler;
     private int _hasCompleted; // 0 = not completed, 1 = completed
 
     /// <summary>
@@ -46,7 +46,7 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     /// The handler is cleared after invocation.
     /// </summary>
     /// <param name="handler">The handler to invoke on completion.</param>
-    public void SetDeliveryHandler(Action<T?, Exception?>? handler)
+    public void SetDeliveryHandler(Action<T, Exception?>? handler)
     {
         _deliveryHandler = handler;
     }
@@ -151,8 +151,8 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
         }
         catch (Exception ex)
         {
-            // Invoke delivery handler with exception
-            handler?.Invoke(default, ex);
+            // Invoke delivery handler with exception (default value for error case)
+            handler?.Invoke(default!, ex);
             throw;
         }
         finally

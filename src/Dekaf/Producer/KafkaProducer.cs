@@ -853,7 +853,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <inheritdoc />
-    public void Produce(ProducerMessage<TKey, TValue> message, Action<RecordMetadata?, Exception?> deliveryHandler)
+    public void Produce(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -886,7 +886,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// For fire-and-forget, exceptions are delivered via the callback, not thrown.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryProduceSyncWithHandler(ProducerMessage<TKey, TValue> message, Action<RecordMetadata?, Exception?> deliveryHandler)
+    private bool TryProduceSyncWithHandler(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
     {
         // Check if metadata is initialized
         if (_metadataManager.Metadata.LastRefreshed == default)
@@ -1406,29 +1406,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     /// <summary>
     /// Converts Headers to RecordHeaders with minimal allocations.
-    /// Allocates an array directly instead of using List to avoid the List wrapper allocation.
-    /// For small header counts (<=16), allocates a small array on the heap.
-    /// For larger counts (>16), uses ArrayPool to avoid allocating large arrays that could pressure GC.
+    /// Always uses ArrayPool to avoid per-message heap allocations.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static IReadOnlyList<RecordHeader> ConvertHeaders(Headers headers, out RecordHeader[]? pooledArray)
     {
-        const int PoolingThreshold = 16;
         var count = headers.Count;
-        pooledArray = null;
 
-        RecordHeader[] result;
-        if (count <= PoolingThreshold)
-        {
-            // Small header count: allocate array directly (one allocation vs List's two allocations)
-            result = new RecordHeader[count];
-        }
-        else
-        {
-            // Large header count: rent from pool to avoid large array allocations
-            result = ArrayPool<RecordHeader>.Shared.Rent(count);
-            pooledArray = result; // Track for returning to pool later
-        }
+        // Always pool to eliminate per-message allocations
+        var result = ArrayPool<RecordHeader>.Shared.Rent(count);
+        pooledArray = result;
 
         // Use index-based iteration to avoid enumerator boxing allocation
         for (var i = 0; i < count; i++)
@@ -1442,13 +1429,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             };
         }
 
-        // If pooled, wrap in HeaderListWrapper to expose only the valid portion
-        if (pooledArray is not null)
-        {
-            return new HeaderListWrapper(result, count);
-        }
-
-        return result;
+        // Always wrap in HeaderListWrapper to expose only the valid portion
+        return new HeaderListWrapper(result, count);
     }
 
     public async ValueTask DisposeAsync()
