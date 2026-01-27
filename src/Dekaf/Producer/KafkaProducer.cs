@@ -86,6 +86,19 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     [ThreadStatic]
     private static MetadataManager? t_cachedMetadataManager;
 
+    // Thread-local reusable serialization buffers to avoid PooledBufferWriter creation per message.
+    // These buffers grow as needed and are reused across messages on the same thread.
+    // After serialization, data is copied to a right-sized pooled buffer for the batch.
+    // This trades a small copy for eliminating buffer allocation overhead.
+    [ThreadStatic]
+    private static byte[]? t_keySerializationBuffer;
+    [ThreadStatic]
+    private static byte[]? t_valueSerializationBuffer;
+
+    // Default sizes match typical key/value sizes to avoid growth in common cases
+    private const int DefaultKeyBufferSize = 512;
+    private const int DefaultValueBufferSize = 2048;
+
     public KafkaProducer(
         ProducerOptions options,
         ISerializer<TKey> keySerializer,
@@ -1230,57 +1243,49 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <summary>
-    /// Serializes the key directly into pooled memory using PooledBufferWriter.
-    /// This eliminates the double-copy overhead of the previous ArrayBufferWriter approach.
+    /// Serializes the key using a thread-local reusable buffer.
+    /// Avoids PooledBufferWriter creation per message by reusing the same buffer.
+    /// Data is copied to a right-sized pooled buffer for the batch.
     /// </summary>
     private PooledMemory SerializeKeyToPooled(TKey key, string topic, Headers? headers)
     {
-        // Keys are typically small (UUIDs, IDs), but 512 avoids growth for most cases
-        var writer = new PooledBufferWriter(initialCapacity: 512);
-        try
-        {
-            // Reuse thread-local context by updating fields (zero-allocation)
-            t_serializationContext.Topic = topic;
-            t_serializationContext.Component = SerializationComponent.Key;
-            t_serializationContext.Headers = headers;
-            _keySerializer.Serialize(key, ref writer, t_serializationContext);
+        // Use thread-local buffer to avoid per-message allocation
+        var writer = new ReusableBufferWriter(ref t_keySerializationBuffer, DefaultKeyBufferSize);
 
-            // Transfer ownership - no copy needed
-            return writer.ToPooledMemory();
-        }
-        catch
-        {
-            // Return buffer to pool on error to prevent leaks
-            writer.Dispose();
-            throw;
-        }
+        // Reuse thread-local context by updating fields (zero-allocation)
+        t_serializationContext.Topic = topic;
+        t_serializationContext.Component = SerializationComponent.Key;
+        t_serializationContext.Headers = headers;
+        _keySerializer.Serialize(key, ref writer, t_serializationContext);
+
+        // Update buffer ref in case it grew during serialization
+        writer.UpdateBufferRef(ref t_keySerializationBuffer);
+
+        // Copy to right-sized pooled buffer for batch storage
+        return writer.ToPooledMemory();
     }
 
     /// <summary>
-    /// Serializes the value directly into pooled memory using PooledBufferWriter.
-    /// This eliminates the double-copy overhead of the previous ArrayBufferWriter approach.
+    /// Serializes the value using a thread-local reusable buffer.
+    /// Avoids PooledBufferWriter creation per message by reusing the same buffer.
+    /// Data is copied to a right-sized pooled buffer for the batch.
     /// </summary>
     private PooledMemory SerializeValueToPooled(TValue value, string topic, Headers? headers)
     {
-        // Values are typically larger; 1024 handles most messages without buffer growth
-        var writer = new PooledBufferWriter(initialCapacity: 1024);
-        try
-        {
-            // Reuse thread-local context by updating fields (zero-allocation)
-            t_serializationContext.Topic = topic;
-            t_serializationContext.Component = SerializationComponent.Value;
-            t_serializationContext.Headers = headers;
-            _valueSerializer.Serialize(value, ref writer, t_serializationContext);
+        // Use thread-local buffer to avoid per-message allocation
+        var writer = new ReusableBufferWriter(ref t_valueSerializationBuffer, DefaultValueBufferSize);
 
-            // Transfer ownership - no copy needed
-            return writer.ToPooledMemory();
-        }
-        catch
-        {
-            // Return buffer to pool on error to prevent leaks
-            writer.Dispose();
-            throw;
-        }
+        // Reuse thread-local context by updating fields (zero-allocation)
+        t_serializationContext.Topic = topic;
+        t_serializationContext.Component = SerializationComponent.Value;
+        t_serializationContext.Headers = headers;
+        _valueSerializer.Serialize(value, ref writer, t_serializationContext);
+
+        // Update buffer ref in case it grew during serialization
+        writer.UpdateBufferRef(ref t_valueSerializationBuffer);
+
+        // Copy to right-sized pooled buffer for batch storage
+        return writer.ToPooledMemory();
     }
 
     /// <summary>
@@ -1532,6 +1537,92 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
             return AbortAsync();
         }
         return ValueTask.CompletedTask;
+    }
+}
+
+/// <summary>
+/// A buffer writer that writes to a provided reusable buffer.
+/// Used with thread-local buffers to avoid per-message ArrayPool rentals.
+/// After serialization, ToPooledMemory() copies data to a right-sized pooled buffer.
+/// </summary>
+internal ref struct ReusableBufferWriter : IBufferWriter<byte>
+{
+    private byte[] _buffer;
+    private int _written;
+
+    public ReusableBufferWriter(ref byte[]? buffer, int initialCapacity)
+    {
+        _buffer = buffer ??= new byte[initialCapacity];
+        _written = 0;
+    }
+
+    public readonly int WrittenCount => _written;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Advance(int count)
+    {
+        _written += count;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Memory<byte> GetMemory(int sizeHint = 0)
+    {
+        EnsureCapacity(sizeHint);
+        return _buffer.AsMemory(_written);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Span<byte> GetSpan(int sizeHint = 0)
+    {
+        EnsureCapacity(sizeHint);
+        return _buffer.AsSpan(_written);
+    }
+
+    /// <summary>
+    /// Copies written data to a right-sized pooled buffer and returns it as PooledMemory.
+    /// The reusable buffer remains available for the next serialization.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public PooledMemory ToPooledMemory()
+    {
+        if (_written == 0)
+            return new PooledMemory(null, 0, isNull: false);
+
+        // Rent exact-size buffer to minimize memory usage in batches
+        var pooledArray = ArrayPool<byte>.Shared.Rent(_written);
+        _buffer.AsSpan(0, _written).CopyTo(pooledArray);
+        return new PooledMemory(pooledArray, _written);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void EnsureCapacity(int sizeHint)
+    {
+        if (sizeHint < 1)
+            sizeHint = 1;
+
+        var remaining = _buffer.Length - _written;
+        if (remaining < sizeHint)
+        {
+            Grow(sizeHint);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void Grow(int sizeHint)
+    {
+        var newSize = Math.Max(_buffer.Length * 2, _written + sizeHint);
+        var newBuffer = new byte[newSize];
+        _buffer.AsSpan(0, _written).CopyTo(newBuffer);
+        _buffer = newBuffer;
+    }
+
+    /// <summary>
+    /// Updates the caller's buffer reference if growth occurred.
+    /// Call this after serialization to preserve the grown buffer for reuse.
+    /// </summary>
+    public void UpdateBufferRef(ref byte[]? buffer)
+    {
+        buffer = _buffer;
     }
 }
 

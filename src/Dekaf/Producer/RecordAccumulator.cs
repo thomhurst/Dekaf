@@ -121,6 +121,28 @@ public sealed class RecordAccumulator : IAsyncDisposable
     [ThreadStatic]
     private static RecordAccumulator? t_cachedAccumulator;
 
+    // Multi-partition thread-local cache for scenarios where messages go to multiple partitions.
+    // Uses a small fixed-size array indexed by partition modulo cache size.
+    // This handles common scenarios (3-16 partitions) with near-100% cache hit rate.
+    // Cache size of 16 covers most production scenarios while keeping memory footprint small.
+    private const int MultiPartitionCacheSize = 16;
+
+    [ThreadStatic]
+    private static PartitionBatchCacheEntry[]? t_partitionBatchCache;
+    [ThreadStatic]
+    private static RecordAccumulator? t_partitionBatchCacheOwner;
+
+    /// <summary>
+    /// Entry in the multi-partition batch cache.
+    /// Stores the topic, partition, and batch reference for quick lookup.
+    /// </summary>
+    private struct PartitionBatchCacheEntry
+    {
+        public string? Topic;
+        public int Partition;
+        public PartitionBatch? Batch;
+    }
+
     // Cache for TopicPartition instances to avoid repeated allocations.
     // Using a nested ConcurrentDictionary: outer key is topic (string), inner key is partition (int).
     // This allows O(1) lookup without allocating a TopicPartition struct on the hot path.
@@ -304,8 +326,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
         if (_disposed)
             return false;
 
-        // FAST PATH: Check thread-local cache for consecutive messages to same partition.
-        // This is the common case in high-throughput scenarios and avoids all dictionary lookups.
+        // FAST PATH 1: Check single-partition cache for consecutive messages to same partition.
+        // This is the fastest path for single-partition or sticky-partitioner scenarios.
         if (t_cachedAccumulator == this &&
             t_cachedTopic == topic &&
             t_cachedPartition == partition &&
@@ -316,6 +338,29 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 return true;
 
             // Cached batch is full, fall through to slow path to handle batch rotation
+        }
+
+        // FAST PATH 2: Check multi-partition cache for scenarios with multiple partitions.
+        // This handles round-robin/default partitioning across multiple partitions efficiently.
+        if (t_partitionBatchCacheOwner == this && t_partitionBatchCache is { } cache)
+        {
+            var cacheIndex = partition & (MultiPartitionCacheSize - 1); // Fast modulo for power of 2
+            ref var entry = ref cache[cacheIndex];
+            if (entry.Topic == topic && entry.Partition == partition && entry.Batch is { } mpCachedBatch)
+            {
+                var result = mpCachedBatch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
+                if (result.Success)
+                {
+                    // Also update single-partition cache for potential consecutive hits
+                    t_cachedAccumulator = this;
+                    t_cachedTopic = topic;
+                    t_cachedPartition = partition;
+                    t_cachedBatch = mpCachedBatch;
+                    return true;
+                }
+                // Batch is full, invalidate this cache entry
+                entry.Batch = null;
+            }
         }
 
         // SLOW PATH: Dictionary lookups required
@@ -340,6 +385,17 @@ public sealed class RecordAccumulator : IAsyncDisposable
         var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
         var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
 
+        // Initialize multi-partition cache if needed (one-time allocation per thread)
+        var mpCache = t_partitionBatchCache;
+        if (mpCache is null || t_partitionBatchCacheOwner != this)
+        {
+            mpCache = t_partitionBatchCache ??= new PartitionBatchCacheEntry[MultiPartitionCacheSize];
+            t_partitionBatchCacheOwner = this;
+            // Clear cache entries when switching accumulators
+            Array.Clear(mpCache);
+        }
+        var cacheIndex = partition & (MultiPartitionCacheSize - 1);
+
         // Loop until we successfully append the record.
         while (true)
         {
@@ -353,12 +409,19 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
             if (result.Success)
             {
-                // Update thread-local cache for next call
+                // Update single-partition cache for consecutive hits
                 t_cachedAccumulator = this;
                 t_cachedTopic = topic;
                 t_cachedPartition = partition;
                 t_cachedTopicPartition = topicPartition;
                 t_cachedBatch = batch;
+
+                // Update multi-partition cache for round-robin scenarios
+                ref var entry = ref mpCache[cacheIndex];
+                entry.Topic = topic;
+                entry.Partition = partition;
+                entry.Batch = batch;
+
                 return true;
             }
 
@@ -372,8 +435,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 {
                     // Channel is closed, fail the batch and return false
                     readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                    // Invalidate cache since batch is invalid
+                    // Invalidate caches
                     t_cachedBatch = null;
+                    mpCache[cacheIndex].Batch = null;
                     return false;
                 }
             }
@@ -381,10 +445,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Atomically remove the completed batch only if it's still the same instance.
             _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch));
 
-            // Invalidate cache since we removed the batch
+            // Invalidate caches since we removed the batch
             if (t_cachedBatch == batch)
             {
                 t_cachedBatch = null;
+            }
+            if (mpCache[cacheIndex].Batch == batch)
+            {
+                mpCache[cacheIndex].Batch = null;
             }
         }
     }
@@ -573,12 +641,20 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         _disposed = true;
 
-        // Invalidate thread-local cache if it points to this accumulator
+        // Invalidate thread-local caches if they point to this accumulator
         if (t_cachedAccumulator == this)
         {
             t_cachedAccumulator = null;
             t_cachedTopic = null;
             t_cachedBatch = null;
+        }
+        if (t_partitionBatchCacheOwner == this)
+        {
+            t_partitionBatchCacheOwner = null;
+            if (t_partitionBatchCache is { } cache)
+            {
+                Array.Clear(cache);
+            }
         }
 
         // Fail all pending batches that haven't been sent yet
