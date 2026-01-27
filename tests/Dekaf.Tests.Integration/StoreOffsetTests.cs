@@ -383,11 +383,23 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka)
 
         consumer2.Subscribe(topic);
 
-        // Check committed offset
-        var committed = await consumer2.GetCommittedOffsetAsync(new TopicPartition(topic, 0)).ConfigureAwait(false);
+        // Consume one message to ensure the consumer has joined the group and has an assignment
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts2.Token).ConfigureAwait(false);
 
-        // Assert - auto-commit should have committed the consumed offsets
-        await Assert.That(committed).IsNotNull();
-        await Assert.That(committed!.Value).IsGreaterThanOrEqualTo(3);
+        // If we got a message, it should be from offset 3 or later (after auto-committed offset)
+        // If the topic is empty (all consumed and committed), result may be null
+        if (result.HasValue)
+        {
+            // Assert - auto-commit should have committed the consumed offsets, so we start at 3+
+            await Assert.That(result.Value.Offset).IsGreaterThanOrEqualTo(3);
+        }
+        else
+        {
+            // No more messages means auto-commit worked and we've consumed everything
+            var committed = await consumer2.GetCommittedOffsetAsync(new TopicPartition(topic, 0)).ConfigureAwait(false);
+            await Assert.That(committed).IsNotNull();
+            await Assert.That(committed!.Value).IsGreaterThanOrEqualTo(3);
+        }
     }
 }
