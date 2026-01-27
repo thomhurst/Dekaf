@@ -95,9 +95,10 @@ public sealed class RecordBatch : IDisposable
         var recordsBuffer = GetRecordsBuffer();
         var recordsWriter = new KafkaProtocolWriter(recordsBuffer);
 
-        foreach (var record in Records)
+        // Use index-based iteration to avoid enumerator boxing when Records is a wrapper struct
+        for (var i = 0; i < Records.Count; i++)
         {
-            record.Write(ref recordsWriter);
+            Records[i].Write(ref recordsWriter);
         }
 
         var recordsData = recordsBuffer.WrittenSpan;
