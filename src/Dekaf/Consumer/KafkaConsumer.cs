@@ -189,7 +189,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly Dictionary<TopicPartition, long> _committed = [];
     private readonly ConcurrentDictionary<TopicPartition, WatermarkOffsets> _watermarks = new(); // Cached watermark offsets from fetch responses
 
-    // Stored offsets for manual offset storage (when EnableAutoOffsetStore = false)
+    // Stored offsets for manual offset storage (when OffsetCommitMode is Manual)
     // Uses ConcurrentDictionary for thread-safety as StoreOffset may be called from different threads
     private readonly ConcurrentDictionary<TopicPartition, long> _storedOffsets = new();
 
@@ -486,8 +486,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        // Start auto-commit if enabled
-        if (_options.EnableAutoCommit && _coordinator is not null)
+        // Start auto-commit if enabled (only in Auto mode)
+        if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
         {
             StartAutoCommit();
         }
@@ -954,9 +954,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         TopicPartitionOffset[]? offsetsArray = null;
         int offsetCount;
 
-        if (_options.EnableAutoOffsetStore)
+        if (_options.OffsetCommitMode != OffsetCommitMode.Manual)
         {
-            // Auto-store mode: commit all consumed positions
+            // Auto-store mode (Auto or ManualCommit): commit all consumed positions
             // Snapshot the concurrent dictionary to avoid race conditions during enumeration
             var positionsSnapshot = _positions.ToArray();
             offsetCount = positionsSnapshot.Length;
@@ -1131,7 +1131,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     /// <summary>
     /// Stores an offset for later commit. Does not commit immediately.
-    /// Use with EnableAutoOffsetStore = false for manual control.
+    /// Use with OffsetCommitMode.Manual for full manual control.
     /// </summary>
     public IKafkaConsumer<TKey, TValue> StoreOffset(TopicPartitionOffset offset)
     {
@@ -2165,7 +2165,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
 
         // Step 4: Commit pending offsets (if auto-commit enabled and we have a coordinator)
-        if (_options.EnableAutoCommit && _coordinator is not null && !_positions.IsEmpty)
+        if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null && !_positions.IsEmpty)
         {
             try
             {

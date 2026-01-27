@@ -99,6 +99,10 @@ public static class ConsumerExtensions
     /// <param name="batchSize">The size of each batch.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>An async enumerable of batches.</returns>
+    /// <remarks>
+    /// This method allocates a new List for each batch. This is acceptable for consumer-side
+    /// processing which is not in the zero-allocation hot path (protocol serialization).
+    /// </remarks>
     public static async IAsyncEnumerable<IReadOnlyList<ConsumeResult<TKey, TValue>>> Batch<TKey, TValue>(
         this IAsyncEnumerable<ConsumeResult<TKey, TValue>> source,
         int batchSize,

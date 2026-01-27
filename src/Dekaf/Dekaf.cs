@@ -470,10 +470,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private string? _clientId;
     private string? _groupId;
     private string? _groupInstanceId;
-    private OffsetCommitMode? _offsetCommitMode;
-    private bool _enableAutoCommit = true;
+    private OffsetCommitMode _offsetCommitMode = OffsetCommitMode.Auto;
     private int _autoCommitIntervalMs = 5000;
-    private bool _enableAutoOffsetStore = true;
     private AutoOffsetReset _autoOffsetReset = AutoOffsetReset.Latest;
     private int _fetchMinBytes = 1;
     private int _fetchMaxWaitMs = 500;
@@ -550,31 +548,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
-    /// <summary>
-    /// Configures automatic offset commits.
-    /// </summary>
-    /// <param name="enabled">True to enable automatic commits, false to disable.</param>
-    public ConsumerBuilder<TKey, TValue> WithAutoCommit(bool enabled = true)
-    {
-        _enableAutoCommit = enabled;
-        return this;
-    }
-
-    /// <summary>
-    /// Enables or disables automatic offset commits.
-    /// </summary>
-    /// <param name="enable">True to enable automatic commits, false to disable.</param>
-    [Obsolete("Use WithAutoCommit instead.")]
-    public ConsumerBuilder<TKey, TValue> EnableAutoCommit(bool enable = true)
-        => WithAutoCommit(enable);
-
-    /// <summary>
-    /// Disables automatic offset commits.
-    /// </summary>
-    [Obsolete("Use WithAutoCommit(false) instead.")]
-    public ConsumerBuilder<TKey, TValue> DisableAutoCommit()
-        => WithAutoCommit(false);
-
     public ConsumerBuilder<TKey, TValue> WithAutoCommitInterval(int intervalMs)
     {
         _autoCommitIntervalMs = intervalMs;
@@ -592,22 +565,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
-    /// Configures automatic offset storage. When enabled (default), offsets are automatically
-    /// stored when messages are consumed. When disabled, offsets must be explicitly stored
-    /// using StoreOffset before they can be committed.
-    /// </summary>
-    /// <param name="enabled">True to enable automatic offset storage, false for manual control.</param>
-    /// <returns>The builder instance for method chaining.</returns>
-    public ConsumerBuilder<TKey, TValue> WithAutoOffsetStore(bool enabled)
-    {
-        _enableAutoOffsetStore = enabled;
-        return this;
-    }
-
-    /// <summary>
     /// Sets the offset commit mode, controlling how offsets are stored and committed.
-    /// This is a simpler alternative to configuring <see cref="WithAutoCommit"/> and
-    /// <see cref="WithAutoOffsetStore"/> separately.
     /// </summary>
     /// <param name="mode">The offset commit mode to use.</param>
     /// <returns>The builder instance for method chaining.</returns>
@@ -881,26 +839,14 @@ public sealed class ConsumerBuilder<TKey, TValue>
         var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>();
         var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>();
 
-        // Determine effective auto-commit and auto-offset-store values
-        // If OffsetCommitMode is set, it takes precedence
-        var (enableAutoCommit, enableAutoOffsetStore) = _offsetCommitMode switch
-        {
-            OffsetCommitMode.Auto => (true, true),
-            OffsetCommitMode.ManualCommit => (false, true),
-            OffsetCommitMode.Manual => (false, false),
-            _ => (_enableAutoCommit, _enableAutoOffsetStore)
-        };
-
         var options = new ConsumerOptions
         {
             BootstrapServers = _bootstrapServers,
             ClientId = _clientId,
             GroupId = _groupId,
             GroupInstanceId = _groupInstanceId,
-            OffsetCommitMode = _offsetCommitMode ?? OffsetCommitMode.Auto,
-            EnableAutoCommit = enableAutoCommit,
+            OffsetCommitMode = _offsetCommitMode,
             AutoCommitIntervalMs = _autoCommitIntervalMs,
-            EnableAutoOffsetStore = enableAutoOffsetStore,
             AutoOffsetReset = _autoOffsetReset,
             FetchMinBytes = _fetchMinBytes,
             FetchMaxWaitMs = _fetchMaxWaitMs,

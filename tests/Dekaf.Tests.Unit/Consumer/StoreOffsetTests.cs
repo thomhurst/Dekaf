@@ -6,42 +6,40 @@ namespace Dekaf.Tests.Unit.Consumer;
 public class StoreOffsetTests
 {
     [Test]
-    public async Task ConsumerBuilder_WithAutoOffsetStore_ConfiguresOption()
+    public async Task ConsumerBuilder_WithOffsetCommitMode_ConfiguresOption()
     {
         // Verify the builder method exists and returns the builder for chaining
         var builder = Dekaf.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
-            .WithAutoOffsetStore(false)
-            .WithAutoOffsetStore(true); // Chain test
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
+            .WithOffsetCommitMode(OffsetCommitMode.Auto); // Chain test
 
         await Assert.That(builder).IsNotNull();
     }
 
     [Test]
-    public async Task ConsumerBuilder_WithAutoOffsetStore_DefaultIsTrue()
+    public async Task ConsumerBuilder_OffsetCommitMode_DefaultIsAuto()
     {
-        // The default should be true (auto store enabled)
-        // We verify this by checking the ConsumerOptions default
+        // The default should be Auto
         var options = new ConsumerOptions
         {
             BootstrapServers = ["localhost:9092"]
         };
 
-        await Assert.That(options.EnableAutoOffsetStore).IsTrue();
+        await Assert.That(options.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Auto);
     }
 
     [Test]
-    public async Task ConsumerBuilder_WithAutoOffsetStore_CanBeDisabled()
+    public async Task ConsumerBuilder_OffsetCommitMode_CanBeSetToManual()
     {
-        // Verify that when building with auto offset store disabled,
-        // the option is correctly configured
+        // Verify that OffsetCommitMode can be set to Manual
         var options = new ConsumerOptions
         {
             BootstrapServers = ["localhost:9092"],
-            EnableAutoOffsetStore = false
+            OffsetCommitMode = OffsetCommitMode.Manual
         };
 
-        await Assert.That(options.EnableAutoOffsetStore).IsFalse();
+        await Assert.That(options.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Manual);
     }
 
     [Test]
@@ -97,7 +95,7 @@ public class StoreOffsetTests
     }
 
     [Test]
-    public async Task ConsumerOptions_EnableAutoOffsetStore_DefaultValue()
+    public async Task ConsumerOptions_OffsetCommitMode_DefaultValue()
     {
         // Verify the default value in ConsumerOptions
         var options = new ConsumerOptions
@@ -105,19 +103,33 @@ public class StoreOffsetTests
             BootstrapServers = ["localhost:9092"]
         };
 
-        // Default should be true (auto offset store enabled)
-        await Assert.That(options.EnableAutoOffsetStore).IsTrue();
+        // Default should be Auto
+        await Assert.That(options.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Auto);
     }
 
     [Test]
-    public async Task ConsumerOptions_EnableAutoOffsetStore_CanBeSetToFalse()
+    public async Task ConsumerOptions_OffsetCommitMode_AllValuesValid()
     {
-        var options = new ConsumerOptions
+        // Verify all OffsetCommitMode values can be set
+        var autoOptions = new ConsumerOptions
         {
             BootstrapServers = ["localhost:9092"],
-            EnableAutoOffsetStore = false
+            OffsetCommitMode = OffsetCommitMode.Auto
         };
+        await Assert.That(autoOptions.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Auto);
 
-        await Assert.That(options.EnableAutoOffsetStore).IsFalse();
+        var manualCommitOptions = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            OffsetCommitMode = OffsetCommitMode.ManualCommit
+        };
+        await Assert.That(manualCommitOptions.OffsetCommitMode).IsEqualTo(OffsetCommitMode.ManualCommit);
+
+        var manualOptions = new ConsumerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            OffsetCommitMode = OffsetCommitMode.Manual
+        };
+        await Assert.That(manualOptions.OffsetCommitMode).IsEqualTo(OffsetCommitMode.Manual);
     }
 }

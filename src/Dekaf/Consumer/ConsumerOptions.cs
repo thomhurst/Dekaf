@@ -60,29 +60,9 @@ public sealed class ConsumerOptions
     public OffsetCommitMode OffsetCommitMode { get; init; } = OffsetCommitMode.Auto;
 
     /// <summary>
-    /// Enable auto-commit.
-    /// </summary>
-    /// <remarks>
-    /// This property is derived from <see cref="OffsetCommitMode"/>. When setting this property directly,
-    /// it takes precedence if explicitly set after OffsetCommitMode.
-    /// </remarks>
-    public bool EnableAutoCommit { get; init; } = true;
-
-    /// <summary>
     /// Auto-commit interval in milliseconds.
     /// </summary>
     public int AutoCommitIntervalMs { get; init; } = 5000;
-
-    /// <summary>
-    /// Enable automatic offset storage. When true, offsets are automatically stored
-    /// when messages are consumed. When false, offsets must be explicitly stored
-    /// using StoreOffset before they can be committed. Default is true.
-    /// </summary>
-    /// <remarks>
-    /// This property is derived from <see cref="OffsetCommitMode"/>. When setting this property directly,
-    /// it takes precedence if explicitly set after OffsetCommitMode.
-    /// </remarks>
-    public bool EnableAutoOffsetStore { get; init; } = true;
 
     /// <summary>
     /// Auto offset reset behavior.
