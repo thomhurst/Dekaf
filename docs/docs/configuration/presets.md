@@ -169,7 +169,7 @@ public static class DekafPresets
         this ConsumerBuilder<TKey, TValue> builder)
     {
         return builder
-            .WithOffsetCommitMode(OffsetCommitMode.ManualCommit)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .ForLowLatency();
     }

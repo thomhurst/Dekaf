@@ -233,7 +233,7 @@ public class OrderProcessor
             .WithGroupId("order-processors")
             .WithGroupInstanceId(instanceId)  // Static membership
             .WithRebalanceListener(new LoggingRebalanceListener(_logger))
-            .WithOffsetCommitMode(OffsetCommitMode.ManualCommit)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .SubscribeTo("orders")
             .Build();
 

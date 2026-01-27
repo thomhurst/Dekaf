@@ -571,9 +571,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     /// <returns>The builder instance for method chaining.</returns>
     /// <remarks>
     /// <list type="bullet">
-    /// <item><description><see cref="OffsetCommitMode.Auto"/>: Offsets auto-stored and auto-committed (default)</description></item>
-    /// <item><description><see cref="OffsetCommitMode.ManualCommit"/>: Offsets auto-stored, manual commit required</description></item>
-    /// <item><description><see cref="OffsetCommitMode.Manual"/>: Manual StoreOffset() and CommitAsync() required</description></item>
+    /// <item><description><see cref="OffsetCommitMode.Auto"/>: Offsets committed automatically in the background (default)</description></item>
+    /// <item><description><see cref="OffsetCommitMode.Manual"/>: You must call CommitAsync() explicitly</description></item>
     /// </list>
     /// </remarks>
     public ConsumerBuilder<TKey, TValue> WithOffsetCommitMode(OffsetCommitMode mode)

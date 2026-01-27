@@ -21,11 +21,11 @@ When you commit offset 3, you're saying "I've processed messages 0, 1, and 2. St
 
 ## Offset Commit Modes
 
-Dekaf provides three modes for managing offsets, controlled by `OffsetCommitMode`:
+Dekaf provides two modes for managing offsets, matching standard Apache Kafka's `enable.auto.commit` setting:
 
 ### Auto Mode (Default)
 
-Offsets are automatically stored and committed in the background:
+Offsets are automatically committed in the background:
 
 ```csharp
 var consumer = Dekaf.CreateConsumer<string, string>()
@@ -48,15 +48,15 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 If your application crashes after committing but before processing, messages may be lost. Use this mode only when occasional message loss is acceptable (logs, metrics, etc.).
 :::
 
-### ManualCommit Mode
+### Manual Mode
 
-Offsets are automatically tracked as you consume, but you control when to commit:
+You control when offsets are committed by calling `CommitAsync()`:
 
 ```csharp
 var consumer = Dekaf.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
-    .WithOffsetCommitMode(OffsetCommitMode.ManualCommit)
+    .WithOffsetCommitMode(OffsetCommitMode.Manual)
     .Build();
 
 await foreach (var msg in consumer.ConsumeAsync(ct))
@@ -69,47 +69,19 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
 **Pros:** Commit after processing ensures at-least-once delivery
 **Cons:** Slightly more code, some overhead from frequent commits
 
-### Manual Mode
-
-Full control - you must explicitly store and commit offsets:
-
-```csharp
-var consumer = Dekaf.CreateConsumer<string, string>()
-    .WithBootstrapServers("localhost:9092")
-    .WithGroupId("my-group")
-    .WithOffsetCommitMode(OffsetCommitMode.Manual)
-    .Build();
-
-await foreach (var msg in consumer.ConsumeAsync(ct))
-{
-    if (await TryProcessAsync(msg))
-    {
-        consumer.StoreOffset(msg);  // Mark this message as processed
-    }
-    // Skipped messages won't have their offset stored
-
-    // Periodically commit stored offsets
-    if (ShouldCommit())
-    {
-        await consumer.CommitAsync();
-    }
-}
-```
-
-**Pros:** Maximum control, can skip messages
-**Cons:** More complex, easy to make mistakes
-
 ## Committing Offsets
 
-### Commit All Stored Offsets
+### Commit All Consumed Offsets
 
 ```csharp
 await consumer.CommitAsync();
 ```
 
-This commits all offsets that have been stored (automatically or via `StoreOffset`).
+This commits the current position for all assigned partitions - i.e., the offset of the next message to be consumed.
 
 ### Commit Specific Offsets
+
+For fine-grained control, you can commit specific offsets:
 
 ```csharp
 await consumer.CommitAsync(new[]
@@ -119,21 +91,10 @@ await consumer.CommitAsync(new[]
 });
 ```
 
-### Storing Offsets
-
-In Manual mode, use `StoreOffset` to mark messages as processed:
-
-```csharp
-// From a ConsumeResult
-consumer.StoreOffset(message);
-
-// Or with explicit offset (commits offset + 1)
-consumer.StoreOffset(new TopicPartitionOffset("topic", partition, offset + 1));
-```
-
-:::note
-Store the **next** offset to consume, not the current one. `StoreOffset(message)` handles this automatically.
-:::
+This is useful when you need to:
+- Skip messages that failed processing
+- Implement custom batching logic
+- Coordinate commits with external systems
 
 ## Commit Strategies
 
@@ -234,7 +195,7 @@ foreach (var (tp, offset) in offsets)
 | Mode | Semantics | Risk |
 |------|-----------|------|
 | Auto | At-most-once | May lose messages on crash |
-| ManualCommit (commit after process) | At-least-once | May reprocess on crash |
+| Manual (commit after process) | At-least-once | May reprocess on crash |
 | Manual + External storage | Exactly-once | Most complex |
 
 ### Achieving Exactly-Once
@@ -257,7 +218,7 @@ await dbTransaction.CommitAsync();
 
 ## Best Practices
 
-1. **Use ManualCommit mode** for most applications - it's a good balance of safety and simplicity
+1. **Use Manual mode** for most applications - it gives you control over when offsets are committed
 
 2. **Batch your commits** - committing after every message is slow
 

@@ -47,21 +47,19 @@ Static membership ID for faster rebalances:
 
 ### WithOffsetCommitMode
 
-How offsets are stored and committed:
+How offsets are committed (matches Kafka's `enable.auto.commit`):
 
 ```csharp
-.WithOffsetCommitMode(OffsetCommitMode.Auto)          // Auto store, auto commit
-.WithOffsetCommitMode(OffsetCommitMode.ManualCommit)  // Auto store, manual commit
-.WithOffsetCommitMode(OffsetCommitMode.Manual)        // Manual store, manual commit
+.WithOffsetCommitMode(OffsetCommitMode.Auto)    // Automatic commit in background (default)
+.WithOffsetCommitMode(OffsetCommitMode.Manual)  // You call CommitAsync() explicitly
 ```
 
-### WithAutoCommit / WithAutoCommitInterval
+### WithAutoCommitInterval
 
-Control automatic offset commits:
+Control how often offsets are committed in Auto mode:
 
 ```csharp
-.WithAutoCommit(true)                              // Enable auto-commit
-.WithAutoCommitInterval(5000)                      // Commit every 5 seconds
+.WithAutoCommitInterval(5000)                      // Commit every 5 seconds (default)
 .WithAutoCommitInterval(TimeSpan.FromSeconds(5))  // Same, using TimeSpan
 ```
 
