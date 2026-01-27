@@ -33,6 +33,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly CancellationTokenSource _senderCts;
     private readonly Task _senderTask;
     private readonly Task _lingerTask;
+    private readonly PeriodicTimer _lingerTimer;
 
     // Channel-based worker pool for thread-safe produce operations
     private readonly Channel<ProduceWorkItem<TKey, TValue>> _workChannel;
@@ -134,6 +135,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _compressionCodecs = new CompressionCodecRegistry();
 
         _senderCts = new CancellationTokenSource();
+        _lingerTimer = new PeriodicTimer(TimeSpan.FromMilliseconds(_options.LingerMs > 0 ? _options.LingerMs : 100));
         _senderTask = SenderLoopAsync(_senderCts.Token);
         _lingerTask = LingerLoopAsync(_senderCts.Token);
 
@@ -995,22 +997,29 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     private async Task LingerLoopAsync(CancellationToken cancellationToken)
     {
-        while (!cancellationToken.IsCancellationRequested)
+        // Use PeriodicTimer instead of Task.Delay to avoid allocations on each tick.
+        // PeriodicTimer.WaitForNextTickAsync is allocation-free after the timer is constructed.
+        try
         {
-            try
+            while (await _lingerTimer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
-                await Task.Delay(_options.LingerMs > 0 ? _options.LingerMs : 100, cancellationToken)
-                    .ConfigureAwait(false);
-                await _accumulator.ExpireLingerAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await _accumulator.ExpireLingerAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogError(ex, "Error in linger loop");
+                }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogError(ex, "Error in linger loop");
-            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Expected during shutdown
         }
     }
 
@@ -1420,6 +1429,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
 
         _senderCts.Dispose();
+        _lingerTimer.Dispose();
 
         // Dispose statistics emitter
         if (_statisticsEmitter is not null)

@@ -141,13 +141,13 @@ public sealed class RecordAccumulator : IAsyncDisposable
     {
         _options = options;
 
-        // Backpressure via channel capacity instead of manual memory tracking
-        // MaxQueuedBatches controls how many batches can be in-flight
-        // When channel is full, we fail fast (like librdkafka's QUEUE_FULL error)
-        var maxQueuedBatches = (int)(options.BufferMemory / (ulong)options.BatchSize);
-        if (maxQueuedBatches < 100) maxQueuedBatches = 100; // Minimum queue depth
-        if (maxQueuedBatches > 10000) maxQueuedBatches = 10000; // Maximum queue depth
-
+        // Use unbounded channel for ready batches to avoid artificial backpressure.
+        // Natural backpressure occurs through:
+        // 1. TCP flow control when the network can't keep up
+        // 2. Broker responses being slow
+        // 3. Batch size limits in PartitionBatch
+        // This matches Confluent.Kafka's approach where queue.buffering.max.messages
+        // defaults to 100,000 and rarely causes backpressure in practice.
         _readyBatches = Channel.CreateUnbounded<ReadyBatch>(new UnboundedChannelOptions
         {
             SingleReader = true,
@@ -211,8 +211,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
             var readyBatch = batch.Complete();
             if (readyBatch is not null)
             {
-                // Backpressure happens here: WriteAsync blocks when channel is full
-                await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                // Try synchronous write first to avoid async state machine allocation
+                if (!_readyBatches.Writer.TryWrite(readyBatch))
+                {
+                    // Backpressure happens here: WriteAsync blocks when channel is full
+                    await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                }
             }
 
             // Atomically remove the completed batch only if it's still the same instance.
@@ -465,7 +469,22 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// Uses conditional removal to avoid race conditions where a new batch might be created
     /// between Complete() and TryRemove() calls.
     /// </summary>
-    public async ValueTask ExpireLingerAsync(CancellationToken cancellationToken)
+    /// <remarks>
+    /// Optimized to avoid async state machine allocation when there are no batches to process.
+    /// Also uses synchronous TryWrite when possible to avoid async overhead.
+    /// </remarks>
+    public ValueTask ExpireLingerAsync(CancellationToken cancellationToken)
+    {
+        // Fast path: no batches to check - avoid enumeration and async overhead entirely
+        if (_batches.IsEmpty)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        return ExpireLingerAsyncCore(cancellationToken);
+    }
+
+    private async ValueTask ExpireLingerAsyncCore(CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
 
@@ -477,7 +496,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
-                    await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                    // Try synchronous write first to avoid async state machine allocation
+                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    {
+                        // Channel is bounded or busy, fall back to async
+                        await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                    }
                     // Only remove if the batch is still the same instance.
                     // If AppendAsync already replaced it with a new batch, don't remove the new one.
                     _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch));
@@ -489,7 +513,21 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Flushes all batches.
     /// </summary>
-    public async ValueTask FlushAsync(CancellationToken cancellationToken)
+    /// <remarks>
+    /// Optimized to avoid async state machine allocation when there are no batches to flush.
+    /// </remarks>
+    public ValueTask FlushAsync(CancellationToken cancellationToken)
+    {
+        // Fast path: no batches to flush - avoid enumeration and async overhead entirely
+        if (_batches.IsEmpty)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        return FlushAsyncCore(cancellationToken);
+    }
+
+    private async ValueTask FlushAsyncCore(CancellationToken cancellationToken)
     {
         foreach (var kvp in _batches)
         {
@@ -497,7 +535,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
             var readyBatch = batch.Complete();
             if (readyBatch is not null)
             {
-                await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                // Try synchronous write first to avoid async state machine allocation
+                if (!_readyBatches.Writer.TryWrite(readyBatch))
+                {
+                    // Channel is bounded or busy, fall back to async
+                    await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                }
                 // Only remove if the batch is still the same instance.
                 // If AppendAsync already replaced it with a new batch, don't remove the new one.
                 _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch));

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Testcontainers.Kafka;
@@ -36,6 +37,28 @@ namespace Dekaf.Profiling;
 public static class Program
 {
     private const string Topic = "profiling-topic";
+
+    /// <summary>
+    /// Pre-allocated keys to eliminate string interpolation allocations in hot paths.
+    /// Using 10,000 keys provides good distribution without excessive memory usage.
+    /// </summary>
+    private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
+
+    private static string[] CreatePreAllocatedKeys(int count)
+    {
+        var keys = new string[count];
+        for (var i = 0; i < count; i++)
+        {
+            keys[i] = $"key-{i}";
+        }
+        return keys;
+    }
+
+    /// <summary>
+    /// Gets a pre-allocated key using modulo indexing for zero-allocation key selection.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static string GetKey(long index) => PreAllocatedKeys[index % PreAllocatedKeys.Length];
 
     public static async Task<int> Main(string[] args)
     {
@@ -125,16 +148,23 @@ public static class Program
         }
         await producer.FlushAsync().ConfigureAwait(false);
 
+        // Force GC and capture baseline
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
         var cts = new CancellationTokenSource(TimeSpan.FromSeconds(durationSeconds));
         var sw = Stopwatch.StartNew();
         var count = 0L;
-        var gcBefore = GC.CollectionCount(0);
+        var gcStats = new GcStats();
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
 
         while (!cts.Token.IsCancellationRequested)
         {
             for (var i = 0; i < batchSize && !cts.Token.IsCancellationRequested; i++)
             {
-                producer.Produce(Topic, $"key-{count % 10000}", messageValue);
+                // Use pre-allocated key to avoid string interpolation allocation
+                producer.Produce(Topic, GetKey(count), messageValue);
                 count++;
             }
         }
@@ -143,11 +173,10 @@ public static class Program
         await producer.FlushAsync().ConfigureAwait(false);
 
         sw.Stop();
-        var gcAfter = GC.CollectionCount(0);
+        var allocatedAfter = GC.GetAllocatedBytesForCurrentThread();
+        gcStats.Capture();
 
-        Console.WriteLine($"  Messages sent: {count:N0}");
-        Console.WriteLine($"  Throughput: {count / sw.Elapsed.TotalSeconds:N0} msg/sec");
-        Console.WriteLine($"  Gen0 GCs: {gcAfter - gcBefore}");
+        PrintResults("Messages sent", count, sw.Elapsed, gcStats, allocatedAfter - allocatedBefore);
     }
 
     private static async Task RunProducerAckedAsync(string bootstrapServers, int durationSeconds, int messageSize)
@@ -173,10 +202,16 @@ public static class Program
             }).ConfigureAwait(false);
         }
 
+        // Force GC and capture baseline
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
         var cts = new CancellationTokenSource(TimeSpan.FromSeconds(durationSeconds));
         var sw = Stopwatch.StartNew();
         var count = 0L;
-        var gcBefore = GC.CollectionCount(0);
+        var gcStats = new GcStats();
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
 
         while (!cts.Token.IsCancellationRequested)
         {
@@ -185,7 +220,7 @@ public static class Program
                 await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = Topic,
-                    Key = $"key-{count % 10000}",
+                    Key = GetKey(count),
                     Value = messageValue
                 }, cts.Token).ConfigureAwait(false);
                 count++;
@@ -197,11 +232,10 @@ public static class Program
         }
 
         sw.Stop();
-        var gcAfter = GC.CollectionCount(0);
+        var allocatedAfter = GC.GetAllocatedBytesForCurrentThread();
+        gcStats.Capture();
 
-        Console.WriteLine($"  Messages sent: {count:N0}");
-        Console.WriteLine($"  Throughput: {count / sw.Elapsed.TotalSeconds:N0} msg/sec");
-        Console.WriteLine($"  Gen0 GCs: {gcAfter - gcBefore}");
+        PrintResults("Messages sent", count, sw.Elapsed, gcStats, allocatedAfter - allocatedBefore);
     }
 
     private static async Task RunProducerBatchAsync(string bootstrapServers, int durationSeconds, int messageSize, int batchSize)
@@ -223,21 +257,29 @@ public static class Program
         }
         await producer.FlushAsync().ConfigureAwait(false);
 
+        // Force GC and capture baseline
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        // Pre-allocate task array to avoid per-batch allocation
+        var tasks = new Task<RecordMetadata>[batchSize];
+
         var cts = new CancellationTokenSource(TimeSpan.FromSeconds(durationSeconds));
         var sw = Stopwatch.StartNew();
         var count = 0L;
-        var gcBefore = GC.CollectionCount(0);
+        var gcStats = new GcStats();
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
 
         while (!cts.Token.IsCancellationRequested)
         {
-            // Fire batch of messages
-            var tasks = new Task<RecordMetadata>[batchSize];
+            // Fire batch of messages using pre-allocated keys
             for (var i = 0; i < batchSize; i++)
             {
                 tasks[i] = producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = Topic,
-                    Key = $"key-{(count + i) % 10000}",
+                    Key = GetKey(count + i),
                     Value = messageValue
                 }).AsTask();
             }
@@ -254,11 +296,10 @@ public static class Program
         }
 
         sw.Stop();
-        var gcAfter = GC.CollectionCount(0);
+        var allocatedAfter = GC.GetAllocatedBytesForCurrentThread();
+        gcStats.Capture();
 
-        Console.WriteLine($"  Messages sent: {count:N0}");
-        Console.WriteLine($"  Throughput: {count / sw.Elapsed.TotalSeconds:N0} msg/sec");
-        Console.WriteLine($"  Gen0 GCs: {gcAfter - gcBefore}");
+        PrintResults("Messages sent", count, sw.Elapsed, gcStats, allocatedAfter - allocatedBefore);
     }
 
     private static async Task RunConsumerAsync(string bootstrapServers, int durationSeconds, int messageSize, int batchSize)
@@ -277,7 +318,7 @@ public static class Program
         {
             for (var i = 0; i < messagesToSeed; i++)
             {
-                producer.Produce(Topic, $"key-{i}", messageValue);
+                producer.Produce(Topic, GetKey(i), messageValue);
             }
             await producer.FlushAsync().ConfigureAwait(false);
         }
@@ -293,10 +334,16 @@ public static class Program
 
         consumer.Subscribe(Topic);
 
+        // Force GC and capture baseline
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
         var cts = new CancellationTokenSource(TimeSpan.FromSeconds(durationSeconds));
         var sw = Stopwatch.StartNew();
         var count = 0L;
-        var gcBefore = GC.CollectionCount(0);
+        var gcStats = new GcStats();
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
 
         try
         {
@@ -311,11 +358,10 @@ public static class Program
         }
 
         sw.Stop();
-        var gcAfter = GC.CollectionCount(0);
+        var allocatedAfter = GC.GetAllocatedBytesForCurrentThread();
+        gcStats.Capture();
 
-        Console.WriteLine($"  Messages consumed: {count:N0}");
-        Console.WriteLine($"  Throughput: {count / sw.Elapsed.TotalSeconds:N0} msg/sec");
-        Console.WriteLine($"  Gen0 GCs: {gcAfter - gcBefore}");
+        PrintResults("Messages consumed", count, sw.Elapsed, gcStats, allocatedAfter - allocatedBefore);
     }
 
     private static async Task RunRoundtripAsync(KafkaEnvironment kafka, int durationSeconds, int messageSize, int batchSize)
@@ -341,11 +387,17 @@ public static class Program
 
         consumer.Subscribe(roundtripTopic);
 
+        // Force GC and capture baseline
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
         var cts = new CancellationTokenSource(TimeSpan.FromSeconds(durationSeconds));
         var sw = Stopwatch.StartNew();
         var produced = 0L;
         var consumed = 0L;
-        var gcBefore = GC.CollectionCount(0);
+        var gcStats = new GcStats();
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
 
         // Start consumer in background
         var consumerTask = Task.Run(async () =>
@@ -363,12 +415,12 @@ public static class Program
             }
         }, cts.Token);
 
-        // Produce messages
+        // Produce messages using pre-allocated keys
         while (!cts.Token.IsCancellationRequested)
         {
             for (var i = 0; i < batchSize && !cts.Token.IsCancellationRequested; i++)
             {
-                producer.Produce(roundtripTopic, $"key-{produced % 10000}", messageValue);
+                producer.Produce(roundtripTopic, GetKey(produced), messageValue);
                 produced++;
             }
 
@@ -388,13 +440,14 @@ public static class Program
         try { await consumerTask.ConfigureAwait(false); } catch { }
 
         sw.Stop();
-        var gcAfter = GC.CollectionCount(0);
+        var allocatedAfter = GC.GetAllocatedBytesForCurrentThread();
+        gcStats.Capture();
 
         Console.WriteLine($"  Messages produced: {produced:N0}");
         Console.WriteLine($"  Messages consumed: {consumed:N0}");
         Console.WriteLine($"  Producer throughput: {produced / sw.Elapsed.TotalSeconds:N0} msg/sec");
         Console.WriteLine($"  Consumer throughput: {consumed / sw.Elapsed.TotalSeconds:N0} msg/sec");
-        Console.WriteLine($"  Gen0 GCs: {gcAfter - gcBefore}");
+        PrintGcStats(gcStats, allocatedAfter - allocatedBefore);
     }
 
     private static async Task<KafkaEnvironment> StartKafkaAsync()
@@ -489,6 +542,62 @@ public static class Program
               dotnet run -c Release -- producer-fire-forget 30 1000 1000
               dotnet run -c Release -- all 15
             """);
+    }
+
+    private static void PrintResults(string label, long count, TimeSpan elapsed, GcStats gcStats, long allocatedBytes)
+    {
+        Console.WriteLine($"  {label}: {count:N0}");
+        Console.WriteLine($"  Throughput: {count / elapsed.TotalSeconds:N0} msg/sec");
+        PrintGcStats(gcStats, allocatedBytes);
+    }
+
+    private static void PrintGcStats(GcStats gcStats, long allocatedBytes)
+    {
+        Console.WriteLine($"  Gen0 GCs: {gcStats.Gen0}");
+        Console.WriteLine($"  Gen1 GCs: {gcStats.Gen1}");
+        Console.WriteLine($"  Gen2 GCs: {gcStats.Gen2}");
+        Console.WriteLine($"  Allocated: {FormatBytes(allocatedBytes)}");
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        return bytes switch
+        {
+            < 1024 => $"{bytes} B",
+            < 1024 * 1024 => $"{bytes / 1024.0:F2} KB",
+            < 1024 * 1024 * 1024 => $"{bytes / (1024.0 * 1024):F2} MB",
+            _ => $"{bytes / (1024.0 * 1024 * 1024):F2} GB"
+        };
+    }
+
+    /// <summary>
+    /// Tracks GC collection counts across all generations.
+    /// Create before the operation, then call Capture() after to calculate deltas.
+    /// </summary>
+    private struct GcStats
+    {
+        private readonly int _gen0Before;
+        private readonly int _gen1Before;
+        private readonly int _gen2Before;
+
+        public int Gen0 { get; private set; }
+        public int Gen1 { get; private set; }
+        public int Gen2 { get; private set; }
+
+        public GcStats()
+        {
+            _gen0Before = GC.CollectionCount(0);
+            _gen1Before = GC.CollectionCount(1);
+            _gen2Before = GC.CollectionCount(2);
+            Gen0 = Gen1 = Gen2 = 0;
+        }
+
+        public void Capture()
+        {
+            Gen0 = GC.CollectionCount(0) - _gen0Before;
+            Gen1 = GC.CollectionCount(1) - _gen1Before;
+            Gen2 = GC.CollectionCount(2) - _gen2Before;
+        }
     }
 
     private sealed class KafkaEnvironment : IAsyncDisposable
