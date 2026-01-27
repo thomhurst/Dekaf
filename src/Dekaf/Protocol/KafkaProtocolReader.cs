@@ -397,26 +397,48 @@ public ref struct KafkaProtocolReader
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint ReadVarUIntFast()
     {
-        // Fast path for contiguous memory - direct span access
+        if (_position >= _span.Length)
+            ThrowInsufficientData();
+
+        // Fast path: single byte (0-127) - most common case
+        var b0 = _span[_position];
+        if ((b0 & 0x80) == 0)
+        {
+            _position++;
+            return b0;
+        }
+
+        // Two-byte path (128-16383) - second most common
+        if (_position + 1 >= _span.Length)
+            ThrowInsufficientData();
+
+        var b1 = _span[_position + 1];
+        if ((b1 & 0x80) == 0)
+        {
+            _position += 2;
+            return (uint)(b0 & 0x7F) | ((uint)b1 << 7);
+        }
+
+        return ReadVarUIntSlowContiguous();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private uint ReadVarUIntSlowContiguous()
+    {
         uint result = 0;
         var shift = 0;
-
         while (shift < 35)
         {
             if (_position >= _span.Length)
                 ThrowInsufficientData();
-
             var b = _span[_position++];
             result |= (uint)(b & 0x7F) << shift;
-
             if ((b & 0x80) == 0)
                 return result;
-
             shift += 7;
         }
-
         ThrowMalformedVarInt();
-        return 0; // Unreachable
+        return 0;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

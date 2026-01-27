@@ -1267,13 +1267,9 @@ internal sealed class PartitionBatchPool
 /// </summary>
 internal sealed class PartitionBatch
 {
-    // Initial capacity increased to reduce array growth frequency.
-    // Most batches contain 100-500 records, so 256 avoids resizing in common cases.
-    // This reduces SpinLock hold time by eliminating most array growth operations.
-    private const int InitialRecordCapacity = 256;
-
     private TopicPartition _topicPartition;
     private ProducerOptions _options;
+    private readonly int _initialRecordCapacity;
 
     // Arena for zero-copy serialization - all message data in one contiguous buffer
     private BatchArena? _arena;
@@ -1329,19 +1325,22 @@ internal sealed class PartitionBatch
         _options = options;
         _createdAt = DateTimeOffset.UtcNow;
 
+        // Clamp initial capacity to reasonable bounds (16-1024)
+        _initialRecordCapacity = Math.Max(16, Math.Min(options.InitialBatchRecordCapacity, 1024));
+
         // Create arena for zero-copy serialization
         // Use ArenaCapacity if set, otherwise fall back to BatchSize
         var arenaCapacity = options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize;
         _arena = new BatchArena(arenaCapacity);
 
         // Rent arrays from pool - eliminates List allocations
-        _records = ArrayPool<Record>.Shared.Rent(InitialRecordCapacity);
+        _records = ArrayPool<Record>.Shared.Rent(_initialRecordCapacity);
         _recordCount = 0;
 
-        _completionSources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(InitialRecordCapacity);
+        _completionSources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(_initialRecordCapacity);
         _completionSourceCount = 0;
 
-        _pooledArrays = ArrayPool<byte[]>.Shared.Rent(InitialRecordCapacity * 2);
+        _pooledArrays = ArrayPool<byte[]>.Shared.Rent(_initialRecordCapacity * 2);
         _pooledArrayCount = 0;
 
         _pooledHeaderArrays = ArrayPool<RecordHeader[]>.Shared.Rent(8); // Headers less common
@@ -1386,9 +1385,9 @@ internal sealed class PartitionBatch
 
         // Arrays were transferred to ReadyBatch by Complete() and are now null.
         // Allocate fresh arrays for the pooled batch.
-        _records = ArrayPool<Record>.Shared.Rent(InitialRecordCapacity);
-        _completionSources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(InitialRecordCapacity);
-        _pooledArrays = ArrayPool<byte[]>.Shared.Rent(InitialRecordCapacity * 2);
+        _records = ArrayPool<Record>.Shared.Rent(_initialRecordCapacity);
+        _completionSources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(_initialRecordCapacity);
+        _pooledArrays = ArrayPool<byte[]>.Shared.Rent(_initialRecordCapacity * 2);
         _pooledHeaderArrays = ArrayPool<RecordHeader[]>.Shared.Rent(8);
 
         // Reset all state for reuse
@@ -2020,7 +2019,9 @@ internal sealed class PartitionBatch
             for (var i = 0; i < headers.Count; i++)
             {
                 var header = headers[i];
-                size += header.Key.Length + (header.IsValueNull ? 0 : header.Value.Length) + 10;
+                // Use UTF-8 byte count for accurate sizing (header keys may contain multi-byte characters)
+                var headerKeyByteCount = System.Text.Encoding.UTF8.GetByteCount(header.Key);
+                size += headerKeyByteCount + (header.IsValueNull ? 0 : header.Value.Length) + 10;
             }
         }
 
