@@ -1049,24 +1049,18 @@ internal sealed class PartitionBatch
             return null;
         }
 
-        // Create a copy of records array with exact size for RecordBatch
-        // RecordBatch needs IReadOnlyList<Record> but we need to return our pooled array
-        var recordsCopy = new Record[_recordCount];
-        Array.Copy(_records, recordsCopy, _recordCount);
-
-        // Return only the records array to pool - we've copied it
-        // Other arrays are passed directly to ReadyBatch which will return them to pool
-        ArrayPool<Record>.Shared.Return(_records, clearArray: false);
-        _records = null!;
-
+        // Use pooled records array directly with wrapper to avoid allocation
+        // ReadyBatch will return the array to pool in Cleanup()
+        var pooledRecordsArray = _records;
         var batch = new RecordBatch
         {
             BaseOffset = 0,
             BaseTimestamp = _baseTimestamp,
-            MaxTimestamp = _baseTimestamp + (_recordCount > 0 ? recordsCopy[_recordCount - 1].TimestampDelta : 0),
+            MaxTimestamp = _baseTimestamp + (_recordCount > 0 ? pooledRecordsArray[_recordCount - 1].TimestampDelta : 0),
             LastOffsetDelta = _recordCount - 1,
-            Records = recordsCopy
+            Records = new RecordListWrapper(pooledRecordsArray, _recordCount)
         };
+        _records = null!;
 
         // Pass pooled arrays directly to ReadyBatch - no copying needed
         // ReadyBatch will return them to pool when done
@@ -1079,7 +1073,8 @@ internal sealed class PartitionBatch
             _pooledArrays,
             _pooledArrayCount,
             _pooledHeaderArrays,
-            _pooledHeaderArrayCount);
+            _pooledHeaderArrayCount,
+            pooledRecordsArray);
 
         // Null out references - ownership transferred to ReadyBatch
         _completionSources = null!;
@@ -1117,8 +1112,10 @@ internal sealed class PartitionBatch
 
         if (headers is not null)
         {
-            foreach (var header in headers)
+            // Use index-based iteration to guarantee zero-allocation (avoids enumerator)
+            for (var i = 0; i < headers.Count; i++)
             {
+                var header = headers[i];
                 size += header.Key.Length + (header.IsValueNull ? 0 : header.Value.Length) + 10;
             }
         }
@@ -1154,6 +1151,7 @@ public sealed class ReadyBatch
     private readonly int _pooledDataArraysCount;
     private readonly RecordHeader[][] _pooledHeaderArrays;
     private readonly int _pooledHeaderArraysCount;
+    private readonly Record[]? _pooledRecordsArray; // Pooled records array from RecordBatch
 
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
 
@@ -1165,7 +1163,8 @@ public sealed class ReadyBatch
         byte[][] pooledDataArrays,
         int pooledDataArraysCount,
         RecordHeader[][] pooledHeaderArrays,
-        int pooledHeaderArraysCount)
+        int pooledHeaderArraysCount,
+        Record[]? pooledRecordsArray = null)
     {
         TopicPartition = topicPartition;
         RecordBatch = recordBatch;
@@ -1175,6 +1174,7 @@ public sealed class ReadyBatch
         _pooledDataArraysCount = pooledDataArraysCount;
         _pooledHeaderArrays = pooledHeaderArrays;
         _pooledHeaderArraysCount = pooledHeaderArraysCount;
+        _pooledRecordsArray = pooledRecordsArray;
     }
 
     public void Complete(long baseOffset, DateTimeOffset timestamp)
@@ -1253,5 +1253,69 @@ public sealed class ReadyBatch
         ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(_completionSourcesArray, clearArray: false);
         ArrayPool<byte[]>.Shared.Return(_pooledDataArrays, clearArray: false);
         ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: false);
+
+        // Return pooled records array if present
+        if (_pooledRecordsArray is not null)
+        {
+            ArrayPool<Record>.Shared.Return(_pooledRecordsArray, clearArray: false);
+        }
+    }
+}
+
+/// <summary>
+/// Zero-allocation wrapper around a pooled Record array that implements IReadOnlyList.
+/// Used to present only the valid portion of a pooled array without copying.
+/// </summary>
+internal readonly struct RecordListWrapper : IReadOnlyList<Record>
+{
+    private readonly Record[] _array;
+    private readonly int _count;
+
+    public RecordListWrapper(Record[] array, int count)
+    {
+        _array = array;
+        _count = count;
+    }
+
+    public Record this[int index]
+    {
+        get
+        {
+            if (index < 0 || index >= _count)
+                throw new ArgumentOutOfRangeException(nameof(index));
+            return _array[index];
+        }
+    }
+
+    public int Count => _count;
+
+    public Enumerator GetEnumerator() => new(_array, _count);
+
+    IEnumerator<Record> IEnumerable<Record>.GetEnumerator() => GetEnumerator();
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+    public struct Enumerator : IEnumerator<Record>
+    {
+        private readonly Record[] _array;
+        private readonly int _count;
+        private int _index;
+
+        public Enumerator(Record[] array, int count)
+        {
+            _array = array;
+            _count = count;
+            _index = -1;
+        }
+
+        public Record Current => _array[_index];
+
+        object System.Collections.IEnumerator.Current => Current;
+
+        public bool MoveNext() => ++_index < _count;
+
+        public void Reset() => _index = -1;
+
+        public void Dispose() { }
     }
 }

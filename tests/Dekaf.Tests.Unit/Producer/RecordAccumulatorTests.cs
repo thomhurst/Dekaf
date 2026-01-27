@@ -1419,4 +1419,97 @@ public class RecordAccumulatorTests
     }
 
     #endregion
+
+    #region RecordListWrapper Tests
+
+    [Test]
+    public async Task RecordListWrapper_Count_ReturnsCorrectValue()
+    {
+        var records = new Record[10];
+        for (var i = 0; i < 10; i++)
+        {
+            records[i] = new Record { OffsetDelta = i };
+        }
+
+        var wrapper = new RecordListWrapper(records, 5); // Only 5 valid elements
+
+        await Assert.That(wrapper.Count).IsEqualTo(5);
+    }
+
+    [Test]
+    public async Task RecordListWrapper_Indexer_ReturnsCorrectElements()
+    {
+        var records = new Record[10];
+        for (var i = 0; i < 10; i++)
+        {
+            records[i] = new Record { OffsetDelta = i * 10 };
+        }
+
+        var wrapper = new RecordListWrapper(records, 5);
+
+        await Assert.That(wrapper[0].OffsetDelta).IsEqualTo(0);
+        await Assert.That(wrapper[2].OffsetDelta).IsEqualTo(20);
+        await Assert.That(wrapper[4].OffsetDelta).IsEqualTo(40);
+    }
+
+    [Test]
+    public async Task RecordListWrapper_Indexer_ThrowsOnOutOfRange()
+    {
+        var records = new Record[10];
+        var wrapper = new RecordListWrapper(records, 5);
+
+        await Assert.That(() => _ = wrapper[5]).Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => _ = wrapper[-1]).Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => _ = wrapper[10]).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task RecordListWrapper_Enumerator_IteratesCorrectElements()
+    {
+        var records = new Record[10];
+        for (var i = 0; i < 10; i++)
+        {
+            records[i] = new Record { OffsetDelta = i };
+        }
+
+        var wrapper = new RecordListWrapper(records, 5);
+        var enumerated = new List<int>();
+
+        foreach (var record in wrapper)
+        {
+            enumerated.Add(record.OffsetDelta);
+        }
+
+        await Assert.That(enumerated).Count().IsEqualTo(5);
+        await Assert.That(enumerated[0]).IsEqualTo(0);
+        await Assert.That(enumerated[4]).IsEqualTo(4);
+    }
+
+    [Test]
+    public async Task RecordListWrapper_IndexBasedIteration_MatchesEnumerator()
+    {
+        var records = new Record[10];
+        for (var i = 0; i < 10; i++)
+        {
+            records[i] = new Record { OffsetDelta = i * 2 };
+        }
+
+        var wrapper = new RecordListWrapper(records, 7);
+        var fromEnumerator = new List<int>();
+        var fromIndexer = new List<int>();
+
+        foreach (var record in wrapper)
+        {
+            fromEnumerator.Add(record.OffsetDelta);
+        }
+
+        for (var i = 0; i < wrapper.Count; i++)
+        {
+            fromIndexer.Add(wrapper[i].OffsetDelta);
+        }
+
+        await Assert.That(fromIndexer).IsEquivalentTo(fromEnumerator);
+    }
+
+    #endregion
 }

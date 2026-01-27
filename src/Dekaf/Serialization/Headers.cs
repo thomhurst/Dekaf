@@ -40,6 +40,11 @@ public sealed class Headers : IEnumerable<Header>
     public int Count => _headers.Count;
 
     /// <summary>
+    /// Gets the header at the specified index.
+    /// </summary>
+    public Header this[int index] => _headers[index];
+
+    /// <summary>
     /// Adds a header with a string value.
     /// </summary>
     public Headers Add(string key, string value)
