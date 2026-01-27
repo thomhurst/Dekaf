@@ -126,16 +126,19 @@ internal sealed class BatchArena
 
     /// <summary>
     /// Gets the current position in the arena (total bytes used).
+    /// Uses volatile read for thread-safe access.
     /// </summary>
-    public int Position => _position;
+    public int Position => Volatile.Read(ref _position);
 
     /// <summary>
     /// Gets the remaining capacity in the current buffer.
+    /// Uses volatile read for thread-safe access.
     /// </summary>
-    public int RemainingCapacity => _buffer.Length - _position;
+    public int RemainingCapacity => _buffer.Length - Volatile.Read(ref _position);
 
     /// <summary>
     /// Tries to allocate space in the arena and returns a span for writing.
+    /// Thread-safe: uses CAS to atomically claim space in the arena.
     /// </summary>
     /// <param name="size">Number of bytes needed.</param>
     /// <param name="span">Output span to write to.</param>
@@ -144,29 +147,30 @@ internal sealed class BatchArena
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryAllocate(int size, out Span<byte> span, out int offset)
     {
-        var currentPos = _position;
-        var newPos = currentPos + size;
-
-        if (newPos <= _buffer.Length)
+        // CAS loop for thread-safe allocation.
+        // Multiple threads may race to allocate space, but each will get a unique region.
+        while (true)
         {
-            offset = currentPos;
-            span = _buffer.AsSpan(currentPos, size);
-            _position = newPos;
-            return true;
+            var currentPos = Volatile.Read(ref _position);
+            var newPos = currentPos + size;
+
+            if (newPos > _buffer.Length)
+            {
+                // Not enough space - don't grow, let caller rotate batch
+                span = default;
+                offset = 0;
+                return false;
+            }
+
+            // Atomically claim this region
+            if (Interlocked.CompareExchange(ref _position, newPos, currentPos) == currentPos)
+            {
+                offset = currentPos;
+                span = _buffer.AsSpan(currentPos, size);
+                return true;
+            }
+            // CAS failed - another thread allocated, retry with new position
         }
-
-        // Need to grow - try to accommodate
-        return TryAllocateSlow(size, out span, out offset);
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TryAllocateSlow(int size, out Span<byte> span, out int offset)
-    {
-        // Don't grow - just return false and let caller rotate batch
-        // Growing causes extra allocations; rotating batch is cleaner
-        span = default;
-        offset = 0;
-        return false;
     }
 
     /// <summary>

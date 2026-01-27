@@ -1700,10 +1700,25 @@ internal ref struct ReusableBufferWriter : IBufferWriter<byte>
         }
     }
 
+    // Maximum buffer size to prevent unbounded growth (1MB)
+    private const int MaxBufferSize = 1024 * 1024;
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void Grow(int sizeHint)
     {
-        var newSize = Math.Max(_buffer.Length * 2, _written + sizeHint);
+        var requiredSize = _written + sizeHint;
+
+        // Cap growth at MaxBufferSize to prevent unbounded memory usage.
+        // If a message exceeds 1MB, we still allocate enough for it but won't
+        // persist that large buffer for reuse (it will be replaced on next message).
+        var newSize = Math.Min(MaxBufferSize, Math.Max(_buffer.Length * 2, requiredSize));
+
+        // If required size exceeds our cap, allocate exactly what's needed
+        if (requiredSize > newSize)
+        {
+            newSize = requiredSize;
+        }
+
         var newBuffer = new byte[newSize];
         _buffer.AsSpan(0, _written).CopyTo(newBuffer);
         _buffer = newBuffer;
@@ -1712,10 +1727,18 @@ internal ref struct ReusableBufferWriter : IBufferWriter<byte>
     /// <summary>
     /// Updates the caller's buffer reference if growth occurred.
     /// Call this after serialization to preserve the grown buffer for reuse.
+    /// If the buffer grew beyond MaxBufferSize, it's discarded to prevent
+    /// permanent memory bloat from occasional large messages.
     /// </summary>
     public void UpdateBufferRef(ref byte[]? buffer)
     {
-        buffer = _buffer;
+        // Don't persist oversized buffers - let them be GC'd
+        // This prevents a single large message from permanently increasing memory
+        if (_buffer.Length <= MaxBufferSize)
+        {
+            buffer = _buffer;
+        }
+        // else: buffer keeps its previous (smaller) value, oversized _buffer will be GC'd
     }
 }
 
