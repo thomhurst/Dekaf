@@ -94,6 +94,207 @@ public readonly struct ProducerRecordData
 }
 
 /// <summary>
+/// Arena allocator for batch message data. Pre-allocates a contiguous buffer
+/// and provides slices for direct serialization, eliminating per-message ArrayPool rentals.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Instead of renting an array for each key/value, the arena provides a single large buffer.
+/// Messages are serialized directly into the arena, and only an offset+length are stored.
+/// When the batch completes, the entire arena buffer is returned to the pool at once.
+/// </para>
+/// <para>
+/// This reduces per-message allocations from 2 (key + value) to 0, significantly
+/// reducing GC pressure in high-throughput scenarios.
+/// </para>
+/// </remarks>
+internal sealed class BatchArena
+{
+    private byte[] _buffer;
+    private int _position;
+
+    /// <summary>
+    /// Creates a new arena with the specified capacity.
+    /// The arena does not grow - when full, the batch should be rotated.
+    /// </summary>
+    /// <param name="capacity">Buffer size (will be rented from ArrayPool).</param>
+    public BatchArena(int capacity)
+    {
+        _buffer = ArrayPool<byte>.Shared.Rent(capacity);
+        _position = 0;
+    }
+
+    /// <summary>
+    /// Gets the current position in the arena (total bytes used).
+    /// </summary>
+    public int Position => _position;
+
+    /// <summary>
+    /// Gets the remaining capacity in the current buffer.
+    /// </summary>
+    public int RemainingCapacity => _buffer.Length - _position;
+
+    /// <summary>
+    /// Tries to allocate space in the arena and returns a span for writing.
+    /// </summary>
+    /// <param name="size">Number of bytes needed.</param>
+    /// <param name="span">Output span to write to.</param>
+    /// <param name="offset">Output offset where the allocation starts.</param>
+    /// <returns>True if allocation succeeded, false if arena is full.</returns>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryAllocate(int size, out Span<byte> span, out int offset)
+    {
+        var currentPos = _position;
+        var newPos = currentPos + size;
+
+        if (newPos <= _buffer.Length)
+        {
+            offset = currentPos;
+            span = _buffer.AsSpan(currentPos, size);
+            _position = newPos;
+            return true;
+        }
+
+        // Need to grow - try to accommodate
+        return TryAllocateSlow(size, out span, out offset);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TryAllocateSlow(int size, out Span<byte> span, out int offset)
+    {
+        // Don't grow - just return false and let caller rotate batch
+        // Growing causes extra allocations; rotating batch is cleaner
+        span = default;
+        offset = 0;
+        return false;
+    }
+
+    /// <summary>
+    /// Gets a read-only span for data at the specified offset and length.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ReadOnlySpan<byte> GetSpan(int offset, int length)
+    {
+        return _buffer.AsSpan(offset, length);
+    }
+
+    /// <summary>
+    /// Gets the underlying buffer for protocol encoding.
+    /// </summary>
+    public byte[] Buffer => _buffer;
+
+    /// <summary>
+    /// Returns the buffer to the ArrayPool.
+    /// </summary>
+    public void Return()
+    {
+        if (_buffer is not null)
+        {
+            ArrayPool<byte>.Shared.Return(_buffer, clearArray: true);
+            _buffer = null!;
+        }
+    }
+}
+
+/// <summary>
+/// Lightweight reference to data within a BatchArena.
+/// Replaces PooledMemory for arena-managed data, eliminating per-message allocations.
+/// </summary>
+internal readonly struct ArenaSlice
+{
+    public readonly int Offset;
+    public readonly int Length;
+
+    public ArenaSlice(int offset, int length)
+    {
+        Offset = offset;
+        Length = length;
+    }
+
+    public bool IsEmpty => Length == 0;
+
+    /// <summary>
+    /// Gets the data from the specified arena.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ReadOnlySpan<byte> GetSpan(BatchArena arena) => arena.GetSpan(Offset, Length);
+}
+
+/// <summary>
+/// Buffer writer that writes directly to a BatchArena.
+/// Implements IBufferWriter&lt;byte&gt; for use with existing serializers.
+/// After writing, call Complete() to get an ArenaSlice referencing the written data.
+/// </summary>
+internal ref struct ArenaBufferWriter : IBufferWriter<byte>
+{
+    private readonly BatchArena _arena;
+    private readonly int _startOffset;
+    private int _written;
+    private bool _failed;
+
+    public ArenaBufferWriter(BatchArena arena)
+    {
+        _arena = arena;
+        _startOffset = arena.Position;
+        _written = 0;
+        _failed = false;
+    }
+
+    /// <summary>
+    /// Gets whether the write operation failed due to arena capacity.
+    /// </summary>
+    public readonly bool Failed => _failed;
+
+    /// <summary>
+    /// Gets the number of bytes written.
+    /// </summary>
+    public readonly int WrittenCount => _written;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Advance(int count)
+    {
+        _written += count;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Memory<byte> GetMemory(int sizeHint = 0)
+    {
+        if (sizeHint < 1) sizeHint = 256;
+
+        if (!_arena.TryAllocate(sizeHint, out var span, out _))
+        {
+            _failed = true;
+            return Memory<byte>.Empty;
+        }
+
+        // Return as Memory - arena buffer is stable until batch completes
+        return _arena.Buffer.AsMemory(_arena.Position - sizeHint, sizeHint);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Span<byte> GetSpan(int sizeHint = 0)
+    {
+        if (sizeHint < 1) sizeHint = 256;
+
+        if (!_arena.TryAllocate(sizeHint, out var span, out _))
+        {
+            _failed = true;
+            return Span<byte>.Empty;
+        }
+
+        return span;
+    }
+
+    /// <summary>
+    /// Completes the write and returns an ArenaSlice referencing the written data.
+    /// </summary>
+    public readonly ArenaSlice Complete()
+    {
+        return new ArenaSlice(_startOffset, _written);
+    }
+}
+
+/// <summary>
 /// Accumulates records into batches for efficient sending.
 /// Provides backpressure through bounded channel capacity (similar to librdkafka's queue.buffering.max.messages).
 /// Simple, reliable, and uses modern C# primitives.
@@ -176,6 +377,119 @@ public sealed class RecordAccumulator : IAsyncDisposable
             SingleWriter = false
         });
     }
+
+    /// <summary>
+    /// Gets the partition cache for a topic (for TopicPartition allocation avoidance).
+    /// Used by KafkaProducer for arena-based serialization path.
+    /// </summary>
+    internal ConcurrentDictionary<int, TopicPartition> GetTopicPartitionCache(string topic)
+    {
+        return _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
+    }
+
+    /// <summary>
+    /// Tries to get an existing batch for the given topic-partition.
+    /// Used by KafkaProducer to access the batch's arena for direct serialization.
+    /// </summary>
+    /// <param name="topicPartition">The topic-partition to look up.</param>
+    /// <param name="batch">The batch if found, null otherwise.</param>
+    /// <returns>True if a batch exists, false otherwise.</returns>
+    internal bool TryGetBatch(TopicPartition topicPartition, out PartitionBatch? batch)
+    {
+        if (_disposed)
+        {
+            batch = null;
+            return false;
+        }
+
+        return _batches.TryGetValue(topicPartition, out batch);
+    }
+
+    /// <summary>
+    /// Tries to get an existing batch by topic and partition using thread-local cache.
+    /// This is the fast path that avoids TopicPartition allocation.
+    /// </summary>
+    /// <param name="topic">The topic name.</param>
+    /// <param name="partition">The partition number.</param>
+    /// <param name="batch">The batch if found, null otherwise.</param>
+    /// <returns>True if a batch exists, false otherwise.</returns>
+    internal bool TryGetBatch(string topic, int partition, out PartitionBatch? batch)
+    {
+        if (_disposed)
+        {
+            batch = null;
+            return false;
+        }
+
+        // Use thread-local multi-partition cache for fast lookup
+        var cache = t_partitionBatchCache;
+        var cacheOwner = t_partitionBatchCacheOwner;
+
+        if (cache is not null && ReferenceEquals(cacheOwner, this))
+        {
+            var index = partition & (MultiPartitionCacheSize - 1);
+            ref var entry = ref cache[index];
+
+            if (entry.Topic == topic && entry.Partition == partition && entry.Batch is not null)
+            {
+                // Cache hit - verify batch is still valid (not completed)
+                var cachedBatch = entry.Batch;
+                if (cachedBatch.Arena is not null) // Arena is null when batch is completed
+                {
+                    batch = cachedBatch;
+                    return true;
+                }
+                // Batch was completed, clear cache entry
+                entry.Batch = null;
+            }
+        }
+
+        // Cache miss - look up in dictionary
+        if (!_topicPartitionCache.TryGetValue(topic, out var partitionCache))
+        {
+            batch = null;
+            return false;
+        }
+
+        if (!partitionCache.TryGetValue(partition, out var topicPartition))
+        {
+            batch = null;
+            return false;
+        }
+
+        if (!_batches.TryGetValue(topicPartition, out batch))
+        {
+            return false;
+        }
+
+        // Update thread-local cache for next time
+        UpdatePartitionCache(topic, partition, batch);
+        return true;
+    }
+
+    /// <summary>
+    /// Updates the thread-local partition cache.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void UpdatePartitionCache(string topic, int partition, PartitionBatch? batch)
+    {
+        var cache = t_partitionBatchCache;
+        if (cache is null || !ReferenceEquals(t_partitionBatchCacheOwner, this))
+        {
+            cache = new PartitionBatchCacheEntry[MultiPartitionCacheSize];
+            t_partitionBatchCache = cache;
+            t_partitionBatchCacheOwner = this;
+        }
+
+        var index = partition & (MultiPartitionCacheSize - 1);
+        cache[index] = new PartitionBatchCacheEntry
+        {
+            Topic = topic,
+            Partition = partition,
+            Batch = batch
+        };
+    }
+
 
     /// <summary>
     /// Appends a record to the appropriate batch.
@@ -337,7 +651,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
             if (result.Success)
                 return true;
 
-            // Cached batch is full, fall through to slow path to handle batch rotation
+            // Cached batch is full - try fast-path rotation using cached TopicPartition
+            if (t_cachedTopicPartition.Topic == topic && t_cachedTopicPartition.Partition == partition)
+            {
+                return TryRotateBatchFastPath(cachedBatch, t_cachedTopicPartition, topic, partition,
+                    timestamp, key, value, headers, pooledHeaderArray);
+            }
         }
 
         // FAST PATH 2: Check multi-partition cache for scenarios with multiple partitions.
@@ -358,13 +677,82 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     t_cachedBatch = mpCachedBatch;
                     return true;
                 }
-                // Batch is full, invalidate this cache entry
+                // Batch is full, invalidate this cache entry and fall through
                 entry.Batch = null;
             }
         }
 
         // SLOW PATH: Dictionary lookups required
         return TryAppendFireAndForgetSlow(topic, partition, timestamp, key, value, headers, pooledHeaderArray);
+    }
+
+    /// <summary>
+    /// Fast-path batch rotation when we have cached TopicPartition.
+    /// Avoids dictionary lookups for TopicPartition cache.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool TryRotateBatchFastPath(
+        PartitionBatch oldBatch,
+        TopicPartition topicPartition,
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray)
+    {
+        // Complete the old batch and queue it for sending
+        var readyBatch = oldBatch.Complete();
+        if (readyBatch is not null)
+        {
+            if (!_readyBatches.Writer.TryWrite(readyBatch))
+            {
+                readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                t_cachedBatch = null;
+                return false;
+            }
+        }
+
+        // Remove the old batch atomically
+        _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, oldBatch));
+
+        // Create new batch and add to dictionary
+        var newBatch = new PartitionBatch(topicPartition, _options);
+
+        // Try to add the new batch - another thread might have added one already
+        if (!_batches.TryAdd(topicPartition, newBatch))
+        {
+            // Another thread added a batch, get it and use it instead
+            // Return our batch's arrays to pool
+            newBatch.Complete(); // This will return arrays since batch is empty
+            newBatch = _batches.GetOrAdd(topicPartition, static (tp, options) => new PartitionBatch(tp, options), _options);
+        }
+
+        // Append to the new batch
+        var result = newBatch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
+
+        if (result.Success)
+        {
+            // Update caches
+            t_cachedBatch = newBatch;
+
+            // Update multi-partition cache if initialized
+            if (t_partitionBatchCacheOwner == this && t_partitionBatchCache is { } mpCache)
+            {
+                var cacheIndex = partition & (MultiPartitionCacheSize - 1);
+                ref var entry = ref mpCache[cacheIndex];
+                entry.Topic = topic;
+                entry.Partition = partition;
+                entry.Batch = newBatch;
+            }
+
+            return true;
+        }
+
+        // Batch rejected the append (shouldn't happen for fresh batch)
+        t_cachedBatch = null;
+        return false;
     }
 
     /// <summary>
@@ -527,7 +915,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Gets batches that are ready to send.
     /// </summary>
-    public IAsyncEnumerable<ReadyBatch> GetReadyBatchesAsync(CancellationToken cancellationToken)
+    internal IAsyncEnumerable<ReadyBatch> GetReadyBatchesAsync(CancellationToken cancellationToken)
     {
         return _readyBatches.Reader.ReadAllAsync(cancellationToken);
     }
@@ -706,6 +1094,9 @@ internal sealed class PartitionBatch
     private readonly TopicPartition _topicPartition;
     private readonly ProducerOptions _options;
 
+    // Arena for zero-copy serialization - all message data in one contiguous buffer
+    private BatchArena? _arena;
+
     // Zero-allocation array management: use pooled arrays instead of List<T>
     private Record[] _records;
     private int _recordCount;
@@ -713,6 +1104,7 @@ internal sealed class PartitionBatch
     private PooledValueTaskSource<RecordMetadata>[] _completionSources;
     private int _completionSourceCount;
 
+    // Legacy: pooled arrays for non-arena path (completion-tracked messages)
     private byte[][] _pooledArrays;
     private int _pooledArrayCount;
 
@@ -756,6 +1148,10 @@ internal sealed class PartitionBatch
         _options = options;
         _createdAt = DateTimeOffset.UtcNow;
 
+        // Create arena for zero-copy serialization
+        // Size matches batch size; when full, batch rotates
+        _arena = new BatchArena(options.BatchSize);
+
         // Rent arrays from pool - eliminates List allocations
         _records = ArrayPool<Record>.Shared.Rent(InitialRecordCapacity);
         _recordCount = 0;
@@ -769,6 +1165,12 @@ internal sealed class PartitionBatch
         _pooledHeaderArrays = ArrayPool<RecordHeader[]>.Shared.Rent(8); // Headers less common
         _pooledHeaderArrayCount = 0;
     }
+
+    /// <summary>
+    /// Gets the batch's arena for direct serialization.
+    /// Returns null if arena is not available (batch completed or arena full).
+    /// </summary>
+    public BatchArena? Arena => Volatile.Read(ref _isCompleted) == 0 ? _arena : null;
 
     public TopicPartition TopicPartition => _topicPartition;
     public int RecordCount => _recordCount;
@@ -992,6 +1394,131 @@ internal sealed class PartitionBatch
     }
 
     /// <summary>
+    /// Arena-based fire-and-forget append. Key/value data is already in the batch's arena.
+    /// This is the zero-allocation path - no per-message ArrayPool rentals.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public RecordAppendResult TryAppendFromArena(
+        long timestamp,
+        ArenaSlice keySlice,
+        bool isKeyNull,
+        ArenaSlice valueSlice,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray)
+    {
+        var recordSize = EstimateRecordSize(keySlice.Length, valueSlice.Length, headers);
+
+        // FAST PATH: Try to atomically claim exclusive access via CAS.
+        if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
+        {
+            try
+            {
+                return TryAppendFromArenaCore(timestamp, keySlice, isKeyNull, valueSlice, headers, pooledHeaderArray, recordSize);
+            }
+            finally
+            {
+                Volatile.Write(ref _exclusiveAccess, 0);
+            }
+        }
+
+        // SLOW PATH: Spin until we can claim access.
+        return TryAppendFromArenaWithSpinWait(timestamp, keySlice, isKeyNull, valueSlice, headers, pooledHeaderArray, recordSize);
+    }
+
+    /// <summary>
+    /// Core append logic for arena-based data. No per-message array tracking needed.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private RecordAppendResult TryAppendFromArenaCore(
+        long timestamp,
+        ArenaSlice keySlice,
+        bool isKeyNull,
+        ArenaSlice valueSlice,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
+        int recordSize)
+    {
+        if (Volatile.Read(ref _isCompleted) != 0)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        if (_recordCount == 0)
+        {
+            _baseTimestamp = timestamp;
+        }
+
+        // Check size limit
+        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        // Grow records array if needed
+        if (_recordCount >= _records.Length)
+        {
+            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
+        }
+        // Track pooled header arrays (rare)
+        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
+        {
+            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
+        }
+        if (pooledHeaderArray is not null)
+        {
+            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
+        }
+
+        // Create record with Memory referencing the arena buffer
+        // Key and value data is already in the arena, we just store the slice info
+        var arena = _arena!;
+        var timestampDelta = (int)(timestamp - _baseTimestamp);
+        var record = new Record
+        {
+            TimestampDelta = timestampDelta,
+            OffsetDelta = _recordCount,
+            Key = isKeyNull ? ReadOnlyMemory<byte>.Empty : arena.Buffer.AsMemory(keySlice.Offset, keySlice.Length),
+            IsKeyNull = isKeyNull,
+            Value = arena.Buffer.AsMemory(valueSlice.Offset, valueSlice.Length),
+            IsValueNull = false,
+            Headers = headers
+        };
+
+        _records[_recordCount++] = record;
+        _estimatedSize += recordSize;
+
+        return new RecordAppendResult(true);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private RecordAppendResult TryAppendFromArenaWithSpinWait(
+        long timestamp,
+        ArenaSlice keySlice,
+        bool isKeyNull,
+        ArenaSlice valueSlice,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
+        int recordSize)
+    {
+        var spin = new SpinWait();
+        while (true)
+        {
+            if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
+            {
+                try
+                {
+                    return TryAppendFromArenaCore(timestamp, keySlice, isKeyNull, valueSlice, headers, pooledHeaderArray, recordSize);
+                }
+                finally
+                {
+                    Volatile.Write(ref _exclusiveAccess, 0);
+                }
+            }
+            spin.SpinOnce();
+        }
+    }
+
+    /// <summary>
     /// Slow path: spins until exclusive access is available, then appends.
     /// Called when CAS failed because another thread is currently appending.
     /// Uses SpinWait for efficient spinning that adapts to contention level.
@@ -1193,12 +1720,14 @@ internal sealed class PartitionBatch
             _pooledArrayCount,
             _pooledHeaderArrays,
             _pooledHeaderArrayCount,
-            pooledRecordsArray);
+            pooledRecordsArray,
+            _arena);
 
         // Null out references - ownership transferred to ReadyBatch
         _completionSources = null!;
         _pooledArrays = null!;
         _pooledHeaderArrays = null!;
+        _arena = null;
 
         return _completedBatch;
     }
@@ -1216,11 +1745,15 @@ internal sealed class PartitionBatch
         if (_pooledHeaderArrays is not null)
             ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: false);
 
+        // Return arena buffer if present
+        _arena?.Return();
+
         // Null out references to prevent accidental reuse
         _records = null!;
         _completionSources = null!;
         _pooledArrays = null!;
         _pooledHeaderArrays = null!;
+        _arena = null;
     }
 
     private static int EstimateRecordSize(int keyLength, int valueLength, IReadOnlyList<RecordHeader>? headers)
@@ -1253,7 +1786,7 @@ public readonly record struct RecordAppendResult(bool Success);
 /// Returns pooled arrays to ArrayPool when complete.
 /// PooledValueTaskSource instances auto-return to their pool when GetResult() is called.
 /// </summary>
-public sealed class ReadyBatch
+internal sealed class ReadyBatch
 {
     public TopicPartition TopicPartition { get; }
     public RecordBatch RecordBatch { get; }
@@ -1271,6 +1804,7 @@ public sealed class ReadyBatch
     private readonly RecordHeader[][] _pooledHeaderArrays;
     private readonly int _pooledHeaderArraysCount;
     private readonly Record[]? _pooledRecordsArray; // Pooled records array from RecordBatch
+    private readonly BatchArena? _arena; // Arena for zero-copy serialization data
 
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
 
@@ -1283,7 +1817,8 @@ public sealed class ReadyBatch
         int pooledDataArraysCount,
         RecordHeader[][] pooledHeaderArrays,
         int pooledHeaderArraysCount,
-        Record[]? pooledRecordsArray = null)
+        Record[]? pooledRecordsArray = null,
+        BatchArena? arena = null)
     {
         TopicPartition = topicPartition;
         RecordBatch = recordBatch;
@@ -1294,6 +1829,7 @@ public sealed class ReadyBatch
         _pooledHeaderArrays = pooledHeaderArrays;
         _pooledHeaderArraysCount = pooledHeaderArraysCount;
         _pooledRecordsArray = pooledRecordsArray;
+        _arena = arena;
     }
 
     public void Complete(long baseOffset, DateTimeOffset timestamp)
@@ -1353,7 +1889,7 @@ public sealed class ReadyBatch
         if (Interlocked.Exchange(ref _cleanedUp, 1) != 0)
             return;
 
-        // Return pooled byte arrays (key/value data)
+        // Return pooled byte arrays (key/value data) - only for non-arena path
         for (var i = 0; i < _pooledDataArraysCount; i++)
         {
             ArrayPool<byte>.Shared.Return(_pooledDataArrays[i], clearArray: true);
@@ -1378,6 +1914,10 @@ public sealed class ReadyBatch
         {
             ArrayPool<Record>.Shared.Return(_pooledRecordsArray, clearArray: false);
         }
+
+        // Return arena buffer if present (arena-based path)
+        // This is a single pool return instead of N individual array returns
+        _arena?.Return();
     }
 }
 

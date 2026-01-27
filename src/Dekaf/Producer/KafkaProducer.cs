@@ -442,6 +442,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// <summary>
     /// Core synchronous fire-and-forget produce logic that works directly from parameters.
     /// Avoids ProducerMessage allocation entirely.
+    ///
+    /// Design: True fast path / slow path split
+    /// - Fast path: Check cached batch, append if space available (no side effects)
+    /// - Slow path: Handle all complexity (batch creation, rotation, dictionary ops)
     /// </summary>
     private void ProduceSyncCoreFireAndForgetDirect(
         string topic,
@@ -452,32 +456,177 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         Headers? headers,
         TopicInfo topicInfo)
     {
+        // Step 1: Serialize to thread-local buffers (no allocation, reused across messages)
+        var keyIsNull = keyObj is null;
+        int keyLength = 0;
+
+        if (!keyIsNull)
+        {
+            var keyWriter = new ReusableBufferWriter(ref t_keySerializationBuffer, DefaultKeyBufferSize);
+            t_serializationContext.Topic = topic;
+            t_serializationContext.Component = SerializationComponent.Key;
+            t_serializationContext.Headers = headers;
+            _keySerializer.Serialize(keyObj!, ref keyWriter, t_serializationContext);
+            keyWriter.UpdateBufferRef(ref t_keySerializationBuffer);
+            keyLength = keyWriter.WrittenCount;
+        }
+
+        var valueWriter = new ReusableBufferWriter(ref t_valueSerializationBuffer, DefaultValueBufferSize);
+        t_serializationContext.Topic = topic;
+        t_serializationContext.Component = SerializationComponent.Value;
+        t_serializationContext.Headers = headers;
+        _valueSerializer.Serialize(value, ref valueWriter, t_serializationContext);
+        valueWriter.UpdateBufferRef(ref t_valueSerializationBuffer);
+        var valueLength = valueWriter.WrittenCount;
+
+        // Step 2: Compute partition using serialized key bytes
+        var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : t_keySerializationBuffer.AsSpan(0, keyLength);
+        var partition = partitionOverride
+            ?? _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
+
+        // Step 3: Get timestamp
+        var timestampMs = timestampOverride?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
+
+        // Step 4: Convert headers
+        IReadOnlyList<RecordHeader>? recordHeaders = null;
+        RecordHeader[]? pooledHeaderArray = null;
+        if (headers is not null && headers.Count > 0)
+        {
+            recordHeaders = ConvertHeaders(headers, out pooledHeaderArray);
+        }
+
+        // Step 5: FAST PATH - Try to append to cached batch with arena (no side effects)
+        // This succeeds when: same partition as recent message AND batch has space
+        if (TryAppendToArenaFast(topic, partition, timestampMs, keyIsNull, keyLength, valueLength, recordHeaders, ref pooledHeaderArray))
+        {
+            _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
+            return;
+        }
+
+        // Step 6: SLOW PATH - Handle all complexity
+        AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueLength, recordHeaders, pooledHeaderArray);
+        _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
+    }
+
+    /// <summary>
+    /// FAST PATH: Try to append to an existing batch's arena.
+    /// No side effects - if anything is wrong, just return false.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryAppendToArenaFast(
+        string topic,
+        int partition,
+        long timestampMs,
+        bool keyIsNull,
+        int keyLength,
+        int valueLength,
+        IReadOnlyList<RecordHeader>? recordHeaders,
+        ref RecordHeader[]? pooledHeaderArray)
+    {
+        // Check thread-local batch cache first (avoids dictionary lookup)
+        var cachedBatch = GetCachedBatch(topic, partition);
+        if (cachedBatch is null)
+        {
+            return false; // No cached batch, use slow path
+        }
+
+        var arena = cachedBatch.Arena;
+        if (arena is null)
+        {
+            return false; // Batch completed, use slow path
+        }
+
+        // Calculate total size needed and check if it fits
+        var totalSize = keyLength + valueLength;
+        if (arena.RemainingCapacity < totalSize)
+        {
+            return false; // Not enough space, use slow path (which will rotate)
+        }
+
+        // Allocate key in arena
+        ArenaSlice keySlice = default;
+        if (!keyIsNull && keyLength > 0)
+        {
+            if (!arena.TryAllocate(keyLength, out var keySpan, out var keyOffset))
+            {
+                return false; // Allocation failed, use slow path
+            }
+            t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(keySpan);
+            keySlice = new ArenaSlice(keyOffset, keyLength);
+        }
+
+        // Allocate value in arena
+        if (!arena.TryAllocate(valueLength, out var valueSpan, out var valueOffset))
+        {
+            return false; // Allocation failed (shouldn't happen after size check, but be safe)
+        }
+        t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(valueSpan);
+        var valueSlice = new ArenaSlice(valueOffset, valueLength);
+
+        // Append using arena-based method
+        var result = cachedBatch.TryAppendFromArena(timestampMs, keySlice, keyIsNull, valueSlice, recordHeaders, pooledHeaderArray);
+
+        if (!result.Success)
+        {
+            return false; // Batch full or completed, use slow path
+        }
+
+        // Success - batch now owns the pooled header array
+        pooledHeaderArray = null;
+        return true;
+    }
+
+    /// <summary>
+    /// Gets a cached batch for the given topic/partition from thread-local cache.
+    /// Returns null if no valid cached batch exists.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private PartitionBatch? GetCachedBatch(string topic, int partition)
+    {
+        // Use multi-partition cache from accumulator
+        if (!_accumulator.TryGetBatch(topic, partition, out var batch))
+        {
+            return null;
+        }
+        return batch;
+    }
+
+    /// <summary>
+    /// SLOW PATH: Handles all complexity - batch creation, rotation, dictionary operations.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void AppendWithSlowPath(
+        string topic,
+        int partition,
+        long timestampMs,
+        bool keyIsNull,
+        int keyLength,
+        int valueLength,
+        IReadOnlyList<RecordHeader>? recordHeaders,
+        RecordHeader[]? pooledHeaderArray)
+    {
         var key = PooledMemory.Null;
         var valueMemory = PooledMemory.Null;
-        RecordHeader[]? pooledHeaderArray = null;
 
         try
         {
-            // Serialize key and value
-            var keyIsNull = keyObj is null;
-            key = keyIsNull ? PooledMemory.Null : SerializeKeyToPooled(keyObj!, topic, headers);
-            valueMemory = SerializeValueToPooled(value, topic, headers);
-
-            // Determine partition
-            var partition = partitionOverride
-                ?? _partitioner.Partition(topic, key.Span, keyIsNull, topicInfo.PartitionCount);
-
-            // Get timestamp - use fast cached timestamp for fire-and-forget (no override provided)
-            var timestampMs = timestampOverride?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
-
-            // Convert headers
-            IReadOnlyList<RecordHeader>? recordHeaders = null;
-            if (headers is not null && headers.Count > 0)
+            // Copy key from thread-local to pooled array
+            if (!keyIsNull && keyLength > 0)
             {
-                recordHeaders = ConvertHeaders(headers, out pooledHeaderArray);
+                var keyArray = ArrayPool<byte>.Shared.Rent(keyLength);
+                t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(keyArray);
+                key = new PooledMemory(keyArray, keyLength);
             }
 
-            // Append to accumulator synchronously - no completion source needed
+            // Copy value from thread-local to pooled array
+            if (valueLength > 0)
+            {
+                var valueArray = ArrayPool<byte>.Shared.Rent(valueLength);
+                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(valueArray);
+                valueMemory = new PooledMemory(valueArray, valueLength);
+            }
+
+            // Append to accumulator
             if (!_accumulator.TryAppendFireAndForget(
                 topic,
                 partition,
@@ -487,23 +636,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 recordHeaders,
                 pooledHeaderArray))
             {
-                // Accumulator is disposed - cleanup and throw
                 CleanupPooledResources(key, valueMemory, pooledHeaderArray);
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
             }
 
-            // SUCCESS: Memory ownership transferred to batch.
-            var messageBytes = key.Length + valueMemory.Length;
+            // Success - ownership transferred, clear local refs
             key = PooledMemory.Null;
             valueMemory = PooledMemory.Null;
-            pooledHeaderArray = null;
-
-            // Track message produced using fast path (global counters only)
-            _statisticsCollector.RecordMessageProducedFast(messageBytes);
         }
         catch
         {
-            // Cleanup pooled resources on ANY exception to prevent leaks.
             CleanupPooledResources(key, valueMemory, pooledHeaderArray);
             throw;
         }
@@ -573,70 +715,21 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// <summary>
     /// Core synchronous fire-and-forget produce logic that skips completion source tracking.
     /// This eliminates the overhead of PooledValueTaskSource rental and result handling.
+    /// Delegates to the direct parameters version to share the optimized arena path.
     /// </summary>
     private void ProduceSyncCoreFireAndForget(
         ProducerMessage<TKey, TValue> message,
         TopicInfo topicInfo)
     {
-        var key = PooledMemory.Null;
-        var value = PooledMemory.Null;
-        RecordHeader[]? pooledHeaderArray = null;
-
-        try
-        {
-            // Serialize key and value
-            var keyIsNull = message.Key is null;
-            key = keyIsNull ? PooledMemory.Null : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
-            value = SerializeValueToPooled(message.Value, message.Topic, message.Headers);
-
-            // Determine partition
-            var partition = message.Partition
-                ?? _partitioner.Partition(message.Topic, key.Span, keyIsNull, topicInfo.PartitionCount);
-
-            // Get timestamp - use fast cached timestamp for fire-and-forget (no override provided)
-            var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
-
-            // Convert headers
-            IReadOnlyList<RecordHeader>? recordHeaders = null;
-            if (message.Headers is not null && message.Headers.Count > 0)
-            {
-                recordHeaders = ConvertHeaders(message.Headers, out pooledHeaderArray);
-            }
-
-            // Append to accumulator synchronously - no completion source needed
-            if (!_accumulator.TryAppendFireAndForget(
-                message.Topic,
-                partition,
-                timestampMs,
-                key,
-                value,
-                recordHeaders,
-                pooledHeaderArray))
-            {
-                // Accumulator is disposed - cleanup and throw
-                CleanupPooledResources(key, value, pooledHeaderArray);
-                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-            }
-
-            // SUCCESS: Memory ownership transferred to batch.
-            // Clear local references to prevent double-return if catch block executes.
-            // The batch now owns these arrays and will return them to the pool.
-            var messageBytes = key.Length + value.Length;
-            key = PooledMemory.Null;
-            value = PooledMemory.Null;
-            pooledHeaderArray = null;
-
-            // Track message produced using fast path (global counters only)
-            _statisticsCollector.RecordMessageProducedFast(messageBytes);
-        }
-        catch
-        {
-            // Cleanup pooled resources on ANY exception to prevent leaks.
-            // After successful append, key/value/pooledHeaderArray are cleared above,
-            // so this is a no-op in the success case (prevents double-return to pool).
-            CleanupPooledResources(key, value, pooledHeaderArray);
-            throw;
-        }
+        // Delegate to the direct parameters version which has the optimized arena path
+        ProduceSyncCoreFireAndForgetDirect(
+            message.Topic,
+            message.Key,
+            message.Value,
+            message.Partition,
+            message.Timestamp,
+            message.Headers,
+            topicInfo);
     }
 
     /// <summary>
