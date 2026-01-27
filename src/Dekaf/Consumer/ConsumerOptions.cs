@@ -5,6 +5,25 @@ using Dekaf.Security.Sasl;
 namespace Dekaf.Consumer;
 
 /// <summary>
+/// Specifies how consumer offsets are committed.
+/// </summary>
+public enum OffsetCommitMode
+{
+    /// <summary>
+    /// Offsets are automatically committed periodically in the background.
+    /// This matches Kafka's enable.auto.commit=true behavior.
+    /// </summary>
+    Auto,
+
+    /// <summary>
+    /// You must call CommitAsync() explicitly to commit offsets.
+    /// This matches Kafka's enable.auto.commit=false behavior.
+    /// Use for at-least-once processing where you commit after processing.
+    /// </summary>
+    Manual
+}
+
+/// <summary>
 /// Configuration options for the Kafka consumer.
 /// </summary>
 public sealed class ConsumerOptions
@@ -30,21 +49,15 @@ public sealed class ConsumerOptions
     public string? GroupInstanceId { get; init; }
 
     /// <summary>
-    /// Enable auto-commit.
+    /// Offset commit mode controlling how offsets are stored and committed.
+    /// Default is <see cref="OffsetCommitMode.Auto"/>.
     /// </summary>
-    public bool EnableAutoCommit { get; init; } = true;
+    public OffsetCommitMode OffsetCommitMode { get; init; } = OffsetCommitMode.Auto;
 
     /// <summary>
     /// Auto-commit interval in milliseconds.
     /// </summary>
     public int AutoCommitIntervalMs { get; init; } = 5000;
-
-    /// <summary>
-    /// Enable automatic offset storage. When true, offsets are automatically stored
-    /// when messages are consumed. When false, offsets must be explicitly stored
-    /// using StoreOffset before they can be committed. Default is true.
-    /// </summary>
-    public bool EnableAutoOffsetStore { get; init; } = true;
 
     /// <summary>
     /// Auto offset reset behavior.

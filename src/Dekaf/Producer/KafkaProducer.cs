@@ -288,7 +288,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <inheritdoc />
-    public void Produce(ProducerMessage<TKey, TValue> message)
+    public void Send(ProducerMessage<TKey, TValue> message)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -313,7 +313,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <inheritdoc />
-    public void Produce(string topic, TKey? key, TValue value)
+    public void Send(string topic, TKey? key, TValue value)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -327,7 +327,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         // Slow path: Fall back to the message-based overload
         // This allocates a ProducerMessage but handles metadata initialization
-        Produce(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
+        Send(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
     }
 
     /// <summary>
@@ -853,7 +853,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <inheritdoc />
-    public void Produce(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
+    public void Send(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -1053,6 +1053,57 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             Key = key,
             Value = value
         }, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<RecordMetadata[]> ProduceAllAsync(
+        IEnumerable<ProducerMessage<TKey, TValue>> messages,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(messages);
+
+        // Convert to list to get count and allow multiple enumeration
+        var messageList = messages as IList<ProducerMessage<TKey, TValue>> ?? messages.ToList();
+        if (messageList.Count == 0)
+        {
+            return [];
+        }
+
+        // Convert ValueTask to Task for each message and await all
+        var tasks = new Task<RecordMetadata>[messageList.Count];
+        for (var i = 0; i < messageList.Count; i++)
+        {
+            tasks[i] = ProduceAsync(messageList[i], cancellationToken).AsTask();
+        }
+
+        return await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<RecordMetadata[]> ProduceAllAsync(
+        string topic,
+        IEnumerable<(TKey? Key, TValue Value)> messages,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(topic);
+        ArgumentNullException.ThrowIfNull(messages);
+
+        // Convert to list to get count and allow multiple enumeration
+        var messageList = messages as IList<(TKey? Key, TValue Value)> ?? messages.ToList();
+        if (messageList.Count == 0)
+        {
+            return [];
+        }
+
+        // Convert ValueTask to Task for each message and await all
+        var tasks = new Task<RecordMetadata>[messageList.Count];
+        for (var i = 0; i < messageList.Count; i++)
+        {
+            var (key, value) = messageList[i];
+            tasks[i] = ProduceAsync(topic, key, value, cancellationToken).AsTask();
+        }
+
+        return await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
     public async ValueTask FlushAsync(CancellationToken cancellationToken = default)

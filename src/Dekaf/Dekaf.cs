@@ -341,6 +341,69 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> OnStatistics(Action<Statistics.ProducerStatistics> handler)
         => WithStatisticsHandler(handler);
 
+    /// <summary>
+    /// Configures the producer for high throughput scenarios.
+    /// </summary>
+    /// <remarks>
+    /// <para>Settings applied:</para>
+    /// <list type="bullet">
+    /// <item><description>Acks: Leader only (faster acknowledgment)</description></item>
+    /// <item><description>LingerMs: 5ms (allows batching)</description></item>
+    /// <item><description>BatchSize: 64KB (larger batches)</description></item>
+    /// <item><description>Compression: LZ4 (fast compression)</description></item>
+    /// </list>
+    /// <para>These settings can be overridden by calling other builder methods after this one.</para>
+    /// </remarks>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ProducerBuilder<TKey, TValue> ForHighThroughput()
+    {
+        _acks = Acks.Leader;
+        _lingerMs = 5;
+        _batchSize = 65536;
+        _compressionType = Protocol.Records.CompressionType.Lz4;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures the producer for low latency scenarios.
+    /// </summary>
+    /// <remarks>
+    /// <para>Settings applied:</para>
+    /// <list type="bullet">
+    /// <item><description>Acks: Leader only (faster acknowledgment)</description></item>
+    /// <item><description>LingerMs: 0ms (no batching delay)</description></item>
+    /// <item><description>BatchSize: 16KB (default, smaller batches)</description></item>
+    /// </list>
+    /// <para>These settings can be overridden by calling other builder methods after this one.</para>
+    /// </remarks>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ProducerBuilder<TKey, TValue> ForLowLatency()
+    {
+        _acks = Acks.Leader;
+        _lingerMs = 0;
+        _batchSize = 16384;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures the producer for maximum reliability.
+    /// </summary>
+    /// <remarks>
+    /// <para>Settings applied:</para>
+    /// <list type="bullet">
+    /// <item><description>Acks: All (wait for all in-sync replicas)</description></item>
+    /// <item><description>EnableIdempotence: true (exactly-once semantics)</description></item>
+    /// </list>
+    /// <para>These settings can be overridden by calling other builder methods after this one.</para>
+    /// </remarks>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ProducerBuilder<TKey, TValue> ForReliability()
+    {
+        _acks = Acks.All;
+        _enableIdempotence = true;
+        return this;
+    }
+
     public IKafkaProducer<TKey, TValue> Build()
     {
         if (_bootstrapServers.Count == 0)
@@ -407,10 +470,11 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private string? _clientId;
     private string? _groupId;
     private string? _groupInstanceId;
-    private bool _enableAutoCommit = true;
+    private OffsetCommitMode _offsetCommitMode = OffsetCommitMode.Auto;
     private int _autoCommitIntervalMs = 5000;
-    private bool _enableAutoOffsetStore = true;
     private AutoOffsetReset _autoOffsetReset = AutoOffsetReset.Latest;
+    private int _fetchMinBytes = 1;
+    private int _fetchMaxWaitMs = 500;
     private int _maxPollRecords = 500;
     private int _sessionTimeoutMs = 45000;
     private bool _useTls;
@@ -484,31 +548,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
-    /// <summary>
-    /// Configures automatic offset commits.
-    /// </summary>
-    /// <param name="enabled">True to enable automatic commits, false to disable.</param>
-    public ConsumerBuilder<TKey, TValue> WithAutoCommit(bool enabled = true)
-    {
-        _enableAutoCommit = enabled;
-        return this;
-    }
-
-    /// <summary>
-    /// Enables or disables automatic offset commits.
-    /// </summary>
-    /// <param name="enable">True to enable automatic commits, false to disable.</param>
-    [Obsolete("Use WithAutoCommit instead.")]
-    public ConsumerBuilder<TKey, TValue> EnableAutoCommit(bool enable = true)
-        => WithAutoCommit(enable);
-
-    /// <summary>
-    /// Disables automatic offset commits.
-    /// </summary>
-    [Obsolete("Use WithAutoCommit(false) instead.")]
-    public ConsumerBuilder<TKey, TValue> DisableAutoCommit()
-        => WithAutoCommit(false);
-
     public ConsumerBuilder<TKey, TValue> WithAutoCommitInterval(int intervalMs)
     {
         _autoCommitIntervalMs = intervalMs;
@@ -526,15 +565,19 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
-    /// Configures automatic offset storage. When enabled (default), offsets are automatically
-    /// stored when messages are consumed. When disabled, offsets must be explicitly stored
-    /// using StoreOffset before they can be committed.
+    /// Sets the offset commit mode, controlling how offsets are stored and committed.
     /// </summary>
-    /// <param name="enabled">True to enable automatic offset storage, false for manual control.</param>
+    /// <param name="mode">The offset commit mode to use.</param>
     /// <returns>The builder instance for method chaining.</returns>
-    public ConsumerBuilder<TKey, TValue> WithAutoOffsetStore(bool enabled)
+    /// <remarks>
+    /// <list type="bullet">
+    /// <item><description><see cref="OffsetCommitMode.Auto"/>: Offsets committed automatically in the background (default)</description></item>
+    /// <item><description><see cref="OffsetCommitMode.Manual"/>: You must call CommitAsync() explicitly</description></item>
+    /// </list>
+    /// </remarks>
+    public ConsumerBuilder<TKey, TValue> WithOffsetCommitMode(OffsetCommitMode mode)
     {
-        _enableAutoOffsetStore = enabled;
+        _offsetCommitMode = mode;
         return this;
     }
 
@@ -745,6 +788,48 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> OnStatistics(Action<Statistics.ConsumerStatistics> handler)
         => WithStatisticsHandler(handler);
 
+    /// <summary>
+    /// Configures the consumer for high throughput scenarios.
+    /// </summary>
+    /// <remarks>
+    /// <para>Settings applied:</para>
+    /// <list type="bullet">
+    /// <item><description>MaxPollRecords: 1000 (larger batches)</description></item>
+    /// <item><description>FetchMinBytes: 1KB (wait for more data)</description></item>
+    /// <item><description>FetchMaxWaitMs: 500ms (allow batching)</description></item>
+    /// </list>
+    /// <para>These settings can be overridden by calling other builder methods after this one.</para>
+    /// </remarks>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> ForHighThroughput()
+    {
+        _maxPollRecords = 1000;
+        _fetchMinBytes = 1024;
+        _fetchMaxWaitMs = 500;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures the consumer for low latency scenarios.
+    /// </summary>
+    /// <remarks>
+    /// <para>Settings applied:</para>
+    /// <list type="bullet">
+    /// <item><description>MaxPollRecords: 100 (smaller batches for faster processing)</description></item>
+    /// <item><description>FetchMinBytes: 1 byte (return immediately when data available)</description></item>
+    /// <item><description>FetchMaxWaitMs: 100ms (reduce waiting time)</description></item>
+    /// </list>
+    /// <para>These settings can be overridden by calling other builder methods after this one.</para>
+    /// </remarks>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> ForLowLatency()
+    {
+        _maxPollRecords = 100;
+        _fetchMinBytes = 1;
+        _fetchMaxWaitMs = 100;
+        return this;
+    }
+
     public IKafkaConsumer<TKey, TValue> Build()
     {
         if (_bootstrapServers.Count == 0)
@@ -759,10 +844,11 @@ public sealed class ConsumerBuilder<TKey, TValue>
             ClientId = _clientId,
             GroupId = _groupId,
             GroupInstanceId = _groupInstanceId,
-            EnableAutoCommit = _enableAutoCommit,
+            OffsetCommitMode = _offsetCommitMode,
             AutoCommitIntervalMs = _autoCommitIntervalMs,
-            EnableAutoOffsetStore = _enableAutoOffsetStore,
             AutoOffsetReset = _autoOffsetReset,
+            FetchMinBytes = _fetchMinBytes,
+            FetchMaxWaitMs = _fetchMaxWaitMs,
             MaxPollRecords = _maxPollRecords,
             SessionTimeoutMs = _sessionTimeoutMs,
             UseTls = _useTls,

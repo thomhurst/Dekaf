@@ -35,6 +35,28 @@ public sealed class Headers : IEnumerable<Header>
     }
 
     /// <summary>
+    /// Creates a new empty headers collection.
+    /// </summary>
+    /// <returns>A new empty Headers instance.</returns>
+    public static Headers Create() => new();
+
+    /// <summary>
+    /// Creates a new headers collection with a single header.
+    /// </summary>
+    /// <param name="key">The header key.</param>
+    /// <param name="value">The header value.</param>
+    /// <returns>A new Headers instance with one header.</returns>
+    public static Headers Create(string key, string value) => new Headers().Add(key, value);
+
+    /// <summary>
+    /// Creates a new headers collection with a single header.
+    /// </summary>
+    /// <param name="key">The header key.</param>
+    /// <param name="value">The header value as bytes.</param>
+    /// <returns>A new Headers instance with one header.</returns>
+    public static Headers Create(string key, byte[]? value) => new Headers().Add(key, value);
+
+    /// <summary>
     /// Gets the number of headers.
     /// </summary>
     public int Count => _headers.Count;
@@ -129,6 +151,66 @@ public sealed class Headers : IEnumerable<Header>
     public void Clear()
     {
         _headers.Clear();
+    }
+
+    /// <summary>
+    /// Adds multiple headers from a collection of key-value pairs.
+    /// </summary>
+    /// <param name="headers">The headers to add.</param>
+    /// <returns>This Headers instance for chaining.</returns>
+    public Headers AddRange(IEnumerable<KeyValuePair<string, string>> headers)
+    {
+        foreach (var kvp in headers)
+        {
+            Add(kvp.Key, kvp.Value);
+        }
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a header conditionally.
+    /// </summary>
+    /// <param name="condition">If true, the header is added; otherwise, nothing happens.</param>
+    /// <param name="key">The header key.</param>
+    /// <param name="value">The header value.</param>
+    /// <returns>This Headers instance for chaining.</returns>
+    public Headers AddIf(bool condition, string key, string value)
+    {
+        if (condition)
+        {
+            Add(key, value);
+        }
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a header if the value is not null.
+    /// </summary>
+    /// <param name="key">The header key.</param>
+    /// <param name="value">The header value (if null, header is not added).</param>
+    /// <returns>This Headers instance for chaining.</returns>
+    public Headers AddIfNotNull(string key, string? value)
+    {
+        if (value is not null)
+        {
+            Add(key, value);
+        }
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a header if the value is not null or empty.
+    /// </summary>
+    /// <param name="key">The header key.</param>
+    /// <param name="value">The header value (if null or empty, header is not added).</param>
+    /// <returns>This Headers instance for chaining.</returns>
+    public Headers AddIfNotNullOrEmpty(string key, string? value)
+    {
+        if (!string.IsNullOrEmpty(value))
+        {
+            Add(key, value);
+        }
+        return this;
     }
 
     /// <summary>
