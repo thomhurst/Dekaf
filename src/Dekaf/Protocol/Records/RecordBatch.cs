@@ -21,6 +21,8 @@ public sealed class RecordBatch : IDisposable
     private static ArrayBufferWriter<byte>? t_recordsBuffer;
     [ThreadStatic]
     private static ArrayBufferWriter<byte>? t_compressedBuffer;
+    [ThreadStatic]
+    private static ArrayBufferWriter<byte>? t_decompressedBuffer;
 
     private static ArrayBufferWriter<byte> GetRecordsBuffer()
     {
@@ -48,6 +50,28 @@ public sealed class RecordBatch : IDisposable
         else
         {
             buffer.Clear();
+        }
+        return buffer;
+    }
+
+    private static ArrayBufferWriter<byte> GetDecompressedBuffer(int estimatedSize)
+    {
+        var buffer = t_decompressedBuffer;
+        if (buffer is null)
+        {
+            buffer = new ArrayBufferWriter<byte>(Math.Max(4096, estimatedSize));
+            t_decompressedBuffer = buffer;
+        }
+        else
+        {
+            buffer.Clear();
+            // Ensure capacity for decompressed data
+            if (buffer.Capacity < estimatedSize)
+            {
+                // Need a larger buffer - create a new one
+                buffer = new ArrayBufferWriter<byte>(estimatedSize);
+                t_decompressedBuffer = buffer;
+            }
         }
         return buffer;
     }
@@ -227,17 +251,25 @@ public sealed class RecordBatch : IDisposable
         var rawRecordData = reader.ReadMemorySlice(recordsLength);
 
         // Determine how to handle the record data based on compression and pooled memory availability
-        ReadOnlyMemory<byte> recordData;
+        LazyRecordList lazyRecords;
 
         if (compression != CompressionType.None)
         {
             // Compressed data must be decompressed to a new buffer.
-            // We still need to copy because decompression creates new data.
+            // Use thread-local buffer for decompression, then copy to a pooled array.
+            // The pooled array will be managed by LazyRecordList for proper cleanup.
             var registry = codecs ?? CompressionCodecRegistry.Default;
             var codec = registry.GetCodec(compression);
-            var decompressedBuffer = new ArrayBufferWriter<byte>(recordsLength * 4); // Estimate 4x expansion
+            var estimatedSize = recordsLength * 4; // Estimate 4x expansion
+            var decompressedBuffer = GetDecompressedBuffer(estimatedSize);
             codec.Decompress(new ReadOnlySequence<byte>(rawRecordData), decompressedBuffer);
-            recordData = decompressedBuffer.WrittenMemory.ToArray();
+
+            // Rent a pooled array and copy the decompressed data
+            var writtenLength = decompressedBuffer.WrittenCount;
+            var pooledArray = ArrayPool<byte>.Shared.Rent(writtenLength);
+            decompressedBuffer.WrittenSpan.CopyTo(pooledArray);
+            var pooledData = new PooledRecordData(pooledArray, writtenLength);
+            lazyRecords = new LazyRecordList(pooledData, recordCount);
         }
         else if (ResponseParsingContext.HasPooledMemory)
         {
@@ -245,17 +277,18 @@ public sealed class RecordBatch : IDisposable
             // Mark that at least one batch used the pooled memory, so ownership
             // will be transferred to PendingFetchData after parsing completes
             ResponseParsingContext.MarkMemoryUsed();
-            recordData = rawRecordData;
+            lazyRecords = new LazyRecordList(rawRecordData, recordCount);
         }
         else
         {
             // No pooled memory available (legacy path or not from network)
-            // Copy to owned memory to avoid use-after-free
-            recordData = rawRecordData.ToArray();
+            // Use pooled array to avoid GC allocation from ToArray()
+            var length = rawRecordData.Length;
+            var pooledArray = ArrayPool<byte>.Shared.Rent(length);
+            rawRecordData.Span.CopyTo(pooledArray);
+            var pooledData = new PooledRecordData(pooledArray, length);
+            lazyRecords = new LazyRecordList(pooledData, recordCount);
         }
-
-        // Create a lazy record list that parses on-demand
-        var lazyRecords = new LazyRecordList(recordData, recordCount);
 
         return new RecordBatch
         {
@@ -286,6 +319,28 @@ public sealed class RecordBatch : IDisposable
 /// The memory ownership is managed at the PendingFetchData level, not here.
 /// Dispose marks the list as disposed and returns the pooled list for reuse.
 /// </remarks>
+/// <summary>
+/// Wraps a pooled byte array as ReadOnlyMemory with proper cleanup semantics.
+/// When the owning LazyRecordList is disposed, the array is returned to the pool.
+/// </summary>
+internal readonly struct PooledRecordData
+{
+    private readonly byte[] _pooledArray;
+    private readonly int _length;
+
+    public PooledRecordData(byte[] pooledArray, int length)
+    {
+        _pooledArray = pooledArray;
+        _length = length;
+    }
+
+    public ReadOnlyMemory<byte> Memory => _pooledArray.AsMemory(0, _length);
+
+    public byte[]? PooledArray => _pooledArray;
+
+    public static implicit operator ReadOnlyMemory<byte>(PooledRecordData data) => data.Memory;
+}
+
 internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
 {
     // Pool for reusing List<Record> instances to reduce GC pressure.
@@ -297,6 +352,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     private const int MaxPooledLists = 64;
 
     private readonly ReadOnlyMemory<byte> _rawData;
+    private readonly byte[]? _pooledArray; // Track pooled array for cleanup
     private readonly int _count;
     private List<Record>? _parsedRecords;
     private int _nextParseOffset;
@@ -305,6 +361,14 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     public LazyRecordList(ReadOnlyMemory<byte> rawData, int count)
     {
         _rawData = rawData;
+        _pooledArray = null;
+        _count = count;
+    }
+
+    public LazyRecordList(PooledRecordData pooledData, int count)
+    {
+        _rawData = pooledData.Memory;
+        _pooledArray = pooledData.PooledArray;
         _count = count;
     }
 
@@ -374,11 +438,18 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     /// <summary>
     /// Marks the list as disposed and returns the pooled list for reuse.
     /// After disposal, accessing records will throw ObjectDisposedException.
-    /// Note: Memory ownership is managed at PendingFetchData level, not here.
+    /// Note: Memory ownership is managed at PendingFetchData level for non-compressed data,
+    /// but pooled decompression buffers are returned here.
     /// </summary>
     public void Dispose()
     {
         _disposed = true;
+
+        // Return pooled decompression array if we own one
+        if (_pooledArray is not null)
+        {
+            ArrayPool<byte>.Shared.Return(_pooledArray, clearArray: true);
+        }
 
         // Return list to pool for reuse (soft limit - see MaxPooledLists comment)
         if (_parsedRecords is not null && s_listPool.Count < MaxPooledLists)

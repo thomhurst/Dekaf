@@ -86,20 +86,38 @@ public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
     /// <summary>
     /// Creates a request to fetch metadata for specific topics.
     /// </summary>
-    public static MetadataRequest ForTopics(params string[] topicNames) =>
-        new()
+    public static MetadataRequest ForTopics(params string[] topicNames)
+    {
+        // Pre-allocate array to avoid intermediate List allocation
+        var topics = new MetadataRequestTopic[topicNames.Length];
+        for (var i = 0; i < topicNames.Length; i++)
         {
-            Topics = topicNames.Select(n => new MetadataRequestTopic { Name = n }).ToList()
-        };
+            topics[i] = new MetadataRequestTopic { Name = topicNames[i] };
+        }
+        return new MetadataRequest { Topics = topics };
+    }
 
     /// <summary>
     /// Creates a request to fetch metadata for specific topics.
     /// </summary>
-    public static MetadataRequest ForTopics(IEnumerable<string> topicNames) =>
-        new()
+    public static MetadataRequest ForTopics(IEnumerable<string> topicNames)
+    {
+        // Optimize for common collection types to avoid multiple enumerations
+        if (topicNames is ICollection<string> collection)
         {
-            Topics = topicNames.Select(n => new MetadataRequestTopic { Name = n }).ToList()
-        };
+            var topics = new MetadataRequestTopic[collection.Count];
+            var i = 0;
+            foreach (var name in collection)
+            {
+                topics[i++] = new MetadataRequestTopic { Name = name };
+            }
+            return new MetadataRequest { Topics = topics };
+        }
+
+        // Fallback for arbitrary enumerables - must enumerate twice or use List
+        var topicList = topicNames.Select(n => new MetadataRequestTopic { Name = n }).ToArray();
+        return new MetadataRequest { Topics = topicList };
+    }
 }
 
 /// <summary>

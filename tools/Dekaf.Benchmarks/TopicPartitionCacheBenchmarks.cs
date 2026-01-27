@@ -19,8 +19,10 @@ public class TopicPartitionCacheBenchmarks
     private ProducerOptions _options = null!;
     private const string TestTopic = "benchmark-topic";
     private const int TestPartition = 0;
-    private byte[] _keyBytes = null!;
-    private byte[] _valueBytes = null!;
+    private byte[] _keyTemplate = null!;
+    private byte[] _valueTemplate = null!;
+    private int _keyLength;
+    private int _valueLength;
 
     [Params(1, 10, 100)]
     public int PartitionCount { get; set; }
@@ -40,16 +42,38 @@ public class TopicPartitionCacheBenchmarks
         _cachedAccumulator = new RecordAccumulator(_options);
         _pool = new ValueTaskSourcePool<RecordMetadata>();
 
-        // Create test data
-        _keyBytes = System.Text.Encoding.UTF8.GetBytes("test-key");
-        _valueBytes = System.Text.Encoding.UTF8.GetBytes("test-value-" + new string('x', 100));
+        // Create test data templates (we'll copy to pooled arrays for each message)
+        _keyTemplate = System.Text.Encoding.UTF8.GetBytes("test-key");
+        _valueTemplate = System.Text.Encoding.UTF8.GetBytes("test-value-" + new string('x', 100));
+        _keyLength = _keyTemplate.Length;
+        _valueLength = _valueTemplate.Length;
+    }
+
+    /// <summary>
+    /// Creates a PooledMemory with a properly rented array from ArrayPool.
+    /// </summary>
+    private PooledMemory CreatePooledKey()
+    {
+        var array = ArrayPool<byte>.Shared.Rent(_keyLength);
+        _keyTemplate.AsSpan().CopyTo(array);
+        return new PooledMemory(array, _keyLength);
+    }
+
+    /// <summary>
+    /// Creates a PooledMemory with a properly rented array from ArrayPool.
+    /// </summary>
+    private PooledMemory CreatePooledValue()
+    {
+        var array = ArrayPool<byte>.Shared.Rent(_valueLength);
+        _valueTemplate.AsSpan().CopyTo(array);
+        return new PooledMemory(array, _valueLength);
     }
 
     [GlobalCleanup]
     public async Task Cleanup()
     {
-        await _cachedAccumulator.DisposeAsync();
-        await _pool.DisposeAsync();
+        await _cachedAccumulator.DisposeAsync().ConfigureAwait(false);
+        await _pool.DisposeAsync().ConfigureAwait(false);
     }
 
     [Benchmark(Description = "Cached: Single partition, 1000 produces")]
@@ -58,8 +82,8 @@ public class TopicPartitionCacheBenchmarks
         for (var i = 0; i < 1000; i++)
         {
             var completion = _pool.Rent();
-            var key = new PooledMemory(_keyBytes, _keyBytes.Length);
-            var value = new PooledMemory(_valueBytes, _valueBytes.Length);
+            var key = CreatePooledKey();
+            var value = CreatePooledValue();
 
             await _cachedAccumulator.AppendAsync(
                 TestTopic,
@@ -81,8 +105,8 @@ public class TopicPartitionCacheBenchmarks
         for (var i = 0; i < 1000; i++)
         {
             var completion = _pool.Rent();
-            var key = new PooledMemory(_keyBytes, _keyBytes.Length);
-            var value = new PooledMemory(_valueBytes, _valueBytes.Length);
+            var key = CreatePooledKey();
+            var value = CreatePooledValue();
 
             // This simulates the old code path which allocated TopicPartition
             var topicPartition = new TopicPartition(TestTopic, TestPartition);
@@ -107,8 +131,8 @@ public class TopicPartitionCacheBenchmarks
         {
             var partition = i % PartitionCount;
             var completion = _pool.Rent();
-            var key = new PooledMemory(_keyBytes, _keyBytes.Length);
-            var value = new PooledMemory(_valueBytes, _valueBytes.Length);
+            var key = CreatePooledKey();
+            var value = CreatePooledValue();
 
             await _cachedAccumulator.AppendAsync(
                 TestTopic,
@@ -131,8 +155,8 @@ public class TopicPartitionCacheBenchmarks
         {
             var partition = i % PartitionCount;
             var completion = _pool.Rent();
-            var key = new PooledMemory(_keyBytes, _keyBytes.Length);
-            var value = new PooledMemory(_valueBytes, _valueBytes.Length);
+            var key = CreatePooledKey();
+            var value = CreatePooledValue();
 
             // This simulates the old code path which allocated TopicPartition
             var topicPartition = new TopicPartition(TestTopic, partition);
@@ -163,8 +187,8 @@ public class TopicPartitionCacheBenchmarks
                 {
                     var partition = (threadId * 250 + i) % PartitionCount;
                     var completion = _pool.Rent();
-                    var key = new PooledMemory(_keyBytes, _keyBytes.Length);
-                    var value = new PooledMemory(_valueBytes, _valueBytes.Length);
+                    var key = CreatePooledKey();
+                    var value = CreatePooledValue();
 
                     await _cachedAccumulator.AppendAsync(
                         TestTopic,
@@ -179,7 +203,7 @@ public class TopicPartitionCacheBenchmarks
                 }
             });
         }
-        await Task.WhenAll(tasks);
+        await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
     [Benchmark(Description = "Uncached (OLD): Concurrent append (4 threads)")]
@@ -195,8 +219,8 @@ public class TopicPartitionCacheBenchmarks
                 {
                     var partition = (threadId * 250 + i) % PartitionCount;
                     var completion = _pool.Rent();
-                    var key = new PooledMemory(_keyBytes, _keyBytes.Length);
-                    var value = new PooledMemory(_valueBytes, _valueBytes.Length);
+                    var key = CreatePooledKey();
+                    var value = CreatePooledValue();
 
                     // This simulates the old code path which allocated TopicPartition
                     var topicPartition = new TopicPartition(TestTopic, partition);
@@ -214,7 +238,7 @@ public class TopicPartitionCacheBenchmarks
                 }
             });
         }
-        await Task.WhenAll(tasks);
+        await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 }
 
