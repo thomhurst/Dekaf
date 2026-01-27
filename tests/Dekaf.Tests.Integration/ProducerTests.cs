@@ -826,7 +826,7 @@ public class ProducerTests(KafkaTestContainer kafka)
     {
         // Test synchronous produce with delivery callback
         var topic = await kafka.CreateTestTopicAsync();
-        var callbackInvoked = new TaskCompletionSource<(RecordMetadata? Metadata, Exception? Error)>();
+        var callbackInvoked = new TaskCompletionSource<(RecordMetadata Metadata, Exception? Error)>();
 
         await using var producer = Dekaf.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -852,8 +852,7 @@ public class ProducerTests(KafkaTestContainer kafka)
 
         // Assert
         await Assert.That(resultError).IsNull();
-        await Assert.That(resultMetadata).IsNotNull();
-        await Assert.That(resultMetadata!.Topic).IsEqualTo(topic);
+        await Assert.That(resultMetadata.Topic).IsEqualTo(topic);
         await Assert.That(resultMetadata.Offset).IsGreaterThanOrEqualTo(0);
     }
 

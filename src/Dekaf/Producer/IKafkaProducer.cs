@@ -99,7 +99,7 @@ public interface IKafkaProducer<TKey, TValue> : IAsyncDisposable
     /// </remarks>
     /// <param name="message">The message to produce.</param>
     /// <param name="deliveryHandler">Callback invoked when delivery completes. The exception parameter is null on success.</param>
-    void Produce(ProducerMessage<TKey, TValue> message, Action<RecordMetadata?, Exception?> deliveryHandler);
+    void Produce(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler);
 
     /// <summary>
     /// Flushes any pending messages.
@@ -157,8 +157,9 @@ public sealed record ProducerMessage<TKey, TValue>
 
 /// <summary>
 /// Metadata about a produced record.
+/// This is a readonly struct to eliminate per-message heap allocations.
 /// </summary>
-public sealed record RecordMetadata
+public readonly record struct RecordMetadata
 {
     /// <summary>
     /// The topic the record was produced to.

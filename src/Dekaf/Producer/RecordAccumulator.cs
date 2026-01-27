@@ -310,6 +310,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private readonly ProducerOptions _options;
     private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
     private readonly Channel<ReadyBatch> _readyBatches;
+    private readonly PartitionBatchPool _batchPool;
     private volatile bool _disposed;
     private volatile bool _closed;
 
@@ -369,6 +370,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     public RecordAccumulator(ProducerOptions options)
     {
         _options = options;
+        _batchPool = new PartitionBatchPool(options);
 
         // Use unbounded channel for ready batches to avoid artificial backpressure.
         // Natural backpressure occurs through:
@@ -535,13 +537,32 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // - Loop retries with the new batch (created by us or another thread)
         while (true)
         {
-            // Hot path optimization: TryGetValue first to avoid lambda invocation when batch exists.
+            // Hot path optimization: TryGetValue first to avoid factory invocation when batch exists.
             // Most appends hit an existing batch, so this avoids GetOrAdd overhead.
             if (!_batches.TryGetValue(topicPartition, out var batch))
             {
-                // Cold path: Use static lambda with explicit state parameter to avoid closure allocation.
-                // The captured _options would create a closure on every call otherwise.
-                batch = _batches.GetOrAdd(topicPartition, static (tp, options) => new PartitionBatch(tp, options), _options);
+                // Cold path: Rent from pool and try to add
+                var newBatch = _batchPool.Rent(topicPartition);
+                if (!_batches.TryAdd(topicPartition, newBatch))
+                {
+                    // Another thread added a batch, return ours to pool
+                    _batchPool.Return(newBatch);
+                    // Use TryGetValue since the batch might have been removed already
+                    if (!_batches.TryGetValue(topicPartition, out batch))
+                    {
+                        continue; // Retry the loop
+                    }
+                }
+                else
+                {
+                    batch = newBatch;
+                }
+            }
+
+            // Should never be null at this point - defensive check
+            if (batch is null)
+            {
+                continue; // Retry the loop
             }
 
             var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
@@ -564,11 +585,17 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Atomically remove the completed batch only if it's still the same instance.
             // If another thread already replaced it, this is a no-op and we'll use their new batch.
             // This prevents the race where two threads both create new batches and one gets orphaned.
+            // IMPORTANT: Must remove from dictionary BEFORE returning to pool to prevent races
+            // where another thread gets the batch from the pool while it's still in the dictionary.
             _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch));
 
-            // Loop will call GetOrAdd again, which will either:
-            // 1. Create a new batch (if we successfully removed the old one)
-            // 2. Return the batch another thread already created (if they won the race)
+            // Return the completed batch shell to the pool for reuse AFTER removing from dictionary
+            if (readyBatch is not null)
+            {
+                _batchPool.Return(batch);
+            }
+
+            // Loop will rent from pool again, which will either reuse a pooled batch or create new
         }
     }
 
@@ -598,10 +625,25 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Loop until we successfully append the record.
         while (true)
         {
-            // Hot path optimization: TryGetValue first to avoid lambda invocation when batch exists.
+            // Hot path optimization: TryGetValue first to avoid factory invocation when batch exists.
             if (!_batches.TryGetValue(topicPartition, out var batch))
             {
-                batch = _batches.GetOrAdd(topicPartition, static (tp, options) => new PartitionBatch(tp, options), _options);
+                // Rent from pool and try to add
+                var newBatch = _batchPool.Rent(topicPartition);
+                if (!_batches.TryAdd(topicPartition, newBatch))
+                {
+                    // Another thread added a batch, return ours to pool
+                    _batchPool.Return(newBatch);
+                    // Use TryGetValue since the batch might have been removed already
+                    if (!_batches.TryGetValue(topicPartition, out batch))
+                    {
+                        continue; // Retry the loop
+                    }
+                }
+                else
+                {
+                    batch = newBatch;
+                }
             }
 
             var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
@@ -624,7 +666,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
             }
 
             // Atomically remove the completed batch only if it's still the same instance.
+            // IMPORTANT: Must remove from dictionary BEFORE returning to pool
             _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch));
+
+            // Return the completed batch shell to the pool for reuse AFTER removing from dictionary
+            if (readyBatch is not null)
+            {
+                _batchPool.Return(batch);
+            }
         }
     }
 
@@ -721,18 +770,30 @@ public sealed class RecordAccumulator : IAsyncDisposable
         }
 
         // Remove the old batch atomically
+        // IMPORTANT: Must remove from dictionary BEFORE returning to pool
         _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, oldBatch));
 
-        // Create new batch and add to dictionary
-        var newBatch = new PartitionBatch(topicPartition, _options);
+        // Return the completed batch shell to the pool for reuse AFTER removing from dictionary
+        if (readyBatch is not null)
+        {
+            _batchPool.Return(oldBatch);
+        }
+
+        // Rent from pool and add to dictionary
+        var newBatch = _batchPool.Rent(topicPartition);
 
         // Try to add the new batch - another thread might have added one already
         if (!_batches.TryAdd(topicPartition, newBatch))
         {
-            // Another thread added a batch, get it and use it instead
-            // Return our batch's arrays to pool
-            newBatch.Complete(); // This will return arrays since batch is empty
-            newBatch = _batches.GetOrAdd(topicPartition, static (tp, options) => new PartitionBatch(tp, options), _options);
+            // Another thread added a batch, return ours to pool
+            _batchPool.Return(newBatch);
+            // Use TryGetValue since the batch might have been removed already
+            if (!_batches.TryGetValue(topicPartition, out newBatch!))
+            {
+                // Batch was removed, retry by falling through to slow path
+                t_cachedBatch = null;
+                return TryAppendFireAndForgetSlow(topic, partition, timestamp, key, value, headers, pooledHeaderArray);
+            }
         }
 
         // Append to the new batch
@@ -793,10 +854,25 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Loop until we successfully append the record.
         while (true)
         {
-            // Hot path optimization: TryGetValue first to avoid lambda invocation when batch exists.
+            // Hot path optimization: TryGetValue first to avoid factory invocation when batch exists.
             if (!_batches.TryGetValue(topicPartition, out var batch))
             {
-                batch = _batches.GetOrAdd(topicPartition, static (tp, options) => new PartitionBatch(tp, options), _options);
+                // Rent from pool and try to add
+                var newBatch = _batchPool.Rent(topicPartition);
+                if (!_batches.TryAdd(topicPartition, newBatch))
+                {
+                    // Another thread added a batch, return ours to pool
+                    _batchPool.Return(newBatch);
+                    // Use TryGetValue since the batch might have been removed already
+                    if (!_batches.TryGetValue(topicPartition, out batch))
+                    {
+                        continue; // Retry the loop
+                    }
+                }
+                else
+                {
+                    batch = newBatch;
+                }
             }
 
             var result = batch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
@@ -837,7 +913,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
             }
 
             // Atomically remove the completed batch only if it's still the same instance.
+            // IMPORTANT: Must remove from dictionary BEFORE returning to pool
             _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch));
+
+            // Return the completed batch shell to the pool for reuse AFTER removing from dictionary
+            if (readyBatch is not null)
+            {
+                _batchPool.Return(batch);
+            }
 
             // Invalidate caches since we removed the batch
             if (t_cachedBatch == batch)
@@ -876,7 +959,22 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Get or create batch
             if (!_batches.TryGetValue(topicPartition, out var batch))
             {
-                batch = _batches.GetOrAdd(topicPartition, static (tp, options) => new PartitionBatch(tp, options), _options);
+                // Rent from pool and try to add
+                var newBatch = _batchPool.Rent(topicPartition);
+                if (!_batches.TryAdd(topicPartition, newBatch))
+                {
+                    // Another thread added a batch, return ours to pool
+                    _batchPool.Return(newBatch);
+                    // Use TryGetValue since the batch might have been removed already
+                    if (!_batches.TryGetValue(topicPartition, out batch))
+                    {
+                        continue; // Retry the loop
+                    }
+                }
+                else
+                {
+                    batch = newBatch;
+                }
             }
 
             // Try to append remaining records
@@ -910,8 +1008,15 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 }
 
                 // Remove the completed batch
+                // IMPORTANT: Must remove from dictionary BEFORE returning to pool
                 _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch));
                 t_cachedBatch = null;
+
+                // Return the completed batch shell to the pool for reuse AFTER removing from dictionary
+                if (readyBatch is not null)
+                {
+                    _batchPool.Return(batch);
+                }
             }
         }
 
@@ -1073,8 +1178,70 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Drain any batches that were in the channel but not yet processed
         while (_readyBatches.Reader.TryRead(out var batch))
         {
-            batch.Fail(disposedException);
+            batch?.Fail(disposedException);
         }
+
+        // Clear the batch pool
+        _batchPool.Clear();
+    }
+}
+
+/// <summary>
+/// Pool for reusing PartitionBatch instances to avoid ~40KB allocation per batch rotation.
+/// Uses a ConcurrentStack for lock-free push/pop operations.
+/// </summary>
+internal sealed class PartitionBatchPool
+{
+    private readonly ConcurrentStack<PartitionBatch> _pool = new();
+    private readonly ProducerOptions _options;
+    private readonly int _maxPoolSize;
+
+    /// <summary>
+    /// Creates a new PartitionBatchPool.
+    /// </summary>
+    /// <param name="options">Producer options for configuring new batches.</param>
+    /// <param name="maxPoolSize">Maximum number of batches to keep pooled. Default is 64.</param>
+    public PartitionBatchPool(ProducerOptions options, int maxPoolSize = 64)
+    {
+        _options = options;
+        _maxPoolSize = maxPoolSize;
+    }
+
+    /// <summary>
+    /// Gets a batch from the pool or creates a new one.
+    /// </summary>
+    public PartitionBatch Rent(TopicPartition topicPartition)
+    {
+        if (_pool.TryPop(out var batch))
+        {
+            batch.Reset(topicPartition);
+            return batch;
+        }
+
+        return new PartitionBatch(topicPartition, _options);
+    }
+
+    /// <summary>
+    /// Returns a batch to the pool for reuse.
+    /// The batch must have been prepared for pooling (arrays transferred to ReadyBatch).
+    /// </summary>
+    public void Return(PartitionBatch batch)
+    {
+        // Only pool if we haven't exceeded the limit
+        if (_pool.Count < _maxPoolSize)
+        {
+            batch.PrepareForPooling(_options);
+            _pool.Push(batch);
+        }
+        // If pool is full, the batch will be garbage collected
+    }
+
+    /// <summary>
+    /// Clears all pooled batches (for disposal).
+    /// </summary>
+    public void Clear()
+    {
+        _pool.Clear();
     }
 }
 
@@ -1097,8 +1264,8 @@ internal sealed class PartitionBatch
     // This reduces SpinLock hold time by eliminating most array growth operations.
     private const int InitialRecordCapacity = 256;
 
-    private readonly TopicPartition _topicPartition;
-    private readonly ProducerOptions _options;
+    private TopicPartition _topicPartition;
+    private ProducerOptions _options;
 
     // Arena for zero-copy serialization - all message data in one contiguous buffer
     private BatchArena? _arena;
@@ -1144,7 +1311,7 @@ internal sealed class PartitionBatch
     private long _baseTimestamp;
     private int _estimatedSize;
     // Note: _offsetDelta removed - it always equals _recordCount at assignment time
-    private readonly DateTimeOffset _createdAt;
+    private DateTimeOffset _createdAt;
     private int _isCompleted; // 0 = not completed, 1 = completed (Interlocked guard for idempotent Complete)
     private ReadyBatch? _completedBatch; // Cached result to ensure Complete() is idempotent
 
@@ -1155,8 +1322,9 @@ internal sealed class PartitionBatch
         _createdAt = DateTimeOffset.UtcNow;
 
         // Create arena for zero-copy serialization
-        // Size matches batch size; when full, batch rotates
-        _arena = new BatchArena(options.BatchSize);
+        // Use ArenaCapacity if set, otherwise fall back to BatchSize
+        var arenaCapacity = options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize;
+        _arena = new BatchArena(arenaCapacity);
 
         // Rent arrays from pool - eliminates List allocations
         _records = ArrayPool<Record>.Shared.Rent(InitialRecordCapacity);
@@ -1170,6 +1338,55 @@ internal sealed class PartitionBatch
 
         _pooledHeaderArrays = ArrayPool<RecordHeader[]>.Shared.Rent(8); // Headers less common
         _pooledHeaderArrayCount = 0;
+    }
+
+    /// <summary>
+    /// Resets the batch for reuse with a new topic-partition.
+    /// Called when renting from the pool.
+    /// </summary>
+    internal void Reset(TopicPartition topicPartition)
+    {
+        _topicPartition = topicPartition;
+        _createdAt = DateTimeOffset.UtcNow;
+        _recordCount = 0;
+        _completionSourceCount = 0;
+        _pooledArrayCount = 0;
+        _pooledHeaderArrayCount = 0;
+        _baseTimestamp = 0;
+        _estimatedSize = 0;
+        _isCompleted = 0;
+        _completedBatch = null;
+        _exclusiveAccess = 0;
+    }
+
+    /// <summary>
+    /// Prepares the batch for returning to the pool.
+    /// Allocates new arrays (the old ones were transferred to ReadyBatch).
+    /// </summary>
+    internal void PrepareForPooling(ProducerOptions options)
+    {
+        _options = options;
+
+        // Allocate new arena
+        var arenaCapacity = options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize;
+        _arena = new BatchArena(arenaCapacity);
+
+        // Allocate new arrays - the old ones were transferred to ReadyBatch
+        _records = ArrayPool<Record>.Shared.Rent(InitialRecordCapacity);
+        _completionSources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(InitialRecordCapacity);
+        _pooledArrays = ArrayPool<byte[]>.Shared.Rent(InitialRecordCapacity * 2);
+        _pooledHeaderArrays = ArrayPool<RecordHeader[]>.Shared.Rent(8);
+
+        // Reset all state for reuse
+        _recordCount = 0;
+        _completionSourceCount = 0;
+        _pooledArrayCount = 0;
+        _pooledHeaderArrayCount = 0;
+        _baseTimestamp = 0;
+        _estimatedSize = 0;
+        _isCompleted = 0;
+        _completedBatch = null;
+        _exclusiveAccess = 0;
     }
 
     /// <summary>
@@ -1206,6 +1423,12 @@ internal sealed class PartitionBatch
             // Complete() sets _isCompleted and nulls out arrays without holding the lock,
             // so we must check this before accessing any arrays.
             if (Volatile.Read(ref _isCompleted) != 0)
+            {
+                return new RecordAppendResult(false);
+            }
+
+            // Defensive check: if arrays are null, batch is in inconsistent state (being pooled)
+            if (_records is null || _completionSources is null || _pooledArrays is null)
             {
                 return new RecordAppendResult(false);
             }
@@ -1337,6 +1560,12 @@ internal sealed class PartitionBatch
         // Check if batch was completed - Complete() nulls out arrays without synchronization,
         // so we must check this before accessing any arrays.
         if (Volatile.Read(ref _isCompleted) != 0)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        // Defensive check: if arrays are null, batch is in inconsistent state (being pooled)
+        if (_records is null || _pooledArrays is null)
         {
             return new RecordAppendResult(false);
         }
@@ -1851,7 +2080,7 @@ internal sealed class ReadyBatch
                 var source = _completionSourcesArray[i];
                 // TrySetResult completes the ValueTask; the awaiter's GetResult()
                 // will auto-return the source to its pool
-                source.TrySetResult(new RecordMetadata
+                source?.TrySetResult(new RecordMetadata
                 {
                     Topic = TopicPartition.Topic,
                     Partition = TopicPartition.Partition,
@@ -1879,7 +2108,7 @@ internal sealed class ReadyBatch
                 var source = _completionSourcesArray[i];
                 // TrySetException completes the ValueTask; the awaiter's GetResult()
                 // will auto-return the source to its pool
-                source.TrySetException(exception);
+                source?.TrySetException(exception);
             }
         }
         finally
