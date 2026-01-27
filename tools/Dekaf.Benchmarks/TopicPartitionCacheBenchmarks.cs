@@ -72,8 +72,8 @@ public class TopicPartitionCacheBenchmarks
     [GlobalCleanup]
     public async Task Cleanup()
     {
-        await _cachedAccumulator.DisposeAsync();
-        await _pool.DisposeAsync();
+        await _cachedAccumulator.DisposeAsync().ConfigureAwait(false);
+        await _pool.DisposeAsync().ConfigureAwait(false);
     }
 
     [Benchmark(Description = "Cached: Single partition, 1000 produces")]
@@ -203,7 +203,7 @@ public class TopicPartitionCacheBenchmarks
                 }
             });
         }
-        await Task.WhenAll(tasks);
+        await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
     [Benchmark(Description = "Uncached (OLD): Concurrent append (4 threads)")]
@@ -238,7 +238,7 @@ public class TopicPartitionCacheBenchmarks
                 }
             });
         }
-        await Task.WhenAll(tasks);
+        await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 }
 
