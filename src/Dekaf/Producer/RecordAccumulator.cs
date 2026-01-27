@@ -189,13 +189,14 @@ internal sealed class BatchArena
 
     /// <summary>
     /// Returns the buffer to the ArrayPool.
+    /// Thread-safe: uses Interlocked.Exchange to prevent double-return.
     /// </summary>
     public void Return()
     {
-        if (_buffer is not null)
+        var buffer = Interlocked.Exchange(ref _buffer, null!);
+        if (buffer is not null)
         {
-            ArrayPool<byte>.Shared.Return(_buffer, clearArray: true);
-            _buffer = null!;
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
         }
     }
 }
@@ -265,14 +266,15 @@ internal ref struct ArenaBufferWriter : IBufferWriter<byte>
     {
         if (sizeHint < 1) sizeHint = 256;
 
-        if (!_arena.TryAllocate(sizeHint, out var span, out _))
+        if (!_arena.TryAllocate(sizeHint, out _, out var offset))
         {
             _failed = true;
             return Memory<byte>.Empty;
         }
 
-        // Return as Memory - arena buffer is stable until batch completes
-        return _arena.Buffer.AsMemory(_arena.Position - sizeHint, sizeHint);
+        // Use offset returned by TryAllocate - don't compute from Position
+        // which could race with concurrent allocations
+        return _arena.Buffer.AsMemory(offset, sizeHint);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
