@@ -192,6 +192,14 @@ public sealed class ProducerOptions
     /// Set to 0 to use BatchSize as the arena capacity.
     /// </summary>
     public int ArenaCapacity { get; init; } = 65536;
+
+    /// <summary>
+    /// Initial capacity for record arrays in partition batches.
+    /// Lower values reduce memory for applications with many small batches.
+    /// Higher values reduce array resizing for high-throughput scenarios.
+    /// Default is 64, balancing memory usage and resize frequency.
+    /// </summary>
+    public int InitialBatchRecordCapacity { get; init; } = 64;
 }
 
 /// <summary>

@@ -131,20 +131,44 @@ public ref struct KafkaProtocolWriter
         WriteVarUInt((uint)value);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void WriteVarUInt(uint value)
     {
-        // Maximum 5 bytes for a 32-bit varint
-        // Write directly to output span to avoid stackalloc + copy overhead
+        // Fast path: single byte (0-127) - most common case
+        if (value < 0x80)
+        {
+            var span = _output.GetSpan(1);
+            span[0] = (byte)value;
+            _output.Advance(1);
+            _bytesWritten += 1;
+            return;
+        }
+
+        // Two-byte path (128-16383) - second most common
+        if (value < 0x4000)
+        {
+            var span = _output.GetSpan(2);
+            span[0] = (byte)(value | 0x80);
+            span[1] = (byte)(value >> 7);
+            _output.Advance(2);
+            _bytesWritten += 2;
+            return;
+        }
+
+        WriteVarUIntSlow(value);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void WriteVarUIntSlow(uint value)
+    {
         var span = _output.GetSpan(5);
         var pos = 0;
-
         while (value >= 0x80)
         {
             span[pos++] = (byte)(value | 0x80);
             value >>= 7;
         }
         span[pos++] = (byte)value;
-
         _output.Advance(pos);
         _bytesWritten += pos;
     }
