@@ -1071,7 +1071,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     }
                     // Only remove if the batch is still the same instance.
                     // If AppendAsync already replaced it with a new batch, don't remove the new one.
+                    // IMPORTANT: Must remove from dictionary BEFORE returning to pool
                     _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch));
+
+                    // Return the completed batch shell to the pool for reuse
+                    _batchPool.Return(batch);
                 }
             }
         }
@@ -1110,7 +1114,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 }
                 // Only remove if the batch is still the same instance.
                 // If AppendAsync already replaced it with a new batch, don't remove the new one.
+                // IMPORTANT: Must remove from dictionary BEFORE returning to pool
                 _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch));
+
+                // Return the completed batch shell to the pool for reuse
+                _batchPool.Return(batch);
             }
         }
     }
@@ -1362,16 +1370,22 @@ internal sealed class PartitionBatch
     /// <summary>
     /// Prepares the batch for returning to the pool.
     /// Allocates new arrays (the old ones were transferred to ReadyBatch).
+    /// IMPORTANT: This must only be called after Complete() which transfers arrays to ReadyBatch.
     /// </summary>
     internal void PrepareForPooling(ProducerOptions options)
     {
         _options = options;
 
-        // Allocate new arena
+        // Arena was transferred to ReadyBatch by Complete(), so _arena should be null.
+        // This is a no-op but kept for safety.
+        _arena?.Return();
+
+        // Allocate new arena for the pooled batch
         var arenaCapacity = options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize;
         _arena = new BatchArena(arenaCapacity);
 
-        // Allocate new arrays - the old ones were transferred to ReadyBatch
+        // Arrays were transferred to ReadyBatch by Complete() and are now null.
+        // Allocate fresh arrays for the pooled batch.
         _records = ArrayPool<Record>.Shared.Rent(InitialRecordCapacity);
         _completionSources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(InitialRecordCapacity);
         _pooledArrays = ArrayPool<byte[]>.Shared.Rent(InitialRecordCapacity * 2);
@@ -1387,6 +1401,9 @@ internal sealed class PartitionBatch
         _isCompleted = 0;
         _completedBatch = null;
         _exclusiveAccess = 0;
+
+        // Reset SpinLock to clear any thread-tracking state
+        _spinLock = new SpinLock(enableThreadOwnerTracking: false);
     }
 
     /// <summary>
