@@ -292,27 +292,34 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka)
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var enumerator = consumer.ConsumeAsync(cts.Token).GetAsyncEnumerator();
 
-        // Consume 2 messages and commit
-        for (var i = 0; i < 2; i++)
+        try
         {
-            await enumerator.MoveNextAsync().ConfigureAwait(false);
+            // Consume 2 messages and commit
+            for (var i = 0; i < 2; i++)
+            {
+                await enumerator.MoveNextAsync().ConfigureAwait(false);
+            }
+
+            await consumer.CommitAsync().ConfigureAwait(false);
+
+            var committedAfterFirst = await consumer.GetCommittedOffsetAsync(new TopicPartition(topic, 0)).ConfigureAwait(false);
+            await Assert.That(committedAfterFirst).IsEqualTo(2);
+
+            // Consume 2 more messages and commit again
+            for (var i = 0; i < 2; i++)
+            {
+                await enumerator.MoveNextAsync().ConfigureAwait(false);
+            }
+
+            await consumer.CommitAsync().ConfigureAwait(false);
+
+            var committedAfterSecond = await consumer.GetCommittedOffsetAsync(new TopicPartition(topic, 0)).ConfigureAwait(false);
+            await Assert.That(committedAfterSecond).IsEqualTo(4);
         }
-
-        await consumer.CommitAsync().ConfigureAwait(false);
-
-        var committedAfterFirst = await consumer.GetCommittedOffsetAsync(new TopicPartition(topic, 0)).ConfigureAwait(false);
-        await Assert.That(committedAfterFirst).IsEqualTo(2);
-
-        // Consume 2 more messages and commit again
-        for (var i = 0; i < 2; i++)
+        finally
         {
-            await enumerator.MoveNextAsync().ConfigureAwait(false);
+            await enumerator.DisposeAsync().ConfigureAwait(false);
         }
-
-        await consumer.CommitAsync().ConfigureAwait(false);
-
-        var committedAfterSecond = await consumer.GetCommittedOffsetAsync(new TopicPartition(topic, 0)).ConfigureAwait(false);
-        await Assert.That(committedAfterSecond).IsEqualTo(4);
     }
 
     [Test]
