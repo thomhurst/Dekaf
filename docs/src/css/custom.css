@@ -1,0 +1,65 @@
+/**
+ * Dekaf Documentation Custom Styles
+ */
+
+:root {
+  --ifm-color-primary: #6d4c41;
+  --ifm-color-primary-dark: #5d4037;
+  --ifm-color-primary-darker: #4e342e;
+  --ifm-color-primary-darkest: #3e2723;
+  --ifm-color-primary-light: #8d6e63;
+  --ifm-color-primary-lighter: #a1887f;
+  --ifm-color-primary-lightest: #bcaaa4;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #a1887f;
+  --ifm-color-primary-dark: #8d6e63;
+  --ifm-color-primary-darker: #795548;
+  --ifm-color-primary-darkest: #6d4c41;
+  --ifm-color-primary-light: #bcaaa4;
+  --ifm-color-primary-lighter: #d7ccc8;
+  --ifm-color-primary-lightest: #efebe9;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}
+
+/* Hero section styling */
+.hero--primary {
+  --ifm-hero-background-color: #4e342e;
+  --ifm-hero-text-color: #fff;
+}
+
+/* Code block enhancements */
+.prism-code {
+  font-size: 14px;
+}
+
+/* Better table styling */
+table {
+  display: table;
+  width: 100%;
+}
+
+th, td {
+  padding: 12px;
+}
+
+/* Admonition tweaks */
+.admonition {
+  margin-bottom: 1.5em;
+}
+
+/* Feature cards on homepage */
+.feature-card {
+  padding: 1.5rem;
+  border-radius: 8px;
+  background: var(--ifm-card-background-color);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  margin-bottom: 1rem;
+}
+
+[data-theme='dark'] .feature-card {
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}

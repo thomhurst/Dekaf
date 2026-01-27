@@ -791,8 +791,8 @@ public class ProducerTests(KafkaTestContainer kafka)
             .WithAcks(Acks.Leader)
             .Build();
 
-        // Act - fire-and-forget produce
-        producer.Produce(new ProducerMessage<string, string>
+        // Act - fire-and-forget send
+        producer.Send(new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "sync-key",
@@ -834,8 +834,8 @@ public class ProducerTests(KafkaTestContainer kafka)
             .WithAcks(Acks.Leader)
             .Build();
 
-        // Act - produce with callback
-        producer.Produce(
+        // Act - send with callback
+        producer.Send(
             new ProducerMessage<string, string>
             {
                 Topic = topic,
@@ -873,7 +873,7 @@ public class ProducerTests(KafkaTestContainer kafka)
         // Act - fire-and-forget multiple messages
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(new ProducerMessage<string, string>
+            producer.Send(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
@@ -921,12 +921,12 @@ public class ProducerTests(KafkaTestContainer kafka)
             .WithAcks(Acks.Leader)
             .Build();
 
-        // Act - concurrent fire-and-forget produces with callbacks
+        // Act - concurrent fire-and-forget sends with callbacks
         var tasks = Enumerable.Range(0, threadCount).Select(threadId => Task.Run(() =>
         {
             for (var i = 0; i < messagesPerThread; i++)
             {
-                producer.Produce(
+                producer.Send(
                     new ProducerMessage<string, string>
                     {
                         Topic = topic,

@@ -58,7 +58,7 @@ public interface IKafkaProducer<TKey, TValue> : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Produces a message without waiting for acknowledgment (fire-and-forget).
+    /// Sends a message without waiting for acknowledgment (fire-and-forget).
     /// </summary>
     /// <remarks>
     /// <para>This method queues the message for delivery without waiting for broker acknowledgment.
@@ -69,10 +69,10 @@ public interface IKafkaProducer<TKey, TValue> : IAsyncDisposable
     /// <para>Errors during delivery will be logged but not thrown. For reliable delivery with error handling,
     /// use the callback overload or <see cref="ProduceAsync"/>.</para>
     /// </remarks>
-    void Produce(ProducerMessage<TKey, TValue> message);
+    void Send(ProducerMessage<TKey, TValue> message);
 
     /// <summary>
-    /// Produces a message to the specified topic without waiting for acknowledgment (fire-and-forget).
+    /// Sends a message to the specified topic without waiting for acknowledgment (fire-and-forget).
     /// </summary>
     /// <remarks>
     /// <para>This is an optimized overload that avoids allocating a <see cref="ProducerMessage{TKey, TValue}"/>
@@ -86,10 +86,10 @@ public interface IKafkaProducer<TKey, TValue> : IAsyncDisposable
     /// <param name="topic">The topic to produce to.</param>
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
-    void Produce(string topic, TKey? key, TValue value);
+    void Send(string topic, TKey? key, TValue value);
 
     /// <summary>
-    /// Produces a message without waiting for acknowledgment, with a delivery callback.
+    /// Sends a message without waiting for acknowledgment, with a delivery callback.
     /// </summary>
     /// <remarks>
     /// <para>This method queues the message for delivery and invokes the callback when delivery completes
@@ -99,7 +99,38 @@ public interface IKafkaProducer<TKey, TValue> : IAsyncDisposable
     /// </remarks>
     /// <param name="message">The message to produce.</param>
     /// <param name="deliveryHandler">Callback invoked when delivery completes. The exception parameter is null on success.</param>
-    void Produce(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler);
+    void Send(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler);
+
+    /// <summary>
+    /// Produces multiple messages and waits for all acknowledgments.
+    /// </summary>
+    /// <remarks>
+    /// <para>This method is the recommended way to produce multiple messages in parallel.
+    /// It handles the <see cref="ValueTask{TResult}"/> to <see cref="Task{TResult}"/> conversion
+    /// internally, avoiding the error-prone pattern of storing ValueTask instances in collections.</para>
+    /// </remarks>
+    /// <param name="messages">The messages to produce.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>An array of record metadata for each produced message, in the same order as the input.</returns>
+    Task<RecordMetadata[]> ProduceAllAsync(
+        IEnumerable<ProducerMessage<TKey, TValue>> messages,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Produces multiple messages to a single topic and waits for all acknowledgments.
+    /// </summary>
+    /// <remarks>
+    /// <para>This is a convenience overload for producing multiple messages to the same topic.
+    /// It avoids allocating <see cref="ProducerMessage{TKey, TValue}"/> objects for simple key-value pairs.</para>
+    /// </remarks>
+    /// <param name="topic">The topic to produce to.</param>
+    /// <param name="messages">The key-value pairs to produce.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>An array of record metadata for each produced message, in the same order as the input.</returns>
+    Task<RecordMetadata[]> ProduceAllAsync(
+        string topic,
+        IEnumerable<(TKey? Key, TValue Value)> messages,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Flushes any pending messages.
@@ -153,6 +184,44 @@ public sealed record ProducerMessage<TKey, TValue>
     /// Optional timestamp. If not set, current time will be used.
     /// </summary>
     public DateTimeOffset? Timestamp { get; init; }
+
+    /// <summary>
+    /// Creates a new producer message.
+    /// </summary>
+    /// <param name="topic">The topic to produce to.</param>
+    /// <param name="key">The message key (can be null).</param>
+    /// <param name="value">The message value.</param>
+    /// <returns>A new producer message.</returns>
+#pragma warning disable CA1000 // Do not declare static members on generic types - factory method pattern
+    public static ProducerMessage<TKey, TValue> Create(string topic, TKey? key, TValue value)
+#pragma warning restore CA1000
+        => new() { Topic = topic, Key = key, Value = value };
+
+    /// <summary>
+    /// Creates a new producer message with headers.
+    /// </summary>
+    /// <param name="topic">The topic to produce to.</param>
+    /// <param name="key">The message key (can be null).</param>
+    /// <param name="value">The message value.</param>
+    /// <param name="headers">The message headers.</param>
+    /// <returns>A new producer message.</returns>
+#pragma warning disable CA1000 // Do not declare static members on generic types - factory method pattern
+    public static ProducerMessage<TKey, TValue> Create(string topic, TKey? key, TValue value, Headers headers)
+#pragma warning restore CA1000
+        => new() { Topic = topic, Key = key, Value = value, Headers = headers };
+
+    /// <summary>
+    /// Creates a new producer message with a specific partition.
+    /// </summary>
+    /// <param name="topic">The topic to produce to.</param>
+    /// <param name="partition">The partition to produce to.</param>
+    /// <param name="key">The message key (can be null).</param>
+    /// <param name="value">The message value.</param>
+    /// <returns>A new producer message.</returns>
+#pragma warning disable CA1000 // Do not declare static members on generic types - factory method pattern
+    public static ProducerMessage<TKey, TValue> Create(string topic, int partition, TKey? key, TValue value)
+#pragma warning restore CA1000
+        => new() { Topic = topic, Partition = partition, Key = key, Value = value };
 }
 
 /// <summary>

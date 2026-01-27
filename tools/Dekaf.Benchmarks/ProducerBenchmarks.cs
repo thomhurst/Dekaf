@@ -172,12 +172,12 @@ public class ProducerBenchmarks
         await Task.WhenAll(tasks);
     }
 
-    [Benchmark(Description = "Dekaf: Fire-and-Forget Produce")]
+    [Benchmark(Description = "Dekaf: Fire-and-Forget Send")]
     public void FireAndForget_Dekaf()
     {
         for (var i = 0; i < BatchSize; i++)
         {
-            _dekafProducer.Produce(new DekafProducer.ProducerMessage<string, string>
+            _dekafProducer.Send(new DekafProducer.ProducerMessage<string, string>
             {
                 Topic = Topic,
                 Key = $"key-{i}",
@@ -191,7 +191,7 @@ public class ProducerBenchmarks
     {
         for (var i = 0; i < BatchSize; i++)
         {
-            _dekafProducer.Produce(Topic, $"key-{i}", _messageValue);
+            _dekafProducer.Send(Topic, $"key-{i}", _messageValue);
         }
     }
 

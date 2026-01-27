@@ -5,6 +5,30 @@ using Dekaf.Security.Sasl;
 namespace Dekaf.Consumer;
 
 /// <summary>
+/// Specifies how consumer offsets are managed.
+/// </summary>
+public enum OffsetCommitMode
+{
+    /// <summary>
+    /// Offsets are automatically stored as consumed and committed periodically.
+    /// Use for at-most-once processing where occasional message loss is acceptable.
+    /// </summary>
+    Auto,
+
+    /// <summary>
+    /// Offsets are automatically stored as consumed, but you must call CommitAsync() explicitly.
+    /// Use for at-least-once processing where you want to commit after processing.
+    /// </summary>
+    ManualCommit,
+
+    /// <summary>
+    /// You must call StoreOffset() for each message and CommitAsync() to persist.
+    /// Use for exactly-once or selective offset management.
+    /// </summary>
+    Manual
+}
+
+/// <summary>
 /// Configuration options for the Kafka consumer.
 /// </summary>
 public sealed class ConsumerOptions
@@ -30,8 +54,18 @@ public sealed class ConsumerOptions
     public string? GroupInstanceId { get; init; }
 
     /// <summary>
+    /// Offset commit mode controlling how offsets are stored and committed.
+    /// Default is <see cref="OffsetCommitMode.Auto"/>.
+    /// </summary>
+    public OffsetCommitMode OffsetCommitMode { get; init; } = OffsetCommitMode.Auto;
+
+    /// <summary>
     /// Enable auto-commit.
     /// </summary>
+    /// <remarks>
+    /// This property is derived from <see cref="OffsetCommitMode"/>. When setting this property directly,
+    /// it takes precedence if explicitly set after OffsetCommitMode.
+    /// </remarks>
     public bool EnableAutoCommit { get; init; } = true;
 
     /// <summary>
@@ -44,6 +78,10 @@ public sealed class ConsumerOptions
     /// when messages are consumed. When false, offsets must be explicitly stored
     /// using StoreOffset before they can be committed. Default is true.
     /// </summary>
+    /// <remarks>
+    /// This property is derived from <see cref="OffsetCommitMode"/>. When setting this property directly,
+    /// it takes precedence if explicitly set after OffsetCommitMode.
+    /// </remarks>
     public bool EnableAutoOffsetStore { get; init; } = true;
 
     /// <summary>
