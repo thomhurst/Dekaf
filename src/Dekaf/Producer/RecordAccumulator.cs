@@ -141,13 +141,13 @@ public sealed class RecordAccumulator : IAsyncDisposable
     {
         _options = options;
 
-        // Backpressure via channel capacity instead of manual memory tracking
-        // MaxQueuedBatches controls how many batches can be in-flight
-        // When channel is full, we fail fast (like librdkafka's QUEUE_FULL error)
-        var maxQueuedBatches = (int)(options.BufferMemory / (ulong)options.BatchSize);
-        if (maxQueuedBatches < 100) maxQueuedBatches = 100; // Minimum queue depth
-        if (maxQueuedBatches > 10000) maxQueuedBatches = 10000; // Maximum queue depth
-
+        // Use unbounded channel for ready batches to avoid artificial backpressure.
+        // Natural backpressure occurs through:
+        // 1. TCP flow control when the network can't keep up
+        // 2. Broker responses being slow
+        // 3. Batch size limits in PartitionBatch
+        // This matches Confluent.Kafka's approach where queue.buffering.max.messages
+        // defaults to 100,000 and rarely causes backpressure in practice.
         _readyBatches = Channel.CreateUnbounded<ReadyBatch>(new UnboundedChannelOptions
         {
             SingleReader = true,
