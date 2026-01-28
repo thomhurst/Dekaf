@@ -1,0 +1,119 @@
+name: Stress Tests
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'  # Weekly Sunday 2 AM UTC
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: 'Test duration in minutes'
+        required: false
+        default: '15'
+      message_size:
+        description: 'Message size in bytes'
+        required: false
+        default: '1000'
+      scenario:
+        description: 'Scenario to run (producer, consumer, all)'
+        required: false
+        default: 'all'
+      client:
+        description: 'Client to test (dekaf, confluent, all)'
+        required: false
+        default: 'all'
+
+jobs:
+  stress-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build Stress Tests
+        run: dotnet build tools/Dekaf.StressTests --configuration Release
+
+      - name: Start Kafka
+        run: |
+          docker run -d --name kafka \
+            -p 9092:9092 \
+            -e KAFKA_NODE_ID=1 \
+            -e KAFKA_PROCESS_ROLES=broker,controller \
+            -e KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
+            -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
+            -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+            -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
+            -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 \
+            -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
+            -e KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1 \
+            -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 \
+            -e KAFKA_LOG_DIRS=/var/lib/kafka/data \
+            -e CLUSTER_ID=stress-test-cluster-001 \
+            apache/kafka:latest
+
+          echo "Waiting for Kafka to be ready..."
+          for i in {1..60}; do
+            if docker exec kafka kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1; then
+              echo "Kafka is ready"
+              break
+            fi
+            echo "Waiting... ($i/60)"
+            sleep 2
+          done
+
+      - name: Run Stress Tests
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+        run: |
+          cd tools/Dekaf.StressTests
+          dotnet run --configuration Release --no-build -- \
+            --duration ${{ github.event.inputs.duration_minutes || '15' }} \
+            --message-size ${{ github.event.inputs.message_size || '1000' }} \
+            --scenario ${{ github.event.inputs.scenario || 'all' }} \
+            --client ${{ github.event.inputs.client || 'all' }} \
+            --output ./results
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-test-results
+          path: tools/Dekaf.StressTests/results/
+          retention-days: 90
+
+      - name: Stop Kafka
+        if: always()
+        run: docker rm -f kafka || true
+
+  generate-summary:
+    needs: stress-test
+    runs-on: ubuntu-latest
+    if: always() && needs.stress-test.result == 'success'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Download Results
+        uses: actions/download-artifact@v4
+        with:
+          name: stress-test-results
+          path: ./results
+
+      - name: Build Stress Tests
+        run: dotnet build tools/Dekaf.StressTests --configuration Release
+
+      - name: Generate Summary
+        run: |
+          cd tools/Dekaf.StressTests
+          dotnet run --configuration Release --no-build -- report --input ../../results
