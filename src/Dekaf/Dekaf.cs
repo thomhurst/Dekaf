@@ -32,6 +32,21 @@ public static class Dekaf
     }
 
     /// <summary>
+    /// Creates a topic-specific producer with the specified bootstrap servers and topic.
+    /// </summary>
+    /// <param name="bootstrapServers">Comma-separated list of bootstrap servers.</param>
+    /// <param name="topic">The topic to bind the producer to.</param>
+    /// <typeparam name="TKey">Key type.</typeparam>
+    /// <typeparam name="TValue">Value type.</typeparam>
+    /// <returns>A producer bound to the specified topic.</returns>
+    public static ITopicProducer<TKey, TValue> CreateTopicProducer<TKey, TValue>(string bootstrapServers, string topic)
+    {
+        return new ProducerBuilder<TKey, TValue>()
+            .WithBootstrapServers(bootstrapServers)
+            .BuildForTopic(topic);
+    }
+
+    /// <summary>
     /// Creates a consumer builder.
     /// </summary>
     public static ConsumerBuilder<TKey, TValue> CreateConsumer<TKey, TValue>()
@@ -436,6 +451,22 @@ public sealed class ProducerBuilder<TKey, TValue>
         };
 
         return new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory);
+    }
+
+    /// <summary>
+    /// Builds a topic-specific producer bound to the specified topic.
+    /// </summary>
+    /// <remarks>
+    /// <para>The returned topic producer owns the underlying producer and will dispose it
+    /// when the topic producer is disposed.</para>
+    /// </remarks>
+    /// <param name="topic">The topic to bind the producer to.</param>
+    /// <returns>A producer bound to the specified topic.</returns>
+    public ITopicProducer<TKey, TValue> BuildForTopic(string topic)
+    {
+        ArgumentNullException.ThrowIfNull(topic);
+        var producer = Build();
+        return new TopicProducer<TKey, TValue>(producer, topic, ownsProducer: true);
     }
 
     private static ISerializer<T> GetDefaultSerializer<T>()
