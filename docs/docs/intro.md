@@ -9,14 +9,7 @@ slug: /
 
 ## Why Build Another Kafka Client?
 
-Most .NET Kafka clients wrap **librdkafka**, a C library. This works, but it's not ideal:
-
-- You're shipping platform-specific native binaries
-- Every call crosses the managed/native boundary (there's overhead there)
-- When something goes wrong, your stack trace jumps between languages
-- The memory model mismatch between native and managed code can bite you
-
-Dekaf is different: **pure C# from the wire protocol to the API**. This means:
+Unlike libraries that wrap librdkafka (a C library), Dekaf is **pure C# from the wire protocol to the API**:
 
 - **No native dependencies**—it runs anywhere .NET runs
 - **Zero-allocation hot paths**—we use `Span<T>`, `ref struct`, and object pooling throughout
