@@ -1,4 +1,5 @@
 using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Engines;
 using Dekaf.Benchmarks.Infrastructure;
 using DekafLib = Dekaf;
@@ -12,6 +13,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Client;
 /// </summary>
 [MemoryDiagnoser]
 [SimpleJob(RunStrategy.Throughput, warmupCount: 2, iterationCount: 5)]
+[GroupBenchmarksBy(BenchmarkLogicalGroupRule.ByCategory)]
+[CategoriesColumn]
 public class ConsumerBenchmarks
 {
     private KafkaTestEnvironment _kafka = null!;
@@ -67,7 +70,8 @@ public class ConsumerBenchmarks
 
     // ===== Consume All Messages =====
 
-    [Benchmark(Baseline = true, Description = "Consume All")]
+    [BenchmarkCategory("ConsumeAll")]
+    [Benchmark(Baseline = true)]
     public int Confluent_ConsumeAll()
     {
         var count = 0;
@@ -98,7 +102,8 @@ public class ConsumerBenchmarks
         return count;
     }
 
-    [Benchmark(Description = "Consume All")]
+    [BenchmarkCategory("ConsumeAll")]
+    [Benchmark]
     public async Task<int> Dekaf_ConsumeAll()
     {
         var count = 0;
@@ -126,7 +131,8 @@ public class ConsumerBenchmarks
 
     // ===== Poll Single Message =====
 
-    [Benchmark(Baseline = true, Description = "Poll Single")]
+    [BenchmarkCategory("PollSingle")]
+    [Benchmark(Baseline = true)]
     public Confluent.Kafka.ConsumeResult<string, string>? Confluent_PollSingle()
     {
         var config = new Confluent.Kafka.ConsumerConfig
@@ -146,7 +152,8 @@ public class ConsumerBenchmarks
         return result;
     }
 
-    [Benchmark(Description = "Poll Single")]
+    [BenchmarkCategory("PollSingle")]
+    [Benchmark]
     public async Task<DekafConsumer.ConsumeResult<string, string>?> Dekaf_PollSingle()
     {
         await using var consumer = DekafLib.Dekaf.CreateConsumer<string, string>()

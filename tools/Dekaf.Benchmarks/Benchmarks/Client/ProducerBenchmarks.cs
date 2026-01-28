@@ -1,4 +1,5 @@
 using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Engines;
 using Dekaf.Benchmarks.Infrastructure;
 using DekafLib = Dekaf;
@@ -12,6 +13,8 @@ namespace Dekaf.Benchmarks.Benchmarks.Client;
 /// </summary>
 [MemoryDiagnoser]
 [SimpleJob(RunStrategy.Throughput, warmupCount: 3, iterationCount: 10)]
+[GroupBenchmarksBy(BenchmarkLogicalGroupRule.ByCategory)]
+[CategoriesColumn]
 public class ProducerBenchmarks
 {
     private KafkaTestEnvironment _kafka = null!;
@@ -100,7 +103,8 @@ public class ProducerBenchmarks
 
     // ===== Single Message Produce =====
 
-    [Benchmark(Baseline = true, Description = "Single Produce")]
+    [BenchmarkCategory("SingleProduce")]
+    [Benchmark(Baseline = true)]
     public async Task<Confluent.Kafka.DeliveryResult<string, string>> Confluent_ProduceSingle()
     {
         return await _confluentProducer.ProduceAsync(Topic, new Confluent.Kafka.Message<string, string>
@@ -110,7 +114,8 @@ public class ProducerBenchmarks
         }).ConfigureAwait(false);
     }
 
-    [Benchmark(Description = "Single Produce")]
+    [BenchmarkCategory("SingleProduce")]
+    [Benchmark]
     public async Task<DekafProducer.RecordMetadata> Dekaf_ProduceSingle()
     {
         return await _dekafProducer.ProduceAsync(new DekafProducer.ProducerMessage<string, string>
@@ -123,7 +128,8 @@ public class ProducerBenchmarks
 
     // ===== Batch Produce =====
 
-    [Benchmark(Baseline = true, Description = "Batch Produce")]
+    [BenchmarkCategory("BatchProduce")]
+    [Benchmark(Baseline = true)]
     public async Task Confluent_ProduceBatch()
     {
         var tasks = new List<Task<Confluent.Kafka.DeliveryResult<string, string>>>(BatchSize);
@@ -140,7 +146,8 @@ public class ProducerBenchmarks
         await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
-    [Benchmark(Description = "Batch Produce")]
+    [BenchmarkCategory("BatchProduce")]
+    [Benchmark]
     public async Task Dekaf_ProduceBatch()
     {
         var tasks = new List<Task<DekafProducer.RecordMetadata>>(BatchSize);
@@ -160,7 +167,8 @@ public class ProducerBenchmarks
 
     // ===== Fire-and-Forget =====
 
-    [Benchmark(Baseline = true, Description = "Fire-and-Forget")]
+    [BenchmarkCategory("FireAndForget")]
+    [Benchmark(Baseline = true)]
     public void Confluent_FireAndForget()
     {
         for (var i = 0; i < BatchSize; i++)
@@ -173,7 +181,8 @@ public class ProducerBenchmarks
         }
     }
 
-    [Benchmark(Description = "Fire-and-Forget")]
+    [BenchmarkCategory("FireAndForget")]
+    [Benchmark]
     public void Dekaf_FireAndForget()
     {
         for (var i = 0; i < BatchSize; i++)
