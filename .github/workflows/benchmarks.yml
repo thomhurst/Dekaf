@@ -118,123 +118,95 @@ jobs:
       - name: Generate Benchmark Summary
         run: |
           python3 << 'EOF'
-          import json
           import os
-
-          def format_time(ns):
-              """Format nanoseconds to appropriate unit"""
-              if ns is None:
-                  return "-"
-              if ns >= 1_000_000_000:
-                  return f"{ns / 1_000_000_000:.2f} s"
-              elif ns >= 1_000_000:
-                  return f"{ns / 1_000_000:.2f} ms"
-              elif ns >= 1_000:
-                  return f"{ns / 1_000:.2f} µs"
-              else:
-                  return f"{ns:.0f} ns"
-
-          def format_bytes(b):
-              """Format bytes to appropriate unit"""
-              if b is None or b == 0:
-                  return "**0 B** ✓"
-              if b >= 1_048_576:
-                  return f"{b / 1_048_576:.1f} MB"
-              elif b >= 1_024:
-                  return f"{b / 1_024:.1f} KB"
-              else:
-                  return f"{b} B"
-
-          def load_benchmarks(category):
-              """Load benchmarks from a category folder"""
-              path = f"benchmark-results/{category}/results"
-              benchmarks = []
-              if os.path.isdir(path):
-                  for f in os.listdir(path):
-                      if f.endswith('.json'):
-                          with open(os.path.join(path, f)) as fp:
-                              data = json.load(fp)
-                              for b in data.get('Benchmarks', []):
-                                  if b.get('Statistics') and b['Statistics'].get('Mean') is not None:
-                                      benchmarks.append(b)
-              return benchmarks
-
-          def get_ratio(dekaf_time, baseline_time):
-              """Calculate performance ratio"""
-              if baseline_time and dekaf_time:
-                  ratio = dekaf_time / baseline_time
-                  return f"{ratio:.2f}x"
-              return "-"
+          import glob
 
           output = []
-          output.append("# Benchmark Results\n")
+          output.append("# Dekaf Benchmark Results\n")
 
-          # Unit Benchmarks
-          unit = load_benchmarks("Unit")
-          if unit:
-              output.append("## Unit Benchmarks (Zero-Allocation Protocol)\n")
-              output.append("| Operation | Time | Allocated |")
-              output.append("|-----------|------|-----------|")
-              for b in sorted(unit, key=lambda x: x.get('MethodTitle', x.get('Method', ''))):
-                  name = b.get('MethodTitle', b.get('Method', ''))
-                  mean = b['Statistics']['Mean']
-                  alloc = b.get('Memory', {}).get('BytesAllocatedPerOperation', 0)
-                  output.append(f"| {name} | {format_time(mean)} | {format_bytes(alloc)} |")
+          # Add the BenchmarkDotNet markdown reports directly
+          # They have proper tables with Ratio columns
+
+          # Producer benchmarks
+          producer_md = glob.glob("benchmark-results/Client/results/*ProducerBenchmarks*-github.md")
+          if producer_md:
+              output.append("## Producer Benchmarks (Dekaf vs Confluent.Kafka)\n")
+              output.append("> **Ratio < 1.0 means Dekaf is faster than Confluent**\n")
+              with open(producer_md[0]) as f:
+                  content = f.read()
+                  # Remove the ``` code block wrapper
+                  lines = content.split('\n')
+                  in_table = False
+                  for line in lines:
+                      if line.startswith('|'):
+                          in_table = True
+                      if in_table:
+                          output.append(line)
               output.append("")
 
-          # Client Benchmarks - Group by operation and show Dekaf vs Confluent
-          client = load_benchmarks("Client")
-          if client:
-              output.append("## Client Benchmarks (Dekaf vs Confluent.Kafka)\n")
+          # Consumer benchmarks
+          consumer_md = glob.glob("benchmark-results/Client/results/*ConsumerBenchmarks*-github.md")
+          if consumer_md:
+              output.append("## Consumer Benchmarks (Dekaf vs Confluent.Kafka)\n")
+              with open(consumer_md[0]) as f:
+                  content = f.read()
+                  lines = content.split('\n')
+                  in_table = False
+                  for line in lines:
+                      if line.startswith('|'):
+                          in_table = True
+                      if in_table:
+                          output.append(line)
+              output.append("")
 
-              # Group by parameters
-              by_params = {}
-              for b in client:
-                  params = b.get('Parameters', '')
-                  by_params.setdefault(params, []).append(b)
+          # Protocol benchmarks (zero-allocation)
+          protocol_md = glob.glob("benchmark-results/Unit/results/*ProtocolBenchmarks*-github.md")
+          if protocol_md:
+              output.append("## Protocol Benchmarks (Zero-Allocation Wire Protocol)\n")
+              output.append("> **Allocated = `-` means zero heap allocations** ✓\n")
+              with open(protocol_md[0]) as f:
+                  content = f.read()
+                  lines = content.split('\n')
+                  in_table = False
+                  for line in lines:
+                      if line.startswith('|'):
+                          in_table = True
+                      if in_table:
+                          output.append(line)
+              output.append("")
 
-              for params in sorted(by_params.keys()):
-                  benches = by_params[params]
-                  if params:
-                      parts = dict(p.split('=') for p in params.split('&') if '=' in p)
-                      param_str = ", ".join(f"{k}={v}" for k, v in sorted(parts.items()))
-                      output.append(f"### {param_str}\n")
+          # Serializer benchmarks
+          serializer_md = glob.glob("benchmark-results/Unit/results/*SerializerBenchmarks*-github.md")
+          if serializer_md:
+              output.append("## Serializer Benchmarks\n")
+              with open(serializer_md[0]) as f:
+                  content = f.read()
+                  lines = content.split('\n')
+                  in_table = False
+                  for line in lines:
+                      if line.startswith('|'):
+                          in_table = True
+                      if in_table:
+                          output.append(line)
+              output.append("")
 
-                  output.append("| Operation | Confluent | Dekaf | Ratio | Dekaf Allocated |")
-                  output.append("|-----------|-----------|-------|-------|-----------------|")
-
-                  # Match Dekaf and Confluent benchmarks
-                  ops = {}
-                  for b in benches:
-                      method = b.get('Method', '')
-                      desc = b.get('MethodTitle', method)
-                      if method.startswith('Confluent_'):
-                          op_name = desc
-                          ops.setdefault(op_name, {})['confluent'] = b
-                      elif method.startswith('Dekaf_'):
-                          op_name = desc
-                          ops.setdefault(op_name, {})['dekaf'] = b
-
-                  for op_name, pair in sorted(ops.items()):
-                      conf = pair.get('confluent')
-                      dekaf = pair.get('dekaf')
-
-                      conf_time = format_time(conf['Statistics']['Mean']) if conf else "-"
-                      dekaf_time = format_time(dekaf['Statistics']['Mean']) if dekaf else "-"
-
-                      ratio = "-"
-                      if conf and dekaf:
-                          ratio = get_ratio(dekaf['Statistics']['Mean'], conf['Statistics']['Mean'])
-
-                      alloc = dekaf.get('Memory', {}).get('BytesAllocatedPerOperation', 0) if dekaf else 0
-
-                      output.append(f"| {op_name} | {conf_time} | {dekaf_time} | {ratio} | {format_bytes(alloc)} |")
-
-                  output.append("")
+          # Compression benchmarks
+          compression_md = glob.glob("benchmark-results/Unit/results/*CompressionBenchmarks*-github.md")
+          if compression_md:
+              output.append("## Compression Benchmarks (Snappy)\n")
+              with open(compression_md[0]) as f:
+                  content = f.read()
+                  lines = content.split('\n')
+                  in_table = False
+                  for line in lines:
+                      if line.startswith('|'):
+                          in_table = True
+                      if in_table:
+                          output.append(line)
+              output.append("")
 
           output.append("---\n")
-          output.append("*Benchmarks run on GitHub Actions (ubuntu-latest)*\n")
-          output.append("*Ratio < 1.0 means Dekaf is faster*")
+          output.append("*Benchmarks run on GitHub Actions (ubuntu-latest) with BenchmarkDotNet*")
 
           # Write to summary
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
