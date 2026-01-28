@@ -325,15 +325,3 @@ services.AddDekafConsumer<string, string>(builder => builder
 4. **Enable compression** - LZ4 adds minimal CPU overhead but can significantly reduce network traffic.
 
 5. **Tune batch settings** - For throughput, increase `LingerMs` and `BatchSize`. For latency, keep them low.
-
-## Contributing
-
-Found a bug? Have an idea? We'd love to hear from you! Open an issue or submit a PR.
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
----
-
-Built with care for .NET developers who just want Kafka to work. No Java required.
