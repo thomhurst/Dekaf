@@ -1415,6 +1415,11 @@ internal sealed class PartitionBatch
     public int RecordCount => _recordCount;
     public int EstimatedSize => _estimatedSize;
 
+    /// <summary>
+    /// Appends a record to the batch with completion tracking.
+    /// Uses lock-free CAS-based synchronization for the common single-producer case,
+    /// falling back to spin-wait under contention.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public RecordAppendResult TryAppend(
         long timestamp,
@@ -1427,94 +1432,146 @@ internal sealed class PartitionBatch
         // Pre-compute record size outside the lock - depends only on input parameters
         var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
 
-        // SpinLock for short critical section - lower overhead than Monitor for <100ns holds.
-        // Multiple threads can call TryAppend concurrently via ConcurrentDictionary.AddOrUpdate.
-        // This lock is per-partition, so there is no cross-partition contention.
-        var lockTaken = false;
-        try
+        // FAST PATH: Try to atomically claim exclusive access via CAS.
+        // If we win (exchange 0 -> 1), we have exclusive access and can proceed without spinning.
+        // This is the common case for single-producer patterns.
+        if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
         {
-            _spinLock.Enter(ref lockTaken);
-
-            // Check if batch was completed while we were waiting for the lock.
-            // Complete() sets _isCompleted and nulls out arrays without holding the lock,
-            // so we must check this before accessing any arrays.
-            if (Volatile.Read(ref _isCompleted) != 0)
+            try
             {
-                return new RecordAppendResult(false);
+                return TryAppendCore(timestamp, key, value, headers, pooledHeaderArray, completion, recordSize);
             }
-
-            // Defensive check: if arrays are null, batch is in inconsistent state (being pooled)
-            if (_records is null || _completionSources is null || _pooledArrays is null)
+            finally
             {
-                return new RecordAppendResult(false);
+                // Release exclusive access
+                Volatile.Write(ref _exclusiveAccess, 0);
             }
-
-            if (_recordCount == 0)
-            {
-                _baseTimestamp = timestamp;
-            }
-
-            // Check size limit
-            if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
-            {
-                return new RecordAppendResult(false);
-            }
-
-            // Grow arrays if needed (rare - only happens if batch fills beyond initial capacity)
-            if (_recordCount >= _records.Length)
-            {
-                GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
-            }
-            if (_completionSourceCount >= _completionSources.Length)
-            {
-                GrowArray(ref _completionSources, ref _completionSourceCount, ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared);
-            }
-            if (_pooledArrayCount + 2 >= _pooledArrays.Length) // +2 for key and value
-            {
-                GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
-            }
-            if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
-            {
-                GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
-            }
-
-            // Track pooled arrays for returning to pool later
-            if (key.Array is not null)
-            {
-                _pooledArrays[_pooledArrayCount++] = key.Array;
-            }
-            if (value.Array is not null)
-            {
-                _pooledArrays[_pooledArrayCount++] = value.Array;
-            }
-            if (pooledHeaderArray is not null)
-            {
-                _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
-            }
-
-            var timestampDelta = (int)(timestamp - _baseTimestamp);
-            var record = new Record
-            {
-                TimestampDelta = timestampDelta,
-                OffsetDelta = _recordCount,
-                Key = key.Memory,
-                IsKeyNull = key.IsNull,
-                Value = value.Memory,
-                IsValueNull = false,
-                Headers = headers
-            };
-
-            _records[_recordCount++] = record;
-            _estimatedSize += recordSize;
-
-            // Use the passed-in completion source - no allocation here
-            _completionSources[_completionSourceCount++] = completion;
-
-            return new RecordAppendResult(true);
         }
-        finally
+
+        // SLOW PATH: CAS failed - another thread is appending. Spin until we can claim access.
+        return TryAppendWithSpinWait(timestamp, key, value, headers, pooledHeaderArray, completion, recordSize);
+    }
+
+    /// <summary>
+    /// Core append logic with completion tracking. Called when we have exclusive access.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private RecordAppendResult TryAppendCore(
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
+        PooledValueTaskSource<RecordMetadata> completion,
+        int recordSize)
+    {
+        // Check if batch was completed - Complete() nulls out arrays without synchronization,
+        // so we must check this before accessing any arrays.
+        if (Volatile.Read(ref _isCompleted) != 0)
         {
-            if (lockTaken) _spinLock.Exit();
+            return new RecordAppendResult(false);
+        }
+
+        // Defensive check: if arrays are null, batch is in inconsistent state (being pooled)
+        if (_records is null || _completionSources is null || _pooledArrays is null)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        if (_recordCount == 0)
+        {
+            _baseTimestamp = timestamp;
+        }
+
+        // Check size limit
+        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        // Grow arrays if needed (rare - only happens if batch fills beyond initial capacity)
+        if (_recordCount >= _records.Length)
+        {
+            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
+        }
+        if (_completionSourceCount >= _completionSources.Length)
+        {
+            GrowArray(ref _completionSources, ref _completionSourceCount, ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared);
+        }
+        if (_pooledArrayCount + 2 >= _pooledArrays.Length) // +2 for key and value
+        {
+            GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
+        }
+        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
+        {
+            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
+        }
+
+        // Track pooled arrays for returning to pool later
+        if (key.Array is not null)
+        {
+            _pooledArrays[_pooledArrayCount++] = key.Array;
+        }
+        if (value.Array is not null)
+        {
+            _pooledArrays[_pooledArrayCount++] = value.Array;
+        }
+        if (pooledHeaderArray is not null)
+        {
+            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
+        }
+
+        var timestampDelta = (int)(timestamp - _baseTimestamp);
+        var record = new Record
+        {
+            TimestampDelta = timestampDelta,
+            OffsetDelta = _recordCount,
+            Key = key.Memory,
+            IsKeyNull = key.IsNull,
+            Value = value.Memory,
+            IsValueNull = false,
+            Headers = headers
+        };
+
+        _records[_recordCount++] = record;
+        _estimatedSize += recordSize;
+
+        // Use the passed-in completion source - no allocation here
+        _completionSources[_completionSourceCount++] = completion;
+
+        return new RecordAppendResult(true);
+    }
+
+    /// <summary>
+    /// Slow path for TryAppend when CAS fails due to contention.
+    /// Spins until exclusive access is available.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private RecordAppendResult TryAppendWithSpinWait(
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
+        PooledValueTaskSource<RecordMetadata> completion,
+        int recordSize)
+    {
+        var spinner = new SpinWait();
+        while (true)
+        {
+            spinner.SpinOnce();
+
+            if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
+            {
+                try
+                {
+                    return TryAppendCore(timestamp, key, value, headers, pooledHeaderArray, completion, recordSize);
+                }
+                finally
+                {
+                    Volatile.Write(ref _exclusiveAccess, 0);
+                }
+            }
         }
     }
 
@@ -1913,9 +1970,15 @@ internal sealed class PartitionBatch
     }
 
     /// <summary>
-    /// Checks if this batch should be flushed based on linger time.
+    /// Checks if this batch should be flushed based on linger time and pending completions.
     /// Uses volatile read instead of locking since this is a read-only check.
     /// The worst case of a stale read is harmless - we'll catch it on the next check.
+    ///
+    /// Smart batching strategy (similar to librdkafka):
+    /// - If there are completion sources waiting (awaited produces), send immediately
+    /// - Otherwise, wait for full linger time (fire-and-forget batching)
+    /// This provides low latency for awaited produces while maintaining efficient
+    /// batching for fire-and-forget workloads.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool ShouldFlush(DateTimeOffset now, int lingerMs)
@@ -1925,6 +1988,13 @@ internal sealed class PartitionBatch
         // A stale read that returns non-zero for an empty batch results in a no-op Complete().
         if (Volatile.Read(ref _recordCount) == 0)
             return false;
+
+        // Early flush: If there are completion sources waiting, send immediately.
+        // This provides low latency for awaited produces (ProduceAsync).
+        // Fire-and-forget messages (Send) don't add completion sources, so they
+        // still benefit from full linger time batching.
+        if (Volatile.Read(ref _completionSourceCount) > 0)
+            return true;
 
         return (now - _createdAt).TotalMilliseconds >= lingerMs;
     }
@@ -1939,10 +2009,22 @@ internal sealed class PartitionBatch
             return _completedBatch;
         }
 
+        // Wait for any in-progress appends to complete before modifying arrays.
+        // This coordinates with the CAS-based exclusive access used by TryAppend/TryAppendFireAndForget.
+        var spinner = new SpinWait();
+        while (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) != 0)
+        {
+            spinner.SpinOnce();
+        }
+        // Now we hold exclusive access - safe to modify arrays
+        // Release at end of method (or rely on batch being removed from dictionary)
+
         if (_recordCount == 0)
         {
             // Empty batch - return arrays to pool immediately
             ReturnBatchArraysToPool();
+            // Release exclusive access
+            Volatile.Write(ref _exclusiveAccess, 0);
             return null;
         }
 
@@ -1979,6 +2061,9 @@ internal sealed class PartitionBatch
         _pooledArrays = null!;
         _pooledHeaderArrays = null!;
         _arena = null;
+
+        // Release exclusive access - batch is now completed and arrays transferred
+        Volatile.Write(ref _exclusiveAccess, 0);
 
         return _completedBatch;
     }
