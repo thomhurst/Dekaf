@@ -570,29 +570,26 @@ public sealed class RecordAccumulator : IAsyncDisposable
             if (result.Success)
                 return result;
 
-            // Batch is full, complete it and queue for sending
-            var readyBatch = batch.Complete();
-            if (readyBatch is not null)
+            // Batch is full - atomically remove it from dictionary BEFORE completing.
+            // Only the thread that wins the TryRemove race will complete the batch.
+            // This prevents a race where:
+            // 1. Thread A calls Complete(), batch returned to pool, Reset() clears _isCompleted
+            // 2. Thread B (holding stale reference) calls Complete() on recycled batch
+            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
             {
-                // Try synchronous write first to avoid async state machine allocation
-                if (!_readyBatches.Writer.TryWrite(readyBatch))
+                var readyBatch = batch.Complete();
+                if (readyBatch is not null)
                 {
-                    // Backpressure happens here: WriteAsync blocks when channel is full
-                    await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                    // Try synchronous write first to avoid async state machine allocation
+                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    {
+                        // Backpressure happens here: WriteAsync blocks when channel is full
+                        await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    // Return the completed batch shell to the pool for reuse
+                    _batchPool.Return(batch);
                 }
-            }
-
-            // Atomically remove the completed batch only if it's still the same instance.
-            // If another thread already replaced it, this is a no-op and we'll use their new batch.
-            // This prevents the race where two threads both create new batches and one gets orphaned.
-            // IMPORTANT: Must remove from dictionary BEFORE returning to pool to prevent races
-            // where another thread gets the batch from the pool while it's still in the dictionary.
-            _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch));
-
-            // Return the completed batch shell to the pool for reuse AFTER removing from dictionary
-            if (readyBatch is not null)
-            {
-                _batchPool.Return(batch);
             }
 
             // Loop will rent from pool again, which will either reuse a pooled batch or create new
@@ -651,28 +648,25 @@ public sealed class RecordAccumulator : IAsyncDisposable
             if (result.Success)
                 return true;
 
-            // Batch is full, complete it and queue for sending
-            var readyBatch = batch.Complete();
-            if (readyBatch is not null)
+            // Batch is full - atomically remove it from dictionary BEFORE completing.
+            // Only the thread that wins the TryRemove race will complete the batch.
+            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
             {
-                // Non-blocking write to unbounded channel - should always succeed
-                // If it fails (channel completed), the producer is being disposed
-                if (!_readyBatches.Writer.TryWrite(readyBatch))
+                var readyBatch = batch.Complete();
+                if (readyBatch is not null)
                 {
-                    // Channel is closed, fail the batch and return false
-                    readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                    return false;
+                    // Non-blocking write to unbounded channel - should always succeed
+                    // If it fails (channel completed), the producer is being disposed
+                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    {
+                        // Channel is closed, fail the batch and return false
+                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                        return false;
+                    }
+
+                    // Return the completed batch shell to the pool for reuse
+                    _batchPool.Return(batch);
                 }
-            }
-
-            // Atomically remove the completed batch only if it's still the same instance.
-            // IMPORTANT: Must remove from dictionary BEFORE returning to pool
-            _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch));
-
-            // Return the completed batch shell to the pool for reuse AFTER removing from dictionary
-            if (readyBatch is not null)
-            {
-                _batchPool.Return(batch);
             }
         }
     }
@@ -757,26 +751,23 @@ public sealed class RecordAccumulator : IAsyncDisposable
         IReadOnlyList<RecordHeader>? headers,
         RecordHeader[]? pooledHeaderArray)
     {
-        // Complete the old batch and queue it for sending
-        var readyBatch = oldBatch.Complete();
-        if (readyBatch is not null)
+        // Atomically remove the old batch from dictionary BEFORE completing.
+        // Only the thread that wins the TryRemove race will complete the batch.
+        if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, oldBatch)))
         {
-            if (!_readyBatches.Writer.TryWrite(readyBatch))
+            var readyBatch = oldBatch.Complete();
+            if (readyBatch is not null)
             {
-                readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                t_cachedBatch = null;
-                return false;
+                if (!_readyBatches.Writer.TryWrite(readyBatch))
+                {
+                    readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                    t_cachedBatch = null;
+                    return false;
+                }
+
+                // Return the completed batch shell to the pool for reuse
+                _batchPool.Return(oldBatch);
             }
-        }
-
-        // Remove the old batch atomically
-        // IMPORTANT: Must remove from dictionary BEFORE returning to pool
-        _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, oldBatch));
-
-        // Return the completed batch shell to the pool for reuse AFTER removing from dictionary
-        if (readyBatch is not null)
-        {
-            _batchPool.Return(oldBatch);
         }
 
         // Rent from pool and add to dictionary
@@ -895,31 +886,28 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 return true;
             }
 
-            // Batch is full, complete it and queue for sending
-            var readyBatch = batch.Complete();
-            if (readyBatch is not null)
+            // Batch is full - atomically remove it from dictionary BEFORE completing.
+            // Only the thread that wins the TryRemove race will complete the batch.
+            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
             {
-                // Non-blocking write to unbounded channel - should always succeed
-                // If it fails (channel completed), the producer is being disposed
-                if (!_readyBatches.Writer.TryWrite(readyBatch))
+                var readyBatch = batch.Complete();
+                if (readyBatch is not null)
                 {
-                    // Channel is closed, fail the batch and return false
-                    readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                    // Invalidate caches
-                    t_cachedBatch = null;
-                    mpCache[cacheIndex].Batch = null;
-                    return false;
+                    // Non-blocking write to unbounded channel - should always succeed
+                    // If it fails (channel completed), the producer is being disposed
+                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    {
+                        // Channel is closed, fail the batch and return false
+                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                        // Invalidate caches
+                        t_cachedBatch = null;
+                        mpCache[cacheIndex].Batch = null;
+                        return false;
+                    }
+
+                    // Return the completed batch shell to the pool for reuse
+                    _batchPool.Return(batch);
                 }
-            }
-
-            // Atomically remove the completed batch only if it's still the same instance.
-            // IMPORTANT: Must remove from dictionary BEFORE returning to pool
-            _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch));
-
-            // Return the completed batch shell to the pool for reuse AFTER removing from dictionary
-            if (readyBatch is not null)
-            {
-                _batchPool.Return(batch);
             }
 
             // Invalidate caches since we removed the batch
@@ -995,28 +983,25 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // If we haven't appended all, batch is full
             if (startIndex < items.Length)
             {
-                // Complete and queue the full batch
-                var readyBatch = batch.Complete();
-                if (readyBatch is not null)
+                // Atomically remove the completed batch BEFORE completing.
+                // Only the thread that wins the TryRemove race will complete the batch.
+                if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
                 {
-                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    var readyBatch = batch.Complete();
+                    if (readyBatch is not null)
                     {
-                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                        t_cachedBatch = null;
-                        return false;
+                        if (!_readyBatches.Writer.TryWrite(readyBatch))
+                        {
+                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                            t_cachedBatch = null;
+                            return false;
+                        }
+
+                        // Return the completed batch shell to the pool for reuse
+                        _batchPool.Return(batch);
                     }
                 }
-
-                // Remove the completed batch
-                // IMPORTANT: Must remove from dictionary BEFORE returning to pool
-                _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch));
                 t_cachedBatch = null;
-
-                // Return the completed batch shell to the pool for reuse AFTER removing from dictionary
-                if (readyBatch is not null)
-                {
-                    _batchPool.Return(batch);
-                }
             }
         }
 
@@ -1060,22 +1045,23 @@ public sealed class RecordAccumulator : IAsyncDisposable
             var batch = kvp.Value;
             if (batch.ShouldFlush(now, _options.LingerMs))
             {
-                var readyBatch = batch.Complete();
-                if (readyBatch is not null)
+                // Atomically remove the batch from dictionary BEFORE completing.
+                // Only the thread that wins the TryRemove race will complete the batch.
+                if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch)))
                 {
-                    // Try synchronous write first to avoid async state machine allocation
-                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    var readyBatch = batch.Complete();
+                    if (readyBatch is not null)
                     {
-                        // Channel is bounded or busy, fall back to async
-                        await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-                    }
-                    // Only remove if the batch is still the same instance.
-                    // If AppendAsync already replaced it with a new batch, don't remove the new one.
-                    // IMPORTANT: Must remove from dictionary BEFORE returning to pool
-                    _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch));
+                        // Try synchronous write first to avoid async state machine allocation
+                        if (!_readyBatches.Writer.TryWrite(readyBatch))
+                        {
+                            // Channel is bounded or busy, fall back to async
+                            await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                        }
 
-                    // Return the completed batch shell to the pool for reuse
-                    _batchPool.Return(batch);
+                        // Return the completed batch shell to the pool for reuse
+                        _batchPool.Return(batch);
+                    }
                 }
             }
         }
@@ -1103,22 +1089,23 @@ public sealed class RecordAccumulator : IAsyncDisposable
         foreach (var kvp in _batches)
         {
             var batch = kvp.Value;
-            var readyBatch = batch.Complete();
-            if (readyBatch is not null)
+            // Atomically remove the batch from dictionary BEFORE completing.
+            // Only the thread that wins the TryRemove race will complete the batch.
+            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch)))
             {
-                // Try synchronous write first to avoid async state machine allocation
-                if (!_readyBatches.Writer.TryWrite(readyBatch))
+                var readyBatch = batch.Complete();
+                if (readyBatch is not null)
                 {
-                    // Channel is bounded or busy, fall back to async
-                    await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-                }
-                // Only remove if the batch is still the same instance.
-                // If AppendAsync already replaced it with a new batch, don't remove the new one.
-                // IMPORTANT: Must remove from dictionary BEFORE returning to pool
-                _batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch));
+                    // Try synchronous write first to avoid async state machine allocation
+                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    {
+                        // Channel is bounded or busy, fall back to async
+                        await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                    }
 
-                // Return the completed batch shell to the pool for reuse
-                _batchPool.Return(batch);
+                    // Return the completed batch shell to the pool for reuse
+                    _batchPool.Return(batch);
+                }
             }
         }
     }
@@ -1169,10 +1156,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         foreach (var kvp in _batches)
         {
-            var readyBatch = kvp.Value.Complete();
-            readyBatch?.Fail(disposedException);
+            // Use TryRemove to ensure only one thread handles each batch during disposal.
+            // This prevents races where a batch is completed and recycled while we're disposing.
+            if (_batches.TryRemove(kvp))
+            {
+                var readyBatch = kvp.Value.Complete();
+                readyBatch?.Fail(disposedException);
+            }
         }
-        _batches.Clear();
 
         // Clear the TopicPartition cache to release memory
         _topicPartitionCache.Clear();
@@ -2009,56 +2000,60 @@ internal sealed class PartitionBatch
         {
             spinner.SpinOnce();
         }
-        // Now we hold exclusive access - safe to modify arrays
-        // Release at end of method (or rely on batch being removed from dictionary)
 
-        if (_recordCount == 0)
+        // Now we hold exclusive access - safe to modify arrays.
+        // Use try/finally to ensure lock is always released, even if an exception occurs
+        // (e.g., OutOfMemoryException during ReadyBatch allocation).
+        try
         {
-            // Empty batch - return arrays to pool immediately
-            ReturnBatchArraysToPool();
-            // Release exclusive access
-            Volatile.Write(ref _exclusiveAccess, 0);
-            return null;
+            if (_recordCount == 0)
+            {
+                // Empty batch - return arrays to pool immediately
+                ReturnBatchArraysToPool();
+                return null;
+            }
+
+            // Use pooled records array directly with wrapper to avoid allocation
+            // ReadyBatch will return the array to pool in Cleanup()
+            var pooledRecordsArray = _records;
+            var batch = new RecordBatch
+            {
+                BaseOffset = 0,
+                BaseTimestamp = _baseTimestamp,
+                MaxTimestamp = _baseTimestamp + (_recordCount > 0 ? pooledRecordsArray[_recordCount - 1].TimestampDelta : 0),
+                LastOffsetDelta = _recordCount - 1,
+                Records = new RecordListWrapper(pooledRecordsArray, _recordCount)
+            };
+            _records = null!;
+
+            // Pass pooled arrays directly to ReadyBatch - no copying needed
+            // ReadyBatch will return them to pool when done
+            // PooledValueTaskSource auto-returns to its pool when GetResult() is called
+            _completedBatch = new ReadyBatch(
+                _topicPartition,
+                batch,
+                _completionSources,
+                _completionSourceCount,
+                _pooledArrays,
+                _pooledArrayCount,
+                _pooledHeaderArrays,
+                _pooledHeaderArrayCount,
+                pooledRecordsArray,
+                _arena);
+
+            // Null out references - ownership transferred to ReadyBatch
+            _completionSources = null!;
+            _pooledArrays = null!;
+            _pooledHeaderArrays = null!;
+            _arena = null;
+
+            return _completedBatch;
         }
-
-        // Use pooled records array directly with wrapper to avoid allocation
-        // ReadyBatch will return the array to pool in Cleanup()
-        var pooledRecordsArray = _records;
-        var batch = new RecordBatch
+        finally
         {
-            BaseOffset = 0,
-            BaseTimestamp = _baseTimestamp,
-            MaxTimestamp = _baseTimestamp + (_recordCount > 0 ? pooledRecordsArray[_recordCount - 1].TimestampDelta : 0),
-            LastOffsetDelta = _recordCount - 1,
-            Records = new RecordListWrapper(pooledRecordsArray, _recordCount)
-        };
-        _records = null!;
-
-        // Pass pooled arrays directly to ReadyBatch - no copying needed
-        // ReadyBatch will return them to pool when done
-        // PooledValueTaskSource auto-returns to its pool when GetResult() is called
-        _completedBatch = new ReadyBatch(
-            _topicPartition,
-            batch,
-            _completionSources,
-            _completionSourceCount,
-            _pooledArrays,
-            _pooledArrayCount,
-            _pooledHeaderArrays,
-            _pooledHeaderArrayCount,
-            pooledRecordsArray,
-            _arena);
-
-        // Null out references - ownership transferred to ReadyBatch
-        _completionSources = null!;
-        _pooledArrays = null!;
-        _pooledHeaderArrays = null!;
-        _arena = null;
-
-        // Release exclusive access - batch is now completed and arrays transferred
-        Volatile.Write(ref _exclusiveAccess, 0);
-
-        return _completedBatch;
+            // Release exclusive access - always release even if exception occurred
+            Volatile.Write(ref _exclusiveAccess, 0);
+        }
     }
 
     private void ReturnBatchArraysToPool()
@@ -2171,18 +2166,22 @@ internal sealed class ReadyBatch
 
         try
         {
-            for (var i = 0; i < _completionSourcesCount; i++)
+            // Null check defensive against partially constructed batches
+            if (_completionSourcesArray is not null)
             {
-                var source = _completionSourcesArray[i];
-                // TrySetResult completes the ValueTask; the awaiter's GetResult()
-                // will auto-return the source to its pool
-                source?.TrySetResult(new RecordMetadata
+                for (var i = 0; i < _completionSourcesCount; i++)
                 {
-                    Topic = TopicPartition.Topic,
-                    Partition = TopicPartition.Partition,
-                    Offset = baseOffset + i,
-                    Timestamp = timestamp
-                });
+                    var source = _completionSourcesArray[i];
+                    // TrySetResult completes the ValueTask; the awaiter's GetResult()
+                    // will auto-return the source to its pool
+                    source?.TrySetResult(new RecordMetadata
+                    {
+                        Topic = TopicPartition.Topic,
+                        Partition = TopicPartition.Partition,
+                        Offset = baseOffset + i,
+                        Timestamp = timestamp
+                    });
+                }
             }
         }
         finally
@@ -2199,12 +2198,16 @@ internal sealed class ReadyBatch
 
         try
         {
-            for (var i = 0; i < _completionSourcesCount; i++)
+            // Null check defensive against partially constructed batches
+            if (_completionSourcesArray is not null)
             {
-                var source = _completionSourcesArray[i];
-                // TrySetException completes the ValueTask; the awaiter's GetResult()
-                // will auto-return the source to its pool
-                source?.TrySetException(exception);
+                for (var i = 0; i < _completionSourcesCount; i++)
+                {
+                    var source = _completionSourcesArray[i];
+                    // TrySetException completes the ValueTask; the awaiter's GetResult()
+                    // will auto-return the source to its pool
+                    source?.TrySetException(exception);
+                }
             }
         }
         finally
@@ -2221,24 +2224,35 @@ internal sealed class ReadyBatch
             return;
 
         // Return pooled byte arrays (key/value data) - only for non-arena path
-        for (var i = 0; i < _pooledDataArraysCount; i++)
+        // Null check defensive against partially constructed batches
+        if (_pooledDataArrays is not null)
         {
-            ArrayPool<byte>.Shared.Return(_pooledDataArrays[i], clearArray: true);
+            for (var i = 0; i < _pooledDataArraysCount; i++)
+            {
+                ArrayPool<byte>.Shared.Return(_pooledDataArrays[i], clearArray: true);
+            }
         }
 
         // Return pooled header arrays (large header counts)
         // clearArray: false - header data is not sensitive
-        for (var i = 0; i < _pooledHeaderArraysCount; i++)
+        if (_pooledHeaderArrays is not null)
         {
-            ArrayPool<RecordHeader>.Shared.Return(_pooledHeaderArrays[i], clearArray: false);
+            for (var i = 0; i < _pooledHeaderArraysCount; i++)
+            {
+                ArrayPool<RecordHeader>.Shared.Return(_pooledHeaderArrays[i], clearArray: false);
+            }
         }
 
         // Return the working arrays to pool
         // Note: PooledValueTaskSource instances auto-return to their pool when awaited
         // clearArray: false for tracking arrays - they only hold references, not actual data
-        ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(_completionSourcesArray, clearArray: false);
-        ArrayPool<byte[]>.Shared.Return(_pooledDataArrays, clearArray: false);
-        ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: false);
+        // Null checks are defensive against partially constructed batches during race conditions
+        if (_completionSourcesArray is not null)
+            ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(_completionSourcesArray, clearArray: false);
+        if (_pooledDataArrays is not null)
+            ArrayPool<byte[]>.Shared.Return(_pooledDataArrays, clearArray: false);
+        if (_pooledHeaderArrays is not null)
+            ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: false);
 
         // Return pooled records array if present
         if (_pooledRecordsArray is not null)
