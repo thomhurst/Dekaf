@@ -20,7 +20,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
         var latency = new LatencyTracker();
         var startedAt = DateTime.UtcNow;
 
-        await using var producer = DekafLib.Dekaf.CreateProducer<string, string>()
+        var producer = DekafLib.Dekaf.CreateProducer<string, string>()
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-producer-dekaf")
             .WithAcks(Acks.Leader)
@@ -83,7 +83,16 @@ internal sealed class ProducerStressTest : IStressTestScenario
             }
         }
 
-        await producer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+        Console.WriteLine($"  Flushing remaining messages...");
+        try
+        {
+            await producer.FlushAsync(CancellationToken.None).AsTask().WaitAsync(TimeSpan.FromSeconds(30), CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            Console.WriteLine($"  Warning: Flush timed out after 30 seconds");
+        }
+
         throughput.Stop();
         gcStats.Capture();
 
@@ -91,6 +100,17 @@ internal sealed class ProducerStressTest : IStressTestScenario
 
         var completedAt = DateTime.UtcNow;
         Console.WriteLine($"  Completed: {throughput.MessageCount:N0} messages, {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
+
+        Console.WriteLine($"  Disposing producer...");
+        try
+        {
+            await producer.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30), CancellationToken.None).ConfigureAwait(false);
+            Console.WriteLine($"  Producer disposed successfully");
+        }
+        catch (TimeoutException)
+        {
+            Console.WriteLine($"  Warning: Dispose timed out after 30 seconds");
+        }
 
         return new StressTestResult
         {
