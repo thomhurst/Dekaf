@@ -1,12 +1,14 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
+using Dekaf.Benchmarks.Infrastructure;
 using DekafLib = Dekaf;
 using DekafConsumer = Dekaf.Consumer;
 
-namespace Dekaf.Benchmarks;
+namespace Dekaf.Benchmarks.Benchmarks.Client;
 
 /// <summary>
-/// Benchmarks comparing Dekaf consumer vs Confluent.Kafka consumer.
+/// Consumer benchmarks comparing Dekaf vs Confluent.Kafka.
+/// Confluent is marked as baseline for ratio comparison.
 /// </summary>
 [MemoryDiagnoser]
 [SimpleJob(RunStrategy.Throughput, warmupCount: 2, iterationCount: 5)]
@@ -28,9 +30,8 @@ public class ConsumerBenchmarks
     [GlobalSetup]
     public async Task Setup()
     {
-        _kafka = await KafkaTestEnvironment.CreateAsync();
+        _kafka = await KafkaTestEnvironment.CreateAsync().ConfigureAwait(false);
 
-        // Setup producer for seeding data
         var confluentConfig = new Confluent.Kafka.ProducerConfig
         {
             BootstrapServers = _kafka.BootstrapServers,
@@ -42,11 +43,9 @@ public class ConsumerBenchmarks
     [IterationSetup]
     public void IterationSetup()
     {
-        // Create a fresh topic for each iteration to ensure clean state
         _topic = $"{TopicPrefix}{++_topicCounter}-{MessageCount}-{MessageSize}";
         _kafka.CreateTopicAsync(_topic, 1).GetAwaiter().GetResult();
 
-        // Seed the topic with messages
         var value = new string('x', MessageSize);
         for (var i = 0; i < MessageCount; i++)
         {
@@ -63,37 +62,13 @@ public class ConsumerBenchmarks
     public async Task Cleanup()
     {
         _confluentProducer.Dispose();
-        await _kafka.DisposeAsync();
+        await _kafka.DisposeAsync().ConfigureAwait(false);
     }
 
-    [Benchmark(Description = "Dekaf: Consume All Messages")]
-    public async Task<int> ConsumeAll_Dekaf()
-    {
-        var count = 0;
+    // ===== Consume All Messages =====
 
-        await using var consumer = DekafLib.Dekaf.CreateConsumer<string, string>()
-            .WithBootstrapServers(_kafka.BootstrapServers)
-            .WithClientId("dekaf-consumer-benchmark")
-            .WithGroupId($"dekaf-benchmark-{Guid.NewGuid():N}")
-            .WithAutoOffsetReset(DekafConsumer.AutoOffsetReset.Earliest)
-            .Build();
-
-        consumer.Subscribe(_topic);
-
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-
-        await foreach (var result in consumer.ConsumeAsync(cts.Token))
-        {
-            count++;
-            if (count >= MessageCount)
-                break;
-        }
-
-        return count;
-    }
-
-    [Benchmark(Description = "Confluent: Consume All Messages")]
-    public int ConsumeAll_Confluent()
+    [Benchmark(Baseline = true, Description = "Consume All")]
+    public int Confluent_ConsumeAll()
     {
         var count = 0;
 
@@ -123,23 +98,36 @@ public class ConsumerBenchmarks
         return count;
     }
 
-    [Benchmark(Description = "Dekaf: Poll Single Message")]
-    public async Task<DekafConsumer.ConsumeResult<string, string>?> PollSingle_Dekaf()
+    [Benchmark(Description = "Consume All")]
+    public async Task<int> Dekaf_ConsumeAll()
     {
+        var count = 0;
+
         await using var consumer = DekafLib.Dekaf.CreateConsumer<string, string>()
             .WithBootstrapServers(_kafka.BootstrapServers)
-            .WithClientId("dekaf-poll-benchmark")
-            .WithGroupId($"dekaf-poll-{Guid.NewGuid():N}")
+            .WithClientId("dekaf-consumer-benchmark")
+            .WithGroupId($"dekaf-benchmark-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(DekafConsumer.AutoOffsetReset.Earliest)
             .Build();
 
         consumer.Subscribe(_topic);
 
-        return await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await foreach (var result in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
+        {
+            count++;
+            if (count >= MessageCount)
+                break;
+        }
+
+        return count;
     }
 
-    [Benchmark(Description = "Confluent: Poll Single Message")]
-    public Confluent.Kafka.ConsumeResult<string, string>? PollSingle_Confluent()
+    // ===== Poll Single Message =====
+
+    [Benchmark(Baseline = true, Description = "Poll Single")]
+    public Confluent.Kafka.ConsumeResult<string, string>? Confluent_PollSingle()
     {
         var config = new Confluent.Kafka.ConsumerConfig
         {
@@ -156,5 +144,20 @@ public class ConsumerBenchmarks
         consumer.Close();
 
         return result;
+    }
+
+    [Benchmark(Description = "Poll Single")]
+    public async Task<DekafConsumer.ConsumeResult<string, string>?> Dekaf_PollSingle()
+    {
+        await using var consumer = DekafLib.Dekaf.CreateConsumer<string, string>()
+            .WithBootstrapServers(_kafka.BootstrapServers)
+            .WithClientId("dekaf-poll-benchmark")
+            .WithGroupId($"dekaf-poll-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(DekafConsumer.AutoOffsetReset.Earliest)
+            .Build();
+
+        consumer.Subscribe(_topic);
+
+        return await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
     }
 }

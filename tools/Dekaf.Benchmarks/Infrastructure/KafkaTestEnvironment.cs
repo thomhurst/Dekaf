@@ -1,6 +1,6 @@
 using Testcontainers.Kafka;
 
-namespace Dekaf.Benchmarks;
+namespace Dekaf.Benchmarks.Infrastructure;
 
 /// <summary>
 /// Manages a Kafka container for benchmarking.
@@ -17,13 +17,12 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
     public static async Task<KafkaTestEnvironment> CreateAsync()
     {
         var env = new KafkaTestEnvironment();
-        await env.StartAsync();
+        await env.StartAsync().ConfigureAwait(false);
         return env;
     }
 
     private async Task StartAsync()
     {
-        // Check for external Kafka (CI environment)
         var externalBootstrap = Environment.GetEnvironmentVariable("KAFKA_BOOTSTRAP_SERVERS");
         if (!string.IsNullOrEmpty(externalBootstrap))
         {
@@ -31,8 +30,7 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
             _externalKafka = true;
             Console.WriteLine($"Using external Kafka at {BootstrapServers}");
 
-            // Wait for external Kafka to be ready
-            await WaitForKafkaAsync();
+            await WaitForKafkaAsync().ConfigureAwait(false);
             return;
         }
 
@@ -42,13 +40,12 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
             .WithPortBinding(9092, true)
             .Build();
 
-        await _container.StartAsync();
+        await _container.StartAsync().ConfigureAwait(false);
 
         BootstrapServers = _container.GetBootstrapAddress();
         Console.WriteLine($"Kafka started at {BootstrapServers}");
 
-        // Wait for Kafka to be fully ready
-        await WaitForKafkaAsync();
+        await WaitForKafkaAsync().ConfigureAwait(false);
     }
 
     private async Task WaitForKafkaAsync()
@@ -78,7 +75,7 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
             }
 
             attempt++;
-            await Task.Delay(1000);
+            await Task.Delay(1000).ConfigureAwait(false);
         }
 
         throw new InvalidOperationException($"Kafka not ready after {maxAttempts} attempts");
@@ -88,7 +85,6 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
     {
         if (_externalKafka)
         {
-            // Use AdminClient for external Kafka
             using var adminClient = new Confluent.Kafka.AdminClientBuilder(
                 new Confluent.Kafka.AdminClientConfig { BootstrapServers = BootstrapServers })
                 .Build();
@@ -102,11 +98,10 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
                         NumPartitions = partitions,
                         ReplicationFactor = 1
                     }
-                ]);
+                ]).ConfigureAwait(false);
             }
             catch (Confluent.Kafka.Admin.CreateTopicsException ex)
             {
-                // Ignore if topic already exists
                 if (!ex.Message.Contains("already exists"))
                 {
                     Console.WriteLine($"Warning: Failed to create topic {topic}: {ex.Message}");
@@ -125,7 +120,7 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
             "--topic", topic,
             "--partitions", partitions.ToString(),
             "--replication-factor", "1"
-        ]);
+        ]).ConfigureAwait(false);
 
         if (result.ExitCode != 0)
         {
@@ -149,7 +144,7 @@ public sealed class KafkaTestEnvironment : IAsyncDisposable
         if (_container is not null)
         {
             Console.WriteLine("Stopping Kafka container...");
-            await _container.DisposeAsync();
+            await _container.DisposeAsync().ConfigureAwait(false);
         }
     }
 }

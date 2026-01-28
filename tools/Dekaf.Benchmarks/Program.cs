@@ -1,18 +1,15 @@
 using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Running;
-using Dekaf.Benchmarks;
 
 var config = DefaultConfig.Instance
     .WithOptions(ConfigOptions.DisableOptimizationsValidator);
 
-// Check for specific benchmark filter from command line
-if (args.Length > 0 && args[0] == "--filter")
-{
-    BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly)
-        .Run(args, config);
-}
-else
-{
-    // Run all benchmarks
-    BenchmarkRunner.Run(typeof(Program).Assembly, config);
-}
+// Pass all arguments to BenchmarkSwitcher for flexible filtering
+// Examples:
+//   dotnet run -c Release -- --filter "*Unit*"     (run unit benchmarks)
+//   dotnet run -c Release -- --filter "*Client*"   (run client benchmarks)
+//   dotnet run -c Release -- --filter "*Producer*" (run producer benchmarks)
+//   dotnet run -c Release                          (run all benchmarks)
+
+BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly)
+    .Run(args, config);

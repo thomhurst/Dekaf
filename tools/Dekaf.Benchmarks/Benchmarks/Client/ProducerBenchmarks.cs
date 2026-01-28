@@ -1,12 +1,14 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Engines;
+using Dekaf.Benchmarks.Infrastructure;
 using DekafLib = Dekaf;
 using DekafProducer = Dekaf.Producer;
 
-namespace Dekaf.Benchmarks;
+namespace Dekaf.Benchmarks.Benchmarks.Client;
 
 /// <summary>
-/// Benchmarks comparing Dekaf producer vs Confluent.Kafka producer.
+/// Producer benchmarks comparing Dekaf vs Confluent.Kafka.
+/// Confluent is marked as baseline for ratio comparison.
 /// </summary>
 [MemoryDiagnoser]
 [SimpleJob(RunStrategy.Throughput, warmupCount: 3, iterationCount: 10)]
@@ -28,13 +30,11 @@ public class ProducerBenchmarks
     [GlobalSetup]
     public async Task Setup()
     {
-        _kafka = await KafkaTestEnvironment.CreateAsync();
-        await _kafka.CreateTopicAsync(Topic, 3);
+        _kafka = await KafkaTestEnvironment.CreateAsync().ConfigureAwait(false);
+        await _kafka.CreateTopicAsync(Topic, 3).ConfigureAwait(false);
 
-        // Create message payload
         _messageValue = new string('x', MessageSize);
 
-        // Setup Dekaf producer
         _dekafProducer = DekafLib.Dekaf.CreateProducer<string, string>()
             .WithBootstrapServers(_kafka.BootstrapServers)
             .WithClientId("dekaf-benchmark")
@@ -43,7 +43,6 @@ public class ProducerBenchmarks
             .WithBatchSize(16384)
             .Build();
 
-        // Setup Confluent producer
         var confluentConfig = new Confluent.Kafka.ProducerConfig
         {
             BootstrapServers = _kafka.BootstrapServers,
@@ -51,17 +50,15 @@ public class ProducerBenchmarks
             Acks = Confluent.Kafka.Acks.Leader,
             LingerMs = 5,
             BatchSize = 16384,
-            QueueBufferingMaxMessages = 1000000  // Increase queue size for fire-and-forget benchmarks
+            QueueBufferingMaxMessages = 1000000
         };
         _confluentProducer = new Confluent.Kafka.ProducerBuilder<string, string>(confluentConfig).Build();
 
-        // Warm up
-        await WarmupAsync();
+        await WarmupAsync().ConfigureAwait(false);
     }
 
     private async Task WarmupAsync()
     {
-        // Send a few messages to warm up connections
         for (var i = 0; i < 10; i++)
         {
             await _dekafProducer.ProduceAsync(new DekafProducer.ProducerMessage<string, string>
@@ -69,28 +66,26 @@ public class ProducerBenchmarks
                 Topic = Topic,
                 Key = "warmup",
                 Value = "warmup"
-            });
+            }).ConfigureAwait(false);
 
             await _confluentProducer.ProduceAsync(Topic, new Confluent.Kafka.Message<string, string>
             {
                 Key = "warmup",
                 Value = "warmup"
-            });
+            }).ConfigureAwait(false);
         }
 
-        // Flush both producers after warmup
-        await _dekafProducer.FlushAsync();
+        await _dekafProducer.FlushAsync().ConfigureAwait(false);
         _confluentProducer.Flush(TimeSpan.FromSeconds(5));
     }
 
     [GlobalCleanup]
     public async Task Cleanup()
     {
-        // Flush any remaining messages from fire-and-forget benchmarks before disposing
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         try
         {
-            await _dekafProducer.FlushAsync(cts.Token);
+            await _dekafProducer.FlushAsync(cts.Token).ConfigureAwait(false);
         }
         catch
         {
@@ -98,53 +93,38 @@ public class ProducerBenchmarks
         }
         _confluentProducer.Flush(TimeSpan.FromSeconds(60));
 
-        await _dekafProducer.DisposeAsync();
+        await _dekafProducer.DisposeAsync().ConfigureAwait(false);
         _confluentProducer.Dispose();
-        await _kafka.DisposeAsync();
+        await _kafka.DisposeAsync().ConfigureAwait(false);
     }
 
-    [Benchmark(Description = "Dekaf: Single Message Produce")]
-    public async Task<DekafProducer.RecordMetadata> SingleProduce_Dekaf()
+    // ===== Single Message Produce =====
+
+    [Benchmark(Baseline = true, Description = "Single Produce")]
+    public async Task<Confluent.Kafka.DeliveryResult<string, string>> Confluent_ProduceSingle()
+    {
+        return await _confluentProducer.ProduceAsync(Topic, new Confluent.Kafka.Message<string, string>
+        {
+            Key = "key",
+            Value = _messageValue
+        }).ConfigureAwait(false);
+    }
+
+    [Benchmark(Description = "Single Produce")]
+    public async Task<DekafProducer.RecordMetadata> Dekaf_ProduceSingle()
     {
         return await _dekafProducer.ProduceAsync(new DekafProducer.ProducerMessage<string, string>
         {
             Topic = Topic,
             Key = "key",
             Value = _messageValue
-        });
+        }).ConfigureAwait(false);
     }
 
-    [Benchmark(Description = "Confluent: Single Message Produce")]
-    public async Task<Confluent.Kafka.DeliveryResult<string, string>> SingleProduce_Confluent()
-    {
-        return await _confluentProducer.ProduceAsync(Topic, new Confluent.Kafka.Message<string, string>
-        {
-            Key = "key",
-            Value = _messageValue
-        });
-    }
+    // ===== Batch Produce =====
 
-    [Benchmark(Description = "Dekaf: Batch Produce")]
-    public async Task BatchProduce_Dekaf()
-    {
-        // Convert ValueTasks to Tasks immediately - ValueTasks must not be stored
-        var tasks = new List<Task<DekafProducer.RecordMetadata>>(BatchSize);
-
-        for (var i = 0; i < BatchSize; i++)
-        {
-            tasks.Add(_dekafProducer.ProduceAsync(new DekafProducer.ProducerMessage<string, string>
-            {
-                Topic = Topic,
-                Key = $"key-{i}",
-                Value = _messageValue
-            }).AsTask());  // Convert ValueTask to Task immediately
-        }
-
-        await Task.WhenAll(tasks);
-    }
-
-    [Benchmark(Description = "Confluent: Batch Produce")]
-    public async Task BatchProduce_Confluent()
+    [Benchmark(Baseline = true, Description = "Batch Produce")]
+    public async Task Confluent_ProduceBatch()
     {
         var tasks = new List<Task<Confluent.Kafka.DeliveryResult<string, string>>>(BatchSize);
 
@@ -157,34 +137,31 @@ public class ProducerBenchmarks
             }));
         }
 
-        await Task.WhenAll(tasks);
+        await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
-    [Benchmark(Description = "Dekaf: Fire-and-Forget Send")]
-    public void FireAndForget_Dekaf()
+    [Benchmark(Description = "Batch Produce")]
+    public async Task Dekaf_ProduceBatch()
     {
+        var tasks = new List<Task<DekafProducer.RecordMetadata>>(BatchSize);
+
         for (var i = 0; i < BatchSize; i++)
         {
-            _dekafProducer.Send(new DekafProducer.ProducerMessage<string, string>
+            tasks.Add(_dekafProducer.ProduceAsync(new DekafProducer.ProducerMessage<string, string>
             {
                 Topic = Topic,
                 Key = $"key-{i}",
                 Value = _messageValue
-            });
+            }).AsTask());
         }
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
-    [Benchmark(Description = "Dekaf: Fire-and-Forget Direct")]
-    public void FireAndForget_Dekaf_Direct()
-    {
-        for (var i = 0; i < BatchSize; i++)
-        {
-            _dekafProducer.Send(Topic, $"key-{i}", _messageValue);
-        }
-    }
+    // ===== Fire-and-Forget =====
 
-    [Benchmark(Description = "Confluent: Fire-and-Forget Produce")]
-    public void FireAndForget_Confluent()
+    [Benchmark(Baseline = true, Description = "Fire-and-Forget")]
+    public void Confluent_FireAndForget()
     {
         for (var i = 0; i < BatchSize; i++)
         {
@@ -193,6 +170,15 @@ public class ProducerBenchmarks
                 Key = $"key-{i}",
                 Value = _messageValue
             });
+        }
+    }
+
+    [Benchmark(Description = "Fire-and-Forget")]
+    public void Dekaf_FireAndForget()
+    {
+        for (var i = 0; i < BatchSize; i++)
+        {
+            _dekafProducer.Send(Topic, $"key-{i}", _messageValue);
         }
     }
 }

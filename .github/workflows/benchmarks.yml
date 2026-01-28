@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       benchmark_filter:
-        description: 'Benchmark filter (e.g., *Serialization*, *Producer*)'
+        description: 'Benchmark filter (e.g., *Unit*, *Client*, *Producer*)'
         required: false
-        default: '*Memory*'
+        default: '*'
 
 env:
   DOTNET_VERSION: '10.0.x'
@@ -17,8 +17,8 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
 jobs:
-  memory-benchmarks:
-    name: Memory Benchmarks
+  unit-benchmarks:
+    name: Unit Benchmarks
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -34,29 +34,24 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
           dotnet-quality: 'preview'
 
-      - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@v3
-        with:
-          versionSpec: '6.x'
-
-      - name: Run Memory Benchmarks
+      - name: Run Unit Benchmarks
         run: |
           dotnet build --configuration Release
           cd tools/Dekaf.Benchmarks
-          dotnet run -c Release -- --filter "*Memory*" --exporters json --artifacts ./BenchmarkResults/Memory
+          dotnet run -c Release -- --filter "*Unit*" --exporters json --artifacts ./BenchmarkResults/Unit
         continue-on-error: true
 
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-results-memory
+          name: benchmark-results-unit
           path: tools/Dekaf.Benchmarks/BenchmarkResults/
           retention-days: 30
 
-  serialization-benchmarks:
-    name: Serialization Benchmarks
+  client-benchmarks:
+    name: Client Benchmarks (Dekaf vs Confluent)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -69,47 +64,6 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
           dotnet-quality: 'preview'
-
-      - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@v3
-        with:
-          versionSpec: '6.x'
-
-      - name: Run Serialization Benchmarks
-        run: |
-          dotnet build --configuration Release
-          cd tools/Dekaf.Benchmarks
-          dotnet run -c Release -- --filter "*Serialization*" --exporters json --artifacts ./BenchmarkResults/Serialization
-        continue-on-error: true
-
-      - name: Upload Results
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results-serialization
-          path: tools/Dekaf.Benchmarks/BenchmarkResults/
-          retention-days: 30
-
-  producer-benchmarks:
-    name: Producer Benchmarks
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-          dotnet-quality: 'preview'
-
-      - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@v3
-        with:
-          versionSpec: '6.x'
 
       - name: Start Kafka
         run: |
@@ -127,13 +81,13 @@ jobs:
             sleep 2
           done
 
-      - name: Run Producer Benchmarks
+      - name: Run Client Benchmarks
         env:
           KAFKA_BOOTSTRAP_SERVERS: localhost:9092
         run: |
           dotnet build --configuration Release
           cd tools/Dekaf.Benchmarks
-          dotnet run -c Release -- --filter "*Producer*" --exporters json --artifacts ./BenchmarkResults/Producer
+          dotnet run -c Release -- --filter "*Client*" --exporters json --artifacts ./BenchmarkResults/Client
         continue-on-error: true
 
       - name: Stop Kafka
@@ -143,72 +97,14 @@ jobs:
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-results-producer
-          path: tools/Dekaf.Benchmarks/BenchmarkResults/
-          retention-days: 30
-
-  consumer-benchmarks:
-    name: Consumer Benchmarks
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-          dotnet-quality: 'preview'
-
-      - name: Install GitVersion
-        uses: gittools/actions/gitversion/setup@v3
-        with:
-          versionSpec: '6.x'
-
-      - name: Start Kafka
-        run: |
-          docker run -d --name kafka \
-            -p 9092:9092 \
-            apache/kafka:latest
-
-          echo "Waiting for Kafka to start..."
-          for i in {1..30}; do
-            if docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list 2>/dev/null; then
-              echo "Kafka is ready"
-              break
-            fi
-            echo "Attempt $i: Kafka not ready yet..."
-            sleep 2
-          done
-
-      - name: Run Consumer Benchmarks
-        env:
-          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
-        run: |
-          dotnet build --configuration Release
-          cd tools/Dekaf.Benchmarks
-          dotnet run -c Release -- --filter "*Consumer*" --exporters json --artifacts ./BenchmarkResults/Consumer
-        continue-on-error: true
-
-      - name: Stop Kafka
-        if: always()
-        run: docker rm -f kafka || true
-
-      - name: Upload Results
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results-consumer
+          name: benchmark-results-client
           path: tools/Dekaf.Benchmarks/BenchmarkResults/
           retention-days: 30
 
   benchmark-summary:
     name: Generate Summary
     runs-on: ubuntu-latest
-    needs: [memory-benchmarks, serialization-benchmarks, producer-benchmarks, consumer-benchmarks]
+    needs: [unit-benchmarks, client-benchmarks]
     if: always()
 
     steps:
@@ -241,7 +137,7 @@ jobs:
           def format_bytes(b):
               """Format bytes to appropriate unit"""
               if b is None or b == 0:
-                  return "0 B"
+                  return "**0 B** ✓"
               if b >= 1_048_576:
                   return f"{b / 1_048_576:.1f} MB"
               elif b >= 1_024:
@@ -263,126 +159,92 @@ jobs:
                                       benchmarks.append(b)
               return benchmarks
 
+          def get_ratio(dekaf_time, baseline_time):
+              """Calculate performance ratio"""
+              if baseline_time and dekaf_time:
+                  ratio = dekaf_time / baseline_time
+                  return f"{ratio:.2f}x"
+              return "-"
+
           output = []
           output.append("# Benchmark Results\n")
 
-          # Memory Benchmarks - Zero Allocation Focus
-          memory = load_benchmarks("Memory")
-          if memory:
-              output.append("## Memory Benchmarks (Zero-Allocation Protocol)\n")
+          # Unit Benchmarks
+          unit = load_benchmarks("Unit")
+          if unit:
+              output.append("## Unit Benchmarks (Zero-Allocation Protocol)\n")
               output.append("| Operation | Time | Allocated |")
               output.append("|-----------|------|-----------|")
-              for b in sorted(memory, key=lambda x: x.get('MethodTitle', x.get('Method', ''))):
+              for b in sorted(unit, key=lambda x: x.get('MethodTitle', x.get('Method', ''))):
                   name = b.get('MethodTitle', b.get('Method', ''))
                   mean = b['Statistics']['Mean']
                   alloc = b.get('Memory', {}).get('BytesAllocatedPerOperation', 0)
-                  zero = "**0 B** ✓" if alloc == 0 else format_bytes(alloc)
-                  output.append(f"| {name} | {format_time(mean)} | {zero} |")
+                  output.append(f"| {name} | {format_time(mean)} | {format_bytes(alloc)} |")
               output.append("")
 
-          # Serialization Benchmarks - Group by type
-          serial = load_benchmarks("Serialization")
-          if serial:
-              output.append("## Serialization Benchmarks\n")
+          # Client Benchmarks - Group by operation and show Dekaf vs Confluent
+          client = load_benchmarks("Client")
+          if client:
+              output.append("## Client Benchmarks (Dekaf vs Confluent.Kafka)\n")
 
-              # Group by operation type
-              dekaf_ops = [b for b in serial if 'Dekaf' in b.get('MethodTitle', b.get('Method', ''))]
-              baseline_ops = [b for b in serial if 'Baseline' in b.get('MethodTitle', b.get('Method', ''))]
+              # Group by parameters
+              by_params = {}
+              for b in client:
+                  params = b.get('Parameters', '')
+                  by_params.setdefault(params, []).append(b)
 
-              if dekaf_ops and baseline_ops:
-                  output.append("| Operation | Dekaf | Baseline | Allocated |")
-                  output.append("|-----------|-------|----------|-----------|")
+              for params in sorted(by_params.keys()):
+                  benches = by_params[params]
+                  if params:
+                      parts = dict(p.split('=') for p in params.split('&') if '=' in p)
+                      param_str = ", ".join(f"{k}={v}" for k, v in sorted(parts.items()))
+                      output.append(f"### {param_str}\n")
 
-                  # Match operations
+                  output.append("| Operation | Confluent | Dekaf | Ratio | Dekaf Allocated |")
+                  output.append("|-----------|-----------|-------|-------|-----------------|")
+
+                  # Match Dekaf and Confluent benchmarks
                   ops = {}
-                  for b in dekaf_ops:
-                      name = b.get('MethodTitle', b.get('Method', '')).replace('Dekaf Writer: ', '')
-                      ops.setdefault(name, {})['dekaf'] = b
-                  for b in baseline_ops:
-                      name = b.get('MethodTitle', b.get('Method', '')).replace('Baseline Writer: ', '')
-                      ops.setdefault(name, {})['baseline'] = b
+                  for b in benches:
+                      method = b.get('Method', '')
+                      desc = b.get('MethodTitle', method)
+                      if method.startswith('Confluent_'):
+                          op_name = desc
+                          ops.setdefault(op_name, {})['confluent'] = b
+                      elif method.startswith('Dekaf_'):
+                          op_name = desc
+                          ops.setdefault(op_name, {})['dekaf'] = b
 
-                  for name, pair in sorted(ops.items()):
-                      d = pair.get('dekaf')
-                      bl = pair.get('baseline')
-                      d_time = format_time(d['Statistics']['Mean']) if d else "-"
-                      b_time = format_time(bl['Statistics']['Mean']) if bl else "-"
-                      alloc = d.get('Memory', {}).get('BytesAllocatedPerOperation', 0) if d else 0
-                      zero = "**0 B** ✓" if alloc == 0 else format_bytes(alloc)
-                      output.append(f"| {name} | {d_time} | {b_time} | {zero} |")
-              output.append("")
+                  for op_name, pair in sorted(ops.items()):
+                      conf = pair.get('confluent')
+                      dekaf = pair.get('dekaf')
 
-          # Producer Benchmarks - Compare Dekaf vs Confluent
-          producer = load_benchmarks("Producer")
-          if producer:
-              output.append("## Producer Benchmarks (Dekaf vs Confluent.Kafka)\n")
+                      conf_time = format_time(conf['Statistics']['Mean']) if conf else "-"
+                      dekaf_time = format_time(dekaf['Statistics']['Mean']) if dekaf else "-"
 
-              # Group by test type and parameters
-              by_params = {}
-              for b in producer:
-                  params = b.get('Parameters', '')
-                  by_params.setdefault(params, []).append(b)
+                      ratio = "-"
+                      if conf and dekaf:
+                          ratio = get_ratio(dekaf['Statistics']['Mean'], conf['Statistics']['Mean'])
 
-              for params in sorted(by_params.keys()):
-                  benches = by_params[params]
-                  if params:
-                      # Parse params for header
-                      parts = dict(p.split('=') for p in params.split('&') if '=' in p)
-                      msg_size = parts.get('MessageSize', '?')
-                      batch = parts.get('BatchSize', '?')
-                      output.append(f"**Message: {msg_size}B, Batch: {batch}**\n")
+                      alloc = dekaf.get('Memory', {}).get('BytesAllocatedPerOperation', 0) if dekaf else 0
 
-                  output.append("| Benchmark | Time | Allocated |")
-                  output.append("|-----------|------|-----------|")
+                      output.append(f"| {op_name} | {conf_time} | {dekaf_time} | {ratio} | {format_bytes(alloc)} |")
 
-                  for b in sorted(benches, key=lambda x: x.get('MethodTitle', '')):
-                      name = b.get('MethodTitle', b.get('Method', ''))
-                      mean = b['Statistics']['Mean']
-                      alloc = b.get('Memory', {}).get('BytesAllocatedPerOperation', 0)
-                      zero = "**0 B** ✓" if alloc == 0 else format_bytes(alloc)
-                      output.append(f"| {name} | {format_time(mean)} | {zero} |")
-                  output.append("")
-
-          # Consumer Benchmarks
-          consumer = load_benchmarks("Consumer")
-          if consumer:
-              output.append("## Consumer Benchmarks (Dekaf vs Confluent.Kafka)\n")
-
-              by_params = {}
-              for b in consumer:
-                  params = b.get('Parameters', '')
-                  by_params.setdefault(params, []).append(b)
-
-              for params in sorted(by_params.keys()):
-                  benches = by_params[params]
-                  if params:
-                      parts = dict(p.split('=') for p in params.split('&') if '=' in p)
-                      count = parts.get('MessageCount', '?')
-                      size = parts.get('MessageSize', '?')
-                      output.append(f"**{count} messages × {size}B**\n")
-
-                  output.append("| Benchmark | Time | Allocated |")
-                  output.append("|-----------|------|-----------|")
-
-                  for b in sorted(benches, key=lambda x: x.get('MethodTitle', '')):
-                      name = b.get('MethodTitle', b.get('Method', ''))
-                      mean = b['Statistics']['Mean']
-                      alloc = b.get('Memory', {}).get('BytesAllocatedPerOperation', 0)
-                      output.append(f"| {name} | {format_time(mean)} | {format_bytes(alloc)} |")
                   output.append("")
 
           output.append("---\n")
-          output.append("*Benchmarks run on GitHub Actions (ubuntu-latest) against Apache Kafka in Docker*")
+          output.append("*Benchmarks run on GitHub Actions (ubuntu-latest)*\n")
+          output.append("*Ratio < 1.0 means Dekaf is faster*")
 
           # Write to summary
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
               f.write('\n'.join(output))
           EOF
 
-  benchmark-comparison:
+  benchmark-history:
     name: Store Benchmark History
     runs-on: ubuntu-latest
-    needs: [memory-benchmarks, serialization-benchmarks, producer-benchmarks, consumer-benchmarks]
+    needs: [unit-benchmarks, client-benchmarks]
     if: github.ref == 'refs/heads/main'
 
     permissions:
@@ -401,11 +263,8 @@ jobs:
 
       - name: Combine Benchmark Results
         run: |
-          # Find all BenchmarkDotNet JSON result files and combine them
           mkdir -p combined-results
 
-          # Create a combined JSON file with all benchmarks
-          # Filter out benchmarks with null Statistics (these fail github-action-benchmark)
           python3 << 'EOF'
           import json
           import os
@@ -419,7 +278,6 @@ jobs:
                       with open(path) as fp:
                           data = json.load(fp)
                           for bench in data.get('Benchmarks', []):
-                              # Only include benchmarks with valid Statistics
                               stats = bench.get('Statistics')
                               if stats is not None and stats.get('Mean') is not None:
                                   combined['Benchmarks'].append(bench)
