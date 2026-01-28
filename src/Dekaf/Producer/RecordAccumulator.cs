@@ -1259,11 +1259,11 @@ internal sealed class PartitionBatchPool
 /// Uses ArrayPool-backed arrays instead of List to eliminate allocations.
 ///
 /// Thread-safety: Multiple threads can call TryAppend concurrently (via ConcurrentDictionary.AddOrUpdate),
-/// so we use a SpinLock to protect array mutations and field updates. SpinLock is ideal here because:
+/// so we use CAS-based exclusive access to protect array mutations and field updates. This is ideal because:
 /// - Critical sections are very short (<100ns)
 /// - Lock is per-partition, so no cross-partition contention
-/// - Avoids the ~20ns overhead of Monitor for short-held locks
-/// Complete() uses Interlocked for lock-free idempotent completion.
+/// - CAS is faster than SpinLock/Monitor for the common single-producer case
+/// Complete() coordinates with TryAppend via the same _exclusiveAccess flag.
 /// </summary>
 internal sealed class PartitionBatch
 {
@@ -1288,23 +1288,15 @@ internal sealed class PartitionBatch
     private RecordHeader[][] _pooledHeaderArrays;
     private int _pooledHeaderArrayCount;
 
-    // SpinLock for short critical sections - lower overhead than Monitor for <100ns holds
-    // IMPORTANT: SpinLock is a struct, must never be copied. Access via ref only.
-    private SpinLock _spinLock = new(enableThreadOwnerTracking: false);
-
-    // Exclusive access flag for lock-free single-producer optimization.
+    // Exclusive access flag for CAS-based synchronization.
     // Uses Interlocked.CompareExchange for atomic claim/release:
     // - 0 = no one is currently appending (available)
-    // - Non-zero = a thread is currently appending (busy)
+    // - 1 = a thread is currently appending (busy)
     //
-    // This replaces the previous ownership-based optimization which had a race condition
-    // where the fast path (checking ownership) could run concurrently with the slow path
-    // (acquiring SpinLock and claiming ownership).
-    //
-    // The new approach uses CAS to atomically claim exclusive access:
-    // 1. CAS(0 -> 1): If success, we have exclusive access, proceed without SpinLock
-    // 2. CAS fails: Someone else is appending, fall back to SpinWait loop
-    // 3. After append, set back to 0 to release
+    // All append methods and Complete() coordinate via this flag:
+    // 1. CAS(0 -> 1): If success, we have exclusive access
+    // 2. CAS fails: Someone else has access, spin wait until available
+    // 3. After work completes, set back to 0 to release
     //
     // This is correct because:
     // - Only one thread can win the CAS at a time
@@ -1400,9 +1392,6 @@ internal sealed class PartitionBatch
         _isCompleted = 0;
         _completedBatch = null;
         _exclusiveAccess = 0;
-
-        // Reset SpinLock to clear any thread-tracking state
-        _spinLock = new SpinLock(enableThreadOwnerTracking: false);
     }
 
     /// <summary>
@@ -1875,11 +1864,15 @@ internal sealed class PartitionBatch
         if (items.Length == 0 || startIndex >= items.Length)
             return 0;
 
-        var lockTaken = false;
+        // Use CAS-based locking to coordinate with Complete() which also uses _exclusiveAccess
+        var spinner = new SpinWait();
+        while (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) != 0)
+        {
+            spinner.SpinOnce();
+        }
+
         try
         {
-            _spinLock.Enter(ref lockTaken);
-
             // Check if batch was completed while we were waiting for the lock.
             if (Volatile.Read(ref _isCompleted) != 0)
             {
@@ -1955,7 +1948,7 @@ internal sealed class PartitionBatch
         }
         finally
         {
-            if (lockTaken) _spinLock.Exit();
+            Volatile.Write(ref _exclusiveAccess, 0);
         }
     }
 
