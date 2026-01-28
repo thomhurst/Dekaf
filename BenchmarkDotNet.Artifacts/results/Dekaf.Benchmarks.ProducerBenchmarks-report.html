@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>Dekaf.Benchmarks.ProducerBenchmarks-20260127-231355</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.14.0, Ubuntu 25.10 (Questing Quokka)
+12th Gen Intel Core i7-12700K, 1 CPU, 20 logical and 12 physical cores
+.NET SDK 10.0.100
+  [Host]     : .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+  Job-XAIQOV : .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+  Job-FNUAAK : .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+</code></pre>
+<pre><code>IterationCount=10  RunStrategy=Throughput  WarmupCount=3  
+</code></pre>
+
+<table>
+<thead><tr><th>Method                        </th><th>Job </th><th>InvocationCount</th><th>UnrollFactor</th><th>MessageSize</th><th>BatchSize</th><th>Mean</th><th>Error</th>
+</tr>
+</thead><tbody><tr><td>&#39;Dekaf: Single Message Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>100</td><td>100</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Confluent: Single Message Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>100</td><td>100</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Dekaf: Batch Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>100</td><td>100</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Confluent: Batch Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>100</td><td>100</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Dekaf: Fire-and-Forget Send&#39;</td><td>Job-FNUAAK</td><td>Default</td><td>16</td><td>100</td><td>100</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Dekaf: Fire-and-Forget Direct&#39;</td><td>Job-FNUAAK</td><td>Default</td><td>16</td><td>100</td><td>100</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Confluent: Fire-and-Forget Produce&#39;</td><td>Job-FNUAAK</td><td>Default</td><td>16</td><td>100</td><td>100</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Dekaf: Single Message Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>100</td><td>1000</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Confluent: Single Message Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>100</td><td>1000</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Dekaf: Batch Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>100</td><td>1000</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Confluent: Batch Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>100</td><td>1000</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Dekaf: Fire-and-Forget Send&#39;</td><td>Job-FNUAAK</td><td>Default</td><td>16</td><td>100</td><td>1000</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Dekaf: Fire-and-Forget Direct&#39;</td><td>Job-FNUAAK</td><td>Default</td><td>16</td><td>100</td><td>1000</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Confluent: Fire-and-Forget Produce&#39;</td><td>Job-FNUAAK</td><td>Default</td><td>16</td><td>100</td><td>1000</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Dekaf: Single Message Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>1000</td><td>100</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Confluent: Single Message Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>1000</td><td>100</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Dekaf: Batch Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>1000</td><td>100</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Confluent: Batch Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>1000</td><td>100</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Dekaf: Fire-and-Forget Send&#39;</td><td>Job-FNUAAK</td><td>Default</td><td>16</td><td>1000</td><td>100</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Dekaf: Fire-and-Forget Direct&#39;</td><td>Job-FNUAAK</td><td>Default</td><td>16</td><td>1000</td><td>100</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Confluent: Fire-and-Forget Produce&#39;</td><td>Job-FNUAAK</td><td>Default</td><td>16</td><td>1000</td><td>100</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Dekaf: Single Message Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>1000</td><td>1000</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Confluent: Single Message Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>1000</td><td>1000</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Dekaf: Batch Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>1000</td><td>1000</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Confluent: Batch Produce&#39;</td><td>Job-XAIQOV</td><td>1</td><td>1</td><td>1000</td><td>1000</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Dekaf: Fire-and-Forget Send&#39;</td><td>Job-FNUAAK</td><td>Default</td><td>16</td><td>1000</td><td>1000</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Dekaf: Fire-and-Forget Direct&#39;</td><td>Job-FNUAAK</td><td>Default</td><td>16</td><td>1000</td><td>1000</td><td>NA</td><td>NA</td>
+</tr><tr><td>&#39;Confluent: Fire-and-Forget Produce&#39;</td><td>Job-FNUAAK</td><td>Default</td><td>16</td><td>1000</td><td>1000</td><td>NA</td><td>NA</td>
+</tr></tbody></table>
+</body>
+</html>

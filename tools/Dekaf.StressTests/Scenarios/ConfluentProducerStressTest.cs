@@ -64,6 +64,12 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
                 latency.RecordTicks(System.Diagnostics.Stopwatch.GetTimestamp() - start);
                 throughput.RecordMessage(options.MessageSizeBytes);
                 messageIndex++;
+
+                // Yield periodically to keep system responsive
+                if (messageIndex % 100_000 == 0)
+                {
+                    await Task.Yield();
+                }
             }
             catch (OperationCanceledException)
             {

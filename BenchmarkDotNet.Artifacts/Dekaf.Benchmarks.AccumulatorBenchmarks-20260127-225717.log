@@ -1,0 +1,2985 @@
+// Validating benchmarks:
+// ***** BenchmarkRunner: Start   *****
+// ***** Found 28 benchmark(s) in total *****
+// ***** Building 1 exe(s) in Parallel: Start   *****
+// start dotnet  restore /p:UseSharedCompilation=false /p:BuildInParallel=false /m:1 /p:Deterministic=true /p:Optimize=true /p:IntermediateOutputPath="/home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/obj/Release/net10.0/" /p:OutDir="/home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0/" /p:OutputPath="/home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0/" in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316
+// command took 0.93 sec and exited with 0
+// start dotnet  build -c Release --no-restore /p:UseSharedCompilation=false /p:BuildInParallel=false /m:1 /p:Deterministic=true /p:Optimize=true /p:IntermediateOutputPath="/home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/obj/Release/net10.0/" /p:OutDir="/home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0/" /p:OutputPath="/home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0/" --output "/home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0/" in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316
+// command took 11.89 sec and exited with 0
+// ***** Done, took 00:00:12 (12.9 sec)   *****
+// Found 28 benchmarks:
+//   AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+//   AccumulatorBenchmarks.'Serialize Only (Key + Value)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+//   AccumulatorBenchmarks.'String Interpolation Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+//   AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+//   AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+//   AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+//   AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+//   AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+//   AccumulatorBenchmarks.'Serialize Only (Key + Value)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+//   AccumulatorBenchmarks.'String Interpolation Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+//   AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+//   AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+//   AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+//   AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+//   AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+//   AccumulatorBenchmarks.'Serialize Only (Key + Value)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+//   AccumulatorBenchmarks.'String Interpolation Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+//   AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+//   AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+//   AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+//   AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+//   AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+//   AccumulatorBenchmarks.'Serialize Only (Key + Value)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+//   AccumulatorBenchmarks.'String Interpolation Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+//   AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+//   AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+//   AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+//   AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 126 127 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.SerializeAndAccumulate(MessageSize: 100, BatchSize: 100)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 0 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-UMKZKO(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 192310.00 ns, 192.3100 us/op
+WorkloadJitting  1: 1 op, 5159745.00 ns, 5.1597 ms/op
+
+OverheadWarmup   1: 1 op, 178.00 ns, 178.0000 ns/op
+OverheadWarmup   2: 1 op, 160.00 ns, 160.0000 ns/op
+OverheadWarmup   3: 1 op, 40.00 ns, 40.0000 ns/op
+OverheadWarmup   4: 1 op, 105.00 ns, 105.0000 ns/op
+OverheadWarmup   5: 1 op, 178.00 ns, 178.0000 ns/op
+OverheadWarmup   6: 1 op, 198.00 ns, 198.0000 ns/op
+OverheadWarmup   7: 1 op, 127.00 ns, 127.0000 ns/op
+OverheadWarmup   8: 1 op, 106.00 ns, 106.0000 ns/op
+OverheadWarmup   9: 1 op, 76.00 ns, 76.0000 ns/op
+OverheadWarmup  10: 1 op, 80.00 ns, 80.0000 ns/op
+
+OverheadActual   1: 1 op, 174.00 ns, 174.0000 ns/op
+OverheadActual   2: 1 op, 205.00 ns, 205.0000 ns/op
+OverheadActual   3: 1 op, 194.00 ns, 194.0000 ns/op
+OverheadActual   4: 1 op, 205.00 ns, 205.0000 ns/op
+OverheadActual   5: 1 op, 200.00 ns, 200.0000 ns/op
+OverheadActual   6: 1 op, 143.00 ns, 143.0000 ns/op
+OverheadActual   7: 1 op, 138.00 ns, 138.0000 ns/op
+OverheadActual   8: 1 op, 108.00 ns, 108.0000 ns/op
+OverheadActual   9: 1 op, 92.00 ns, 92.0000 ns/op
+OverheadActual  10: 1 op, 68.00 ns, 68.0000 ns/op
+OverheadActual  11: 1 op, 93.00 ns, 93.0000 ns/op
+OverheadActual  12: 1 op, 78.00 ns, 78.0000 ns/op
+OverheadActual  13: 1 op, 94.00 ns, 94.0000 ns/op
+OverheadActual  14: 1 op, 78.00 ns, 78.0000 ns/op
+OverheadActual  15: 1 op, 92.00 ns, 92.0000 ns/op
+OverheadActual  16: 1 op, 85.00 ns, 85.0000 ns/op
+OverheadActual  17: 1 op, 99.00 ns, 99.0000 ns/op
+OverheadActual  18: 1 op, 210.00 ns, 210.0000 ns/op
+OverheadActual  19: 1 op, 190.00 ns, 190.0000 ns/op
+OverheadActual  20: 1 op, 148.00 ns, 148.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 221704.00 ns, 221.7040 us/op
+WorkloadWarmup   2: 1 op, 42608.00 ns, 42.6080 us/op
+WorkloadWarmup   3: 1 op, 39331.00 ns, 39.3310 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 45303.00 ns, 45.3030 us/op
+WorkloadActual   2: 1 op, 39583.00 ns, 39.5830 us/op
+WorkloadActual   3: 1 op, 38582.00 ns, 38.5820 us/op
+WorkloadActual   4: 1 op, 38601.00 ns, 38.6010 us/op
+WorkloadActual   5: 1 op, 37915.00 ns, 37.9150 us/op
+WorkloadActual   6: 1 op, 38330.00 ns, 38.3300 us/op
+WorkloadActual   7: 1 op, 38335.00 ns, 38.3350 us/op
+WorkloadActual   8: 1 op, 38797.00 ns, 38.7970 us/op
+WorkloadActual   9: 1 op, 39702.00 ns, 39.7020 us/op
+WorkloadActual  10: 1 op, 38419.00 ns, 38.4190 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 39460.00 ns, 39.4600 us/op
+WorkloadResult   2: 1 op, 38459.00 ns, 38.4590 us/op
+WorkloadResult   3: 1 op, 38478.00 ns, 38.4780 us/op
+WorkloadResult   4: 1 op, 37792.00 ns, 37.7920 us/op
+WorkloadResult   5: 1 op, 38207.00 ns, 38.2070 us/op
+WorkloadResult   6: 1 op, 38212.00 ns, 38.2120 us/op
+WorkloadResult   7: 1 op, 38674.00 ns, 38.6740 us/op
+WorkloadResult   8: 1 op, 39579.00 ns, 39.5790 us/op
+WorkloadResult   9: 1 op, 38296.00 ns, 38.2960 us/op
+// GC:  0 0 0 8072 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154638 has exited with code 0.
+
+Mean = 38.573 μs, StdErr = 0.197 μs (0.51%), N = 9, StdDev = 0.590 μs
+Min = 37.792 μs, Q1 = 38.212 μs, Median = 38.459 μs, Q3 = 38.674 μs, Max = 39.579 μs
+IQR = 0.462 μs, LowerFence = 37.519 μs, UpperFence = 39.367 μs
+ConfidenceInterval = [37.582 μs; 39.564 μs] (CI 99.9%), Margin = 0.991 μs (2.57% of Mean)
+Skewness = 0.61, Kurtosis = 1.89, MValue = 2
+
+// ** Remained 27 (96.4%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Serialize Only (Key + Value)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 126 127 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.SerializeOnly(MessageSize: 100, BatchSize: 100)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 1 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-NDTFVW(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 197351.00 ns, 197.3510 us/op
+WorkloadJitting  1: 1 op, 943209.00 ns, 943.2090 us/op
+
+OverheadWarmup   1: 1 op, 345.00 ns, 345.0000 ns/op
+OverheadWarmup   2: 1 op, 317.00 ns, 317.0000 ns/op
+OverheadWarmup   3: 1 op, 160.00 ns, 160.0000 ns/op
+OverheadWarmup   4: 1 op, 148.00 ns, 148.0000 ns/op
+OverheadWarmup   5: 1 op, 184.00 ns, 184.0000 ns/op
+OverheadWarmup   6: 1 op, 140.00 ns, 140.0000 ns/op
+OverheadWarmup   7: 1 op, 118.00 ns, 118.0000 ns/op
+OverheadWarmup   8: 1 op, 96.00 ns, 96.0000 ns/op
+OverheadWarmup   9: 1 op, 104.00 ns, 104.0000 ns/op
+OverheadWarmup  10: 1 op, 138.00 ns, 138.0000 ns/op
+
+OverheadActual   1: 1 op, 212.00 ns, 212.0000 ns/op
+OverheadActual   2: 1 op, 194.00 ns, 194.0000 ns/op
+OverheadActual   3: 1 op, 194.00 ns, 194.0000 ns/op
+OverheadActual   4: 1 op, 112.00 ns, 112.0000 ns/op
+OverheadActual   5: 1 op, 181.00 ns, 181.0000 ns/op
+OverheadActual   6: 1 op, 133.00 ns, 133.0000 ns/op
+OverheadActual   7: 1 op, 147.00 ns, 147.0000 ns/op
+OverheadActual   8: 1 op, 88.00 ns, 88.0000 ns/op
+OverheadActual   9: 1 op, 46.00 ns, 46.0000 ns/op
+OverheadActual  10: 1 op, 98.00 ns, 98.0000 ns/op
+OverheadActual  11: 1 op, 65.00 ns, 65.0000 ns/op
+OverheadActual  12: 1 op, 35.00 ns, 35.0000 ns/op
+OverheadActual  13: 1 op, 107.00 ns, 107.0000 ns/op
+OverheadActual  14: 1 op, 98.00 ns, 98.0000 ns/op
+OverheadActual  15: 1 op, 104.00 ns, 104.0000 ns/op
+OverheadActual  16: 1 op, 97.00 ns, 97.0000 ns/op
+OverheadActual  17: 1 op, 98.00 ns, 98.0000 ns/op
+OverheadActual  18: 1 op, 176.00 ns, 176.0000 ns/op
+OverheadActual  19: 1 op, 112.00 ns, 112.0000 ns/op
+OverheadActual  20: 1 op, 101.00 ns, 101.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 22917.00 ns, 22.9170 us/op
+WorkloadWarmup   2: 1 op, 19471.00 ns, 19.4710 us/op
+WorkloadWarmup   3: 1 op, 19447.00 ns, 19.4470 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 21237.00 ns, 21.2370 us/op
+WorkloadActual   2: 1 op, 18942.00 ns, 18.9420 us/op
+WorkloadActual   3: 1 op, 19102.00 ns, 19.1020 us/op
+WorkloadActual   4: 1 op, 19162.00 ns, 19.1620 us/op
+WorkloadActual   5: 1 op, 19005.00 ns, 19.0050 us/op
+WorkloadActual   6: 1 op, 19064.00 ns, 19.0640 us/op
+WorkloadActual   7: 1 op, 18934.00 ns, 18.9340 us/op
+WorkloadActual   8: 1 op, 18874.00 ns, 18.8740 us/op
+WorkloadActual   9: 1 op, 18686.00 ns, 18.6860 us/op
+WorkloadActual  10: 1 op, 18841.00 ns, 18.8410 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 18836.50 ns, 18.8365 us/op
+WorkloadResult   2: 1 op, 18996.50 ns, 18.9965 us/op
+WorkloadResult   3: 1 op, 19056.50 ns, 19.0565 us/op
+WorkloadResult   4: 1 op, 18899.50 ns, 18.8995 us/op
+WorkloadResult   5: 1 op, 18958.50 ns, 18.9585 us/op
+WorkloadResult   6: 1 op, 18828.50 ns, 18.8285 us/op
+WorkloadResult   7: 1 op, 18768.50 ns, 18.7685 us/op
+WorkloadResult   8: 1 op, 18580.50 ns, 18.5805 us/op
+WorkloadResult   9: 1 op, 18735.50 ns, 18.7355 us/op
+// GC:  0 0 0 4656 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154663 has exited with code 0.
+
+Mean = 18.851 μs, StdErr = 0.049 μs (0.26%), N = 9, StdDev = 0.146 μs
+Min = 18.581 μs, Q1 = 18.768 μs, Median = 18.837 μs, Q3 = 18.959 μs, Max = 19.056 μs
+IQR = 0.190 μs, LowerFence = 18.483 μs, UpperFence = 19.244 μs
+ConfidenceInterval = [18.605 μs; 19.097 μs] (CI 99.9%), Margin = 0.246 μs (1.30% of Mean)
+Skewness = -0.31, Kurtosis = 1.93, MValue = 2
+
+// ** Remained 26 (92.9%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'String Interpolation Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 126 127 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.StringInterpolationOnly(MessageSize: 100, BatchSize: 100)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 2 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-MFIECC(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 197071.00 ns, 197.0710 us/op
+WorkloadJitting  1: 1 op, 310207.00 ns, 310.2070 us/op
+
+OverheadWarmup   1: 1 op, 269.00 ns, 269.0000 ns/op
+OverheadWarmup   2: 1 op, 192.00 ns, 192.0000 ns/op
+OverheadWarmup   3: 1 op, 88.00 ns, 88.0000 ns/op
+OverheadWarmup   4: 1 op, 34.00 ns, 34.0000 ns/op
+OverheadWarmup   5: 1 op, 193.00 ns, 193.0000 ns/op
+OverheadWarmup   6: 1 op, 115.00 ns, 115.0000 ns/op
+OverheadWarmup   7: 1 op, 93.00 ns, 93.0000 ns/op
+OverheadWarmup   8: 1 op, 88.00 ns, 88.0000 ns/op
+OverheadWarmup   9: 1 op, 83.00 ns, 83.0000 ns/op
+OverheadWarmup  10: 1 op, 34.00 ns, 34.0000 ns/op
+
+OverheadActual   1: 1 op, 190.00 ns, 190.0000 ns/op
+OverheadActual   2: 1 op, 187.00 ns, 187.0000 ns/op
+OverheadActual   3: 1 op, 185.00 ns, 185.0000 ns/op
+OverheadActual   4: 1 op, 168.00 ns, 168.0000 ns/op
+OverheadActual   5: 1 op, 166.00 ns, 166.0000 ns/op
+OverheadActual   6: 1 op, 84.00 ns, 84.0000 ns/op
+OverheadActual   7: 1 op, 37.00 ns, 37.0000 ns/op
+OverheadActual   8: 1 op, 45.00 ns, 45.0000 ns/op
+OverheadActual   9: 1 op, 38.00 ns, 38.0000 ns/op
+OverheadActual  10: 1 op, 38.00 ns, 38.0000 ns/op
+OverheadActual  11: 1 op, 36.00 ns, 36.0000 ns/op
+OverheadActual  12: 1 op, 59.00 ns, 59.0000 ns/op
+OverheadActual  13: 1 op, 77.00 ns, 77.0000 ns/op
+OverheadActual  14: 1 op, 71.00 ns, 71.0000 ns/op
+OverheadActual  15: 1 op, 73.00 ns, 73.0000 ns/op
+OverheadActual  16: 1 op, 50.00 ns, 50.0000 ns/op
+OverheadActual  17: 1 op, 62.00 ns, 62.0000 ns/op
+OverheadActual  18: 1 op, 173.00 ns, 173.0000 ns/op
+OverheadActual  19: 1 op, 138.00 ns, 138.0000 ns/op
+OverheadActual  20: 1 op, 136.00 ns, 136.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 6794.00 ns, 6.7940 us/op
+WorkloadWarmup   2: 1 op, 5291.00 ns, 5.2910 us/op
+WorkloadWarmup   3: 1 op, 6099.00 ns, 6.0990 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 7045.00 ns, 7.0450 us/op
+WorkloadActual   2: 1 op, 5011.00 ns, 5.0110 us/op
+WorkloadActual   3: 1 op, 6068.00 ns, 6.0680 us/op
+WorkloadActual   4: 1 op, 5746.00 ns, 5.7460 us/op
+WorkloadActual   5: 1 op, 5722.00 ns, 5.7220 us/op
+WorkloadActual   6: 1 op, 5774.00 ns, 5.7740 us/op
+WorkloadActual   7: 1 op, 5573.00 ns, 5.5730 us/op
+WorkloadActual   8: 1 op, 5720.00 ns, 5.7200 us/op
+WorkloadActual   9: 1 op, 5645.00 ns, 5.6450 us/op
+WorkloadActual  10: 1 op, 5703.00 ns, 5.7030 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 4936.00 ns, 4.9360 us/op
+WorkloadResult   2: 1 op, 5671.00 ns, 5.6710 us/op
+WorkloadResult   3: 1 op, 5647.00 ns, 5.6470 us/op
+WorkloadResult   4: 1 op, 5699.00 ns, 5.6990 us/op
+WorkloadResult   5: 1 op, 5498.00 ns, 5.4980 us/op
+WorkloadResult   6: 1 op, 5645.00 ns, 5.6450 us/op
+WorkloadResult   7: 1 op, 5570.00 ns, 5.5700 us/op
+WorkloadResult   8: 1 op, 5628.00 ns, 5.6280 us/op
+// GC:  0 0 0 4656 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154710 has exited with code 0.
+
+Mean = 5.537 μs, StdErr = 0.089 μs (1.60%), N = 8, StdDev = 0.251 μs
+Min = 4.936 μs, Q1 = 5.552 μs, Median = 5.636 μs, Q3 = 5.653 μs, Max = 5.699 μs
+IQR = 0.101 μs, LowerFence = 5.401 μs, UpperFence = 5.804 μs
+ConfidenceInterval = [5.057 μs; 6.016 μs] (CI 99.9%), Margin = 0.479 μs (8.66% of Mean)
+Skewness = -1.64, Kurtosis = 4.16, MValue = 2
+
+// ** Remained 25 (89.3%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 126 127 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.TimestampOnly(MessageSize: 100, BatchSize: 100)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 3 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-KVPAAV(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 212182.00 ns, 212.1820 us/op
+WorkloadJitting  1: 1 op, 368487.00 ns, 368.4870 us/op
+
+OverheadWarmup   1: 1 op, 175.00 ns, 175.0000 ns/op
+OverheadWarmup   2: 1 op, 191.00 ns, 191.0000 ns/op
+OverheadWarmup   3: 1 op, 107.00 ns, 107.0000 ns/op
+OverheadWarmup   4: 1 op, 85.00 ns, 85.0000 ns/op
+OverheadWarmup   5: 1 op, 138.00 ns, 138.0000 ns/op
+OverheadWarmup   6: 1 op, 151.00 ns, 151.0000 ns/op
+OverheadWarmup   7: 1 op, 108.00 ns, 108.0000 ns/op
+
+OverheadActual   1: 1 op, 168.00 ns, 168.0000 ns/op
+OverheadActual   2: 1 op, 180.00 ns, 180.0000 ns/op
+OverheadActual   3: 1 op, 198.00 ns, 198.0000 ns/op
+OverheadActual   4: 1 op, 120.00 ns, 120.0000 ns/op
+OverheadActual   5: 1 op, 171.00 ns, 171.0000 ns/op
+OverheadActual   6: 1 op, 86.00 ns, 86.0000 ns/op
+OverheadActual   7: 1 op, 70.00 ns, 70.0000 ns/op
+OverheadActual   8: 1 op, 69.00 ns, 69.0000 ns/op
+OverheadActual   9: 1 op, 113.00 ns, 113.0000 ns/op
+OverheadActual  10: 1 op, 91.00 ns, 91.0000 ns/op
+OverheadActual  11: 1 op, 97.00 ns, 97.0000 ns/op
+OverheadActual  12: 1 op, 72.00 ns, 72.0000 ns/op
+OverheadActual  13: 1 op, 72.00 ns, 72.0000 ns/op
+OverheadActual  14: 1 op, 71.00 ns, 71.0000 ns/op
+OverheadActual  15: 1 op, 72.00 ns, 72.0000 ns/op
+OverheadActual  16: 1 op, 72.00 ns, 72.0000 ns/op
+OverheadActual  17: 1 op, 95.00 ns, 95.0000 ns/op
+OverheadActual  18: 1 op, 165.00 ns, 165.0000 ns/op
+OverheadActual  19: 1 op, 183.00 ns, 183.0000 ns/op
+OverheadActual  20: 1 op, 135.00 ns, 135.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 3989.00 ns, 3.9890 us/op
+WorkloadWarmup   2: 1 op, 3135.00 ns, 3.1350 us/op
+WorkloadWarmup   3: 1 op, 3235.00 ns, 3.2350 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 4607.00 ns, 4.6070 us/op
+WorkloadActual   2: 1 op, 4395.00 ns, 4.3950 us/op
+WorkloadActual   3: 1 op, 4472.00 ns, 4.4720 us/op
+WorkloadActual   4: 1 op, 3208.00 ns, 3.2080 us/op
+WorkloadActual   5: 1 op, 3389.00 ns, 3.3890 us/op
+WorkloadActual   6: 1 op, 2819.00 ns, 2.8190 us/op
+WorkloadActual   7: 1 op, 2800.00 ns, 2.8000 us/op
+WorkloadActual   8: 1 op, 2787.00 ns, 2.7870 us/op
+WorkloadActual   9: 1 op, 3168.00 ns, 3.1680 us/op
+WorkloadActual  10: 1 op, 3510.00 ns, 3.5100 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 4511.00 ns, 4.5110 us/op
+WorkloadResult   2: 1 op, 4299.00 ns, 4.2990 us/op
+WorkloadResult   3: 1 op, 4376.00 ns, 4.3760 us/op
+WorkloadResult   4: 1 op, 3112.00 ns, 3.1120 us/op
+WorkloadResult   5: 1 op, 3293.00 ns, 3.2930 us/op
+WorkloadResult   6: 1 op, 2723.00 ns, 2.7230 us/op
+WorkloadResult   7: 1 op, 2704.00 ns, 2.7040 us/op
+WorkloadResult   8: 1 op, 2691.00 ns, 2.6910 us/op
+WorkloadResult   9: 1 op, 3072.00 ns, 3.0720 us/op
+WorkloadResult  10: 1 op, 3414.00 ns, 3.4140 us/op
+// GC:  0 0 0 736 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154723 has exited with code 0.
+
+Mean = 3.420 μs, StdErr = 0.227 μs (6.64%), N = 10, StdDev = 0.718 μs
+Min = 2.691 μs, Q1 = 2.810 μs, Median = 3.203 μs, Q3 = 4.078 μs, Max = 4.511 μs
+IQR = 1.268 μs, LowerFence = 0.909 μs, UpperFence = 5.979 μs
+ConfidenceInterval = [2.334 μs; 4.505 μs] (CI 99.9%), Margin = 1.085 μs (31.74% of Mean)
+Skewness = 0.46, Kurtosis = 1.38, MValue = 2.86
+
+// ** Remained 24 (85.7%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 126 127 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.AccumulateSamePartition(MessageSize: 100, BatchSize: 100)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 4 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-GRISIJ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 189861.00 ns, 189.8610 us/op
+WorkloadJitting  1: 1 op, 5527936.00 ns, 5.5279 ms/op
+
+OverheadWarmup   1: 1 op, 328.00 ns, 328.0000 ns/op
+OverheadWarmup   2: 1 op, 135.00 ns, 135.0000 ns/op
+OverheadWarmup   3: 1 op, 97.00 ns, 97.0000 ns/op
+OverheadWarmup   4: 1 op, 98.00 ns, 98.0000 ns/op
+OverheadWarmup   5: 1 op, 218.00 ns, 218.0000 ns/op
+OverheadWarmup   6: 1 op, 599.00 ns, 599.0000 ns/op
+OverheadWarmup   7: 1 op, 89.00 ns, 89.0000 ns/op
+OverheadWarmup   8: 1 op, 67.00 ns, 67.0000 ns/op
+OverheadWarmup   9: 1 op, 66.00 ns, 66.0000 ns/op
+OverheadWarmup  10: 1 op, 90.00 ns, 90.0000 ns/op
+
+OverheadActual   1: 1 op, 338.00 ns, 338.0000 ns/op
+OverheadActual   2: 1 op, 273.00 ns, 273.0000 ns/op
+OverheadActual   3: 1 op, 1774.00 ns, 1.7740 us/op
+OverheadActual   4: 1 op, 187.00 ns, 187.0000 ns/op
+OverheadActual   5: 1 op, 249.00 ns, 249.0000 ns/op
+OverheadActual   6: 1 op, 103.00 ns, 103.0000 ns/op
+OverheadActual   7: 1 op, 57.00 ns, 57.0000 ns/op
+OverheadActual   8: 1 op, 88.00 ns, 88.0000 ns/op
+OverheadActual   9: 1 op, 94.00 ns, 94.0000 ns/op
+OverheadActual  10: 1 op, 59.00 ns, 59.0000 ns/op
+OverheadActual  11: 1 op, 77.00 ns, 77.0000 ns/op
+OverheadActual  12: 1 op, 91.00 ns, 91.0000 ns/op
+OverheadActual  13: 1 op, 124.00 ns, 124.0000 ns/op
+OverheadActual  14: 1 op, 89.00 ns, 89.0000 ns/op
+OverheadActual  15: 1 op, 86.00 ns, 86.0000 ns/op
+OverheadActual  16: 1 op, 89.00 ns, 89.0000 ns/op
+OverheadActual  17: 1 op, 84.00 ns, 84.0000 ns/op
+OverheadActual  18: 1 op, 320.00 ns, 320.0000 ns/op
+OverheadActual  19: 1 op, 90.00 ns, 90.0000 ns/op
+OverheadActual  20: 1 op, 85.00 ns, 85.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 51431.00 ns, 51.4310 us/op
+WorkloadWarmup   2: 1 op, 38094.00 ns, 38.0940 us/op
+WorkloadWarmup   3: 1 op, 35961.00 ns, 35.9610 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 40099.00 ns, 40.0990 us/op
+WorkloadActual   2: 1 op, 35893.00 ns, 35.8930 us/op
+WorkloadActual   3: 1 op, 35155.00 ns, 35.1550 us/op
+WorkloadActual   4: 1 op, 35362.00 ns, 35.3620 us/op
+WorkloadActual   5: 1 op, 34971.00 ns, 34.9710 us/op
+WorkloadActual   6: 1 op, 34595.00 ns, 34.5950 us/op
+WorkloadActual   7: 1 op, 34330.00 ns, 34.3300 us/op
+WorkloadActual   8: 1 op, 34552.00 ns, 34.5520 us/op
+WorkloadActual   9: 1 op, 35878.00 ns, 35.8780 us/op
+WorkloadActual  10: 1 op, 34586.00 ns, 34.5860 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 35802.50 ns, 35.8025 us/op
+WorkloadResult   2: 1 op, 35064.50 ns, 35.0645 us/op
+WorkloadResult   3: 1 op, 35271.50 ns, 35.2715 us/op
+WorkloadResult   4: 1 op, 34880.50 ns, 34.8805 us/op
+WorkloadResult   5: 1 op, 34504.50 ns, 34.5045 us/op
+WorkloadResult   6: 1 op, 34239.50 ns, 34.2395 us/op
+WorkloadResult   7: 1 op, 34461.50 ns, 34.4615 us/op
+WorkloadResult   8: 1 op, 35787.50 ns, 35.7875 us/op
+WorkloadResult   9: 1 op, 34495.50 ns, 34.4955 us/op
+// GC:  0 0 0 5480 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154732 has exited with code 0.
+
+Mean = 34.945 μs, StdErr = 0.194 μs (0.55%), N = 9, StdDev = 0.581 μs
+Min = 34.239 μs, Q1 = 34.495 μs, Median = 34.880 μs, Q3 = 35.272 μs, Max = 35.803 μs
+IQR = 0.776 μs, LowerFence = 33.331 μs, UpperFence = 36.435 μs
+ConfidenceInterval = [33.969 μs; 35.921 μs] (CI 99.9%), Margin = 0.976 μs (2.79% of Mean)
+Skewness = 0.35, Kurtosis = 1.4, MValue = 2
+
+// ** Remained 23 (82.1%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 126 127 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.AccumulateRotatingPartitions(MessageSize: 100, BatchSize: 100)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 5 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-VCQXEF(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 196192.00 ns, 196.1920 us/op
+WorkloadJitting  1: 1 op, 5234265.00 ns, 5.2343 ms/op
+
+OverheadWarmup   1: 1 op, 439.00 ns, 439.0000 ns/op
+OverheadWarmup   2: 1 op, 163.00 ns, 163.0000 ns/op
+OverheadWarmup   3: 1 op, 99.00 ns, 99.0000 ns/op
+OverheadWarmup   4: 1 op, 94.00 ns, 94.0000 ns/op
+OverheadWarmup   5: 1 op, 217.00 ns, 217.0000 ns/op
+OverheadWarmup   6: 1 op, 167.00 ns, 167.0000 ns/op
+OverheadWarmup   7: 1 op, 135.00 ns, 135.0000 ns/op
+OverheadWarmup   8: 1 op, 39.00 ns, 39.0000 ns/op
+OverheadWarmup   9: 1 op, 57.00 ns, 57.0000 ns/op
+OverheadWarmup  10: 1 op, 82.00 ns, 82.0000 ns/op
+
+OverheadActual   1: 1 op, 200.00 ns, 200.0000 ns/op
+OverheadActual   2: 1 op, 199.00 ns, 199.0000 ns/op
+OverheadActual   3: 1 op, 196.00 ns, 196.0000 ns/op
+OverheadActual   4: 1 op, 140.00 ns, 140.0000 ns/op
+OverheadActual   5: 1 op, 193.00 ns, 193.0000 ns/op
+OverheadActual   6: 1 op, 183.00 ns, 183.0000 ns/op
+OverheadActual   7: 1 op, 62.00 ns, 62.0000 ns/op
+OverheadActual   8: 1 op, 82.00 ns, 82.0000 ns/op
+OverheadActual   9: 1 op, 58.00 ns, 58.0000 ns/op
+OverheadActual  10: 1 op, 44.00 ns, 44.0000 ns/op
+OverheadActual  11: 1 op, 58.00 ns, 58.0000 ns/op
+OverheadActual  12: 1 op, 86.00 ns, 86.0000 ns/op
+OverheadActual  13: 1 op, 66.00 ns, 66.0000 ns/op
+OverheadActual  14: 1 op, 81.00 ns, 81.0000 ns/op
+OverheadActual  15: 1 op, 75.00 ns, 75.0000 ns/op
+OverheadActual  16: 1 op, 57.00 ns, 57.0000 ns/op
+OverheadActual  17: 1 op, 60.00 ns, 60.0000 ns/op
+OverheadActual  18: 1 op, 195.00 ns, 195.0000 ns/op
+OverheadActual  19: 1 op, 156.00 ns, 156.0000 ns/op
+OverheadActual  20: 1 op, 52.00 ns, 52.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 204078.00 ns, 204.0780 us/op
+WorkloadWarmup   2: 1 op, 42669.00 ns, 42.6690 us/op
+WorkloadWarmup   3: 1 op, 40485.00 ns, 40.4850 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 45103.00 ns, 45.1030 us/op
+WorkloadActual   2: 1 op, 40334.00 ns, 40.3340 us/op
+WorkloadActual   3: 1 op, 39829.00 ns, 39.8290 us/op
+WorkloadActual   4: 1 op, 39584.00 ns, 39.5840 us/op
+WorkloadActual   5: 1 op, 39076.00 ns, 39.0760 us/op
+WorkloadActual   6: 1 op, 39343.00 ns, 39.3430 us/op
+WorkloadActual   7: 1 op, 39456.00 ns, 39.4560 us/op
+WorkloadActual   8: 1 op, 39068.00 ns, 39.0680 us/op
+WorkloadActual   9: 1 op, 38645.00 ns, 38.6450 us/op
+WorkloadActual  10: 1 op, 39318.00 ns, 39.3180 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 40252.50 ns, 40.2525 us/op
+WorkloadResult   2: 1 op, 39747.50 ns, 39.7475 us/op
+WorkloadResult   3: 1 op, 39502.50 ns, 39.5025 us/op
+WorkloadResult   4: 1 op, 38994.50 ns, 38.9945 us/op
+WorkloadResult   5: 1 op, 39261.50 ns, 39.2615 us/op
+WorkloadResult   6: 1 op, 39374.50 ns, 39.3745 us/op
+WorkloadResult   7: 1 op, 38986.50 ns, 38.9865 us/op
+WorkloadResult   8: 1 op, 38563.50 ns, 38.5635 us/op
+WorkloadResult   9: 1 op, 39236.50 ns, 39.2365 us/op
+// GC:  0 0 0 8072 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154741 has exited with code 0.
+
+Mean = 39.324 μs, StdErr = 0.162 μs (0.41%), N = 9, StdDev = 0.486 μs
+Min = 38.563 μs, Q1 = 38.995 μs, Median = 39.261 μs, Q3 = 39.502 μs, Max = 40.252 μs
+IQR = 0.508 μs, LowerFence = 38.233 μs, UpperFence = 40.264 μs
+ConfidenceInterval = [38.508 μs; 40.141 μs] (CI 99.9%), Margin = 0.816 μs (2.08% of Mean)
+Skewness = 0.35, Kurtosis = 2.26, MValue = 2
+
+// ** Remained 22 (78.6%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 126 127 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.BatchAppendSamePartition(MessageSize: 100, BatchSize: 100)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 6 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-LZXRCO(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 207852.00 ns, 207.8520 us/op
+WorkloadJitting  1: 1 op, 5577421.00 ns, 5.5774 ms/op
+
+OverheadWarmup   1: 1 op, 201.00 ns, 201.0000 ns/op
+OverheadWarmup   2: 1 op, 154.00 ns, 154.0000 ns/op
+OverheadWarmup   3: 1 op, 88.00 ns, 88.0000 ns/op
+OverheadWarmup   4: 1 op, 99.00 ns, 99.0000 ns/op
+OverheadWarmup   5: 1 op, 219.00 ns, 219.0000 ns/op
+OverheadWarmup   6: 1 op, 171.00 ns, 171.0000 ns/op
+OverheadWarmup   7: 1 op, 76.00 ns, 76.0000 ns/op
+OverheadWarmup   8: 1 op, 58.00 ns, 58.0000 ns/op
+OverheadWarmup   9: 1 op, 92.00 ns, 92.0000 ns/op
+OverheadWarmup  10: 1 op, 110.00 ns, 110.0000 ns/op
+
+OverheadActual   1: 1 op, 178.00 ns, 178.0000 ns/op
+OverheadActual   2: 1 op, 175.00 ns, 175.0000 ns/op
+OverheadActual   3: 1 op, 173.00 ns, 173.0000 ns/op
+OverheadActual   4: 1 op, 185.00 ns, 185.0000 ns/op
+OverheadActual   5: 1 op, 171.00 ns, 171.0000 ns/op
+OverheadActual   6: 1 op, 121.00 ns, 121.0000 ns/op
+OverheadActual   7: 1 op, 73.00 ns, 73.0000 ns/op
+OverheadActual   8: 1 op, 59.00 ns, 59.0000 ns/op
+OverheadActual   9: 1 op, 42.00 ns, 42.0000 ns/op
+OverheadActual  10: 1 op, 55.00 ns, 55.0000 ns/op
+OverheadActual  11: 1 op, 42.00 ns, 42.0000 ns/op
+OverheadActual  12: 1 op, 83.00 ns, 83.0000 ns/op
+OverheadActual  13: 1 op, 90.00 ns, 90.0000 ns/op
+OverheadActual  14: 1 op, 90.00 ns, 90.0000 ns/op
+OverheadActual  15: 1 op, 73.00 ns, 73.0000 ns/op
+OverheadActual  16: 1 op, 78.00 ns, 78.0000 ns/op
+OverheadActual  17: 1 op, 78.00 ns, 78.0000 ns/op
+OverheadActual  18: 1 op, 165.00 ns, 165.0000 ns/op
+OverheadActual  19: 1 op, 173.00 ns, 173.0000 ns/op
+OverheadActual  20: 1 op, 108.00 ns, 108.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 85924.00 ns, 85.9240 us/op
+WorkloadWarmup   2: 1 op, 70724.00 ns, 70.7240 us/op
+WorkloadWarmup   3: 1 op, 68778.00 ns, 68.7780 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 78685.00 ns, 78.6850 us/op
+WorkloadActual   2: 1 op, 69442.00 ns, 69.4420 us/op
+WorkloadActual   3: 1 op, 70096.00 ns, 70.0960 us/op
+WorkloadActual   4: 1 op, 68495.00 ns, 68.4950 us/op
+WorkloadActual   5: 1 op, 67563.00 ns, 67.5630 us/op
+WorkloadActual   6: 1 op, 67180.00 ns, 67.1800 us/op
+WorkloadActual   7: 1 op, 91142.00 ns, 91.1420 us/op
+WorkloadActual   8: 1 op, 68465.00 ns, 68.4650 us/op
+WorkloadActual   9: 1 op, 68627.00 ns, 68.6270 us/op
+WorkloadActual  10: 1 op, 67751.00 ns, 67.7510 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 69352.00 ns, 69.3520 us/op
+WorkloadResult   2: 1 op, 70006.00 ns, 70.0060 us/op
+WorkloadResult   3: 1 op, 68405.00 ns, 68.4050 us/op
+WorkloadResult   4: 1 op, 67473.00 ns, 67.4730 us/op
+WorkloadResult   5: 1 op, 67090.00 ns, 67.0900 us/op
+WorkloadResult   6: 1 op, 68375.00 ns, 68.3750 us/op
+WorkloadResult   7: 1 op, 68537.00 ns, 68.5370 us/op
+WorkloadResult   8: 1 op, 67661.00 ns, 67.6610 us/op
+// GC:  0 0 0 13120 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154802 has exited with code 0.
+
+Mean = 68.362 μs, StdErr = 0.344 μs (0.50%), N = 8, StdDev = 0.972 μs
+Min = 67.090 μs, Q1 = 67.614 μs, Median = 68.390 μs, Q3 = 68.741 μs, Max = 70.006 μs
+IQR = 1.127 μs, LowerFence = 65.924 μs, UpperFence = 70.431 μs
+ConfidenceInterval = [66.504 μs; 70.221 μs] (CI 99.9%), Margin = 1.859 μs (2.72% of Mean)
+Skewness = 0.31, Kurtosis = 1.64, MValue = 2
+
+// ** Remained 21 (75.0%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 126 127 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.SerializeAndAccumulate(MessageSize: 100, BatchSize: 1000)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 7 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-VJPPOJ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 181758.00 ns, 181.7580 us/op
+WorkloadJitting  1: 1 op, 8012147.00 ns, 8.0121 ms/op
+
+OverheadWarmup   1: 1 op, 330.00 ns, 330.0000 ns/op
+OverheadWarmup   2: 1 op, 305.00 ns, 305.0000 ns/op
+OverheadWarmup   3: 1 op, 266.00 ns, 266.0000 ns/op
+OverheadWarmup   4: 1 op, 212.00 ns, 212.0000 ns/op
+OverheadWarmup   5: 1 op, 263.00 ns, 263.0000 ns/op
+OverheadWarmup   6: 1 op, 298.00 ns, 298.0000 ns/op
+OverheadWarmup   7: 1 op, 177.00 ns, 177.0000 ns/op
+OverheadWarmup   8: 1 op, 175.00 ns, 175.0000 ns/op
+OverheadWarmup   9: 1 op, 152.00 ns, 152.0000 ns/op
+OverheadWarmup  10: 1 op, 144.00 ns, 144.0000 ns/op
+
+OverheadActual   1: 1 op, 191.00 ns, 191.0000 ns/op
+OverheadActual   2: 1 op, 365.00 ns, 365.0000 ns/op
+OverheadActual   3: 1 op, 265.00 ns, 265.0000 ns/op
+OverheadActual   4: 1 op, 196.00 ns, 196.0000 ns/op
+OverheadActual   5: 1 op, 176.00 ns, 176.0000 ns/op
+OverheadActual   6: 1 op, 220.00 ns, 220.0000 ns/op
+OverheadActual   7: 1 op, 80.00 ns, 80.0000 ns/op
+OverheadActual   8: 1 op, 102.00 ns, 102.0000 ns/op
+OverheadActual   9: 1 op, 109.00 ns, 109.0000 ns/op
+OverheadActual  10: 1 op, 101.00 ns, 101.0000 ns/op
+OverheadActual  11: 1 op, 134.00 ns, 134.0000 ns/op
+OverheadActual  12: 1 op, 81.00 ns, 81.0000 ns/op
+OverheadActual  13: 1 op, 207.00 ns, 207.0000 ns/op
+OverheadActual  14: 1 op, 143.00 ns, 143.0000 ns/op
+OverheadActual  15: 1 op, 119.00 ns, 119.0000 ns/op
+OverheadActual  16: 1 op, 110.00 ns, 110.0000 ns/op
+OverheadActual  17: 1 op, 104.00 ns, 104.0000 ns/op
+OverheadActual  18: 1 op, 184.00 ns, 184.0000 ns/op
+OverheadActual  19: 1 op, 147.00 ns, 147.0000 ns/op
+OverheadActual  20: 1 op, 110.00 ns, 110.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 732520.00 ns, 732.5200 us/op
+WorkloadWarmup   2: 1 op, 717832.00 ns, 717.8320 us/op
+WorkloadWarmup   3: 1 op, 674788.00 ns, 674.7880 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 714697.00 ns, 714.6970 us/op
+WorkloadActual   2: 1 op, 717416.00 ns, 717.4160 us/op
+WorkloadActual   3: 1 op, 669222.00 ns, 669.2220 us/op
+WorkloadActual   4: 1 op, 678709.00 ns, 678.7090 us/op
+WorkloadActual   5: 1 op, 691623.00 ns, 691.6230 us/op
+WorkloadActual   6: 1 op, 15915004.00 ns, 15.9150 ms/op
+WorkloadActual   7: 1 op, 706141.00 ns, 706.1410 us/op
+WorkloadActual   8: 1 op, 689792.00 ns, 689.7920 us/op
+WorkloadActual   9: 1 op, 692530.00 ns, 692.5300 us/op
+WorkloadActual  10: 1 op, 689254.00 ns, 689.2540 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 714558.50 ns, 714.5585 us/op
+WorkloadResult   2: 1 op, 717277.50 ns, 717.2775 us/op
+WorkloadResult   3: 1 op, 669083.50 ns, 669.0835 us/op
+WorkloadResult   4: 1 op, 678570.50 ns, 678.5705 us/op
+WorkloadResult   5: 1 op, 691484.50 ns, 691.4845 us/op
+WorkloadResult   6: 1 op, 706002.50 ns, 706.0025 us/op
+WorkloadResult   7: 1 op, 689653.50 ns, 689.6535 us/op
+WorkloadResult   8: 1 op, 692391.50 ns, 692.3915 us/op
+WorkloadResult   9: 1 op, 689115.50 ns, 689.1155 us/op
+// GC:  0 0 0 130616 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154811 has exited with code 0.
+
+Mean = 694.237 μs, StdErr = 5.295 μs (0.76%), N = 9, StdDev = 15.885 μs
+Min = 669.083 μs, Q1 = 689.115 μs, Median = 691.485 μs, Q3 = 706.003 μs, Max = 717.278 μs
+IQR = 16.887 μs, LowerFence = 663.785 μs, UpperFence = 731.333 μs
+ConfidenceInterval = [667.544 μs; 720.931 μs] (CI 99.9%), Margin = 26.693 μs (3.84% of Mean)
+Skewness = 0.06, Kurtosis = 1.63, MValue = 2
+
+// ** Remained 20 (71.4%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Serialize Only (Key + Value)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 126 127 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.SerializeOnly(MessageSize: 100, BatchSize: 1000)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 8 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-RVGRAI(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 171816.00 ns, 171.8160 us/op
+WorkloadJitting  1: 1 op, 1084567.00 ns, 1.0846 ms/op
+
+OverheadWarmup   1: 1 op, 455.00 ns, 455.0000 ns/op
+OverheadWarmup   2: 1 op, 478.00 ns, 478.0000 ns/op
+OverheadWarmup   3: 1 op, 42.00 ns, 42.0000 ns/op
+OverheadWarmup   4: 1 op, 90.00 ns, 90.0000 ns/op
+OverheadWarmup   5: 1 op, 172.00 ns, 172.0000 ns/op
+OverheadWarmup   6: 1 op, 183.00 ns, 183.0000 ns/op
+OverheadWarmup   7: 1 op, 157.00 ns, 157.0000 ns/op
+
+OverheadActual   1: 1 op, 194.00 ns, 194.0000 ns/op
+OverheadActual   2: 1 op, 243.00 ns, 243.0000 ns/op
+OverheadActual   3: 1 op, 183.00 ns, 183.0000 ns/op
+OverheadActual   4: 1 op, 179.00 ns, 179.0000 ns/op
+OverheadActual   5: 1 op, 166.00 ns, 166.0000 ns/op
+OverheadActual   6: 1 op, 87.00 ns, 87.0000 ns/op
+OverheadActual   7: 1 op, 83.00 ns, 83.0000 ns/op
+OverheadActual   8: 1 op, 72.00 ns, 72.0000 ns/op
+OverheadActual   9: 1 op, 39.00 ns, 39.0000 ns/op
+OverheadActual  10: 1 op, 88.00 ns, 88.0000 ns/op
+OverheadActual  11: 1 op, 63.00 ns, 63.0000 ns/op
+OverheadActual  12: 1 op, 61.00 ns, 61.0000 ns/op
+OverheadActual  13: 1 op, 62.00 ns, 62.0000 ns/op
+OverheadActual  14: 1 op, 84.00 ns, 84.0000 ns/op
+OverheadActual  15: 1 op, 83.00 ns, 83.0000 ns/op
+OverheadActual  16: 1 op, 82.00 ns, 82.0000 ns/op
+OverheadActual  17: 1 op, 78.00 ns, 78.0000 ns/op
+OverheadActual  18: 1 op, 176.00 ns, 176.0000 ns/op
+OverheadActual  19: 1 op, 166.00 ns, 166.0000 ns/op
+OverheadActual  20: 1 op, 146.00 ns, 146.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 189800.00 ns, 189.8000 us/op
+WorkloadWarmup   2: 1 op, 185017.00 ns, 185.0170 us/op
+WorkloadWarmup   3: 1 op, 172622.00 ns, 172.6220 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 177265.00 ns, 177.2650 us/op
+WorkloadActual   2: 1 op, 184053.00 ns, 184.0530 us/op
+WorkloadActual   3: 1 op, 165558.00 ns, 165.5580 us/op
+WorkloadActual   4: 1 op, 165985.00 ns, 165.9850 us/op
+WorkloadActual   5: 1 op, 172454.00 ns, 172.4540 us/op
+WorkloadActual   6: 1 op, 11260518.00 ns, 11.2605 ms/op
+WorkloadActual   7: 1 op, 187411.00 ns, 187.4110 us/op
+WorkloadActual   8: 1 op, 178729.00 ns, 178.7290 us/op
+WorkloadActual   9: 1 op, 223792.00 ns, 223.7920 us/op
+WorkloadActual  10: 1 op, 182820.00 ns, 182.8200 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 177179.50 ns, 177.1795 us/op
+WorkloadResult   2: 1 op, 183967.50 ns, 183.9675 us/op
+WorkloadResult   3: 1 op, 165472.50 ns, 165.4725 us/op
+WorkloadResult   4: 1 op, 165899.50 ns, 165.8995 us/op
+WorkloadResult   5: 1 op, 172368.50 ns, 172.3685 us/op
+WorkloadResult   6: 1 op, 187325.50 ns, 187.3255 us/op
+WorkloadResult   7: 1 op, 178643.50 ns, 178.6435 us/op
+WorkloadResult   8: 1 op, 182734.50 ns, 182.7345 us/op
+// GC:  0 0 0 40656 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154821 has exited with code 0.
+
+Mean = 176.699 μs, StdErr = 2.890 μs (1.64%), N = 8, StdDev = 8.173 μs
+Min = 165.472 μs, Q1 = 170.751 μs, Median = 177.911 μs, Q3 = 183.043 μs, Max = 187.326 μs
+IQR = 12.291 μs, LowerFence = 152.314 μs, UpperFence = 201.480 μs
+ConfidenceInterval = [161.072 μs; 192.326 μs] (CI 99.9%), Margin = 15.627 μs (8.84% of Mean)
+Skewness = -0.22, Kurtosis = 1.31, MValue = 2
+
+// ** Remained 19 (67.9%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'String Interpolation Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 126 127 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.StringInterpolationOnly(MessageSize: 100, BatchSize: 1000)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 9 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-YRLSNX(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 187454.00 ns, 187.4540 us/op
+WorkloadJitting  1: 1 op, 349930.00 ns, 349.9300 us/op
+
+OverheadWarmup   1: 1 op, 222.00 ns, 222.0000 ns/op
+OverheadWarmup   2: 1 op, 108.00 ns, 108.0000 ns/op
+OverheadWarmup   3: 1 op, 70.00 ns, 70.0000 ns/op
+OverheadWarmup   4: 1 op, 56.00 ns, 56.0000 ns/op
+OverheadWarmup   5: 1 op, 165.00 ns, 165.0000 ns/op
+OverheadWarmup   6: 1 op, 187.00 ns, 187.0000 ns/op
+OverheadWarmup   7: 1 op, 143.00 ns, 143.0000 ns/op
+OverheadWarmup   8: 1 op, 91.00 ns, 91.0000 ns/op
+OverheadWarmup   9: 1 op, 115.00 ns, 115.0000 ns/op
+OverheadWarmup  10: 1 op, 216.00 ns, 216.0000 ns/op
+
+OverheadActual   1: 1 op, 242.00 ns, 242.0000 ns/op
+OverheadActual   2: 1 op, 242.00 ns, 242.0000 ns/op
+OverheadActual   3: 1 op, 191.00 ns, 191.0000 ns/op
+OverheadActual   4: 1 op, 172.00 ns, 172.0000 ns/op
+OverheadActual   5: 1 op, 195.00 ns, 195.0000 ns/op
+OverheadActual   6: 1 op, 190.00 ns, 190.0000 ns/op
+OverheadActual   7: 1 op, 143.00 ns, 143.0000 ns/op
+OverheadActual   8: 1 op, 75.00 ns, 75.0000 ns/op
+OverheadActual   9: 1 op, 109.00 ns, 109.0000 ns/op
+OverheadActual  10: 1 op, 110.00 ns, 110.0000 ns/op
+OverheadActual  11: 1 op, 577.00 ns, 577.0000 ns/op
+OverheadActual  12: 1 op, 101.00 ns, 101.0000 ns/op
+OverheadActual  13: 1 op, 284.00 ns, 284.0000 ns/op
+OverheadActual  14: 1 op, 135.00 ns, 135.0000 ns/op
+OverheadActual  15: 1 op, 81.00 ns, 81.0000 ns/op
+OverheadActual  16: 1 op, 108.00 ns, 108.0000 ns/op
+OverheadActual  17: 1 op, 62.00 ns, 62.0000 ns/op
+OverheadActual  18: 1 op, 185.00 ns, 185.0000 ns/op
+OverheadActual  19: 1 op, 170.00 ns, 170.0000 ns/op
+OverheadActual  20: 1 op, 53.00 ns, 53.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 70914.00 ns, 70.9140 us/op
+WorkloadWarmup   2: 1 op, 64145.00 ns, 64.1450 us/op
+WorkloadWarmup   3: 1 op, 49260.00 ns, 49.2600 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 49976.00 ns, 49.9760 us/op
+WorkloadActual   2: 1 op, 64164.00 ns, 64.1640 us/op
+WorkloadActual   3: 1 op, 45193.00 ns, 45.1930 us/op
+WorkloadActual   4: 1 op, 44752.00 ns, 44.7520 us/op
+WorkloadActual   5: 1 op, 49358.00 ns, 49.3580 us/op
+WorkloadActual   6: 1 op, 6611972.00 ns, 6.6120 ms/op
+WorkloadActual   7: 1 op, 54831.00 ns, 54.8310 us/op
+WorkloadActual   8: 1 op, 53835.00 ns, 53.8350 us/op
+WorkloadActual   9: 1 op, 52999.00 ns, 52.9990 us/op
+WorkloadActual  10: 1 op, 51920.00 ns, 51.9200 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 49819.50 ns, 49.8195 us/op
+WorkloadResult   2: 1 op, 45036.50 ns, 45.0365 us/op
+WorkloadResult   3: 1 op, 44595.50 ns, 44.5955 us/op
+WorkloadResult   4: 1 op, 49201.50 ns, 49.2015 us/op
+WorkloadResult   5: 1 op, 54674.50 ns, 54.6745 us/op
+WorkloadResult   6: 1 op, 53678.50 ns, 53.6785 us/op
+WorkloadResult   7: 1 op, 52842.50 ns, 52.8425 us/op
+WorkloadResult   8: 1 op, 51763.50 ns, 51.7635 us/op
+// GC:  0 0 0 40656 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154845 has exited with code 0.
+
+Mean = 50.202 μs, StdErr = 1.341 μs (2.67%), N = 8, StdDev = 3.794 μs
+Min = 44.596 μs, Q1 = 48.160 μs, Median = 50.791 μs, Q3 = 53.051 μs, Max = 54.675 μs
+IQR = 4.891 μs, LowerFence = 40.823 μs, UpperFence = 60.388 μs
+ConfidenceInterval = [42.947 μs; 57.456 μs] (CI 99.9%), Margin = 7.254 μs (14.45% of Mean)
+Skewness = -0.37, Kurtosis = 1.39, MValue = 2
+
+// ** Remained 18 (64.3%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 117 126 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.TimestampOnly(MessageSize: 100, BatchSize: 1000)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 10 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-EGDAYY(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 196657.00 ns, 196.6570 us/op
+WorkloadJitting  1: 1 op, 350582.00 ns, 350.5820 us/op
+
+OverheadWarmup   1: 1 op, 388.00 ns, 388.0000 ns/op
+OverheadWarmup   2: 1 op, 164.00 ns, 164.0000 ns/op
+OverheadWarmup   3: 1 op, 97.00 ns, 97.0000 ns/op
+OverheadWarmup   4: 1 op, 48.00 ns, 48.0000 ns/op
+OverheadWarmup   5: 1 op, 226.00 ns, 226.0000 ns/op
+OverheadWarmup   6: 1 op, 107.00 ns, 107.0000 ns/op
+OverheadWarmup   7: 1 op, 53.00 ns, 53.0000 ns/op
+OverheadWarmup   8: 1 op, 81.00 ns, 81.0000 ns/op
+OverheadWarmup   9: 1 op, 38.00 ns, 38.0000 ns/op
+
+OverheadActual   1: 1 op, 214.00 ns, 214.0000 ns/op
+OverheadActual   2: 1 op, 200.00 ns, 200.0000 ns/op
+OverheadActual   3: 1 op, 204.00 ns, 204.0000 ns/op
+OverheadActual   4: 1 op, 178.00 ns, 178.0000 ns/op
+OverheadActual   5: 1 op, 176.00 ns, 176.0000 ns/op
+OverheadActual   6: 1 op, 151.00 ns, 151.0000 ns/op
+OverheadActual   7: 1 op, 73.00 ns, 73.0000 ns/op
+OverheadActual   8: 1 op, 60.00 ns, 60.0000 ns/op
+OverheadActual   9: 1 op, 39.00 ns, 39.0000 ns/op
+OverheadActual  10: 1 op, 45.00 ns, 45.0000 ns/op
+OverheadActual  11: 1 op, 67.00 ns, 67.0000 ns/op
+OverheadActual  12: 1 op, 60.00 ns, 60.0000 ns/op
+OverheadActual  13: 1 op, 73.00 ns, 73.0000 ns/op
+OverheadActual  14: 1 op, 67.00 ns, 67.0000 ns/op
+OverheadActual  15: 1 op, 73.00 ns, 73.0000 ns/op
+OverheadActual  16: 1 op, 100.00 ns, 100.0000 ns/op
+OverheadActual  17: 1 op, 86.00 ns, 86.0000 ns/op
+OverheadActual  18: 1 op, 173.00 ns, 173.0000 ns/op
+OverheadActual  19: 1 op, 143.00 ns, 143.0000 ns/op
+OverheadActual  20: 1 op, 96.00 ns, 96.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 27646.00 ns, 27.6460 us/op
+WorkloadWarmup   2: 1 op, 26787.00 ns, 26.7870 us/op
+WorkloadWarmup   3: 1 op, 26699.00 ns, 26.6990 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 26889.00 ns, 26.8890 us/op
+WorkloadActual   2: 1 op, 26699.00 ns, 26.6990 us/op
+WorkloadActual   3: 1 op, 26843.00 ns, 26.8430 us/op
+WorkloadActual   4: 1 op, 26428.00 ns, 26.4280 us/op
+WorkloadActual   5: 1 op, 26655.00 ns, 26.6550 us/op
+WorkloadActual   6: 1 op, 428322.00 ns, 428.3220 us/op
+WorkloadActual   7: 1 op, 32879.00 ns, 32.8790 us/op
+WorkloadActual   8: 1 op, 29093.00 ns, 29.0930 us/op
+WorkloadActual   9: 1 op, 28871.00 ns, 28.8710 us/op
+WorkloadActual  10: 1 op, 36144.00 ns, 36.1440 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 26798.00 ns, 26.7980 us/op
+WorkloadResult   2: 1 op, 26608.00 ns, 26.6080 us/op
+WorkloadResult   3: 1 op, 26752.00 ns, 26.7520 us/op
+WorkloadResult   4: 1 op, 26337.00 ns, 26.3370 us/op
+WorkloadResult   5: 1 op, 26564.00 ns, 26.5640 us/op
+WorkloadResult   6: 1 op, 32788.00 ns, 32.7880 us/op
+WorkloadResult   7: 1 op, 29002.00 ns, 29.0020 us/op
+WorkloadResult   8: 1 op, 28780.00 ns, 28.7800 us/op
+WorkloadResult   9: 1 op, 36053.00 ns, 36.0530 us/op
+// GC:  0 0 0 736 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154895 has exited with code 0.
+
+Mean = 28.854 μs, StdErr = 1.134 μs (3.93%), N = 9, StdDev = 3.402 μs
+Min = 26.337 μs, Q1 = 26.608 μs, Median = 26.798 μs, Q3 = 29.002 μs, Max = 36.053 μs
+IQR = 2.394 μs, LowerFence = 23.017 μs, UpperFence = 32.593 μs
+ConfidenceInterval = [23.136 μs; 34.571 μs] (CI 99.9%), Margin = 5.717 μs (19.81% of Mean)
+Skewness = 1.06, Kurtosis = 2.53, MValue = 2.8
+
+// ** Remained 17 (60.7%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 117 126 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.AccumulateSamePartition(MessageSize: 100, BatchSize: 1000)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 11 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-RILDWD(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 179486.00 ns, 179.4860 us/op
+WorkloadJitting  1: 1 op, 7432282.00 ns, 7.4323 ms/op
+
+OverheadWarmup   1: 1 op, 1027.00 ns, 1.0270 us/op
+OverheadWarmup   2: 1 op, 825.00 ns, 825.0000 ns/op
+OverheadWarmup   3: 1 op, 171.00 ns, 171.0000 ns/op
+OverheadWarmup   4: 1 op, 181.00 ns, 181.0000 ns/op
+OverheadWarmup   5: 1 op, 194.00 ns, 194.0000 ns/op
+OverheadWarmup   6: 1 op, 202.00 ns, 202.0000 ns/op
+OverheadWarmup   7: 1 op, 142.00 ns, 142.0000 ns/op
+OverheadWarmup   8: 1 op, 100.00 ns, 100.0000 ns/op
+OverheadWarmup   9: 1 op, 128.00 ns, 128.0000 ns/op
+OverheadWarmup  10: 1 op, 127.00 ns, 127.0000 ns/op
+
+OverheadActual   1: 1 op, 490.00 ns, 490.0000 ns/op
+OverheadActual   2: 1 op, 182.00 ns, 182.0000 ns/op
+OverheadActual   3: 1 op, 311.00 ns, 311.0000 ns/op
+OverheadActual   4: 1 op, 264.00 ns, 264.0000 ns/op
+OverheadActual   5: 1 op, 385.00 ns, 385.0000 ns/op
+OverheadActual   6: 1 op, 136.00 ns, 136.0000 ns/op
+OverheadActual   7: 1 op, 149.00 ns, 149.0000 ns/op
+OverheadActual   8: 1 op, 82.00 ns, 82.0000 ns/op
+OverheadActual   9: 1 op, 104.00 ns, 104.0000 ns/op
+OverheadActual  10: 1 op, 69.00 ns, 69.0000 ns/op
+OverheadActual  11: 1 op, 77.00 ns, 77.0000 ns/op
+OverheadActual  12: 1 op, 83.00 ns, 83.0000 ns/op
+OverheadActual  13: 1 op, 87.00 ns, 87.0000 ns/op
+OverheadActual  14: 1 op, 76.00 ns, 76.0000 ns/op
+OverheadActual  15: 1 op, 121.00 ns, 121.0000 ns/op
+OverheadActual  16: 1 op, 97.00 ns, 97.0000 ns/op
+OverheadActual  17: 1 op, 110.00 ns, 110.0000 ns/op
+OverheadActual  18: 1 op, 193.00 ns, 193.0000 ns/op
+OverheadActual  19: 1 op, 166.00 ns, 166.0000 ns/op
+OverheadActual  20: 1 op, 116.00 ns, 116.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 846192.00 ns, 846.1920 us/op
+WorkloadWarmup   2: 1 op, 685037.00 ns, 685.0370 us/op
+WorkloadWarmup   3: 1 op, 639986.00 ns, 639.9860 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 650481.00 ns, 650.4810 us/op
+WorkloadActual   2: 1 op, 688181.00 ns, 688.1810 us/op
+WorkloadActual   3: 1 op, 635016.00 ns, 635.0160 us/op
+WorkloadActual   4: 1 op, 636909.00 ns, 636.9090 us/op
+WorkloadActual   5: 1 op, 690785.00 ns, 690.7850 us/op
+WorkloadActual   6: 1 op, 15372168.00 ns, 15.3722 ms/op
+WorkloadActual   7: 1 op, 676919.00 ns, 676.9190 us/op
+WorkloadActual   8: 1 op, 704572.00 ns, 704.5720 us/op
+WorkloadActual   9: 1 op, 655256.00 ns, 655.2560 us/op
+WorkloadActual  10: 1 op, 648726.00 ns, 648.7260 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 650362.50 ns, 650.3625 us/op
+WorkloadResult   2: 1 op, 688062.50 ns, 688.0625 us/op
+WorkloadResult   3: 1 op, 634897.50 ns, 634.8975 us/op
+WorkloadResult   4: 1 op, 636790.50 ns, 636.7905 us/op
+WorkloadResult   5: 1 op, 690666.50 ns, 690.6665 us/op
+WorkloadResult   6: 1 op, 676800.50 ns, 676.8005 us/op
+WorkloadResult   7: 1 op, 704453.50 ns, 704.4535 us/op
+WorkloadResult   8: 1 op, 655137.50 ns, 655.1375 us/op
+WorkloadResult   9: 1 op, 648607.50 ns, 648.6075 us/op
+// GC:  0 0 0 132008 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154904 has exited with code 0.
+
+Mean = 665.087 μs, StdErr = 8.473 μs (1.27%), N = 9, StdDev = 25.418 μs
+Min = 634.898 μs, Q1 = 648.607 μs, Median = 655.138 μs, Q3 = 688.062 μs, Max = 704.453 μs
+IQR = 39.455 μs, LowerFence = 589.425 μs, UpperFence = 747.245 μs
+ConfidenceInterval = [622.373 μs; 707.800 μs] (CI 99.9%), Margin = 42.713 μs (6.42% of Mean)
+Skewness = 0.22, Kurtosis = 1.26, MValue = 3.6
+
+// ** Remained 16 (57.1%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.AccumulateRotatingPartitions(MessageSize: 100, BatchSize: 1000)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 12 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-LQAEDR(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 183675.00 ns, 183.6750 us/op
+WorkloadJitting  1: 1 op, 8709513.00 ns, 8.7095 ms/op
+
+OverheadWarmup   1: 1 op, 621.00 ns, 621.0000 ns/op
+OverheadWarmup   2: 1 op, 153.00 ns, 153.0000 ns/op
+OverheadWarmup   3: 1 op, 129.00 ns, 129.0000 ns/op
+OverheadWarmup   4: 1 op, 153.00 ns, 153.0000 ns/op
+OverheadWarmup   5: 1 op, 234.00 ns, 234.0000 ns/op
+OverheadWarmup   6: 1 op, 198.00 ns, 198.0000 ns/op
+OverheadWarmup   7: 1 op, 113.00 ns, 113.0000 ns/op
+OverheadWarmup   8: 1 op, 171.00 ns, 171.0000 ns/op
+OverheadWarmup   9: 1 op, 151.00 ns, 151.0000 ns/op
+
+OverheadActual   1: 1 op, 230.00 ns, 230.0000 ns/op
+OverheadActual   2: 1 op, 227.00 ns, 227.0000 ns/op
+OverheadActual   3: 1 op, 1070.00 ns, 1.0700 us/op
+OverheadActual   4: 1 op, 199.00 ns, 199.0000 ns/op
+OverheadActual   5: 1 op, 316.00 ns, 316.0000 ns/op
+OverheadActual   6: 1 op, 147.00 ns, 147.0000 ns/op
+OverheadActual   7: 1 op, 55.00 ns, 55.0000 ns/op
+OverheadActual   8: 1 op, 111.00 ns, 111.0000 ns/op
+OverheadActual   9: 1 op, 96.00 ns, 96.0000 ns/op
+OverheadActual  10: 1 op, 148.00 ns, 148.0000 ns/op
+OverheadActual  11: 1 op, 103.00 ns, 103.0000 ns/op
+OverheadActual  12: 1 op, 160.00 ns, 160.0000 ns/op
+OverheadActual  13: 1 op, 121.00 ns, 121.0000 ns/op
+OverheadActual  14: 1 op, 109.00 ns, 109.0000 ns/op
+OverheadActual  15: 1 op, 91.00 ns, 91.0000 ns/op
+OverheadActual  16: 1 op, 97.00 ns, 97.0000 ns/op
+OverheadActual  17: 1 op, 221.00 ns, 221.0000 ns/op
+OverheadActual  18: 1 op, 215.00 ns, 215.0000 ns/op
+OverheadActual  19: 1 op, 129.00 ns, 129.0000 ns/op
+OverheadActual  20: 1 op, 128.00 ns, 128.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 746369.00 ns, 746.3690 us/op
+WorkloadWarmup   2: 1 op, 794493.00 ns, 794.4930 us/op
+WorkloadWarmup   3: 1 op, 679261.00 ns, 679.2610 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 766755.00 ns, 766.7550 us/op
+WorkloadActual   2: 1 op, 730158.00 ns, 730.1580 us/op
+WorkloadActual   3: 1 op, 699627.00 ns, 699.6270 us/op
+WorkloadActual   4: 1 op, 677682.00 ns, 677.6820 us/op
+WorkloadActual   5: 1 op, 716688.00 ns, 716.6880 us/op
+WorkloadActual   6: 1 op, 16040297.00 ns, 16.0403 ms/op
+WorkloadActual   7: 1 op, 726486.00 ns, 726.4860 us/op
+WorkloadActual   8: 1 op, 696787.00 ns, 696.7870 us/op
+WorkloadActual   9: 1 op, 691794.00 ns, 691.7940 us/op
+WorkloadActual  10: 1 op, 686298.00 ns, 686.2980 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 766617.00 ns, 766.6170 us/op
+WorkloadResult   2: 1 op, 730020.00 ns, 730.0200 us/op
+WorkloadResult   3: 1 op, 699489.00 ns, 699.4890 us/op
+WorkloadResult   4: 1 op, 677544.00 ns, 677.5440 us/op
+WorkloadResult   5: 1 op, 716550.00 ns, 716.5500 us/op
+WorkloadResult   6: 1 op, 726348.00 ns, 726.3480 us/op
+WorkloadResult   7: 1 op, 696649.00 ns, 696.6490 us/op
+WorkloadResult   8: 1 op, 691656.00 ns, 691.6560 us/op
+WorkloadResult   9: 1 op, 686160.00 ns, 686.1600 us/op
+// GC:  0 0 0 130616 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154913 has exited with code 0.
+
+Mean = 710.115 μs, StdErr = 9.252 μs (1.30%), N = 9, StdDev = 27.756 μs
+Min = 677.544 μs, Q1 = 691.656 μs, Median = 699.489 μs, Q3 = 726.348 μs, Max = 766.617 μs
+IQR = 34.692 μs, LowerFence = 639.618 μs, UpperFence = 778.386 μs
+ConfidenceInterval = [663.472 μs; 756.757 μs] (CI 99.9%), Margin = 46.643 μs (6.57% of Mean)
+Skewness = 0.7, Kurtosis = 2.25, MValue = 2
+
+// ** Remained 15 (53.6%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.BatchAppendSamePartition(MessageSize: 100, BatchSize: 1000)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 13 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-WHFWZO(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 193364.00 ns, 193.3640 us/op
+WorkloadJitting  1: 1 op, 7791707.00 ns, 7.7917 ms/op
+
+OverheadWarmup   1: 1 op, 468.00 ns, 468.0000 ns/op
+OverheadWarmup   2: 1 op, 147.00 ns, 147.0000 ns/op
+OverheadWarmup   3: 1 op, 170.00 ns, 170.0000 ns/op
+OverheadWarmup   4: 1 op, 140.00 ns, 140.0000 ns/op
+OverheadWarmup   5: 1 op, 205.00 ns, 205.0000 ns/op
+OverheadWarmup   6: 1 op, 164.00 ns, 164.0000 ns/op
+
+OverheadActual   1: 1 op, 212.00 ns, 212.0000 ns/op
+OverheadActual   2: 1 op, 183.00 ns, 183.0000 ns/op
+OverheadActual   3: 1 op, 191.00 ns, 191.0000 ns/op
+OverheadActual   4: 1 op, 180.00 ns, 180.0000 ns/op
+OverheadActual   5: 1 op, 220.00 ns, 220.0000 ns/op
+OverheadActual   6: 1 op, 152.00 ns, 152.0000 ns/op
+OverheadActual   7: 1 op, 132.00 ns, 132.0000 ns/op
+OverheadActual   8: 1 op, 138.00 ns, 138.0000 ns/op
+OverheadActual   9: 1 op, 121.00 ns, 121.0000 ns/op
+OverheadActual  10: 1 op, 75.00 ns, 75.0000 ns/op
+OverheadActual  11: 1 op, 77.00 ns, 77.0000 ns/op
+OverheadActual  12: 1 op, 84.00 ns, 84.0000 ns/op
+OverheadActual  13: 1 op, 110.00 ns, 110.0000 ns/op
+OverheadActual  14: 1 op, 109.00 ns, 109.0000 ns/op
+OverheadActual  15: 1 op, 99.00 ns, 99.0000 ns/op
+OverheadActual  16: 1 op, 121.00 ns, 121.0000 ns/op
+OverheadActual  17: 1 op, 117.00 ns, 117.0000 ns/op
+OverheadActual  18: 1 op, 197.00 ns, 197.0000 ns/op
+OverheadActual  19: 1 op, 219.00 ns, 219.0000 ns/op
+OverheadActual  20: 1 op, 163.00 ns, 163.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 1216373.00 ns, 1.2164 ms/op
+WorkloadWarmup   2: 1 op, 983636.00 ns, 983.6360 us/op
+WorkloadWarmup   3: 1 op, 1010862.00 ns, 1.0109 ms/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 990870.00 ns, 990.8700 us/op
+WorkloadActual   2: 1 op, 1061190.00 ns, 1.0612 ms/op
+WorkloadActual   3: 1 op, 996789.00 ns, 996.7890 us/op
+WorkloadActual   4: 1 op, 984361.00 ns, 984.3610 us/op
+WorkloadActual   5: 1 op, 984084.00 ns, 984.0840 us/op
+WorkloadActual   6: 1 op, 9487373.00 ns, 9.4874 ms/op
+WorkloadActual   7: 1 op, 989949.00 ns, 989.9490 us/op
+WorkloadActual   8: 1 op, 975602.00 ns, 975.6020 us/op
+WorkloadActual   9: 1 op, 974590.00 ns, 974.5900 us/op
+WorkloadActual  10: 1 op, 974084.00 ns, 974.0840 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 990735.00 ns, 990.7350 us/op
+WorkloadResult   2: 1 op, 996654.00 ns, 996.6540 us/op
+WorkloadResult   3: 1 op, 984226.00 ns, 984.2260 us/op
+WorkloadResult   4: 1 op, 983949.00 ns, 983.9490 us/op
+WorkloadResult   5: 1 op, 989814.00 ns, 989.8140 us/op
+WorkloadResult   6: 1 op, 975467.00 ns, 975.4670 us/op
+WorkloadResult   7: 1 op, 974455.00 ns, 974.4550 us/op
+WorkloadResult   8: 1 op, 973949.00 ns, 973.9490 us/op
+// GC:  0 0 0 188032 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154974 has exited with code 0.
+
+Mean = 983.656 μs, StdErr = 2.998 μs (0.30%), N = 8, StdDev = 8.480 μs
+Min = 973.949 μs, Q1 = 975.214 μs, Median = 984.087 μs, Q3 = 990.044 μs, Max = 996.654 μs
+IQR = 14.830 μs, LowerFence = 952.969 μs, UpperFence = 1,012.290 μs
+ConfidenceInterval = [967.443 μs; 999.869 μs] (CI 99.9%), Margin = 16.213 μs (1.65% of Mean)
+Skewness = 0.11, Kurtosis = 1.28, MValue = 2
+
+// ** Remained 14 (50.0%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.SerializeAndAccumulate(MessageSize: 1000, BatchSize: 100)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 14 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-PLKZRK(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 210060.00 ns, 210.0600 us/op
+WorkloadJitting  1: 1 op, 6425272.00 ns, 6.4253 ms/op
+
+OverheadWarmup   1: 1 op, 258.00 ns, 258.0000 ns/op
+OverheadWarmup   2: 1 op, 209.00 ns, 209.0000 ns/op
+OverheadWarmup   3: 1 op, 181.00 ns, 181.0000 ns/op
+OverheadWarmup   4: 1 op, 141.00 ns, 141.0000 ns/op
+OverheadWarmup   5: 1 op, 184.00 ns, 184.0000 ns/op
+OverheadWarmup   6: 1 op, 172.00 ns, 172.0000 ns/op
+OverheadWarmup   7: 1 op, 158.00 ns, 158.0000 ns/op
+OverheadWarmup   8: 1 op, 142.00 ns, 142.0000 ns/op
+OverheadWarmup   9: 1 op, 147.00 ns, 147.0000 ns/op
+OverheadWarmup  10: 1 op, 111.00 ns, 111.0000 ns/op
+
+OverheadActual   1: 1 op, 216.00 ns, 216.0000 ns/op
+OverheadActual   2: 1 op, 182.00 ns, 182.0000 ns/op
+OverheadActual   3: 1 op, 338.00 ns, 338.0000 ns/op
+OverheadActual   4: 1 op, 182.00 ns, 182.0000 ns/op
+OverheadActual   5: 1 op, 171.00 ns, 171.0000 ns/op
+OverheadActual   6: 1 op, 118.00 ns, 118.0000 ns/op
+OverheadActual   7: 1 op, 117.00 ns, 117.0000 ns/op
+OverheadActual   8: 1 op, 98.00 ns, 98.0000 ns/op
+OverheadActual   9: 1 op, 118.00 ns, 118.0000 ns/op
+OverheadActual  10: 1 op, 141.00 ns, 141.0000 ns/op
+OverheadActual  11: 1 op, 114.00 ns, 114.0000 ns/op
+OverheadActual  12: 1 op, 115.00 ns, 115.0000 ns/op
+OverheadActual  13: 1 op, 102.00 ns, 102.0000 ns/op
+OverheadActual  14: 1 op, 111.00 ns, 111.0000 ns/op
+OverheadActual  15: 1 op, 127.00 ns, 127.0000 ns/op
+OverheadActual  16: 1 op, 141.00 ns, 141.0000 ns/op
+OverheadActual  17: 1 op, 138.00 ns, 138.0000 ns/op
+OverheadActual  18: 1 op, 185.00 ns, 185.0000 ns/op
+OverheadActual  19: 1 op, 156.00 ns, 156.0000 ns/op
+OverheadActual  20: 1 op, 134.00 ns, 134.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 226442.00 ns, 226.4420 us/op
+WorkloadWarmup   2: 1 op, 55802.00 ns, 55.8020 us/op
+WorkloadWarmup   3: 1 op, 53469.00 ns, 53.4690 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 58351.00 ns, 58.3510 us/op
+WorkloadActual   2: 1 op, 52963.00 ns, 52.9630 us/op
+WorkloadActual   3: 1 op, 52080.00 ns, 52.0800 us/op
+WorkloadActual   4: 1 op, 56454.00 ns, 56.4540 us/op
+WorkloadActual   5: 1 op, 50602.00 ns, 50.6020 us/op
+WorkloadActual   6: 1 op, 51686.00 ns, 51.6860 us/op
+WorkloadActual   7: 1 op, 52067.00 ns, 52.0670 us/op
+WorkloadActual   8: 1 op, 60104.00 ns, 60.1040 us/op
+WorkloadActual   9: 1 op, 51308.00 ns, 51.3080 us/op
+WorkloadActual  10: 1 op, 50965.00 ns, 50.9650 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 58215.00 ns, 58.2150 us/op
+WorkloadResult   2: 1 op, 52827.00 ns, 52.8270 us/op
+WorkloadResult   3: 1 op, 51944.00 ns, 51.9440 us/op
+WorkloadResult   4: 1 op, 56318.00 ns, 56.3180 us/op
+WorkloadResult   5: 1 op, 50466.00 ns, 50.4660 us/op
+WorkloadResult   6: 1 op, 51550.00 ns, 51.5500 us/op
+WorkloadResult   7: 1 op, 51931.00 ns, 51.9310 us/op
+WorkloadResult   8: 1 op, 59968.00 ns, 59.9680 us/op
+WorkloadResult   9: 1 op, 51172.00 ns, 51.1720 us/op
+WorkloadResult  10: 1 op, 50829.00 ns, 50.8290 us/op
+// GC:  0 0 0 8744 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154984 has exited with code 0.
+
+Mean = 53.522 μs, StdErr = 1.069 μs (2.00%), N = 10, StdDev = 3.381 μs
+Min = 50.466 μs, Q1 = 51.267 μs, Median = 51.938 μs, Q3 = 55.445 μs, Max = 59.968 μs
+IQR = 4.179 μs, LowerFence = 44.998 μs, UpperFence = 61.713 μs
+ConfidenceInterval = [48.410 μs; 58.634 μs] (CI 99.9%), Margin = 5.112 μs (9.55% of Mean)
+Skewness = 0.82, Kurtosis = 1.89, MValue = 2.86
+
+// ** Remained 13 (46.4%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Serialize Only (Key + Value)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.SerializeOnly(MessageSize: 1000, BatchSize: 100)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 15 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-BAQRGH(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 207243.00 ns, 207.2430 us/op
+WorkloadJitting  1: 1 op, 1046231.00 ns, 1.0462 ms/op
+
+OverheadWarmup   1: 1 op, 191.00 ns, 191.0000 ns/op
+OverheadWarmup   2: 1 op, 187.00 ns, 187.0000 ns/op
+OverheadWarmup   3: 1 op, 129.00 ns, 129.0000 ns/op
+OverheadWarmup   4: 1 op, 96.00 ns, 96.0000 ns/op
+OverheadWarmup   5: 1 op, 196.00 ns, 196.0000 ns/op
+OverheadWarmup   6: 1 op, 163.00 ns, 163.0000 ns/op
+OverheadWarmup   7: 1 op, 104.00 ns, 104.0000 ns/op
+OverheadWarmup   8: 1 op, 78.00 ns, 78.0000 ns/op
+OverheadWarmup   9: 1 op, 79.00 ns, 79.0000 ns/op
+OverheadWarmup  10: 1 op, 49.00 ns, 49.0000 ns/op
+
+OverheadActual   1: 1 op, 176.00 ns, 176.0000 ns/op
+OverheadActual   2: 1 op, 190.00 ns, 190.0000 ns/op
+OverheadActual   3: 1 op, 190.00 ns, 190.0000 ns/op
+OverheadActual   4: 1 op, 147.00 ns, 147.0000 ns/op
+OverheadActual   5: 1 op, 165.00 ns, 165.0000 ns/op
+OverheadActual   6: 1 op, 94.00 ns, 94.0000 ns/op
+OverheadActual   7: 1 op, 67.00 ns, 67.0000 ns/op
+OverheadActual   8: 1 op, 67.00 ns, 67.0000 ns/op
+OverheadActual   9: 1 op, 58.00 ns, 58.0000 ns/op
+OverheadActual  10: 1 op, 60.00 ns, 60.0000 ns/op
+OverheadActual  11: 1 op, 43.00 ns, 43.0000 ns/op
+OverheadActual  12: 1 op, 63.00 ns, 63.0000 ns/op
+OverheadActual  13: 1 op, 68.00 ns, 68.0000 ns/op
+OverheadActual  14: 1 op, 77.00 ns, 77.0000 ns/op
+OverheadActual  15: 1 op, 92.00 ns, 92.0000 ns/op
+OverheadActual  16: 1 op, 221.00 ns, 221.0000 ns/op
+OverheadActual  17: 1 op, 130.00 ns, 130.0000 ns/op
+OverheadActual  18: 1 op, 199.00 ns, 199.0000 ns/op
+OverheadActual  19: 1 op, 206.00 ns, 206.0000 ns/op
+OverheadActual  20: 1 op, 57.00 ns, 57.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 36865.00 ns, 36.8650 us/op
+WorkloadWarmup   2: 1 op, 25826.00 ns, 25.8260 us/op
+WorkloadWarmup   3: 1 op, 27084.00 ns, 27.0840 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 39339.00 ns, 39.3390 us/op
+WorkloadActual   2: 1 op, 53503.00 ns, 53.5030 us/op
+WorkloadActual   3: 1 op, 131819.00 ns, 131.8190 us/op
+WorkloadActual   4: 1 op, 26363.00 ns, 26.3630 us/op
+WorkloadActual   5: 1 op, 25690.00 ns, 25.6900 us/op
+WorkloadActual   6: 1 op, 26292.00 ns, 26.2920 us/op
+WorkloadActual   7: 1 op, 25589.00 ns, 25.5890 us/op
+WorkloadActual   8: 1 op, 25544.00 ns, 25.5440 us/op
+WorkloadActual   9: 1 op, 25754.00 ns, 25.7540 us/op
+WorkloadActual  10: 1 op, 25782.00 ns, 25.7820 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 39246.00 ns, 39.2460 us/op
+WorkloadResult   2: 1 op, 26270.00 ns, 26.2700 us/op
+WorkloadResult   3: 1 op, 25597.00 ns, 25.5970 us/op
+WorkloadResult   4: 1 op, 26199.00 ns, 26.1990 us/op
+WorkloadResult   5: 1 op, 25496.00 ns, 25.4960 us/op
+WorkloadResult   6: 1 op, 25451.00 ns, 25.4510 us/op
+WorkloadResult   7: 1 op, 25661.00 ns, 25.6610 us/op
+WorkloadResult   8: 1 op, 25689.00 ns, 25.6890 us/op
+// GC:  0 0 0 3984 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1154993 has exited with code 0.
+
+Mean = 27.451 μs, StdErr = 1.688 μs (6.15%), N = 8, StdDev = 4.776 μs
+Min = 25.451 μs, Q1 = 25.572 μs, Median = 25.675 μs, Q3 = 26.217 μs, Max = 39.246 μs
+IQR = 0.645 μs, LowerFence = 24.604 μs, UpperFence = 27.184 μs
+ConfidenceInterval = [18.320 μs; 36.582 μs] (CI 99.9%), Margin = 9.131 μs (33.26% of Mean)
+Skewness = 1.84, Kurtosis = 4.67, MValue = 2
+
+// ** Remained 12 (42.9%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'String Interpolation Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.StringInterpolationOnly(MessageSize: 1000, BatchSize: 100)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 16 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-TIKNGM(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 178404.00 ns, 178.4040 us/op
+WorkloadJitting  1: 1 op, 302354.00 ns, 302.3540 us/op
+
+OverheadWarmup   1: 1 op, 227.00 ns, 227.0000 ns/op
+OverheadWarmup   2: 1 op, 119.00 ns, 119.0000 ns/op
+OverheadWarmup   3: 1 op, 136.00 ns, 136.0000 ns/op
+OverheadWarmup   4: 1 op, 104.00 ns, 104.0000 ns/op
+OverheadWarmup   5: 1 op, 207.00 ns, 207.0000 ns/op
+OverheadWarmup   6: 1 op, 195.00 ns, 195.0000 ns/op
+
+OverheadActual   1: 1 op, 204.00 ns, 204.0000 ns/op
+OverheadActual   2: 1 op, 197.00 ns, 197.0000 ns/op
+OverheadActual   3: 1 op, 181.00 ns, 181.0000 ns/op
+OverheadActual   4: 1 op, 159.00 ns, 159.0000 ns/op
+OverheadActual   5: 1 op, 184.00 ns, 184.0000 ns/op
+OverheadActual   6: 1 op, 152.00 ns, 152.0000 ns/op
+OverheadActual   7: 1 op, 143.00 ns, 143.0000 ns/op
+OverheadActual   8: 1 op, 122.00 ns, 122.0000 ns/op
+OverheadActual   9: 1 op, 112.00 ns, 112.0000 ns/op
+OverheadActual  10: 1 op, 103.00 ns, 103.0000 ns/op
+OverheadActual  11: 1 op, 147.00 ns, 147.0000 ns/op
+OverheadActual  12: 1 op, 90.00 ns, 90.0000 ns/op
+OverheadActual  13: 1 op, 73.00 ns, 73.0000 ns/op
+OverheadActual  14: 1 op, 86.00 ns, 86.0000 ns/op
+OverheadActual  15: 1 op, 97.00 ns, 97.0000 ns/op
+OverheadActual  16: 1 op, 74.00 ns, 74.0000 ns/op
+OverheadActual  17: 1 op, 82.00 ns, 82.0000 ns/op
+OverheadActual  18: 1 op, 223.00 ns, 223.0000 ns/op
+OverheadActual  19: 1 op, 182.00 ns, 182.0000 ns/op
+OverheadActual  20: 1 op, 137.00 ns, 137.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 14754.00 ns, 14.7540 us/op
+WorkloadWarmup   2: 1 op, 5465.00 ns, 5.4650 us/op
+WorkloadWarmup   3: 1 op, 6154.00 ns, 6.1540 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 7133.00 ns, 7.1330 us/op
+WorkloadActual   2: 1 op, 8997.00 ns, 8.9970 us/op
+WorkloadActual   3: 1 op, 6072.00 ns, 6.0720 us/op
+WorkloadActual   4: 1 op, 6416.00 ns, 6.4160 us/op
+WorkloadActual   5: 1 op, 5937.00 ns, 5.9370 us/op
+WorkloadActual   6: 1 op, 6113.00 ns, 6.1130 us/op
+WorkloadActual   7: 1 op, 5546.00 ns, 5.5460 us/op
+WorkloadActual   8: 1 op, 6119.00 ns, 6.1190 us/op
+WorkloadActual   9: 1 op, 6042.00 ns, 6.0420 us/op
+WorkloadActual  10: 1 op, 5956.00 ns, 5.9560 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 5932.00 ns, 5.9320 us/op
+WorkloadResult   2: 1 op, 6276.00 ns, 6.2760 us/op
+WorkloadResult   3: 1 op, 5797.00 ns, 5.7970 us/op
+WorkloadResult   4: 1 op, 5973.00 ns, 5.9730 us/op
+WorkloadResult   5: 1 op, 5406.00 ns, 5.4060 us/op
+WorkloadResult   6: 1 op, 5979.00 ns, 5.9790 us/op
+WorkloadResult   7: 1 op, 5902.00 ns, 5.9020 us/op
+WorkloadResult   8: 1 op, 5816.00 ns, 5.8160 us/op
+// GC:  0 0 0 4656 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1155007 has exited with code 0.
+
+Mean = 5.885 μs, StdErr = 0.086 μs (1.46%), N = 8, StdDev = 0.243 μs
+Min = 5.406 μs, Q1 = 5.811 μs, Median = 5.917 μs, Q3 = 5.974 μs, Max = 6.276 μs
+IQR = 0.163 μs, LowerFence = 5.566 μs, UpperFence = 6.219 μs
+ConfidenceInterval = [5.420 μs; 6.350 μs] (CI 99.9%), Margin = 0.465 μs (7.90% of Mean)
+Skewness = -0.43, Kurtosis = 2.73, MValue = 2
+
+// ** Remained 11 (39.3%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.TimestampOnly(MessageSize: 1000, BatchSize: 100)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 17 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-JVDSJP(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 208314.00 ns, 208.3140 us/op
+WorkloadJitting  1: 1 op, 280566.00 ns, 280.5660 us/op
+
+OverheadWarmup   1: 1 op, 249.00 ns, 249.0000 ns/op
+OverheadWarmup   2: 1 op, 156.00 ns, 156.0000 ns/op
+OverheadWarmup   3: 1 op, 57.00 ns, 57.0000 ns/op
+OverheadWarmup   4: 1 op, 55.00 ns, 55.0000 ns/op
+OverheadWarmup   5: 1 op, 515.00 ns, 515.0000 ns/op
+OverheadWarmup   6: 1 op, 112.00 ns, 112.0000 ns/op
+OverheadWarmup   7: 1 op, 98.00 ns, 98.0000 ns/op
+OverheadWarmup   8: 1 op, 69.00 ns, 69.0000 ns/op
+OverheadWarmup   9: 1 op, 47.00 ns, 47.0000 ns/op
+OverheadWarmup  10: 1 op, 70.00 ns, 70.0000 ns/op
+
+OverheadActual   1: 1 op, 177.00 ns, 177.0000 ns/op
+OverheadActual   2: 1 op, 311.00 ns, 311.0000 ns/op
+OverheadActual   3: 1 op, 294.00 ns, 294.0000 ns/op
+OverheadActual   4: 1 op, 199.00 ns, 199.0000 ns/op
+OverheadActual   5: 1 op, 187.00 ns, 187.0000 ns/op
+OverheadActual   6: 1 op, 70.00 ns, 70.0000 ns/op
+OverheadActual   7: 1 op, 77.00 ns, 77.0000 ns/op
+OverheadActual   8: 1 op, 82.00 ns, 82.0000 ns/op
+OverheadActual   9: 1 op, 69.00 ns, 69.0000 ns/op
+OverheadActual  10: 1 op, 85.00 ns, 85.0000 ns/op
+OverheadActual  11: 1 op, 82.00 ns, 82.0000 ns/op
+OverheadActual  12: 1 op, 77.00 ns, 77.0000 ns/op
+OverheadActual  13: 1 op, 81.00 ns, 81.0000 ns/op
+OverheadActual  14: 1 op, 54.00 ns, 54.0000 ns/op
+OverheadActual  15: 1 op, 81.00 ns, 81.0000 ns/op
+OverheadActual  16: 1 op, 78.00 ns, 78.0000 ns/op
+OverheadActual  17: 1 op, 88.00 ns, 88.0000 ns/op
+OverheadActual  18: 1 op, 183.00 ns, 183.0000 ns/op
+OverheadActual  19: 1 op, 180.00 ns, 180.0000 ns/op
+OverheadActual  20: 1 op, 142.00 ns, 142.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 3534.00 ns, 3.5340 us/op
+WorkloadWarmup   2: 1 op, 3039.00 ns, 3.0390 us/op
+WorkloadWarmup   3: 1 op, 2766.00 ns, 2.7660 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 3236.00 ns, 3.2360 us/op
+WorkloadActual   2: 1 op, 2789.00 ns, 2.7890 us/op
+WorkloadActual   3: 1 op, 2847.00 ns, 2.8470 us/op
+WorkloadActual   4: 1 op, 2820.00 ns, 2.8200 us/op
+WorkloadActual   5: 1 op, 2758.00 ns, 2.7580 us/op
+WorkloadActual   6: 1 op, 2779.00 ns, 2.7790 us/op
+WorkloadActual   7: 1 op, 2746.00 ns, 2.7460 us/op
+WorkloadActual   8: 1 op, 2763.00 ns, 2.7630 us/op
+WorkloadActual   9: 1 op, 2771.00 ns, 2.7710 us/op
+WorkloadActual  10: 1 op, 2758.00 ns, 2.7580 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 2705.50 ns, 2.7055 us/op
+WorkloadResult   2: 1 op, 2763.50 ns, 2.7635 us/op
+WorkloadResult   3: 1 op, 2736.50 ns, 2.7365 us/op
+WorkloadResult   4: 1 op, 2674.50 ns, 2.6745 us/op
+WorkloadResult   5: 1 op, 2695.50 ns, 2.6955 us/op
+WorkloadResult   6: 1 op, 2662.50 ns, 2.6625 us/op
+WorkloadResult   7: 1 op, 2679.50 ns, 2.6795 us/op
+WorkloadResult   8: 1 op, 2687.50 ns, 2.6875 us/op
+WorkloadResult   9: 1 op, 2674.50 ns, 2.6745 us/op
+// GC:  0 0 0 736 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1155068 has exited with code 0.
+
+Mean = 2.698 μs, StdErr = 0.011 μs (0.41%), N = 9, StdDev = 0.033 μs
+Min = 2.663 μs, Q1 = 2.675 μs, Median = 2.688 μs, Q3 = 2.705 μs, Max = 2.764 μs
+IQR = 0.031 μs, LowerFence = 2.628 μs, UpperFence = 2.752 μs
+ConfidenceInterval = [2.642 μs; 2.753 μs] (CI 99.9%), Margin = 0.055 μs (2.05% of Mean)
+Skewness = 0.84, Kurtosis = 2.21, MValue = 2
+
+// ** Remained 10 (35.7%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.AccumulateSamePartition(MessageSize: 1000, BatchSize: 100)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 18 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-MWYJNC(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 213885.00 ns, 213.8850 us/op
+WorkloadJitting  1: 1 op, 6679736.00 ns, 6.6797 ms/op
+
+OverheadWarmup   1: 1 op, 187.00 ns, 187.0000 ns/op
+OverheadWarmup   2: 1 op, 134.00 ns, 134.0000 ns/op
+OverheadWarmup   3: 1 op, 73.00 ns, 73.0000 ns/op
+OverheadWarmup   4: 1 op, 102.00 ns, 102.0000 ns/op
+OverheadWarmup   5: 1 op, 183.00 ns, 183.0000 ns/op
+OverheadWarmup   6: 1 op, 116.00 ns, 116.0000 ns/op
+OverheadWarmup   7: 1 op, 104.00 ns, 104.0000 ns/op
+OverheadWarmup   8: 1 op, 94.00 ns, 94.0000 ns/op
+OverheadWarmup   9: 1 op, 95.00 ns, 95.0000 ns/op
+OverheadWarmup  10: 1 op, 106.00 ns, 106.0000 ns/op
+
+OverheadActual   1: 1 op, 192.00 ns, 192.0000 ns/op
+OverheadActual   2: 1 op, 202.00 ns, 202.0000 ns/op
+OverheadActual   3: 1 op, 337.00 ns, 337.0000 ns/op
+OverheadActual   4: 1 op, 149.00 ns, 149.0000 ns/op
+OverheadActual   5: 1 op, 259.00 ns, 259.0000 ns/op
+OverheadActual   6: 1 op, 143.00 ns, 143.0000 ns/op
+OverheadActual   7: 1 op, 122.00 ns, 122.0000 ns/op
+OverheadActual   8: 1 op, 136.00 ns, 136.0000 ns/op
+OverheadActual   9: 1 op, 135.00 ns, 135.0000 ns/op
+OverheadActual  10: 1 op, 131.00 ns, 131.0000 ns/op
+OverheadActual  11: 1 op, 114.00 ns, 114.0000 ns/op
+OverheadActual  12: 1 op, 124.00 ns, 124.0000 ns/op
+OverheadActual  13: 1 op, 124.00 ns, 124.0000 ns/op
+OverheadActual  14: 1 op, 134.00 ns, 134.0000 ns/op
+OverheadActual  15: 1 op, 129.00 ns, 129.0000 ns/op
+OverheadActual  16: 1 op, 108.00 ns, 108.0000 ns/op
+OverheadActual  17: 1 op, 121.00 ns, 121.0000 ns/op
+OverheadActual  18: 1 op, 286.00 ns, 286.0000 ns/op
+OverheadActual  19: 1 op, 146.00 ns, 146.0000 ns/op
+OverheadActual  20: 1 op, 155.00 ns, 155.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 268822.00 ns, 268.8220 us/op
+WorkloadWarmup   2: 1 op, 49173.00 ns, 49.1730 us/op
+WorkloadWarmup   3: 1 op, 46689.00 ns, 46.6890 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 92612.00 ns, 92.6120 us/op
+WorkloadActual   2: 1 op, 90841.00 ns, 90.8410 us/op
+WorkloadActual   3: 1 op, 84343.00 ns, 84.3430 us/op
+WorkloadActual   4: 1 op, 93077.00 ns, 93.0770 us/op
+WorkloadActual   5: 1 op, 90471.00 ns, 90.4710 us/op
+WorkloadActual   6: 1 op, 91283.00 ns, 91.2830 us/op
+WorkloadActual   7: 1 op, 46793.00 ns, 46.7930 us/op
+WorkloadActual   8: 1 op, 45901.00 ns, 45.9010 us/op
+WorkloadActual   9: 1 op, 45821.00 ns, 45.8210 us/op
+WorkloadActual  10: 1 op, 46025.00 ns, 46.0250 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 92476.50 ns, 92.4765 us/op
+WorkloadResult   2: 1 op, 90705.50 ns, 90.7055 us/op
+WorkloadResult   3: 1 op, 84207.50 ns, 84.2075 us/op
+WorkloadResult   4: 1 op, 92941.50 ns, 92.9415 us/op
+WorkloadResult   5: 1 op, 90335.50 ns, 90.3355 us/op
+WorkloadResult   6: 1 op, 91147.50 ns, 91.1475 us/op
+WorkloadResult   7: 1 op, 46657.50 ns, 46.6575 us/op
+WorkloadResult   8: 1 op, 45765.50 ns, 45.7655 us/op
+WorkloadResult   9: 1 op, 45685.50 ns, 45.6855 us/op
+WorkloadResult  10: 1 op, 45889.50 ns, 45.8895 us/op
+// GC:  0 0 0 9512 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1155077 has exited with code 0.
+
+Mean = 72.581 μs, StdErr = 7.273 μs (10.02%), N = 10, StdDev = 23.000 μs
+Min = 45.685 μs, Q1 = 46.081 μs, Median = 87.272 μs, Q3 = 91.037 μs, Max = 92.942 μs
+IQR = 44.956 μs, LowerFence = -21.352 μs, UpperFence = 158.470 μs
+ConfidenceInterval = [37.809 μs; 107.354 μs] (CI 99.9%), Margin = 34.772 μs (47.91% of Mean)
+Skewness = -0.32, Kurtosis = 0.96, MValue = 3.33
+
+// ** Remained 9 (32.1%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.AccumulateRotatingPartitions(MessageSize: 1000, BatchSize: 100)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 19 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-HDYRNK(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 204159.00 ns, 204.1590 us/op
+WorkloadJitting  1: 1 op, 6657767.00 ns, 6.6578 ms/op
+
+OverheadWarmup   1: 1 op, 201.00 ns, 201.0000 ns/op
+OverheadWarmup   2: 1 op, 163.00 ns, 163.0000 ns/op
+OverheadWarmup   3: 1 op, 95.00 ns, 95.0000 ns/op
+OverheadWarmup   4: 1 op, 97.00 ns, 97.0000 ns/op
+OverheadWarmup   5: 1 op, 195.00 ns, 195.0000 ns/op
+OverheadWarmup   6: 1 op, 176.00 ns, 176.0000 ns/op
+OverheadWarmup   7: 1 op, 155.00 ns, 155.0000 ns/op
+OverheadWarmup   8: 1 op, 127.00 ns, 127.0000 ns/op
+OverheadWarmup   9: 1 op, 99.00 ns, 99.0000 ns/op
+OverheadWarmup  10: 1 op, 130.00 ns, 130.0000 ns/op
+
+OverheadActual   1: 1 op, 191.00 ns, 191.0000 ns/op
+OverheadActual   2: 1 op, 201.00 ns, 201.0000 ns/op
+OverheadActual   3: 1 op, 188.00 ns, 188.0000 ns/op
+OverheadActual   4: 1 op, 201.00 ns, 201.0000 ns/op
+OverheadActual   5: 1 op, 170.00 ns, 170.0000 ns/op
+OverheadActual   6: 1 op, 117.00 ns, 117.0000 ns/op
+OverheadActual   7: 1 op, 64.00 ns, 64.0000 ns/op
+OverheadActual   8: 1 op, 75.00 ns, 75.0000 ns/op
+OverheadActual   9: 1 op, 95.00 ns, 95.0000 ns/op
+OverheadActual  10: 1 op, 56.00 ns, 56.0000 ns/op
+OverheadActual  11: 1 op, 56.00 ns, 56.0000 ns/op
+OverheadActual  12: 1 op, 84.00 ns, 84.0000 ns/op
+OverheadActual  13: 1 op, 86.00 ns, 86.0000 ns/op
+OverheadActual  14: 1 op, 102.00 ns, 102.0000 ns/op
+OverheadActual  15: 1 op, 103.00 ns, 103.0000 ns/op
+OverheadActual  16: 1 op, 95.00 ns, 95.0000 ns/op
+OverheadActual  17: 1 op, 105.00 ns, 105.0000 ns/op
+OverheadActual  18: 1 op, 164.00 ns, 164.0000 ns/op
+OverheadActual  19: 1 op, 141.00 ns, 141.0000 ns/op
+OverheadActual  20: 1 op, 194.00 ns, 194.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 246084.00 ns, 246.0840 us/op
+WorkloadWarmup   2: 1 op, 56816.00 ns, 56.8160 us/op
+WorkloadWarmup   3: 1 op, 52291.00 ns, 52.2910 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 58967.00 ns, 58.9670 us/op
+WorkloadActual   2: 1 op, 53964.00 ns, 53.9640 us/op
+WorkloadActual   3: 1 op, 52596.00 ns, 52.5960 us/op
+WorkloadActual   4: 1 op, 53944.00 ns, 53.9440 us/op
+WorkloadActual   5: 1 op, 52593.00 ns, 52.5930 us/op
+WorkloadActual   6: 1 op, 52802.00 ns, 52.8020 us/op
+WorkloadActual   7: 1 op, 51766.00 ns, 51.7660 us/op
+WorkloadActual   8: 1 op, 53012.00 ns, 53.0120 us/op
+WorkloadActual   9: 1 op, 51584.00 ns, 51.5840 us/op
+WorkloadActual  10: 1 op, 52017.00 ns, 52.0170 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 53860.00 ns, 53.8600 us/op
+WorkloadResult   2: 1 op, 52492.00 ns, 52.4920 us/op
+WorkloadResult   3: 1 op, 53840.00 ns, 53.8400 us/op
+WorkloadResult   4: 1 op, 52489.00 ns, 52.4890 us/op
+WorkloadResult   5: 1 op, 52698.00 ns, 52.6980 us/op
+WorkloadResult   6: 1 op, 51662.00 ns, 51.6620 us/op
+WorkloadResult   7: 1 op, 52908.00 ns, 52.9080 us/op
+WorkloadResult   8: 1 op, 51480.00 ns, 51.4800 us/op
+WorkloadResult   9: 1 op, 51913.00 ns, 51.9130 us/op
+// GC:  0 0 0 9800 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1155086 has exited with code 0.
+
+Mean = 52.594 μs, StdErr = 0.285 μs (0.54%), N = 9, StdDev = 0.856 μs
+Min = 51.480 μs, Q1 = 51.913 μs, Median = 52.492 μs, Q3 = 52.908 μs, Max = 53.860 μs
+IQR = 0.995 μs, LowerFence = 50.420 μs, UpperFence = 54.401 μs
+ConfidenceInterval = [51.155 μs; 54.032 μs] (CI 99.9%), Margin = 1.438 μs (2.73% of Mean)
+Skewness = 0.26, Kurtosis = 1.55, MValue = 2
+
+// ** Remained 8 (28.6%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.BatchAppendSamePartition(MessageSize: 1000, BatchSize: 100)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 20 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-RCYGGE(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 207621.00 ns, 207.6210 us/op
+WorkloadJitting  1: 1 op, 6645039.00 ns, 6.6450 ms/op
+
+OverheadWarmup   1: 1 op, 383.00 ns, 383.0000 ns/op
+OverheadWarmup   2: 1 op, 209.00 ns, 209.0000 ns/op
+OverheadWarmup   3: 1 op, 228.00 ns, 228.0000 ns/op
+OverheadWarmup   4: 1 op, 174.00 ns, 174.0000 ns/op
+OverheadWarmup   5: 1 op, 293.00 ns, 293.0000 ns/op
+OverheadWarmup   6: 1 op, 288.00 ns, 288.0000 ns/op
+
+OverheadActual   1: 1 op, 385.00 ns, 385.0000 ns/op
+OverheadActual   2: 1 op, 335.00 ns, 335.0000 ns/op
+OverheadActual   3: 1 op, 200.00 ns, 200.0000 ns/op
+OverheadActual   4: 1 op, 184.00 ns, 184.0000 ns/op
+OverheadActual   5: 1 op, 211.00 ns, 211.0000 ns/op
+OverheadActual   6: 1 op, 181.00 ns, 181.0000 ns/op
+OverheadActual   7: 1 op, 55.00 ns, 55.0000 ns/op
+OverheadActual   8: 1 op, 73.00 ns, 73.0000 ns/op
+OverheadActual   9: 1 op, 121.00 ns, 121.0000 ns/op
+OverheadActual  10: 1 op, 116.00 ns, 116.0000 ns/op
+OverheadActual  11: 1 op, 78.00 ns, 78.0000 ns/op
+OverheadActual  12: 1 op, 105.00 ns, 105.0000 ns/op
+OverheadActual  13: 1 op, 100.00 ns, 100.0000 ns/op
+OverheadActual  14: 1 op, 114.00 ns, 114.0000 ns/op
+OverheadActual  15: 1 op, 79.00 ns, 79.0000 ns/op
+OverheadActual  16: 1 op, 106.00 ns, 106.0000 ns/op
+OverheadActual  17: 1 op, 134.00 ns, 134.0000 ns/op
+OverheadActual  18: 1 op, 178.00 ns, 178.0000 ns/op
+OverheadActual  19: 1 op, 193.00 ns, 193.0000 ns/op
+OverheadActual  20: 1 op, 135.00 ns, 135.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 263716.00 ns, 263.7160 us/op
+WorkloadWarmup   2: 1 op, 88173.00 ns, 88.1730 us/op
+WorkloadWarmup   3: 1 op, 84304.00 ns, 84.3040 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 87085.00 ns, 87.0850 us/op
+WorkloadActual   2: 1 op, 88069.00 ns, 88.0690 us/op
+WorkloadActual   3: 1 op, 85058.00 ns, 85.0580 us/op
+WorkloadActual   4: 1 op, 86445.00 ns, 86.4450 us/op
+WorkloadActual   5: 1 op, 80413.00 ns, 80.4130 us/op
+WorkloadActual   6: 1 op, 81244.00 ns, 81.2440 us/op
+WorkloadActual   7: 1 op, 80051.00 ns, 80.0510 us/op
+WorkloadActual   8: 1 op, 82104.00 ns, 82.1040 us/op
+WorkloadActual   9: 1 op, 149871.00 ns, 149.8710 us/op
+WorkloadActual  10: 1 op, 133361.00 ns, 133.3610 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 86957.50 ns, 86.9575 us/op
+WorkloadResult   2: 1 op, 87941.50 ns, 87.9415 us/op
+WorkloadResult   3: 1 op, 84930.50 ns, 84.9305 us/op
+WorkloadResult   4: 1 op, 86317.50 ns, 86.3175 us/op
+WorkloadResult   5: 1 op, 80285.50 ns, 80.2855 us/op
+WorkloadResult   6: 1 op, 81116.50 ns, 81.1165 us/op
+WorkloadResult   7: 1 op, 79923.50 ns, 79.9235 us/op
+WorkloadResult   8: 1 op, 81976.50 ns, 81.9765 us/op
+// GC:  0 0 0 15136 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1155096 has exited with code 0.
+
+Mean = 83.681 μs, StdErr = 1.138 μs (1.36%), N = 8, StdDev = 3.219 μs
+Min = 79.924 μs, Q1 = 80.909 μs, Median = 83.454 μs, Q3 = 86.478 μs, Max = 87.942 μs
+IQR = 5.569 μs, LowerFence = 72.556 μs, UpperFence = 94.831 μs
+ConfidenceInterval = [77.527 μs; 89.836 μs] (CI 99.9%), Margin = 6.154 μs (7.35% of Mean)
+Skewness = 0.07, Kurtosis = 1.02, MValue = 2
+
+// ** Remained 7 (25.0%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.SerializeAndAccumulate(MessageSize: 1000, BatchSize: 1000)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 21 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-EXLSGX(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 202409.00 ns, 202.4090 us/op
+WorkloadJitting  1: 1 op, 7384448.00 ns, 7.3844 ms/op
+
+OverheadWarmup   1: 1 op, 300.00 ns, 300.0000 ns/op
+OverheadWarmup   2: 1 op, 190.00 ns, 190.0000 ns/op
+OverheadWarmup   3: 1 op, 179.00 ns, 179.0000 ns/op
+OverheadWarmup   4: 1 op, 167.00 ns, 167.0000 ns/op
+OverheadWarmup   5: 1 op, 248.00 ns, 248.0000 ns/op
+OverheadWarmup   6: 1 op, 207.00 ns, 207.0000 ns/op
+OverheadWarmup   7: 1 op, 171.00 ns, 171.0000 ns/op
+OverheadWarmup   8: 1 op, 175.00 ns, 175.0000 ns/op
+OverheadWarmup   9: 1 op, 402.00 ns, 402.0000 ns/op
+OverheadWarmup  10: 1 op, 190.00 ns, 190.0000 ns/op
+
+OverheadActual   1: 1 op, 221.00 ns, 221.0000 ns/op
+OverheadActual   2: 1 op, 240.00 ns, 240.0000 ns/op
+OverheadActual   3: 1 op, 269.00 ns, 269.0000 ns/op
+OverheadActual   4: 1 op, 288.00 ns, 288.0000 ns/op
+OverheadActual   5: 1 op, 308.00 ns, 308.0000 ns/op
+OverheadActual   6: 1 op, 313.00 ns, 313.0000 ns/op
+OverheadActual   7: 1 op, 200.00 ns, 200.0000 ns/op
+OverheadActual   8: 1 op, 212.00 ns, 212.0000 ns/op
+OverheadActual   9: 1 op, 242.00 ns, 242.0000 ns/op
+OverheadActual  10: 1 op, 258.00 ns, 258.0000 ns/op
+OverheadActual  11: 1 op, 427.00 ns, 427.0000 ns/op
+OverheadActual  12: 1 op, 197.00 ns, 197.0000 ns/op
+OverheadActual  13: 1 op, 151.00 ns, 151.0000 ns/op
+OverheadActual  14: 1 op, 204.00 ns, 204.0000 ns/op
+OverheadActual  15: 1 op, 228.00 ns, 228.0000 ns/op
+OverheadActual  16: 1 op, 335.00 ns, 335.0000 ns/op
+OverheadActual  17: 1 op, 281.00 ns, 281.0000 ns/op
+OverheadActual  18: 1 op, 204.00 ns, 204.0000 ns/op
+OverheadActual  19: 1 op, 218.00 ns, 218.0000 ns/op
+OverheadActual  20: 1 op, 151.00 ns, 151.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 1228085.00 ns, 1.2281 ms/op
+WorkloadWarmup   2: 1 op, 972157.00 ns, 972.1570 us/op
+WorkloadWarmup   3: 1 op, 966589.00 ns, 966.5890 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 939508.00 ns, 939.5080 us/op
+WorkloadActual   2: 1 op, 928132.00 ns, 928.1320 us/op
+WorkloadActual   3: 1 op, 1288181.00 ns, 1.2882 ms/op
+WorkloadActual   4: 1 op, 894889.00 ns, 894.8890 us/op
+WorkloadActual   5: 1 op, 933607.00 ns, 933.6070 us/op
+WorkloadActual   6: 1 op, 17184043.00 ns, 17.1840 ms/op
+WorkloadActual   7: 1 op, 979861.00 ns, 979.8610 us/op
+WorkloadActual   8: 1 op, 816331.00 ns, 816.3310 us/op
+WorkloadActual   9: 1 op, 820718.00 ns, 820.7180 us/op
+WorkloadActual  10: 1 op, 901753.00 ns, 901.7530 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 939274.00 ns, 939.2740 us/op
+WorkloadResult   2: 1 op, 927898.00 ns, 927.8980 us/op
+WorkloadResult   3: 1 op, 894655.00 ns, 894.6550 us/op
+WorkloadResult   4: 1 op, 933373.00 ns, 933.3730 us/op
+WorkloadResult   5: 1 op, 979627.00 ns, 979.6270 us/op
+WorkloadResult   6: 1 op, 816097.00 ns, 816.0970 us/op
+WorkloadResult   7: 1 op, 820484.00 ns, 820.4840 us/op
+WorkloadResult   8: 1 op, 901519.00 ns, 901.5190 us/op
+// GC:  0 0 0 475032 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1155157 has exited with code 0.
+
+Mean = 901.616 μs, StdErr = 20.331 μs (2.25%), N = 8, StdDev = 57.505 μs
+Min = 816.097 μs, Q1 = 876.112 μs, Median = 914.708 μs, Q3 = 934.848 μs, Max = 979.627 μs
+IQR = 58.736 μs, LowerFence = 788.008 μs, UpperFence = 1,022.952 μs
+ConfidenceInterval = [791.668 μs; 1,011.563 μs] (CI 99.9%), Margin = 109.947 μs (12.19% of Mean)
+Skewness = -0.38, Kurtosis = 1.57, MValue = 2
+
+// ** Remained 6 (21.4%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Serialize Only (Key + Value)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.SerializeOnly(MessageSize: 1000, BatchSize: 1000)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 22 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-IBLSOV(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 202809.00 ns, 202.8090 us/op
+WorkloadJitting  1: 1 op, 1106758.00 ns, 1.1068 ms/op
+
+OverheadWarmup   1: 1 op, 263.00 ns, 263.0000 ns/op
+OverheadWarmup   2: 1 op, 167.00 ns, 167.0000 ns/op
+OverheadWarmup   3: 1 op, 60.00 ns, 60.0000 ns/op
+OverheadWarmup   4: 1 op, 73.00 ns, 73.0000 ns/op
+OverheadWarmup   5: 1 op, 188.00 ns, 188.0000 ns/op
+OverheadWarmup   6: 1 op, 183.00 ns, 183.0000 ns/op
+OverheadWarmup   7: 1 op, 107.00 ns, 107.0000 ns/op
+OverheadWarmup   8: 1 op, 71.00 ns, 71.0000 ns/op
+OverheadWarmup   9: 1 op, 97.00 ns, 97.0000 ns/op
+OverheadWarmup  10: 1 op, 62.00 ns, 62.0000 ns/op
+
+OverheadActual   1: 1 op, 184.00 ns, 184.0000 ns/op
+OverheadActual   2: 1 op, 187.00 ns, 187.0000 ns/op
+OverheadActual   3: 1 op, 190.00 ns, 190.0000 ns/op
+OverheadActual   4: 1 op, 134.00 ns, 134.0000 ns/op
+OverheadActual   5: 1 op, 205.00 ns, 205.0000 ns/op
+OverheadActual   6: 1 op, 100.00 ns, 100.0000 ns/op
+OverheadActual   7: 1 op, 55.00 ns, 55.0000 ns/op
+OverheadActual   8: 1 op, 38.00 ns, 38.0000 ns/op
+OverheadActual   9: 1 op, 35.00 ns, 35.0000 ns/op
+OverheadActual  10: 1 op, 37.00 ns, 37.0000 ns/op
+OverheadActual  11: 1 op, 46.00 ns, 46.0000 ns/op
+OverheadActual  12: 1 op, 37.00 ns, 37.0000 ns/op
+OverheadActual  13: 1 op, 64.00 ns, 64.0000 ns/op
+OverheadActual  14: 1 op, 73.00 ns, 73.0000 ns/op
+OverheadActual  15: 1 op, 75.00 ns, 75.0000 ns/op
+OverheadActual  16: 1 op, 73.00 ns, 73.0000 ns/op
+OverheadActual  17: 1 op, 88.00 ns, 88.0000 ns/op
+OverheadActual  18: 1 op, 208.00 ns, 208.0000 ns/op
+OverheadActual  19: 1 op, 122.00 ns, 122.0000 ns/op
+OverheadActual  20: 1 op, 112.00 ns, 112.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 257241.00 ns, 257.2410 us/op
+WorkloadWarmup   2: 1 op, 271293.00 ns, 271.2930 us/op
+WorkloadWarmup   3: 1 op, 240782.00 ns, 240.7820 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 244608.00 ns, 244.6080 us/op
+WorkloadActual   2: 1 op, 255327.00 ns, 255.3270 us/op
+WorkloadActual   3: 1 op, 238574.00 ns, 238.5740 us/op
+WorkloadActual   4: 1 op, 243646.00 ns, 243.6460 us/op
+WorkloadActual   5: 1 op, 242662.00 ns, 242.6620 us/op
+WorkloadActual   6: 1 op, 10790588.00 ns, 10.7906 ms/op
+WorkloadActual   7: 1 op, 255266.00 ns, 255.2660 us/op
+WorkloadActual   8: 1 op, 246970.00 ns, 246.9700 us/op
+WorkloadActual   9: 1 op, 246002.00 ns, 246.0020 us/op
+WorkloadActual  10: 1 op, 247794.00 ns, 247.7940 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 244526.50 ns, 244.5265 us/op
+WorkloadResult   2: 1 op, 255245.50 ns, 255.2455 us/op
+WorkloadResult   3: 1 op, 238492.50 ns, 238.4925 us/op
+WorkloadResult   4: 1 op, 243564.50 ns, 243.5645 us/op
+WorkloadResult   5: 1 op, 242580.50 ns, 242.5805 us/op
+WorkloadResult   6: 1 op, 255184.50 ns, 255.1845 us/op
+WorkloadResult   7: 1 op, 246888.50 ns, 246.8885 us/op
+WorkloadResult   8: 1 op, 245920.50 ns, 245.9205 us/op
+WorkloadResult   9: 1 op, 247712.50 ns, 247.7125 us/op
+// GC:  0 0 0 40368 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1155170 has exited with code 0.
+
+Mean = 246.679 μs, StdErr = 1.847 μs (0.75%), N = 9, StdDev = 5.540 μs
+Min = 238.493 μs, Q1 = 243.565 μs, Median = 245.921 μs, Q3 = 247.713 μs, Max = 255.245 μs
+IQR = 4.148 μs, LowerFence = 237.343 μs, UpperFence = 253.935 μs
+ConfidenceInterval = [237.369 μs; 255.990 μs] (CI 99.9%), Margin = 9.310 μs (3.77% of Mean)
+Skewness = 0.38, Kurtosis = 1.83, MValue = 2
+
+// ** Remained 5 (17.9%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'String Interpolation Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.StringInterpolationOnly(MessageSize: 1000, BatchSize: 1000)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 23 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-LFUNMT(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 180474.00 ns, 180.4740 us/op
+WorkloadJitting  1: 1 op, 402042.00 ns, 402.0420 us/op
+
+OverheadWarmup   1: 1 op, 542.00 ns, 542.0000 ns/op
+OverheadWarmup   2: 1 op, 415.00 ns, 415.0000 ns/op
+OverheadWarmup   3: 1 op, 112.00 ns, 112.0000 ns/op
+OverheadWarmup   4: 1 op, 49.00 ns, 49.0000 ns/op
+OverheadWarmup   5: 1 op, 270.00 ns, 270.0000 ns/op
+OverheadWarmup   6: 1 op, 151.00 ns, 151.0000 ns/op
+OverheadWarmup   7: 1 op, 104.00 ns, 104.0000 ns/op
+OverheadWarmup   8: 1 op, 91.00 ns, 91.0000 ns/op
+OverheadWarmup   9: 1 op, 80.00 ns, 80.0000 ns/op
+OverheadWarmup  10: 1 op, 72.00 ns, 72.0000 ns/op
+
+OverheadActual   1: 1 op, 167.00 ns, 167.0000 ns/op
+OverheadActual   2: 1 op, 195.00 ns, 195.0000 ns/op
+OverheadActual   3: 1 op, 195.00 ns, 195.0000 ns/op
+OverheadActual   4: 1 op, 97.00 ns, 97.0000 ns/op
+OverheadActual   5: 1 op, 182.00 ns, 182.0000 ns/op
+OverheadActual   6: 1 op, 100.00 ns, 100.0000 ns/op
+OverheadActual   7: 1 op, 60.00 ns, 60.0000 ns/op
+OverheadActual   8: 1 op, 46.00 ns, 46.0000 ns/op
+OverheadActual   9: 1 op, 39.00 ns, 39.0000 ns/op
+OverheadActual  10: 1 op, 38.00 ns, 38.0000 ns/op
+OverheadActual  11: 1 op, 36.00 ns, 36.0000 ns/op
+OverheadActual  12: 1 op, 87.00 ns, 87.0000 ns/op
+OverheadActual  13: 1 op, 92.00 ns, 92.0000 ns/op
+OverheadActual  14: 1 op, 94.00 ns, 94.0000 ns/op
+OverheadActual  15: 1 op, 83.00 ns, 83.0000 ns/op
+OverheadActual  16: 1 op, 86.00 ns, 86.0000 ns/op
+OverheadActual  17: 1 op, 39.00 ns, 39.0000 ns/op
+OverheadActual  18: 1 op, 233.00 ns, 233.0000 ns/op
+OverheadActual  19: 1 op, 94.00 ns, 94.0000 ns/op
+OverheadActual  20: 1 op, 127.00 ns, 127.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 65958.00 ns, 65.9580 us/op
+WorkloadWarmup   2: 1 op, 61471.00 ns, 61.4710 us/op
+WorkloadWarmup   3: 1 op, 45877.00 ns, 45.8770 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 46867.00 ns, 46.8670 us/op
+WorkloadActual   2: 1 op, 68431.00 ns, 68.4310 us/op
+WorkloadActual   3: 1 op, 44507.00 ns, 44.5070 us/op
+WorkloadActual   4: 1 op, 44973.00 ns, 44.9730 us/op
+WorkloadActual   5: 1 op, 49599.00 ns, 49.5990 us/op
+WorkloadActual   6: 1 op, 6944190.00 ns, 6.9442 ms/op
+WorkloadActual   7: 1 op, 59407.00 ns, 59.4070 us/op
+WorkloadActual   8: 1 op, 54373.00 ns, 54.3730 us/op
+WorkloadActual   9: 1 op, 53460.00 ns, 53.4600 us/op
+WorkloadActual  10: 1 op, 52853.00 ns, 52.8530 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 46774.00 ns, 46.7740 us/op
+WorkloadResult   2: 1 op, 68338.00 ns, 68.3380 us/op
+WorkloadResult   3: 1 op, 44414.00 ns, 44.4140 us/op
+WorkloadResult   4: 1 op, 44880.00 ns, 44.8800 us/op
+WorkloadResult   5: 1 op, 49506.00 ns, 49.5060 us/op
+WorkloadResult   6: 1 op, 59314.00 ns, 59.3140 us/op
+WorkloadResult   7: 1 op, 54280.00 ns, 54.2800 us/op
+WorkloadResult   8: 1 op, 53367.00 ns, 53.3670 us/op
+WorkloadResult   9: 1 op, 52760.00 ns, 52.7600 us/op
+// GC:  0 0 0 40656 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1155179 has exited with code 0.
+
+Mean = 52.626 μs, StdErr = 2.545 μs (4.84%), N = 9, StdDev = 7.635 μs
+Min = 44.414 μs, Q1 = 46.774 μs, Median = 52.760 μs, Q3 = 54.280 μs, Max = 68.338 μs
+IQR = 7.506 μs, LowerFence = 35.515 μs, UpperFence = 65.539 μs
+ConfidenceInterval = [39.796 μs; 65.456 μs] (CI 99.9%), Margin = 12.830 μs (24.38% of Mean)
+Skewness = 0.73, Kurtosis = 2.37, MValue = 2
+
+// ** Remained 4 (14.3%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.TimestampOnly(MessageSize: 1000, BatchSize: 1000)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 24 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-HWKAQC(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 192313.00 ns, 192.3130 us/op
+WorkloadJitting  1: 1 op, 300301.00 ns, 300.3010 us/op
+
+OverheadWarmup   1: 1 op, 202.00 ns, 202.0000 ns/op
+OverheadWarmup   2: 1 op, 174.00 ns, 174.0000 ns/op
+OverheadWarmup   3: 1 op, 46.00 ns, 46.0000 ns/op
+OverheadWarmup   4: 1 op, 58.00 ns, 58.0000 ns/op
+OverheadWarmup   5: 1 op, 203.00 ns, 203.0000 ns/op
+OverheadWarmup   6: 1 op, 157.00 ns, 157.0000 ns/op
+OverheadWarmup   7: 1 op, 103.00 ns, 103.0000 ns/op
+OverheadWarmup   8: 1 op, 96.00 ns, 96.0000 ns/op
+OverheadWarmup   9: 1 op, 90.00 ns, 90.0000 ns/op
+OverheadWarmup  10: 1 op, 81.00 ns, 81.0000 ns/op
+
+OverheadActual   1: 1 op, 185.00 ns, 185.0000 ns/op
+OverheadActual   2: 1 op, 201.00 ns, 201.0000 ns/op
+OverheadActual   3: 1 op, 186.00 ns, 186.0000 ns/op
+OverheadActual   4: 1 op, 171.00 ns, 171.0000 ns/op
+OverheadActual   5: 1 op, 165.00 ns, 165.0000 ns/op
+OverheadActual   6: 1 op, 169.00 ns, 169.0000 ns/op
+OverheadActual   7: 1 op, 99.00 ns, 99.0000 ns/op
+OverheadActual   8: 1 op, 96.00 ns, 96.0000 ns/op
+OverheadActual   9: 1 op, 52.00 ns, 52.0000 ns/op
+OverheadActual  10: 1 op, 41.00 ns, 41.0000 ns/op
+OverheadActual  11: 1 op, 219.00 ns, 219.0000 ns/op
+OverheadActual  12: 1 op, 132.00 ns, 132.0000 ns/op
+OverheadActual  13: 1 op, 119.00 ns, 119.0000 ns/op
+OverheadActual  14: 1 op, 118.00 ns, 118.0000 ns/op
+OverheadActual  15: 1 op, 103.00 ns, 103.0000 ns/op
+OverheadActual  16: 1 op, 76.00 ns, 76.0000 ns/op
+OverheadActual  17: 1 op, 113.00 ns, 113.0000 ns/op
+OverheadActual  18: 1 op, 166.00 ns, 166.0000 ns/op
+OverheadActual  19: 1 op, 115.00 ns, 115.0000 ns/op
+OverheadActual  20: 1 op, 104.00 ns, 104.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 28794.00 ns, 28.7940 us/op
+WorkloadWarmup   2: 1 op, 26741.00 ns, 26.7410 us/op
+WorkloadWarmup   3: 1 op, 26341.00 ns, 26.3410 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 41981.00 ns, 41.9810 us/op
+WorkloadActual   2: 1 op, 41298.00 ns, 41.2980 us/op
+WorkloadActual   3: 1 op, 41416.00 ns, 41.4160 us/op
+WorkloadActual   4: 1 op, 41298.00 ns, 41.2980 us/op
+WorkloadActual   5: 1 op, 43366.00 ns, 43.3660 us/op
+WorkloadActual   6: 1 op, 569378.00 ns, 569.3780 us/op
+WorkloadActual   7: 1 op, 48339.00 ns, 48.3390 us/op
+WorkloadActual   8: 1 op, 49623.00 ns, 49.6230 us/op
+WorkloadActual   9: 1 op, 49197.00 ns, 49.1970 us/op
+WorkloadActual  10: 1 op, 49937.00 ns, 49.9370 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 41862.50 ns, 41.8625 us/op
+WorkloadResult   2: 1 op, 41179.50 ns, 41.1795 us/op
+WorkloadResult   3: 1 op, 41297.50 ns, 41.2975 us/op
+WorkloadResult   4: 1 op, 41179.50 ns, 41.1795 us/op
+WorkloadResult   5: 1 op, 43247.50 ns, 43.2475 us/op
+WorkloadResult   6: 1 op, 48220.50 ns, 48.2205 us/op
+WorkloadResult   7: 1 op, 49504.50 ns, 49.5045 us/op
+WorkloadResult   8: 1 op, 49078.50 ns, 49.0785 us/op
+WorkloadResult   9: 1 op, 49818.50 ns, 49.8185 us/op
+// GC:  0 0 0 736 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1155240 has exited with code 0.
+
+Mean = 45.043 μs, StdErr = 1.325 μs (2.94%), N = 9, StdDev = 3.974 μs
+Min = 41.179 μs, Q1 = 41.297 μs, Median = 43.248 μs, Q3 = 49.078 μs, Max = 49.819 μs
+IQR = 7.781 μs, LowerFence = 29.626 μs, UpperFence = 60.750 μs
+ConfidenceInterval = [38.366 μs; 51.720 μs] (CI 99.9%), Margin = 6.677 μs (14.82% of Mean)
+Skewness = 0.16, Kurtosis = 0.91, MValue = 3.6
+
+// ** Remained 3 (10.7%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.AccumulateSamePartition(MessageSize: 1000, BatchSize: 1000)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 25 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-RTCIXH(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 209122.00 ns, 209.1220 us/op
+WorkloadJitting  1: 1 op, 7466412.00 ns, 7.4664 ms/op
+
+OverheadWarmup   1: 1 op, 292.00 ns, 292.0000 ns/op
+OverheadWarmup   2: 1 op, 201.00 ns, 201.0000 ns/op
+OverheadWarmup   3: 1 op, 106.00 ns, 106.0000 ns/op
+OverheadWarmup   4: 1 op, 137.00 ns, 137.0000 ns/op
+OverheadWarmup   5: 1 op, 202.00 ns, 202.0000 ns/op
+OverheadWarmup   6: 1 op, 221.00 ns, 221.0000 ns/op
+OverheadWarmup   7: 1 op, 178.00 ns, 178.0000 ns/op
+OverheadWarmup   8: 1 op, 202.00 ns, 202.0000 ns/op
+OverheadWarmup   9: 1 op, 221.00 ns, 221.0000 ns/op
+OverheadWarmup  10: 1 op, 217.00 ns, 217.0000 ns/op
+
+OverheadActual   1: 1 op, 243.00 ns, 243.0000 ns/op
+OverheadActual   2: 1 op, 221.00 ns, 221.0000 ns/op
+OverheadActual   3: 1 op, 1027.00 ns, 1.0270 us/op
+OverheadActual   4: 1 op, 601.00 ns, 601.0000 ns/op
+OverheadActual   5: 1 op, 186.00 ns, 186.0000 ns/op
+OverheadActual   6: 1 op, 147.00 ns, 147.0000 ns/op
+OverheadActual   7: 1 op, 103.00 ns, 103.0000 ns/op
+OverheadActual   8: 1 op, 110.00 ns, 110.0000 ns/op
+OverheadActual   9: 1 op, 101.00 ns, 101.0000 ns/op
+OverheadActual  10: 1 op, 130.00 ns, 130.0000 ns/op
+OverheadActual  11: 1 op, 165.00 ns, 165.0000 ns/op
+OverheadActual  12: 1 op, 181.00 ns, 181.0000 ns/op
+OverheadActual  13: 1 op, 137.00 ns, 137.0000 ns/op
+OverheadActual  14: 1 op, 200.00 ns, 200.0000 ns/op
+OverheadActual  15: 1 op, 151.00 ns, 151.0000 ns/op
+OverheadActual  16: 1 op, 127.00 ns, 127.0000 ns/op
+OverheadActual  17: 1 op, 301.00 ns, 301.0000 ns/op
+OverheadActual  18: 1 op, 274.00 ns, 274.0000 ns/op
+OverheadActual  19: 1 op, 182.00 ns, 182.0000 ns/op
+OverheadActual  20: 1 op, 206.00 ns, 206.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 1458010.00 ns, 1.4580 ms/op
+WorkloadWarmup   2: 1 op, 885408.00 ns, 885.4080 us/op
+WorkloadWarmup   3: 1 op, 879735.00 ns, 879.7350 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 932132.00 ns, 932.1320 us/op
+WorkloadActual   2: 1 op, 741420.00 ns, 741.4200 us/op
+WorkloadActual   3: 1 op, 931845.00 ns, 931.8450 us/op
+WorkloadActual   4: 1 op, 903114.00 ns, 903.1140 us/op
+WorkloadActual   5: 1 op, 923150.00 ns, 923.1500 us/op
+WorkloadActual   6: 1 op, 16305756.00 ns, 16.3058 ms/op
+WorkloadActual   7: 1 op, 981910.00 ns, 981.9100 us/op
+WorkloadActual   8: 1 op, 768149.00 ns, 768.1490 us/op
+WorkloadActual   9: 1 op, 753387.00 ns, 753.3870 us/op
+WorkloadActual  10: 1 op, 869265.00 ns, 869.2650 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 931950.50 ns, 931.9505 us/op
+WorkloadResult   2: 1 op, 741238.50 ns, 741.2385 us/op
+WorkloadResult   3: 1 op, 931663.50 ns, 931.6635 us/op
+WorkloadResult   4: 1 op, 902932.50 ns, 902.9325 us/op
+WorkloadResult   5: 1 op, 922968.50 ns, 922.9685 us/op
+WorkloadResult   6: 1 op, 981728.50 ns, 981.7285 us/op
+WorkloadResult   7: 1 op, 767967.50 ns, 767.9675 us/op
+WorkloadResult   8: 1 op, 753205.50 ns, 753.2055 us/op
+WorkloadResult   9: 1 op, 869083.50 ns, 869.0835 us/op
+// GC:  0 0 0 474456 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1155249 has exited with code 0.
+
+Mean = 866.971 μs, StdErr = 29.945 μs (3.45%), N = 9, StdDev = 89.835 μs
+Min = 741.239 μs, Q1 = 767.967 μs, Median = 902.933 μs, Q3 = 931.663 μs, Max = 981.729 μs
+IQR = 163.696 μs, LowerFence = 522.423 μs, UpperFence = 1,177.207 μs
+ConfidenceInterval = [716.008 μs; 1,017.933 μs] (CI 99.9%), Margin = 150.962 μs (17.41% of Mean)
+Skewness = -0.33, Kurtosis = 1.25, MValue = 3
+
+// ** Remained 2 (7.1%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.AccumulateRotatingPartitions(MessageSize: 1000, BatchSize: 1000)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 26 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-XUZINY(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 181570.00 ns, 181.5700 us/op
+WorkloadJitting  1: 1 op, 7525797.00 ns, 7.5258 ms/op
+
+OverheadWarmup   1: 1 op, 268.00 ns, 268.0000 ns/op
+OverheadWarmup   2: 1 op, 351.00 ns, 351.0000 ns/op
+OverheadWarmup   3: 1 op, 169.00 ns, 169.0000 ns/op
+OverheadWarmup   4: 1 op, 171.00 ns, 171.0000 ns/op
+OverheadWarmup   5: 1 op, 257.00 ns, 257.0000 ns/op
+OverheadWarmup   6: 1 op, 263.00 ns, 263.0000 ns/op
+OverheadWarmup   7: 1 op, 351.00 ns, 351.0000 ns/op
+OverheadWarmup   8: 1 op, 228.00 ns, 228.0000 ns/op
+
+OverheadActual   1: 1 op, 237.00 ns, 237.0000 ns/op
+OverheadActual   2: 1 op, 219.00 ns, 219.0000 ns/op
+OverheadActual   3: 1 op, 403.00 ns, 403.0000 ns/op
+OverheadActual   4: 1 op, 219.00 ns, 219.0000 ns/op
+OverheadActual   5: 1 op, 177.00 ns, 177.0000 ns/op
+OverheadActual   6: 1 op, 170.00 ns, 170.0000 ns/op
+OverheadActual   7: 1 op, 102.00 ns, 102.0000 ns/op
+OverheadActual   8: 1 op, 109.00 ns, 109.0000 ns/op
+OverheadActual   9: 1 op, 87.00 ns, 87.0000 ns/op
+OverheadActual  10: 1 op, 108.00 ns, 108.0000 ns/op
+OverheadActual  11: 1 op, 102.00 ns, 102.0000 ns/op
+OverheadActual  12: 1 op, 91.00 ns, 91.0000 ns/op
+OverheadActual  13: 1 op, 115.00 ns, 115.0000 ns/op
+OverheadActual  14: 1 op, 124.00 ns, 124.0000 ns/op
+OverheadActual  15: 1 op, 90.00 ns, 90.0000 ns/op
+OverheadActual  16: 1 op, 133.00 ns, 133.0000 ns/op
+OverheadActual  17: 1 op, 127.00 ns, 127.0000 ns/op
+OverheadActual  18: 1 op, 191.00 ns, 191.0000 ns/op
+OverheadActual  19: 1 op, 165.00 ns, 165.0000 ns/op
+OverheadActual  20: 1 op, 134.00 ns, 134.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 1131591.00 ns, 1.1316 ms/op
+WorkloadWarmup   2: 1 op, 1133809.00 ns, 1.1338 ms/op
+WorkloadWarmup   3: 1 op, 964060.00 ns, 964.0600 us/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 930864.00 ns, 930.8640 us/op
+WorkloadActual   2: 1 op, 913293.00 ns, 913.2930 us/op
+WorkloadActual   3: 1 op, 972968.00 ns, 972.9680 us/op
+WorkloadActual   4: 1 op, 969149.00 ns, 969.1490 us/op
+WorkloadActual   5: 1 op, 1019341.00 ns, 1.0193 ms/op
+WorkloadActual   6: 1 op, 16696855.00 ns, 16.6969 ms/op
+WorkloadActual   7: 1 op, 964060.00 ns, 964.0600 us/op
+WorkloadActual   8: 1 op, 832385.00 ns, 832.3850 us/op
+WorkloadActual   9: 1 op, 808376.00 ns, 808.3760 us/op
+WorkloadActual  10: 1 op, 910085.00 ns, 910.0850 us/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 930734.00 ns, 930.7340 us/op
+WorkloadResult   2: 1 op, 913163.00 ns, 913.1630 us/op
+WorkloadResult   3: 1 op, 972838.00 ns, 972.8380 us/op
+WorkloadResult   4: 1 op, 969019.00 ns, 969.0190 us/op
+WorkloadResult   5: 1 op, 1019211.00 ns, 1.0192 ms/op
+WorkloadResult   6: 1 op, 963930.00 ns, 963.9300 us/op
+WorkloadResult   7: 1 op, 832255.00 ns, 832.2550 us/op
+WorkloadResult   8: 1 op, 808246.00 ns, 808.2460 us/op
+WorkloadResult   9: 1 op, 909955.00 ns, 909.9550 us/op
+// GC:  0 0 0 475032 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1155259 has exited with code 0.
+
+Mean = 924.372 μs, StdErr = 22.744 μs (2.46%), N = 9, StdDev = 68.233 μs
+Min = 808.246 μs, Q1 = 909.955 μs, Median = 930.734 μs, Q3 = 969.019 μs, Max = 1,019.211 μs
+IQR = 59.064 μs, LowerFence = 821.359 μs, UpperFence = 1,057.615 μs
+ConfidenceInterval = [809.711 μs; 1,039.034 μs] (CI 99.9%), Margin = 114.662 μs (12.40% of Mean)
+Skewness = -0.43, Kurtosis = 1.78, MValue = 2.33
+
+// ** Remained 1 (3.6%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// **************************
+// Benchmark: AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+// *** Execute ***
+// Launch: 1 / 1
+// Execute: dotnet d899c145-54eb-4eef-9e9d-6917ed999316.dll --anonymousPipes 127 128 --benchmarkName "Dekaf.Benchmarks.AccumulatorBenchmarks.BatchAppendSamePartition(MessageSize: 1000, BatchSize: 1000)" --job "InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3" --benchmarkId 27 in /home/tom-longhurst/dev/Dekaf/tools/Dekaf.Benchmarks/bin/Release/net10.0/d899c145-54eb-4eef-9e9d-6917ed999316/bin/Release/net10.0
+// Failed to set up high priority (Permission denied). In order to run benchmarks with high priority, make sure you have the right permissions.
+// BeforeAnythingElse
+
+// Benchmark Process Environment Information:
+// BenchmarkDotNet v0.14.0
+// Runtime=.NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+// GC=Concurrent Workstation
+// HardwareIntrinsics=AVX2,AES,BMI1,BMI2,FMA,LZCNT,PCLMUL,POPCNT,AvxVnni,SERIALIZE VectorSize=256
+// Job: Job-OWAZJM(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3)
+
+OverheadJitting  1: 1 op, 197393.00 ns, 197.3930 us/op
+WorkloadJitting  1: 1 op, 8302377.00 ns, 8.3024 ms/op
+
+OverheadWarmup   1: 1 op, 320.00 ns, 320.0000 ns/op
+OverheadWarmup   2: 1 op, 214.00 ns, 214.0000 ns/op
+OverheadWarmup   3: 1 op, 171.00 ns, 171.0000 ns/op
+OverheadWarmup   4: 1 op, 158.00 ns, 158.0000 ns/op
+OverheadWarmup   5: 1 op, 175.00 ns, 175.0000 ns/op
+OverheadWarmup   6: 1 op, 181.00 ns, 181.0000 ns/op
+OverheadWarmup   7: 1 op, 149.00 ns, 149.0000 ns/op
+OverheadWarmup   8: 1 op, 99.00 ns, 99.0000 ns/op
+OverheadWarmup   9: 1 op, 108.00 ns, 108.0000 ns/op
+OverheadWarmup  10: 1 op, 93.00 ns, 93.0000 ns/op
+
+OverheadActual   1: 1 op, 218.00 ns, 218.0000 ns/op
+OverheadActual   2: 1 op, 211.00 ns, 211.0000 ns/op
+OverheadActual   3: 1 op, 198.00 ns, 198.0000 ns/op
+OverheadActual   4: 1 op, 196.00 ns, 196.0000 ns/op
+OverheadActual   5: 1 op, 205.00 ns, 205.0000 ns/op
+OverheadActual   6: 1 op, 195.00 ns, 195.0000 ns/op
+OverheadActual   7: 1 op, 94.00 ns, 94.0000 ns/op
+OverheadActual   8: 1 op, 174.00 ns, 174.0000 ns/op
+OverheadActual   9: 1 op, 162.00 ns, 162.0000 ns/op
+OverheadActual  10: 1 op, 129.00 ns, 129.0000 ns/op
+OverheadActual  11: 1 op, 166.00 ns, 166.0000 ns/op
+OverheadActual  12: 1 op, 208.00 ns, 208.0000 ns/op
+OverheadActual  13: 1 op, 173.00 ns, 173.0000 ns/op
+OverheadActual  14: 1 op, 135.00 ns, 135.0000 ns/op
+OverheadActual  15: 1 op, 123.00 ns, 123.0000 ns/op
+OverheadActual  16: 1 op, 142.00 ns, 142.0000 ns/op
+OverheadActual  17: 1 op, 159.00 ns, 159.0000 ns/op
+OverheadActual  18: 1 op, 206.00 ns, 206.0000 ns/op
+OverheadActual  19: 1 op, 137.00 ns, 137.0000 ns/op
+OverheadActual  20: 1 op, 202.00 ns, 202.0000 ns/op
+
+WorkloadWarmup   1: 1 op, 1556887.00 ns, 1.5569 ms/op
+WorkloadWarmup   2: 1 op, 1319114.00 ns, 1.3191 ms/op
+WorkloadWarmup   3: 1 op, 1225795.00 ns, 1.2258 ms/op
+
+// BeforeActualRun
+WorkloadActual   1: 1 op, 1282029.00 ns, 1.2820 ms/op
+WorkloadActual   2: 1 op, 1202659.00 ns, 1.2027 ms/op
+WorkloadActual   3: 1 op, 1230590.00 ns, 1.2306 ms/op
+WorkloadActual   4: 1 op, 1224273.00 ns, 1.2243 ms/op
+WorkloadActual   5: 1 op, 1244292.00 ns, 1.2443 ms/op
+WorkloadActual   6: 1 op, 10353970.00 ns, 10.3540 ms/op
+WorkloadActual   7: 1 op, 1223002.00 ns, 1.2230 ms/op
+WorkloadActual   8: 1 op, 1231474.00 ns, 1.2315 ms/op
+WorkloadActual   9: 1 op, 1266088.00 ns, 1.2661 ms/op
+WorkloadActual  10: 1 op, 1124393.00 ns, 1.1244 ms/op
+
+// AfterActualRun
+WorkloadResult   1: 1 op, 1281855.50 ns, 1.2819 ms/op
+WorkloadResult   2: 1 op, 1202485.50 ns, 1.2025 ms/op
+WorkloadResult   3: 1 op, 1230416.50 ns, 1.2304 ms/op
+WorkloadResult   4: 1 op, 1224099.50 ns, 1.2241 ms/op
+WorkloadResult   5: 1 op, 1244118.50 ns, 1.2441 ms/op
+WorkloadResult   6: 1 op, 1222828.50 ns, 1.2228 ms/op
+WorkloadResult   7: 1 op, 1231300.50 ns, 1.2313 ms/op
+WorkloadResult   8: 1 op, 1265914.50 ns, 1.2659 ms/op
+WorkloadResult   9: 1 op, 1124219.50 ns, 1.1242 ms/op
+// GC:  0 0 0 530480 1
+// Threading:  0 0 1
+
+// AfterAll
+// Benchmark Process 1155319 has exited with code 0.
+
+Mean = 1.225 ms, StdErr = 0.015 ms (1.22%), N = 9, StdDev = 0.045 ms
+Min = 1.124 ms, Q1 = 1.223 ms, Median = 1.230 ms, Q3 = 1.244 ms, Max = 1.282 ms
+IQR = 0.021 ms, LowerFence = 1.191 ms, UpperFence = 1.276 ms
+ConfidenceInterval = [1.150 ms; 1.300 ms] (CI 99.9%), Margin = 0.075 ms (6.14% of Mean)
+Skewness = -0.98, Kurtosis = 3.26, MValue = 2
+
+// ** Remained 0 (0.0%) benchmark(s) to run. Estimated finish 2026-01-27 22:57 (0h 0m from now) **
+// ***** BenchmarkRunner: Finish  *****
+
+// * Export *
+  BenchmarkDotNet.Artifacts/results/Dekaf.Benchmarks.AccumulatorBenchmarks-report.csv
+  BenchmarkDotNet.Artifacts/results/Dekaf.Benchmarks.AccumulatorBenchmarks-report-github.md
+  BenchmarkDotNet.Artifacts/results/Dekaf.Benchmarks.AccumulatorBenchmarks-report.html
+
+// * Detailed results *
+AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 38.573 μs, StdErr = 0.197 μs (0.51%), N = 9, StdDev = 0.590 μs
+Min = 37.792 μs, Q1 = 38.212 μs, Median = 38.459 μs, Q3 = 38.674 μs, Max = 39.579 μs
+IQR = 0.462 μs, LowerFence = 37.519 μs, UpperFence = 39.367 μs
+ConfidenceInterval = [37.582 μs; 39.564 μs] (CI 99.9%), Margin = 0.991 μs (2.57% of Mean)
+Skewness = 0.61, Kurtosis = 1.89, MValue = 2
+-------------------- Histogram --------------------
+[37.420 μs ; 38.825 μs) | @@@@@@@
+[38.825 μs ; 39.951 μs) | @@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Serialize Only (Key + Value)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 18.851 μs, StdErr = 0.049 μs (0.26%), N = 9, StdDev = 0.146 μs
+Min = 18.581 μs, Q1 = 18.768 μs, Median = 18.837 μs, Q3 = 18.959 μs, Max = 19.056 μs
+IQR = 0.190 μs, LowerFence = 18.483 μs, UpperFence = 19.244 μs
+ConfidenceInterval = [18.605 μs; 19.097 μs] (CI 99.9%), Margin = 0.246 μs (1.30% of Mean)
+Skewness = -0.31, Kurtosis = 1.93, MValue = 2
+-------------------- Histogram --------------------
+[18.488 μs ; 19.149 μs) | @@@@@@@@@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'String Interpolation Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 5.537 μs, StdErr = 0.089 μs (1.60%), N = 8, StdDev = 0.251 μs
+Min = 4.936 μs, Q1 = 5.552 μs, Median = 5.636 μs, Q3 = 5.653 μs, Max = 5.699 μs
+IQR = 0.101 μs, LowerFence = 5.401 μs, UpperFence = 5.804 μs
+ConfidenceInterval = [5.057 μs; 6.016 μs] (CI 99.9%), Margin = 0.479 μs (8.66% of Mean)
+Skewness = -1.64, Kurtosis = 4.16, MValue = 2
+-------------------- Histogram --------------------
+[4.771 μs ; 5.101 μs) | @
+[5.101 μs ; 5.434 μs) | 
+[5.434 μs ; 5.763 μs) | @@@@@@@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 3.420 μs, StdErr = 0.227 μs (6.64%), N = 10, StdDev = 0.718 μs
+Min = 2.691 μs, Q1 = 2.810 μs, Median = 3.203 μs, Q3 = 4.078 μs, Max = 4.511 μs
+IQR = 1.268 μs, LowerFence = 0.909 μs, UpperFence = 5.979 μs
+ConfidenceInterval = [2.334 μs; 4.505 μs] (CI 99.9%), Margin = 1.085 μs (31.74% of Mean)
+Skewness = 0.46, Kurtosis = 1.38, MValue = 2.86
+-------------------- Histogram --------------------
+[2.615 μs ; 3.490 μs) | @@@@@@@
+[3.490 μs ; 3.968 μs) | 
+[3.968 μs ; 4.948 μs) | @@@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 34.945 μs, StdErr = 0.194 μs (0.55%), N = 9, StdDev = 0.581 μs
+Min = 34.239 μs, Q1 = 34.495 μs, Median = 34.880 μs, Q3 = 35.272 μs, Max = 35.803 μs
+IQR = 0.776 μs, LowerFence = 33.331 μs, UpperFence = 36.435 μs
+ConfidenceInterval = [33.969 μs; 35.921 μs] (CI 99.9%), Margin = 0.976 μs (2.79% of Mean)
+Skewness = 0.35, Kurtosis = 1.4, MValue = 2
+-------------------- Histogram --------------------
+[33.873 μs ; 35.129 μs) | @@@@@@
+[35.129 μs ; 35.903 μs) | @@@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 39.324 μs, StdErr = 0.162 μs (0.41%), N = 9, StdDev = 0.486 μs
+Min = 38.563 μs, Q1 = 38.995 μs, Median = 39.261 μs, Q3 = 39.502 μs, Max = 40.252 μs
+IQR = 0.508 μs, LowerFence = 38.233 μs, UpperFence = 40.264 μs
+ConfidenceInterval = [38.508 μs; 40.141 μs] (CI 99.9%), Margin = 0.816 μs (2.08% of Mean)
+Skewness = 0.35, Kurtosis = 2.26, MValue = 2
+-------------------- Histogram --------------------
+[38.257 μs ; 40.400 μs) | @@@@@@@@@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=100]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 68.362 μs, StdErr = 0.344 μs (0.50%), N = 8, StdDev = 0.972 μs
+Min = 67.090 μs, Q1 = 67.614 μs, Median = 68.390 μs, Q3 = 68.741 μs, Max = 70.006 μs
+IQR = 1.127 μs, LowerFence = 65.924 μs, UpperFence = 70.431 μs
+ConfidenceInterval = [66.504 μs; 70.221 μs] (CI 99.9%), Margin = 1.859 μs (2.72% of Mean)
+Skewness = 0.31, Kurtosis = 1.64, MValue = 2
+-------------------- Histogram --------------------
+[66.452 μs ; 68.685 μs) | @@@@@@
+[68.685 μs ; 70.376 μs) | @@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 694.237 μs, StdErr = 5.295 μs (0.76%), N = 9, StdDev = 15.885 μs
+Min = 669.083 μs, Q1 = 689.115 μs, Median = 691.485 μs, Q3 = 706.003 μs, Max = 717.278 μs
+IQR = 16.887 μs, LowerFence = 663.785 μs, UpperFence = 731.333 μs
+ConfidenceInterval = [667.544 μs; 720.931 μs] (CI 99.9%), Margin = 26.693 μs (3.84% of Mean)
+Skewness = 0.06, Kurtosis = 1.63, MValue = 2
+-------------------- Histogram --------------------
+[659.060 μs ; 675.458 μs) | @
+[675.458 μs ; 695.504 μs) | @@@@@
+[695.504 μs ; 721.663 μs) | @@@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Serialize Only (Key + Value)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 176.699 μs, StdErr = 2.890 μs (1.64%), N = 8, StdDev = 8.173 μs
+Min = 165.472 μs, Q1 = 170.751 μs, Median = 177.911 μs, Q3 = 183.043 μs, Max = 187.326 μs
+IQR = 12.291 μs, LowerFence = 152.314 μs, UpperFence = 201.480 μs
+ConfidenceInterval = [161.072 μs; 192.326 μs] (CI 99.9%), Margin = 15.627 μs (8.84% of Mean)
+Skewness = -0.22, Kurtosis = 1.31, MValue = 2
+-------------------- Histogram --------------------
+[163.557 μs ; 176.889 μs) | @@@
+[176.889 μs ; 187.616 μs) | @@@@@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'String Interpolation Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 50.202 μs, StdErr = 1.341 μs (2.67%), N = 8, StdDev = 3.794 μs
+Min = 44.596 μs, Q1 = 48.160 μs, Median = 50.791 μs, Q3 = 53.051 μs, Max = 54.675 μs
+IQR = 4.891 μs, LowerFence = 40.823 μs, UpperFence = 60.388 μs
+ConfidenceInterval = [42.947 μs; 57.456 μs] (CI 99.9%), Margin = 7.254 μs (14.45% of Mean)
+Skewness = -0.37, Kurtosis = 1.39, MValue = 2
+-------------------- Histogram --------------------
+[42.106 μs ; 47.306 μs) | @@
+[47.306 μs ; 53.930 μs) | @@@@@
+[53.930 μs ; 57.164 μs) | @
+---------------------------------------------------
+
+AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 28.854 μs, StdErr = 1.134 μs (3.93%), N = 9, StdDev = 3.402 μs
+Min = 26.337 μs, Q1 = 26.608 μs, Median = 26.798 μs, Q3 = 29.002 μs, Max = 36.053 μs
+IQR = 2.394 μs, LowerFence = 23.017 μs, UpperFence = 32.593 μs
+ConfidenceInterval = [23.136 μs; 34.571 μs] (CI 99.9%), Margin = 5.717 μs (19.81% of Mean)
+Skewness = 1.06, Kurtosis = 2.53, MValue = 2.8
+-------------------- Histogram --------------------
+[25.523 μs ; 29.816 μs) | @@@@@@@
+[29.816 μs ; 32.274 μs) | 
+[32.274 μs ; 36.567 μs) | @@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 665.087 μs, StdErr = 8.473 μs (1.27%), N = 9, StdDev = 25.418 μs
+Min = 634.898 μs, Q1 = 648.607 μs, Median = 655.138 μs, Q3 = 688.062 μs, Max = 704.453 μs
+IQR = 39.455 μs, LowerFence = 589.425 μs, UpperFence = 747.245 μs
+ConfidenceInterval = [622.373 μs; 707.800 μs] (CI 99.9%), Margin = 42.713 μs (6.42% of Mean)
+Skewness = 0.22, Kurtosis = 1.26, MValue = 3.6
+-------------------- Histogram --------------------
+[628.979 μs ; 661.056 μs) | @@@@@
+[661.056 μs ; 674.589 μs) | 
+[674.589 μs ; 706.665 μs) | @@@@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 710.115 μs, StdErr = 9.252 μs (1.30%), N = 9, StdDev = 27.756 μs
+Min = 677.544 μs, Q1 = 691.656 μs, Median = 699.489 μs, Q3 = 726.348 μs, Max = 766.617 μs
+IQR = 34.692 μs, LowerFence = 639.618 μs, UpperFence = 778.386 μs
+ConfidenceInterval = [663.472 μs; 756.757 μs] (CI 99.9%), Margin = 46.643 μs (6.57% of Mean)
+Skewness = 0.7, Kurtosis = 2.25, MValue = 2
+-------------------- Histogram --------------------
+[671.003 μs ; 706.030 μs) | @@@@@
+[706.030 μs ; 749.103 μs) | @@@
+[749.103 μs ; 784.131 μs) | @
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 983.656 μs, StdErr = 2.998 μs (0.30%), N = 8, StdDev = 8.480 μs
+Min = 973.949 μs, Q1 = 975.214 μs, Median = 984.087 μs, Q3 = 990.044 μs, Max = 996.654 μs
+IQR = 14.830 μs, LowerFence = 952.969 μs, UpperFence = 1,012.290 μs
+ConfidenceInterval = [967.443 μs; 999.869 μs] (CI 99.9%), Margin = 16.213 μs (1.65% of Mean)
+Skewness = 0.11, Kurtosis = 1.28, MValue = 2
+-------------------- Histogram --------------------
+[968.384 μs ; 1,002.219 μs) | @@@@@@@@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 53.522 μs, StdErr = 1.069 μs (2.00%), N = 10, StdDev = 3.381 μs
+Min = 50.466 μs, Q1 = 51.267 μs, Median = 51.938 μs, Q3 = 55.445 μs, Max = 59.968 μs
+IQR = 4.179 μs, LowerFence = 44.998 μs, UpperFence = 61.713 μs
+ConfidenceInterval = [48.410 μs; 58.634 μs] (CI 99.9%), Margin = 5.112 μs (9.55% of Mean)
+Skewness = 0.82, Kurtosis = 1.89, MValue = 2.86
+-------------------- Histogram --------------------
+[49.587 μs ; 53.706 μs) | @@@@@@@
+[53.706 μs ; 56.083 μs) | 
+[56.083 μs ; 60.203 μs) | @@@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Serialize Only (Key + Value)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 27.451 μs, StdErr = 1.688 μs (6.15%), N = 8, StdDev = 4.776 μs
+Min = 25.451 μs, Q1 = 25.572 μs, Median = 25.675 μs, Q3 = 26.217 μs, Max = 39.246 μs
+IQR = 0.645 μs, LowerFence = 24.604 μs, UpperFence = 27.184 μs
+ConfidenceInterval = [18.320 μs; 36.582 μs] (CI 99.9%), Margin = 9.131 μs (33.26% of Mean)
+Skewness = 1.84, Kurtosis = 4.67, MValue = 2
+-------------------- Histogram --------------------
+[22.317 μs ; 28.995 μs) | @@@@@@@
+[28.995 μs ; 36.112 μs) | 
+[36.112 μs ; 42.380 μs) | @
+---------------------------------------------------
+
+AccumulatorBenchmarks.'String Interpolation Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 5.885 μs, StdErr = 0.086 μs (1.46%), N = 8, StdDev = 0.243 μs
+Min = 5.406 μs, Q1 = 5.811 μs, Median = 5.917 μs, Q3 = 5.974 μs, Max = 6.276 μs
+IQR = 0.163 μs, LowerFence = 5.566 μs, UpperFence = 6.219 μs
+ConfidenceInterval = [5.420 μs; 6.350 μs] (CI 99.9%), Margin = 0.465 μs (7.90% of Mean)
+Skewness = -0.43, Kurtosis = 2.73, MValue = 2
+-------------------- Histogram --------------------
+[5.246 μs ; 5.566 μs) | @
+[5.566 μs ; 5.728 μs) | 
+[5.728 μs ; 6.048 μs) | @@@@@@
+[6.048 μs ; 6.436 μs) | @
+---------------------------------------------------
+
+AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 2.698 μs, StdErr = 0.011 μs (0.41%), N = 9, StdDev = 0.033 μs
+Min = 2.663 μs, Q1 = 2.675 μs, Median = 2.688 μs, Q3 = 2.705 μs, Max = 2.764 μs
+IQR = 0.031 μs, LowerFence = 2.628 μs, UpperFence = 2.752 μs
+ConfidenceInterval = [2.642 μs; 2.753 μs] (CI 99.9%), Margin = 0.055 μs (2.05% of Mean)
+Skewness = 0.84, Kurtosis = 2.21, MValue = 2
+-------------------- Histogram --------------------
+[2.642 μs ; 2.717 μs) | @@@@@@@
+[2.717 μs ; 2.777 μs) | @@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 72.581 μs, StdErr = 7.273 μs (10.02%), N = 10, StdDev = 23.000 μs
+Min = 45.685 μs, Q1 = 46.081 μs, Median = 87.272 μs, Q3 = 91.037 μs, Max = 92.942 μs
+IQR = 44.956 μs, LowerFence = -21.352 μs, UpperFence = 158.470 μs
+ConfidenceInterval = [37.809 μs; 107.354 μs] (CI 99.9%), Margin = 34.772 μs (47.91% of Mean)
+Skewness = -0.32, Kurtosis = 0.96, MValue = 3.33
+-------------------- Histogram --------------------
+[31.674 μs ;  60.183 μs) | @@@@
+[60.183 μs ;  74.563 μs) | 
+[74.563 μs ; 106.953 μs) | @@@@@@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 52.594 μs, StdErr = 0.285 μs (0.54%), N = 9, StdDev = 0.856 μs
+Min = 51.480 μs, Q1 = 51.913 μs, Median = 52.492 μs, Q3 = 52.908 μs, Max = 53.860 μs
+IQR = 0.995 μs, LowerFence = 50.420 μs, UpperFence = 54.401 μs
+ConfidenceInterval = [51.155 μs; 54.032 μs] (CI 99.9%), Margin = 1.438 μs (2.73% of Mean)
+Skewness = 0.26, Kurtosis = 1.55, MValue = 2
+-------------------- Histogram --------------------
+[50.940 μs ; 52.951 μs) | @@@@@@@
+[52.951 μs ; 54.400 μs) | @@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 83.681 μs, StdErr = 1.138 μs (1.36%), N = 8, StdDev = 3.219 μs
+Min = 79.924 μs, Q1 = 80.909 μs, Median = 83.454 μs, Q3 = 86.478 μs, Max = 87.942 μs
+IQR = 5.569 μs, LowerFence = 72.556 μs, UpperFence = 94.831 μs
+ConfidenceInterval = [77.527 μs; 89.836 μs] (CI 99.9%), Margin = 6.154 μs (7.35% of Mean)
+Skewness = 0.07, Kurtosis = 1.02, MValue = 2
+-------------------- Histogram --------------------
+[78.838 μs ; 83.062 μs) | @@@@
+[83.062 μs ; 88.548 μs) | @@@@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 901.616 μs, StdErr = 20.331 μs (2.25%), N = 8, StdDev = 57.505 μs
+Min = 816.097 μs, Q1 = 876.112 μs, Median = 914.708 μs, Q3 = 934.848 μs, Max = 979.627 μs
+IQR = 58.736 μs, LowerFence = 788.008 μs, UpperFence = 1,022.952 μs
+ConfidenceInterval = [791.668 μs; 1,011.563 μs] (CI 99.9%), Margin = 109.947 μs (12.19% of Mean)
+Skewness = -0.38, Kurtosis = 1.57, MValue = 2
+-------------------- Histogram --------------------
+[778.360 μs ;   856.028 μs) | @@
+[856.028 μs ;   954.702 μs) | @@@@@
+[954.702 μs ; 1,017.364 μs) | @
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Serialize Only (Key + Value)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 246.679 μs, StdErr = 1.847 μs (0.75%), N = 9, StdDev = 5.540 μs
+Min = 238.493 μs, Q1 = 243.565 μs, Median = 245.921 μs, Q3 = 247.713 μs, Max = 255.245 μs
+IQR = 4.148 μs, LowerFence = 237.343 μs, UpperFence = 253.935 μs
+ConfidenceInterval = [237.369 μs; 255.990 μs] (CI 99.9%), Margin = 9.310 μs (3.77% of Mean)
+Skewness = 0.38, Kurtosis = 1.83, MValue = 2
+-------------------- Histogram --------------------
+[234.997 μs ; 241.651 μs) | @
+[241.651 μs ; 251.719 μs) | @@@@@@
+[251.719 μs ; 258.741 μs) | @@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'String Interpolation Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 52.626 μs, StdErr = 2.545 μs (4.84%), N = 9, StdDev = 7.635 μs
+Min = 44.414 μs, Q1 = 46.774 μs, Median = 52.760 μs, Q3 = 54.280 μs, Max = 68.338 μs
+IQR = 7.506 μs, LowerFence = 35.515 μs, UpperFence = 65.539 μs
+ConfidenceInterval = [39.796 μs; 65.456 μs] (CI 99.9%), Margin = 12.830 μs (24.38% of Mean)
+Skewness = 0.73, Kurtosis = 2.37, MValue = 2
+-------------------- Histogram --------------------
+[44.073 μs ; 53.708 μs) | @@@@@@
+[53.708 μs ; 61.614 μs) | @@
+[61.614 μs ; 73.155 μs) | @
+---------------------------------------------------
+
+AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 45.043 μs, StdErr = 1.325 μs (2.94%), N = 9, StdDev = 3.974 μs
+Min = 41.179 μs, Q1 = 41.297 μs, Median = 43.248 μs, Q3 = 49.078 μs, Max = 49.819 μs
+IQR = 7.781 μs, LowerFence = 29.626 μs, UpperFence = 60.750 μs
+ConfidenceInterval = [38.366 μs; 51.720 μs] (CI 99.9%), Margin = 6.677 μs (14.82% of Mean)
+Skewness = 0.16, Kurtosis = 0.91, MValue = 3.6
+-------------------- Histogram --------------------
+[39.706 μs ; 44.721 μs) | @@@@@
+[44.721 μs ; 46.512 μs) | 
+[46.512 μs ; 52.326 μs) | @@@@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 866.971 μs, StdErr = 29.945 μs (3.45%), N = 9, StdDev = 89.835 μs
+Min = 741.239 μs, Q1 = 767.967 μs, Median = 902.933 μs, Q3 = 931.663 μs, Max = 981.729 μs
+IQR = 163.696 μs, LowerFence = 522.423 μs, UpperFence = 1,177.207 μs
+ConfidenceInterval = [716.008 μs; 1,017.933 μs] (CI 99.9%), Margin = 150.962 μs (17.41% of Mean)
+Skewness = -0.33, Kurtosis = 1.25, MValue = 3
+-------------------- Histogram --------------------
+[697.918 μs ; 811.288 μs) | @@@
+[811.288 μs ; 868.721 μs) | 
+[868.721 μs ; 982.091 μs) | @@@@@@
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 924.372 μs, StdErr = 22.744 μs (2.46%), N = 9, StdDev = 68.233 μs
+Min = 808.246 μs, Q1 = 909.955 μs, Median = 930.734 μs, Q3 = 969.019 μs, Max = 1,019.211 μs
+IQR = 59.064 μs, LowerFence = 821.359 μs, UpperFence = 1,057.615 μs
+ConfidenceInterval = [809.711 μs; 1,039.034 μs] (CI 99.9%), Margin = 114.662 μs (12.40% of Mean)
+Skewness = -0.43, Kurtosis = 1.78, MValue = 2.33
+-------------------- Histogram --------------------
+[777.196 μs ;   863.305 μs) | @@
+[863.305 μs ;   898.342 μs) | 
+[898.342 μs ;   984.451 μs) | @@@@@@
+[984.451 μs ; 1,062.265 μs) | @
+---------------------------------------------------
+
+AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': Job-PZCEMQ(InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+Runtime = .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2; GC = Concurrent Workstation
+Mean = 1.225 ms, StdErr = 0.015 ms (1.22%), N = 9, StdDev = 0.045 ms
+Min = 1.124 ms, Q1 = 1.223 ms, Median = 1.230 ms, Q3 = 1.244 ms, Max = 1.282 ms
+IQR = 0.021 ms, LowerFence = 1.191 ms, UpperFence = 1.276 ms
+ConfidenceInterval = [1.150 ms; 1.300 ms] (CI 99.9%), Margin = 0.075 ms (6.14% of Mean)
+Skewness = -0.98, Kurtosis = 3.26, MValue = 2
+-------------------- Histogram --------------------
+[1.096 ms ; 1.152 ms) | @
+[1.152 ms ; 1.195 ms) | 
+[1.195 ms ; 1.252 ms) | @@@@@@
+[1.252 ms ; 1.310 ms) | @@
+---------------------------------------------------
+
+// * Summary *
+
+BenchmarkDotNet v0.14.0, Ubuntu 25.10 (Questing Quokka)
+12th Gen Intel Core i7-12700K, 1 CPU, 20 logical and 12 physical cores
+.NET SDK 10.0.100
+  [Host]     : .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+  Job-PZCEMQ : .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+
+InvocationCount=1  IterationCount=10  UnrollFactor=1  
+WarmupCount=3  
+
+| Method                                          | MessageSize | BatchSize | Mean         | Error       | StdDev     | Median       | Allocated |
+|------------------------------------------------ |------------ |---------- |-------------:|------------:|-----------:|-------------:|----------:|
+| 'Serialize + Accumulate (Fire-and-Forget Path)' | 100         | 100       |    38.573 μs |   0.9910 μs |  0.5897 μs |    38.459 μs |         - |
+| 'Serialize Only (Key + Value)'                  | 100         | 100       |    18.851 μs |   0.2459 μs |  0.1463 μs |    18.837 μs |         - |
+| 'String Interpolation Only'                     | 100         | 100       |     5.537 μs |   0.4794 μs |  0.2507 μs |     5.636 μs |         - |
+| 'DateTimeOffset.UtcNow Only'                    | 100         | 100       |     3.420 μs |   1.0854 μs |  0.7179 μs |     3.203 μs |         - |
+| 'Accumulate Same Partition (Tests Cache)'       | 100         | 100       |    34.945 μs |   0.9758 μs |  0.5807 μs |    34.880 μs |         - |
+| 'Accumulate Rotating Partitions (No Cache)'     | 100         | 100       |    39.324 μs |   0.8164 μs |  0.4858 μs |    39.261 μs |         - |
+| 'Batch Append Same Partition (Single Lock)'     | 100         | 100       |    68.362 μs |   1.8587 μs |  0.9721 μs |    68.390 μs |   13120 B |
+| 'Serialize + Accumulate (Fire-and-Forget Path)' | 100         | 1000      |   694.237 μs |  26.6934 μs | 15.8848 μs |   691.485 μs |  130616 B |
+| 'Serialize Only (Key + Value)'                  | 100         | 1000      |   176.699 μs |  15.6270 μs |  8.1732 μs |   177.911 μs |   40656 B |
+| 'String Interpolation Only'                     | 100         | 1000      |    50.202 μs |   7.2541 μs |  3.7940 μs |    50.791 μs |   40656 B |
+| 'DateTimeOffset.UtcNow Only'                    | 100         | 1000      |    28.854 μs |   5.7171 μs |  3.4022 μs |    26.798 μs |         - |
+| 'Accumulate Same Partition (Tests Cache)'       | 100         | 1000      |   665.087 μs |  42.7133 μs | 25.4180 μs |   655.138 μs |  132008 B |
+| 'Accumulate Rotating Partitions (No Cache)'     | 100         | 1000      |   710.115 μs |  46.6427 μs | 27.7563 μs |   699.489 μs |  130616 B |
+| 'Batch Append Same Partition (Single Lock)'     | 100         | 1000      |   983.656 μs |  16.2130 μs |  8.4797 μs |   984.087 μs |  188032 B |
+| 'Serialize + Accumulate (Fire-and-Forget Path)' | 1000        | 100       |    53.522 μs |   5.1121 μs |  3.3813 μs |    51.938 μs |    8744 B |
+| 'Serialize Only (Key + Value)'                  | 1000        | 100       |    27.451 μs |   9.1311 μs |  4.7757 μs |    25.675 μs |         - |
+| 'String Interpolation Only'                     | 1000        | 100       |     5.885 μs |   0.4649 μs |  0.2432 μs |     5.917 μs |         - |
+| 'DateTimeOffset.UtcNow Only'                    | 1000        | 100       |     2.698 μs |   0.0553 μs |  0.0329 μs |     2.688 μs |         - |
+| 'Accumulate Same Partition (Tests Cache)'       | 1000        | 100       |    72.581 μs |  34.7723 μs | 22.9997 μs |    87.272 μs |    9512 B |
+| 'Accumulate Rotating Partitions (No Cache)'     | 1000        | 100       |    52.594 μs |   1.4382 μs |  0.8558 μs |    52.492 μs |    9800 B |
+| 'Batch Append Same Partition (Single Lock)'     | 1000        | 100       |    83.681 μs |   6.1545 μs |  3.2189 μs |    83.454 μs |   15136 B |
+| 'Serialize + Accumulate (Fire-and-Forget Path)' | 1000        | 1000      |   901.616 μs | 109.9474 μs | 57.5046 μs |   914.708 μs |  475032 B |
+| 'Serialize Only (Key + Value)'                  | 1000        | 1000      |   246.679 μs |   9.3102 μs |  5.5404 μs |   245.921 μs |   40368 B |
+| 'String Interpolation Only'                     | 1000        | 1000      |    52.626 μs |  12.8297 μs |  7.6348 μs |    52.760 μs |   40656 B |
+| 'DateTimeOffset.UtcNow Only'                    | 1000        | 1000      |    45.043 μs |   6.6773 μs |  3.9736 μs |    43.248 μs |         - |
+| 'Accumulate Same Partition (Tests Cache)'       | 1000        | 1000      |   866.971 μs | 150.9624 μs | 89.8353 μs |   902.933 μs |  474456 B |
+| 'Accumulate Rotating Partitions (No Cache)'     | 1000        | 1000      |   924.372 μs | 114.6617 μs | 68.2334 μs |   930.734 μs |  475032 B |
+| 'Batch Append Same Partition (Single Lock)'     | 1000        | 1000      | 1,225.249 μs |  75.1741 μs | 44.7349 μs | 1,230.417 μs |  530480 B |
+
+// * Warnings *
+MinIterationTime
+  AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3 -> The minimum observed iteration time is 37.915μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Serialize Only (Key + Value)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                  -> The minimum observed iteration time is 18.686μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'String Interpolation Only': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                     -> The minimum observed iteration time is 5.011μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                    -> The minimum observed iteration time is 2.787μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3       -> The minimum observed iteration time is 34.33μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> The minimum observed iteration time is 38.645μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> The minimum observed iteration time is 67.18μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3 -> The minimum observed iteration time is 669.222μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Serialize Only (Key + Value)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                  -> The minimum observed iteration time is 165.558μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'String Interpolation Only': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                     -> The minimum observed iteration time is 44.752μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                    -> The minimum observed iteration time is 26.428μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3       -> The minimum observed iteration time is 635.016μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> The minimum observed iteration time is 677.682μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> The minimum observed iteration time is 974.084μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3 -> The minimum observed iteration time is 50.602μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Serialize Only (Key + Value)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                  -> The minimum observed iteration time is 25.544μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'String Interpolation Only': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                     -> The minimum observed iteration time is 5.546μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                    -> The minimum observed iteration time is 2.746μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3       -> The minimum observed iteration time is 45.821μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> The minimum observed iteration time is 51.584μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> The minimum observed iteration time is 80.051μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3 -> The minimum observed iteration time is 816.331μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Serialize Only (Key + Value)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                  -> The minimum observed iteration time is 238.574μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'String Interpolation Only': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                     -> The minimum observed iteration time is 44.507μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                    -> The minimum observed iteration time is 41.298μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3       -> The minimum observed iteration time is 741.42μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> The minimum observed iteration time is 808.376μs which is very small. It's recommended to increase it to at least 100ms using more operations.
+  AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> The minimum observed iteration time is 1.124ms which is very small. It's recommended to increase it to at least 100ms using more operations.
+
+// * Hints *
+Outliers
+  AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3 -> 1 outlier  was  removed (45.30 μs)
+  AccumulatorBenchmarks.'Serialize Only (Key + Value)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                  -> 1 outlier  was  removed (21.24 μs)
+  AccumulatorBenchmarks.'String Interpolation Only': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                     -> 2 outliers were removed, 3 outliers were detected (5.01 μs, 6.07 μs, 7.04 μs)
+  AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3       -> 1 outlier  was  removed (40.10 μs)
+  AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> 1 outlier  was  removed (45.10 μs)
+  AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> 2 outliers were removed (78.69 μs, 91.14 μs)
+  AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3 -> 1 outlier  was  removed (15.92 ms)
+  AccumulatorBenchmarks.'Serialize Only (Key + Value)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                  -> 2 outliers were removed (223.79 μs, 11.26 ms)
+  AccumulatorBenchmarks.'String Interpolation Only': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                     -> 2 outliers were removed (64.16 μs, 6.61 ms)
+  AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                    -> 1 outlier  was  removed (428.32 μs)
+  AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3       -> 1 outlier  was  removed (15.37 ms)
+  AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> 1 outlier  was  removed (16.04 ms)
+  AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> 2 outliers were removed (1.06 ms, 9.49 ms)
+  AccumulatorBenchmarks.'Serialize Only (Key + Value)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                  -> 2 outliers were removed (53.50 μs, 131.82 μs)
+  AccumulatorBenchmarks.'String Interpolation Only': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                     -> 2 outliers were removed (7.13 μs, 9.00 μs)
+  AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                    -> 1 outlier  was  removed (3.24 μs)
+  AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> 1 outlier  was  removed (58.97 μs)
+  AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> 2 outliers were removed (133.36 μs, 149.87 μs)
+  AccumulatorBenchmarks.'Serialize + Accumulate (Fire-and-Forget Path)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3 -> 2 outliers were removed (1.29 ms, 17.18 ms)
+  AccumulatorBenchmarks.'Serialize Only (Key + Value)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                  -> 1 outlier  was  removed (10.79 ms)
+  AccumulatorBenchmarks.'String Interpolation Only': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                     -> 1 outlier  was  removed (6.94 ms)
+  AccumulatorBenchmarks.'DateTimeOffset.UtcNow Only': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3                    -> 1 outlier  was  removed (569.38 μs)
+  AccumulatorBenchmarks.'Accumulate Same Partition (Tests Cache)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3       -> 1 outlier  was  removed (16.31 ms)
+  AccumulatorBenchmarks.'Accumulate Rotating Partitions (No Cache)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> 1 outlier  was  removed, 2 outliers were detected (808.38 μs, 16.70 ms)
+  AccumulatorBenchmarks.'Batch Append Same Partition (Single Lock)': InvocationCount=1, IterationCount=10, UnrollFactor=1, WarmupCount=3     -> 1 outlier  was  removed, 2 outliers were detected (1.12 ms, 10.35 ms)
+
+// * Legends *
+  MessageSize : Value of the 'MessageSize' parameter
+  BatchSize   : Value of the 'BatchSize' parameter
+  Mean        : Arithmetic mean of all measurements
+  Error       : Half of 99.9% confidence interval
+  StdDev      : Standard deviation of all measurements
+  Median      : Value separating the higher half of all measurements (50th percentile)
+  Allocated   : Allocated memory per single operation (managed only, inclusive, 1KB = 1024B)
+  1 μs        : 1 Microsecond (0.000001 sec)
+
+// * Diagnostic Output - MemoryDiagnoser *
+
+
+// ***** BenchmarkRunner: End *****
+Run time: 00:00:04 (4.63 sec), executed benchmarks: 28
+
+Global total time: 00:00:17 (17.61 sec), executed benchmarks: 28
+// * Artifacts cleanup *
+Artifacts cleanup is finished

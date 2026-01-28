@@ -22,6 +22,10 @@ on:
         required: false
         default: 'all'
 
+concurrency:
+  group: stress-tests
+  cancel-in-progress: false
+
 jobs:
   stress-test:
     runs-on: ubuntu-latest

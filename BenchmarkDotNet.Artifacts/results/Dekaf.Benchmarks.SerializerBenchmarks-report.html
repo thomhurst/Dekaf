@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>Dekaf.Benchmarks.SerializerBenchmarks-20260127-220601</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.14.0, Ubuntu 25.10 (Questing Quokka)
+12th Gen Intel Core i7-12700K, 1 CPU, 20 logical and 12 physical cores
+.NET SDK 10.0.100
+  [Host]     : .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+  Job-NMRVZI : .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+</code></pre>
+<pre><code>IterationCount=10  WarmupCount=3  
+</code></pre>
+
+<table>
+<thead><tr><th>Method                                      </th><th>Mean  </th><th>Error</th><th>StdDev</th><th>Gen0</th><th>Gen1</th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>&#39;String Serialize: ArrayBufferWriter + Copy&#39;</td><td>44.95 ns</td><td>1.130 ns</td><td>0.747 ns</td><td>0.0306</td><td>-</td><td>400 B</td>
+</tr><tr><td>&#39;String Serialize: PooledBufferWriter Direct&#39;</td><td>30.75 ns</td><td>1.180 ns</td><td>0.780 ns</td><td>0.0214</td><td>-</td><td>280 B</td>
+</tr><tr><td>&#39;String Serialize x100: ArrayBufferWriter + Copy&#39;</td><td>4,067.22 ns</td><td>111.866 ns</td><td>73.992 ns</td><td>2.3804</td><td>-</td><td>31200 B</td>
+</tr><tr><td>&#39;String Serialize x100: PooledBufferWriter Direct&#39;</td><td>1,819.48 ns</td><td>6.764 ns</td><td>4.474 ns</td><td>-</td><td>-</td><td>-</td>
+</tr><tr><td>&#39;Key+Value Serialize: ArrayBufferWriter + Copy&#39;</td><td>111.27 ns</td><td>3.040 ns</td><td>2.011 ns</td><td>0.0758</td><td>0.0002</td><td>992 B</td>
+</tr><tr><td>&#39;Key+Value Serialize: PooledBufferWriter Direct&#39;</td><td>65.03 ns</td><td>1.363 ns</td><td>0.902 ns</td><td>0.0428</td><td>-</td><td>560 B</td>
+</tr><tr><td>&#39;Key+Value x100: ArrayBufferWriter + Copy&#39;</td><td>10,799.86 ns</td><td>162.591 ns</td><td>107.544 ns</td><td>4.7607</td><td>-</td><td>62400 B</td>
+</tr><tr><td>&#39;Key+Value x100: PooledBufferWriter Direct&#39;</td><td>7,474.64 ns</td><td>71.935 ns</td><td>47.581 ns</td><td>-</td><td>-</td><td>-</td>
+</tr><tr><td>&#39;Int32 Serialize x1000: ArrayBufferWriter + Copy&#39;</td><td>19,381.68 ns</td><td>289.276 ns</td><td>191.338 ns</td><td>4.8828</td><td>-</td><td>64000 B</td>
+</tr><tr><td>&#39;Int32 Serialize x1000: PooledBufferWriter Direct&#39;</td><td>8,541.56 ns</td><td>60.570 ns</td><td>36.044 ns</td><td>-</td><td>-</td><td>-</td>
+</tr><tr><td>&#39;Large 10KB Serialize: ArrayBufferWriter + Copy&#39;</td><td>1,428.58 ns</td><td>42.346 ns</td><td>28.009 ns</td><td>2.5120</td><td>0.3128</td><td>32848 B</td>
+</tr><tr><td>&#39;Large 10KB Serialize: PooledBufferWriter Direct&#39;</td><td>567.52 ns</td><td>8.912 ns</td><td>5.895 ns</td><td>1.2512</td><td>0.0772</td><td>16408 B</td>
+</tr></tbody></table>
+</body>
+</html>

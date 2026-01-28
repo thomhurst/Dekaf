@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>Dekaf.Benchmarks.AccumulatorBenchmarks-20260127-225730</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.14.0, Ubuntu 25.10 (Questing Quokka)
+12th Gen Intel Core i7-12700K, 1 CPU, 20 logical and 12 physical cores
+.NET SDK 10.0.100
+  [Host]     : .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+  Job-PZCEMQ : .NET 10.0.0 (10.0.25.52411), X64 RyuJIT AVX2
+</code></pre>
+<pre><code>InvocationCount=1  IterationCount=10  UnrollFactor=1  
+WarmupCount=3  
+</code></pre>
+
+<table>
+<thead><tr><th>Method                                   </th><th>MessageSize</th><th>BatchSize</th><th>Mean  </th><th>Error</th><th>StdDev</th><th>Median</th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>&#39;Serialize + Accumulate (Fire-and-Forget Path)&#39;</td><td>100</td><td>100</td><td>38.573 &mu;s</td><td>0.9910 &mu;s</td><td>0.5897 &mu;s</td><td>38.459 &mu;s</td><td>-</td>
+</tr><tr><td>&#39;Serialize Only (Key + Value)&#39;</td><td>100</td><td>100</td><td>18.851 &mu;s</td><td>0.2459 &mu;s</td><td>0.1463 &mu;s</td><td>18.837 &mu;s</td><td>-</td>
+</tr><tr><td>&#39;String Interpolation Only&#39;</td><td>100</td><td>100</td><td>5.537 &mu;s</td><td>0.4794 &mu;s</td><td>0.2507 &mu;s</td><td>5.636 &mu;s</td><td>-</td>
+</tr><tr><td>&#39;DateTimeOffset.UtcNow Only&#39;</td><td>100</td><td>100</td><td>3.420 &mu;s</td><td>1.0854 &mu;s</td><td>0.7179 &mu;s</td><td>3.203 &mu;s</td><td>-</td>
+</tr><tr><td>&#39;Accumulate Same Partition (Tests Cache)&#39;</td><td>100</td><td>100</td><td>34.945 &mu;s</td><td>0.9758 &mu;s</td><td>0.5807 &mu;s</td><td>34.880 &mu;s</td><td>-</td>
+</tr><tr><td>&#39;Accumulate Rotating Partitions (No Cache)&#39;</td><td>100</td><td>100</td><td>39.324 &mu;s</td><td>0.8164 &mu;s</td><td>0.4858 &mu;s</td><td>39.261 &mu;s</td><td>-</td>
+</tr><tr><td>&#39;Batch Append Same Partition (Single Lock)&#39;</td><td>100</td><td>100</td><td>68.362 &mu;s</td><td>1.8587 &mu;s</td><td>0.9721 &mu;s</td><td>68.390 &mu;s</td><td>13120 B</td>
+</tr><tr><td>&#39;Serialize + Accumulate (Fire-and-Forget Path)&#39;</td><td>100</td><td>1000</td><td>694.237 &mu;s</td><td>26.6934 &mu;s</td><td>15.8848 &mu;s</td><td>691.485 &mu;s</td><td>130616 B</td>
+</tr><tr><td>&#39;Serialize Only (Key + Value)&#39;</td><td>100</td><td>1000</td><td>176.699 &mu;s</td><td>15.6270 &mu;s</td><td>8.1732 &mu;s</td><td>177.911 &mu;s</td><td>40656 B</td>
+</tr><tr><td>&#39;String Interpolation Only&#39;</td><td>100</td><td>1000</td><td>50.202 &mu;s</td><td>7.2541 &mu;s</td><td>3.7940 &mu;s</td><td>50.791 &mu;s</td><td>40656 B</td>
+</tr><tr><td>&#39;DateTimeOffset.UtcNow Only&#39;</td><td>100</td><td>1000</td><td>28.854 &mu;s</td><td>5.7171 &mu;s</td><td>3.4022 &mu;s</td><td>26.798 &mu;s</td><td>-</td>
+</tr><tr><td>&#39;Accumulate Same Partition (Tests Cache)&#39;</td><td>100</td><td>1000</td><td>665.087 &mu;s</td><td>42.7133 &mu;s</td><td>25.4180 &mu;s</td><td>655.138 &mu;s</td><td>132008 B</td>
+</tr><tr><td>&#39;Accumulate Rotating Partitions (No Cache)&#39;</td><td>100</td><td>1000</td><td>710.115 &mu;s</td><td>46.6427 &mu;s</td><td>27.7563 &mu;s</td><td>699.489 &mu;s</td><td>130616 B</td>
+</tr><tr><td>&#39;Batch Append Same Partition (Single Lock)&#39;</td><td>100</td><td>1000</td><td>983.656 &mu;s</td><td>16.2130 &mu;s</td><td>8.4797 &mu;s</td><td>984.087 &mu;s</td><td>188032 B</td>
+</tr><tr><td>&#39;Serialize + Accumulate (Fire-and-Forget Path)&#39;</td><td>1000</td><td>100</td><td>53.522 &mu;s</td><td>5.1121 &mu;s</td><td>3.3813 &mu;s</td><td>51.938 &mu;s</td><td>8744 B</td>
+</tr><tr><td>&#39;Serialize Only (Key + Value)&#39;</td><td>1000</td><td>100</td><td>27.451 &mu;s</td><td>9.1311 &mu;s</td><td>4.7757 &mu;s</td><td>25.675 &mu;s</td><td>-</td>
+</tr><tr><td>&#39;String Interpolation Only&#39;</td><td>1000</td><td>100</td><td>5.885 &mu;s</td><td>0.4649 &mu;s</td><td>0.2432 &mu;s</td><td>5.917 &mu;s</td><td>-</td>
+</tr><tr><td>&#39;DateTimeOffset.UtcNow Only&#39;</td><td>1000</td><td>100</td><td>2.698 &mu;s</td><td>0.0553 &mu;s</td><td>0.0329 &mu;s</td><td>2.688 &mu;s</td><td>-</td>
+</tr><tr><td>&#39;Accumulate Same Partition (Tests Cache)&#39;</td><td>1000</td><td>100</td><td>72.581 &mu;s</td><td>34.7723 &mu;s</td><td>22.9997 &mu;s</td><td>87.272 &mu;s</td><td>9512 B</td>
+</tr><tr><td>&#39;Accumulate Rotating Partitions (No Cache)&#39;</td><td>1000</td><td>100</td><td>52.594 &mu;s</td><td>1.4382 &mu;s</td><td>0.8558 &mu;s</td><td>52.492 &mu;s</td><td>9800 B</td>
+</tr><tr><td>&#39;Batch Append Same Partition (Single Lock)&#39;</td><td>1000</td><td>100</td><td>83.681 &mu;s</td><td>6.1545 &mu;s</td><td>3.2189 &mu;s</td><td>83.454 &mu;s</td><td>15136 B</td>
+</tr><tr><td>&#39;Serialize + Accumulate (Fire-and-Forget Path)&#39;</td><td>1000</td><td>1000</td><td>901.616 &mu;s</td><td>109.9474 &mu;s</td><td>57.5046 &mu;s</td><td>914.708 &mu;s</td><td>475032 B</td>
+</tr><tr><td>&#39;Serialize Only (Key + Value)&#39;</td><td>1000</td><td>1000</td><td>246.679 &mu;s</td><td>9.3102 &mu;s</td><td>5.5404 &mu;s</td><td>245.921 &mu;s</td><td>40368 B</td>
+</tr><tr><td>&#39;String Interpolation Only&#39;</td><td>1000</td><td>1000</td><td>52.626 &mu;s</td><td>12.8297 &mu;s</td><td>7.6348 &mu;s</td><td>52.760 &mu;s</td><td>40656 B</td>
+</tr><tr><td>&#39;DateTimeOffset.UtcNow Only&#39;</td><td>1000</td><td>1000</td><td>45.043 &mu;s</td><td>6.6773 &mu;s</td><td>3.9736 &mu;s</td><td>43.248 &mu;s</td><td>-</td>
+</tr><tr><td>&#39;Accumulate Same Partition (Tests Cache)&#39;</td><td>1000</td><td>1000</td><td>866.971 &mu;s</td><td>150.9624 &mu;s</td><td>89.8353 &mu;s</td><td>902.933 &mu;s</td><td>474456 B</td>
+</tr><tr><td>&#39;Accumulate Rotating Partitions (No Cache)&#39;</td><td>1000</td><td>1000</td><td>924.372 &mu;s</td><td>114.6617 &mu;s</td><td>68.2334 &mu;s</td><td>930.734 &mu;s</td><td>475032 B</td>
+</tr><tr><td>&#39;Batch Append Same Partition (Single Lock)&#39;</td><td>1000</td><td>1000</td><td>1,225.249 &mu;s</td><td>75.1741 &mu;s</td><td>44.7349 &mu;s</td><td>1,230.417 &mu;s</td><td>530480 B</td>
+</tr></tbody></table>
+</body>
+</html>
