@@ -8,6 +8,7 @@ const sidebars = {
       label: 'Producer',
       items: [
         'producer/basics',
+        'producer/topic-producer',
         'producer/batch-production',
         'producer/fire-and-forget',
         'producer/headers',
