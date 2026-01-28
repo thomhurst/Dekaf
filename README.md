@@ -186,7 +186,7 @@ await consumer.ForEachAsync(async msg =>
 
 ## Offset Management
 
-Dekaf gives you control over when offsets are committed. The `OffsetCommitMode` makes this easy to understand:
+Dekaf gives you control over when offsets are committed:
 
 ```csharp
 // Auto mode (default): Offsets committed automatically in the background
@@ -197,22 +197,11 @@ var consumer = Dekaf.CreateConsumer<string, string>()
     .WithOffsetCommitMode(OffsetCommitMode.Auto)
     .Build();
 
-// ManualCommit mode: You control when to commit, but offsets are tracked for you
-// Good for: At-least-once processing where you commit after handling
-var consumer = Dekaf.CreateConsumer<string, string>()
-    .WithBootstrapServers("localhost:9092")
-    .WithGroupId("my-group")
-    .WithOffsetCommitMode(OffsetCommitMode.ManualCommit)
-    .Build();
-
-await foreach (var msg in consumer.ConsumeAsync(ct))
-{
-    await ProcessAsync(msg);
-    await consumer.CommitAsync();  // Commit after processing
-}
-
-// Manual mode: Full control - you must call StoreOffset() AND CommitAsync()
-// Good for: Exactly-once semantics, selective acknowledgment
+// Manual mode: You control when to commit by calling CommitAsync()
+// Dekaf tracks consumed offsets for you - CommitAsync() commits the latest
+// consumed position for each partition. This gives you at-least-once semantics:
+// if your app crashes before committing, messages will be redelivered on restart.
+// Good for: Payment processing, order handling, anything where you can't lose messages
 var consumer = Dekaf.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
@@ -221,11 +210,17 @@ var consumer = Dekaf.CreateConsumer<string, string>()
 
 await foreach (var msg in consumer.ConsumeAsync(ct))
 {
-    if (await TryProcessAsync(msg))
-    {
-        consumer.StoreOffset(msg);  // Only store if processing succeeded
-    }
-    await consumer.CommitAsync();
+    await ProcessAsync(msg);
+    await consumer.CommitAsync();  // Commits offset for all consumed messages
+}
+
+// Tip: For better throughput, commit in batches rather than after every message
+await foreach (var batch in consumer.ConsumeAsync(ct).Batch(100))
+{
+    foreach (var msg in batch)
+        await ProcessAsync(msg);
+
+    await consumer.CommitAsync();  // Commit once per batch
 }
 ```
 
