@@ -44,8 +44,10 @@ internal sealed class ProducerStressTest : IStressTestScenario
         cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
 
         Console.WriteLine($"  Running Dekaf producer stress test for {options.DurationMinutes} minutes...");
+        Console.WriteLine($"  Start time: {DateTime.UtcNow:HH:mm:ss.fff} UTC");
         throughput.Start();
         var messageIndex = 0L;
+        var lastStatusTime = DateTime.UtcNow;
 
         var samplerTask = RunSamplerAsync(throughput, cts.Token);
 
@@ -59,10 +61,16 @@ internal sealed class ProducerStressTest : IStressTestScenario
                 throughput.RecordMessage(options.MessageSizeBytes);
                 messageIndex++;
 
-                // Yield periodically to keep system responsive
+                // Yield and report status periodically
                 if (messageIndex % 100_000 == 0)
                 {
                     await Task.Yield();
+                    var now = DateTime.UtcNow;
+                    if ((now - lastStatusTime).TotalSeconds >= 10)
+                    {
+                        Console.WriteLine($"  [{now:HH:mm:ss}] Progress: {messageIndex:N0} messages, {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
+                        lastStatusTime = now;
+                    }
                 }
             }
             catch (OperationCanceledException)

@@ -35,8 +35,20 @@ public static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            Console.WriteLine($"UNHANDLED EXCEPTION: {e.ExceptionObject}");
+        };
+
+        Console.CancelKeyPress += (_, e) =>
+        {
+            Console.WriteLine("CANCEL KEY PRESSED");
+        };
+
         try
         {
+            Console.WriteLine($"Process started at {DateTime.UtcNow:HH:mm:ss.fff} UTC, PID: {Environment.ProcessId}");
+
             var options = ParseArgs(args);
 
             if (options.IsReport)
@@ -46,9 +58,14 @@ public static class Program
 
             return await RunStressTestsAsync(options).ConfigureAwait(false);
         }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine("Operation was cancelled");
+            return 1;
+        }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error: {ex.Message}");
+            Console.WriteLine($"Error: {ex}");
             return 1;
         }
     }
