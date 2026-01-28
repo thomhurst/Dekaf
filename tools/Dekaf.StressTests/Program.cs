@@ -142,7 +142,8 @@ public static class Program
         Console.WriteLine($"Seeding consumer topic with messages...");
 
         var messageValue = new string('x', options.MessageSizeBytes);
-        var totalMessages = options.DurationMinutes * 60 * 50_000;
+        // Seed 500K messages - enough to test consumer throughput without excessive disk/time
+        var totalMessages = 500_000;
 
         await using var producer = DekafLib.Dekaf.CreateProducer<string, string>()
             .WithBootstrapServers(bootstrapServers)

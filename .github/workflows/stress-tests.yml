@@ -59,7 +59,7 @@ jobs:
 
           echo "Waiting for Kafka to be ready..."
           for i in {1..60}; do
-            if docker exec kafka kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1; then
+            if docker exec kafka /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1; then
               echo "Kafka is ready"
               break
             fi
