@@ -146,6 +146,20 @@ public interface IKafkaProducer<TKey, TValue> : IAsyncDisposable
     /// Initializes transactions (must be called before BeginTransaction).
     /// </summary>
     ValueTask InitTransactionsAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates a topic-specific producer bound to the specified topic.
+    /// </summary>
+    /// <remarks>
+    /// <para>The returned topic producer shares connections, worker threads, and metadata cache
+    /// with this producer. Multiple topic producers from the same base producer operate efficiently
+    /// without duplicating resources.</para>
+    /// <para>Disposing the topic producer does NOT dispose this producer. You must dispose this
+    /// producer separately when done.</para>
+    /// </remarks>
+    /// <param name="topic">The topic to bind the producer to.</param>
+    /// <returns>A producer bound to the specified topic.</returns>
+    ITopicProducer<TKey, TValue> ForTopic(string topic);
 }
 
 /// <summary>

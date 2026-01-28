@@ -84,14 +84,14 @@ public class ProducerBenchmarks
     }
 
     [IterationCleanup(Targets = [nameof(SingleProduce_Dekaf), nameof(SingleProduce_Confluent), nameof(BatchProduce_Dekaf), nameof(BatchProduce_Confluent)])]
-    public void IterationCleanup()
+    public async Task IterationCleanup()
     {
         // Flush both producers between iterations for awaited benchmarks only.
         // Fire-and-forget benchmarks (DekafFireAndForget, ConfluentFireAndForget) intentionally
         // skip iteration cleanup to measure pure queueing time without flush overhead.
         // GlobalCleanup handles flushing before teardown.
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        _dekafProducer.FlushAsync(cts.Token).GetAwaiter().GetResult();
+        await _dekafProducer.FlushAsync(cts.Token);
         _confluentProducer.Flush(TimeSpan.FromSeconds(30));
     }
 

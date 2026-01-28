@@ -1142,6 +1142,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         throw new NotImplementedException();
     }
 
+    /// <inheritdoc />
+    public ITopicProducer<TKey, TValue> ForTopic(string topic)
+    {
+        ArgumentNullException.ThrowIfNull(topic);
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
+        return new TopicProducer<TKey, TValue>(this, topic, ownsProducer: false);
+    }
+
     private async Task SenderLoopAsync(CancellationToken cancellationToken)
     {
         await foreach (var batch in _accumulator.GetReadyBatchesAsync(cancellationToken).ConfigureAwait(false))
