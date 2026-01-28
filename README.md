@@ -43,6 +43,31 @@ producer.Send("my-topic", "key", "value");
 await producer.FlushAsync();
 ```
 
+### Topic-Specific Producers
+
+When you're always producing to the same topic, use a topic producer for a cleaner API:
+
+```csharp
+await using var producer = Dekaf.CreateTopicProducer<string, string>(
+    "localhost:9092", "orders");
+
+// No topic parameter needed
+await producer.ProduceAsync("order-123", orderJson);
+producer.Send("order-456", orderJson);
+```
+
+You can also create multiple topic producers that share the same connection:
+
+```csharp
+await using var baseProducer = Dekaf.CreateProducer<string, string>("localhost:9092");
+
+var orders = baseProducer.ForTopic("orders");
+var events = baseProducer.ForTopic("events");
+
+await orders.ProduceAsync("order-1", orderJson);
+await events.ProduceAsync("event-1", eventJson);
+```
+
 ### Consuming Messages
 
 ```csharp
