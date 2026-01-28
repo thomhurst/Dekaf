@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
@@ -46,10 +47,15 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
         cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
 
         Console.WriteLine($"  Running Confluent producer stress test for {options.DurationMinutes} minutes...");
+        Console.WriteLine($"  Start time: {DateTime.UtcNow:HH:mm:ss.fff} UTC");
+        LogResourceUsage("Initial");
+
         throughput.Start();
         var messageIndex = 0L;
+        var lastStatusTime = DateTime.UtcNow;
 
         var samplerTask = RunSamplerAsync(throughput, cts.Token);
+        var resourceMonitorTask = RunResourceMonitorAsync(cts.Token);
 
         while (!cts.Token.IsCancellationRequested)
         {
@@ -65,10 +71,16 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
                 throughput.RecordMessage(options.MessageSizeBytes);
                 messageIndex++;
 
-                // Yield periodically to keep system responsive
+                // Yield and report status periodically
                 if (messageIndex % 100_000 == 0)
                 {
                     await Task.Yield();
+                    var now = DateTime.UtcNow;
+                    if ((now - lastStatusTime).TotalSeconds >= 10)
+                    {
+                        Console.WriteLine($"  [{now:HH:mm:ss}] Progress: {messageIndex:N0} messages, {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
+                        lastStatusTime = now;
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -86,9 +98,11 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
         gcStats.Capture();
 
         try { await samplerTask.ConfigureAwait(false); } catch { }
+        try { await resourceMonitorTask.ConfigureAwait(false); } catch { }
 
         var completedAt = DateTime.UtcNow;
         Console.WriteLine($"  Completed: {throughput.MessageCount:N0} messages, {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
+        LogResourceUsage("Final");
 
         return new StressTestResult
         {
@@ -132,4 +146,39 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static string GetKey(long index) => PreAllocatedKeys[index % PreAllocatedKeys.Length];
+
+    private static async Task RunResourceMonitorAsync(CancellationToken cancellationToken)
+    {
+        var process = Process.GetCurrentProcess();
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(5000, cancellationToken).ConfigureAwait(false);
+                LogResourceUsage("Monitor", process);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+    }
+
+    private static void LogResourceUsage(string label, Process? process = null)
+    {
+        process ??= Process.GetCurrentProcess();
+        process.Refresh();
+
+        var workingSet = process.WorkingSet64 / (1024.0 * 1024.0);
+        var privateMemory = process.PrivateMemorySize64 / (1024.0 * 1024.0);
+        var gcHeap = GC.GetTotalMemory(forceFullCollection: false) / (1024.0 * 1024.0);
+        var threadCount = process.Threads.Count;
+        var gen0 = GC.CollectionCount(0);
+        var gen1 = GC.CollectionCount(1);
+        var gen2 = GC.CollectionCount(2);
+
+        Console.WriteLine($"  [{DateTime.UtcNow:HH:mm:ss}] {label} Resources: " +
+            $"WorkingSet={workingSet:F1}MB, Private={privateMemory:F1}MB, GCHeap={gcHeap:F1}MB, " +
+            $"Threads={threadCount}, GC=[{gen0}/{gen1}/{gen2}]");
+    }
 }
