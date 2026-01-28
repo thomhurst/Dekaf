@@ -1334,6 +1334,13 @@ internal sealed class PartitionBatch
     /// Resets the batch for reuse with a new topic-partition.
     /// Called when renting from the pool.
     /// </summary>
+    /// <remarks>
+    /// IMPORTANT: _isCompleted and _exclusiveAccess must ONLY be reset here, NOT in PrepareForPooling().
+    /// Resetting them in PrepareForPooling() creates a race condition where a stale reference from
+    /// another thread could successfully append to the pooled batch (since _isCompleted would be 0),
+    /// and those messages would be lost when Reset() is later called. By only resetting these flags
+    /// at rent time, we ensure that any stale references fail the _isCompleted check in TryAppend().
+    /// </remarks>
     internal void Reset(TopicPartition topicPartition)
     {
         _topicPartition = topicPartition;
@@ -1344,9 +1351,9 @@ internal sealed class PartitionBatch
         _pooledHeaderArrayCount = 0;
         _baseTimestamp = 0;
         _estimatedSize = 0;
-        _isCompleted = 0;
+        _isCompleted = 0;  // Only reset here - see remarks
         _completedBatch = null;
-        _exclusiveAccess = 0;
+        _exclusiveAccess = 0;  // Only reset here - see remarks
     }
 
     /// <summary>
@@ -1373,16 +1380,21 @@ internal sealed class PartitionBatch
         _pooledArrays = ArrayPool<byte[]>.Shared.Rent(_initialRecordCapacity * 2);
         _pooledHeaderArrays = ArrayPool<RecordHeader[]>.Shared.Rent(8);
 
-        // Reset all state for reuse
+        // Reset counters and state for reuse.
+        // IMPORTANT: Do NOT reset _isCompleted or _exclusiveAccess here!
+        // These must only be reset in Reset() when the batch is actually rented.
+        // If we reset _isCompleted here, a stale reference from another thread could
+        // successfully append to this pooled batch (since _isCompleted would be 0),
+        // and those messages would be lost when Reset() is later called.
         _recordCount = 0;
         _completionSourceCount = 0;
         _pooledArrayCount = 0;
         _pooledHeaderArrayCount = 0;
         _baseTimestamp = 0;
         _estimatedSize = 0;
-        _isCompleted = 0;
+        // _isCompleted stays at 1 - batch is "completed" while in pool
         _completedBatch = null;
-        _exclusiveAccess = 0;
+        // _exclusiveAccess stays at 0 (should already be 0 from Complete())
     }
 
     /// <summary>
