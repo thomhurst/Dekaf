@@ -318,6 +318,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Slow path: Fall back to channel-based async processing
         // This handles the case where metadata isn't initialized or cached
         var completion = _valueTaskSourcePool.Rent();
+        // Fire-and-forget: ensure completion source returns to pool when batch completes
+        _ = AwaitDeliveryAsync(completion);
+
         var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None);
 
         if (!_workChannel.Writer.TryWrite(workItem))
