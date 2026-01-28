@@ -107,15 +107,7 @@ var producer = Dekaf.CreateProducer<string, string>()
     .Build();
 ```
 
-You can always override individual settings after applying a preset:
-
-```csharp
-var producer = Dekaf.CreateProducer<string, string>()
-    .WithBootstrapServers("localhost:9092")
-    .ForHighThroughput()
-    .WithAcks(Acks.All)  // Override just this one setting
-    .Build();
-```
+You can override individual settings after applying a preset.
 
 ## Batch Production
 
@@ -213,15 +205,6 @@ await foreach (var msg in consumer.ConsumeAsync(ct))
     await ProcessAsync(msg);
     await consumer.CommitAsync();  // Commits offset for all consumed messages
 }
-
-// Tip: For better throughput, commit in batches rather than after every message
-await foreach (var batch in consumer.ConsumeAsync(ct).Batch(100))
-{
-    foreach (var msg in batch)
-        await ProcessAsync(msg);
-
-    await consumer.CommitAsync();  // Commit once per batch
-}
 ```
 
 ## Compression
@@ -314,14 +297,3 @@ services.AddDekafConsumer<string, string>(builder => builder
     .SubscribeTo("events"));
 ```
 
-## Performance Tips
-
-1. **Reuse producers** - Creating a producer is expensive. Create one and reuse it.
-
-2. **Use `Send()` for fire-and-forget** - If you don't need acknowledgment, `Send()` is much faster than `ProduceAsync()`.
-
-3. **Batch your commits** - Don't commit after every message. Process batches and commit periodically.
-
-4. **Enable compression** - LZ4 adds minimal CPU overhead but can significantly reduce network traffic.
-
-5. **Tune batch settings** - For throughput, increase `LingerMs` and `BatchSize`. For latency, keep them low.
