@@ -17,7 +17,7 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
 {
     private readonly IKafkaProducer<TKey, TValue> _producer;
     private readonly bool _ownsProducer;
-    private volatile bool _disposed;
+    private int _disposed; // 0 = not disposed, 1 = disposed (for atomic CAS)
 
     /// <summary>
     /// Creates a new topic producer.
@@ -175,10 +175,9 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        // Atomically set disposed flag - only first caller proceeds
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
             return;
-
-        _disposed = true;
 
         if (_ownsProducer)
         {
@@ -188,7 +187,7 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
 
     private void ThrowIfDisposed()
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(TopicProducer<TKey, TValue>));
     }
 }
