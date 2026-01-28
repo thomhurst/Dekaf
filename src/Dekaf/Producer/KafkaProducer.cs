@@ -1176,6 +1176,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     batch.CompletionSourcesCount);
 
                 batch.Fail(ex);
+
+                // Release buffer memory now that batch is complete
+                _accumulator.ReleaseMemory(batch.DataSize);
             }
         }
     }
@@ -1293,6 +1296,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // Complete with synthetic metadata since we don't get a response
             // Offset is unknown (-1) for fire-and-forget
             batch.Complete(-1, DateTimeOffset.UtcNow);
+
+            // Release buffer memory now that batch is complete
+            _accumulator.ReleaseMemory(batch.DataSize);
             return;
         }
 
@@ -1395,6 +1401,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             : DateTimeOffset.UtcNow;
 
         batch.Complete(partitionResponse.BaseOffset, timestamp);
+
+        // Release buffer memory now that batch is complete
+        _accumulator.ReleaseMemory(batch.DataSize);
     }
 
     /// <summary>

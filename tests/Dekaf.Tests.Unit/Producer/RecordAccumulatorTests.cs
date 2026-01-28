@@ -16,7 +16,7 @@ public class RecordAccumulatorTests
         {
             BootstrapServers = new[] { "localhost:9092" },
             ClientId = "test-producer",
-            BufferMemory = 10000,
+            BufferMemory = ulong.MaxValue, // Disable buffer limit for unit tests (no producer to drain)
             BatchSize = 1000,
             LingerMs = 10
         };

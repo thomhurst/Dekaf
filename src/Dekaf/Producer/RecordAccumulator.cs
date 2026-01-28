@@ -314,6 +314,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private volatile bool _disposed;
     private volatile bool _closed;
 
+    // Buffer memory tracking for backpressure
+    private readonly ulong _maxBufferMemory;
+    private long _bufferedBytes;
+    private readonly SemaphoreSlim _bufferSpaceAvailable = new(1, 1);
+
     // Thread-local cache for fast path when consecutive messages go to the same partition.
     // This eliminates ConcurrentDictionary lookups for the common case of sending multiple
     // messages to the same topic-partition in sequence (e.g., keyed messages, batch processing).
@@ -371,19 +376,114 @@ public sealed class RecordAccumulator : IAsyncDisposable
     {
         _options = options;
         _batchPool = new PartitionBatchPool(options);
+        _maxBufferMemory = options.BufferMemory;
 
-        // Use unbounded channel for ready batches to avoid artificial backpressure.
-        // Natural backpressure occurs through:
-        // 1. TCP flow control when the network can't keep up
-        // 2. Broker responses being slow
-        // 3. Batch size limits in PartitionBatch
-        // This matches Confluent.Kafka's approach where queue.buffering.max.messages
-        // defaults to 100,000 and rarely causes backpressure in practice.
+        // Use unbounded channel for ready batches - backpressure is now handled by buffer memory tracking
         _readyBatches = Channel.CreateUnbounded<ReadyBatch>(new UnboundedChannelOptions
         {
             SingleReader = true,
             SingleWriter = false
         });
+    }
+
+    /// <summary>
+    /// Gets the current buffered memory usage in bytes.
+    /// </summary>
+    public long BufferedBytes => Volatile.Read(ref _bufferedBytes);
+
+    /// <summary>
+    /// Gets the maximum buffer memory limit in bytes.
+    /// </summary>
+    public ulong MaxBufferMemory => _maxBufferMemory;
+
+    /// <summary>
+    /// Tries to reserve buffer memory for a record. Returns true if successful, false if buffer is full.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryReserveMemory(int recordSize)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _bufferedBytes);
+            var newValue = current + recordSize;
+
+            // Check if adding this record would exceed buffer limit
+            if ((ulong)newValue > _maxBufferMemory)
+            {
+                return false;
+            }
+
+            if (Interlocked.CompareExchange(ref _bufferedBytes, newValue, current) == current)
+            {
+                return true;
+            }
+            // CAS failed, retry
+        }
+    }
+
+    /// <summary>
+    /// Waits until buffer space is available, then reserves memory for a record.
+    /// </summary>
+    private async ValueTask ReserveMemoryAsync(int recordSize, CancellationToken cancellationToken)
+    {
+        // Fast path: try to reserve immediately
+        if (TryReserveMemory(recordSize))
+        {
+            return;
+        }
+
+        // Slow path: wait for space to become available
+        // Use semaphore to avoid busy spinning - released when batches are completed
+        while (!TryReserveMemory(recordSize))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Wait with timeout to periodically retry in case we missed a signal
+            await _bufferSpaceAvailable.WaitAsync(100, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Synchronous version of ReserveMemoryAsync for fire-and-forget paths.
+    /// Blocks the calling thread until buffer space is available.
+    /// </summary>
+    private void ReserveMemorySync(int recordSize)
+    {
+        // Fast path: try to reserve immediately
+        if (TryReserveMemory(recordSize))
+        {
+            return;
+        }
+
+        // Slow path: spin-wait for space to become available
+        var spinWait = new SpinWait();
+        while (!TryReserveMemory(recordSize))
+        {
+            if (_disposed)
+                return;
+
+            // SpinWait starts with spinning, then yields, then sleeps(0), then sleeps(1)
+            spinWait.SpinOnce();
+        }
+    }
+
+    /// <summary>
+    /// Releases reserved buffer memory when a batch is completed/sent.
+    /// </summary>
+    internal void ReleaseMemory(int batchSize)
+    {
+        Interlocked.Add(ref _bufferedBytes, -batchSize);
+
+        // Signal that space may be available
+        // Use TryRelease to handle case where semaphore is already at max count
+        try
+        {
+            _bufferSpaceAvailable.Release();
+        }
+        catch (SemaphoreFullException)
+        {
+            // Already at max count, ignore
+        }
     }
 
     /// <summary>
@@ -521,6 +621,13 @@ public sealed class RecordAccumulator : IAsyncDisposable
         if (_disposed)
             throw new ObjectDisposedException(nameof(RecordAccumulator));
 
+        // Calculate record size for buffer memory tracking
+        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
+
+        // Reserve memory before appending - blocks if buffer is full
+        // This provides backpressure when producers are faster than the network can drain
+        await ReserveMemoryAsync(recordSize, cancellationToken).ConfigureAwait(false);
+
         // OPTIMIZATION: Use a nested cache to get/create TopicPartition without allocating on hot path.
         // First, get or create the partition cache for this topic.
         var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
@@ -615,6 +722,13 @@ public sealed class RecordAccumulator : IAsyncDisposable
         if (_disposed)
             return false;
 
+        // Calculate record size for buffer memory tracking
+        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
+
+        // Reserve memory before appending - blocks synchronously if buffer is full
+        // This provides backpressure when producers are faster than the network can drain
+        ReserveMemorySync(recordSize);
+
         // OPTIMIZATION: Use a nested cache to get/create TopicPartition without allocating on hot path.
         var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
         var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
@@ -661,6 +775,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     {
                         // Channel is closed, fail the batch and return false
                         readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                        // Release the batch's buffer memory since it won't go through producer
+                        ReleaseMemory(readyBatch.DataSize);
                         return false;
                     }
 
@@ -688,6 +804,13 @@ public sealed class RecordAccumulator : IAsyncDisposable
     {
         if (_disposed)
             return false;
+
+        // Calculate record size for buffer memory tracking
+        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
+
+        // Reserve memory before appending - blocks synchronously if buffer is full
+        // This provides backpressure when producers are faster than the network can drain
+        ReserveMemorySync(recordSize);
 
         // FAST PATH 1: Check single-partition cache for consecutive messages to same partition.
         // This is the fastest path for single-partition or sticky-partitioner scenarios.
@@ -761,6 +884,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 if (!_readyBatches.Writer.TryWrite(readyBatch))
                 {
                     readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                    // Release the batch's buffer memory since it won't go through producer
+                    ReleaseMemory(readyBatch.DataSize);
                     t_cachedBatch = null;
                     return false;
                 }
@@ -899,6 +1024,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     {
                         // Channel is closed, fail the batch and return false
                         readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                        // Release the batch's buffer memory since it won't go through producer
+                        ReleaseMemory(readyBatch.DataSize);
                         // Invalidate caches
                         t_cachedBatch = null;
                         mpCache[cacheIndex].Batch = null;
@@ -993,6 +1120,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                         if (!_readyBatches.Writer.TryWrite(readyBatch))
                         {
                             readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                            // Release the batch's buffer memory since it won't go through producer
+                            ReleaseMemory(readyBatch.DataSize);
                             t_cachedBatch = null;
                             return false;
                         }
@@ -1161,7 +1290,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
             if (_batches.TryRemove(kvp))
             {
                 var readyBatch = kvp.Value.Complete();
-                readyBatch?.Fail(disposedException);
+                if (readyBatch is not null)
+                {
+                    readyBatch.Fail(disposedException);
+                    // Release the batch's buffer memory
+                    ReleaseMemory(readyBatch.DataSize);
+                }
             }
         }
 
@@ -1177,7 +1311,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Drain any batches that were in the channel but not yet processed
         while (_readyBatches.Reader.TryRead(out var batch))
         {
-            batch?.Fail(disposedException);
+            if (batch is not null)
+            {
+                batch.Fail(disposedException);
+                // Release the batch's buffer memory
+                ReleaseMemory(batch.DataSize);
+            }
         }
 
         // Clear the batch pool
@@ -2050,6 +2189,7 @@ internal sealed class PartitionBatch
                 _pooledArrayCount,
                 _pooledHeaderArrays,
                 _pooledHeaderArrayCount,
+                _estimatedSize,
                 pooledRecordsArray,
                 _arena);
 
@@ -2092,7 +2232,7 @@ internal sealed class PartitionBatch
         _arena = null;
     }
 
-    private static int EstimateRecordSize(int keyLength, int valueLength, IReadOnlyList<RecordHeader>? headers)
+    internal static int EstimateRecordSize(int keyLength, int valueLength, IReadOnlyList<RecordHeader>? headers)
     {
         var size = 20; // Base overhead for varint lengths, timestamp delta, offset delta, etc.
         size += keyLength;
@@ -2134,6 +2274,11 @@ internal sealed class ReadyBatch
     /// </summary>
     public int CompletionSourcesCount => _completionSourcesCount;
 
+    /// <summary>
+    /// Estimated size of all data in this batch (for buffer memory tracking).
+    /// </summary>
+    public int DataSize { get; }
+
     // Working arrays from accumulator (pooled)
     private readonly PooledValueTaskSource<RecordMetadata>[] _completionSourcesArray;
     private readonly int _completionSourcesCount;
@@ -2155,6 +2300,7 @@ internal sealed class ReadyBatch
         int pooledDataArraysCount,
         RecordHeader[][] pooledHeaderArrays,
         int pooledHeaderArraysCount,
+        int dataSize,
         Record[]? pooledRecordsArray = null,
         BatchArena? arena = null)
     {
@@ -2166,6 +2312,7 @@ internal sealed class ReadyBatch
         _pooledDataArraysCount = pooledDataArraysCount;
         _pooledHeaderArrays = pooledHeaderArrays;
         _pooledHeaderArraysCount = pooledHeaderArraysCount;
+        DataSize = dataSize;
         _pooledRecordsArray = pooledRecordsArray;
         _arena = arena;
     }
