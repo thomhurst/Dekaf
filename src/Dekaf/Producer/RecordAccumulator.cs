@@ -450,6 +450,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         while (!TryReserveMemory(recordSize))
         {
+            // Check disposal first
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(RecordAccumulator));
+
             cancellationToken.ThrowIfCancellationRequested();
 
             // Check if we've exceeded the delivery timeout
