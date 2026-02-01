@@ -274,3 +274,175 @@ jobs:
           comment-on-alert: true
           fail-on-alert: false
           alert-comment-cc-users: '@thomholloway'
+
+  publish-to-docs:
+    name: Publish Benchmarks to Documentation
+    runs-on: ubuntu-latest
+    needs: [unit-benchmarks, client-benchmarks]
+    if: github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Benchmark Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: benchmark-results-*
+          path: benchmark-results
+          merge-multiple: true
+
+      - name: Generate Benchmarks Documentation
+        run: |
+          python3 << 'EOF'
+          import os
+          import glob
+          from datetime import datetime
+
+          output = []
+          output.append("---")
+          output.append("sidebar_position: 13")
+          output.append("---")
+          output.append("")
+          output.append("# Benchmark Results")
+          output.append("")
+          output.append("Live benchmark comparisons between Dekaf and Confluent.Kafka, automatically updated on every commit to main.")
+          output.append("")
+          output.append(f"**Last Updated:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+          output.append("")
+          output.append(":::info")
+          output.append("These benchmarks run on GitHub Actions (ubuntu-latest) using BenchmarkDotNet. ")
+          output.append("**Ratio < 1.0 means Dekaf is faster than Confluent.Kafka**")
+          output.append(":::")
+          output.append("")
+
+          # Producer benchmarks
+          producer_md = glob.glob("benchmark-results/Client/results/*ProducerBenchmarks*-github.md")
+          if producer_md:
+              output.append("## Producer Benchmarks")
+              output.append("")
+              output.append("Comparing Dekaf vs Confluent.Kafka for message production across different scenarios.")
+              output.append("")
+              with open(producer_md[0]) as f:
+                  content = f.read()
+                  lines = content.split('\n')
+                  in_table = False
+                  for line in lines:
+                      if line.startswith('|'):
+                          in_table = True
+                      if in_table:
+                          output.append(line)
+              output.append("")
+
+          # Consumer benchmarks
+          consumer_md = glob.glob("benchmark-results/Client/results/*ConsumerBenchmarks*-github.md")
+          if consumer_md:
+              output.append("## Consumer Benchmarks")
+              output.append("")
+              output.append("Comparing Dekaf vs Confluent.Kafka for message consumption.")
+              output.append("")
+              with open(consumer_md[0]) as f:
+                  content = f.read()
+                  lines = content.split('\n')
+                  in_table = False
+                  for line in lines:
+                      if line.startswith('|'):
+                          in_table = True
+                      if in_table:
+                          output.append(line)
+              output.append("")
+
+          # Protocol benchmarks (zero-allocation)
+          protocol_md = glob.glob("benchmark-results/Unit/results/*ProtocolBenchmarks*-github.md")
+          if protocol_md:
+              output.append("## Protocol Benchmarks")
+              output.append("")
+              output.append("Zero-allocation wire protocol serialization/deserialization.")
+              output.append("")
+              output.append(":::tip")
+              output.append("**Allocated = `-` means zero heap allocations** - the goal of Dekaf's design!")
+              output.append(":::")
+              output.append("")
+              with open(protocol_md[0]) as f:
+                  content = f.read()
+                  lines = content.split('\n')
+                  in_table = False
+                  for line in lines:
+                      if line.startswith('|'):
+                          in_table = True
+                      if in_table:
+                          output.append(line)
+              output.append("")
+
+          # Serializer benchmarks
+          serializer_md = glob.glob("benchmark-results/Unit/results/*SerializerBenchmarks*-github.md")
+          if serializer_md:
+              output.append("## Serializer Benchmarks")
+              output.append("")
+              with open(serializer_md[0]) as f:
+                  content = f.read()
+                  lines = content.split('\n')
+                  in_table = False
+                  for line in lines:
+                      if line.startswith('|'):
+                          in_table = True
+                      if in_table:
+                          output.append(line)
+              output.append("")
+
+          # Compression benchmarks
+          compression_md = glob.glob("benchmark-results/Unit/results/*CompressionBenchmarks*-github.md")
+          if compression_md:
+              output.append("## Compression Benchmarks")
+              output.append("")
+              with open(compression_md[0]) as f:
+                  content = f.read()
+                  lines = content.split('\n')
+                  in_table = False
+                  for line in lines:
+                      if line.startswith('|'):
+                          in_table = True
+                      if in_table:
+                          output.append(line)
+              output.append("")
+
+          output.append("---")
+          output.append("")
+          output.append("## How to Read These Results")
+          output.append("")
+          output.append("- **Mean**: Average execution time")
+          output.append("- **Error**: Half of 99.9% confidence interval")
+          output.append("- **StdDev**: Standard deviation of all measurements")
+          output.append("- **Ratio**: Performance relative to baseline (Confluent.Kafka)")
+          output.append("  - `< 1.0` = Dekaf is faster")
+          output.append("  - `> 1.0` = Confluent is faster")
+          output.append("  - `1.0` = Same performance")
+          output.append("- **Allocated**: Heap memory allocated per operation")
+          output.append("  - `-` = Zero allocations (ideal!)")
+          output.append("")
+          output.append("*Benchmarks are automatically run on every push to main.*")
+
+          # Write to docs
+          os.makedirs('docs/docs', exist_ok=True)
+          with open('docs/docs/benchmarks.md', 'w') as f:
+              f.write('\n'.join(output))
+
+          print(f"Generated benchmarks.md with {len(output)} lines")
+          EOF
+
+      - name: Commit and Push Benchmark Results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/docs/benchmarks.md
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "docs: Update benchmark results [skip ci]"
+            git push
+          fi

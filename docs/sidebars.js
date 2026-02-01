@@ -58,6 +58,8 @@ const sidebars = {
     'compression',
     'dependency-injection',
     'performance',
+    'benchmarks',
+    'stress-tests',
   ],
 };
 

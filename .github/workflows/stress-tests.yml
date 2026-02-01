@@ -121,3 +121,194 @@ jobs:
         run: |
           cd tools/Dekaf.StressTests
           dotnet run --configuration Release --no-build -- report --input ../../results
+
+  publish-to-docs:
+    name: Publish Stress Test Results to Documentation
+    needs: stress-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && needs.stress-test.result == 'success'
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Results
+        uses: actions/download-artifact@v4
+        with:
+          name: stress-test-results
+          path: ./results
+
+      - name: Generate Stress Test Documentation
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          import glob
+          from datetime import datetime
+
+          output = []
+          output.append("---")
+          output.append("sidebar_position: 14")
+          output.append("---")
+          output.append("")
+          output.append("# Stress Test Results")
+          output.append("")
+          output.append("Long-running stress tests comparing sustained performance between Dekaf and Confluent.Kafka under real-world load.")
+          output.append("")
+          output.append(f"**Last Updated:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+          output.append("")
+          output.append(":::info")
+          output.append("These tests run weekly (Sunday 2 AM UTC) and can be manually triggered. ")
+          output.append("They measure sustained performance over 15+ minutes with real Kafka instances.")
+          output.append(":::")
+          output.append("")
+
+          # Find and parse JSON results
+          json_files = glob.glob("results/**/*.json", recursive=True)
+
+          if json_files:
+              output.append("## Latest Results")
+              output.append("")
+
+              for json_file in json_files:
+                  try:
+                      with open(json_file) as f:
+                          data = json.load(f)
+
+                      # Extract test configuration
+                      config = data.get('configuration', {})
+                      duration = config.get('duration_minutes', 'N/A')
+                      message_size = config.get('message_size', 'N/A')
+                      scenario = config.get('scenario', 'N/A')
+
+                      output.append(f"### Test Configuration")
+                      output.append("")
+                      output.append(f"- **Duration**: {duration} minutes")
+                      output.append(f"- **Message Size**: {message_size} bytes")
+                      output.append(f"- **Scenario**: {scenario}")
+                      output.append("")
+
+                      # Producer results
+                      if 'producer' in data:
+                          output.append("#### Producer Performance")
+                          output.append("")
+                          output.append("| Client | Messages/sec | Total Messages | Errors | Avg Latency | P99 Latency |")
+                          output.append("|--------|--------------|----------------|--------|-------------|-------------|")
+
+                          for client_name, metrics in data['producer'].items():
+                              msg_per_sec = metrics.get('messages_per_second', 0)
+                              total = metrics.get('total_messages', 0)
+                              errors = metrics.get('errors', 0)
+                              avg_latency = metrics.get('avg_latency_ms', 0)
+                              p99_latency = metrics.get('p99_latency_ms', 0)
+
+                              output.append(f"| {client_name} | {msg_per_sec:,.0f} | {total:,} | {errors} | {avg_latency:.2f}ms | {p99_latency:.2f}ms |")
+
+                          output.append("")
+
+                          # Calculate and show comparison
+                          if 'Dekaf' in data['producer'] and 'Confluent' in data['producer']:
+                              dekaf_throughput = data['producer']['Dekaf'].get('messages_per_second', 0)
+                              confluent_throughput = data['producer']['Confluent'].get('messages_per_second', 0)
+
+                              if confluent_throughput > 0:
+                                  ratio = dekaf_throughput / confluent_throughput
+                                  if ratio > 1.0:
+                                      output.append(f":::tip")
+                                      output.append(f"**Dekaf is {ratio:.2f}x faster** than Confluent.Kafka for producer throughput!")
+                                      output.append(f":::")
+                                  elif ratio < 1.0:
+                                      output.append(f":::note")
+                                      output.append(f"Confluent.Kafka is {1/ratio:.2f}x faster for this producer scenario.")
+                                      output.append(f":::")
+                                  else:
+                                      output.append(f":::note")
+                                      output.append(f"Dekaf and Confluent.Kafka have similar producer performance.")
+                                      output.append(f":::")
+                              output.append("")
+
+                      # Consumer results
+                      if 'consumer' in data:
+                          output.append("#### Consumer Performance")
+                          output.append("")
+                          output.append("| Client | Messages/sec | Total Messages | Errors | Avg Processing Time |")
+                          output.append("|--------|--------------|----------------|--------|---------------------|")
+
+                          for client_name, metrics in data['consumer'].items():
+                              msg_per_sec = metrics.get('messages_per_second', 0)
+                              total = metrics.get('total_messages', 0)
+                              errors = metrics.get('errors', 0)
+                              avg_time = metrics.get('avg_processing_time_ms', 0)
+
+                              output.append(f"| {client_name} | {msg_per_sec:,.0f} | {total:,} | {errors} | {avg_time:.2f}ms |")
+
+                          output.append("")
+
+                          # Calculate and show comparison
+                          if 'Dekaf' in data['consumer'] and 'Confluent' in data['consumer']:
+                              dekaf_throughput = data['consumer']['Dekaf'].get('messages_per_second', 0)
+                              confluent_throughput = data['consumer']['Confluent'].get('messages_per_second', 0)
+
+                              if confluent_throughput > 0:
+                                  ratio = dekaf_throughput / confluent_throughput
+                                  if ratio > 1.0:
+                                      output.append(f":::tip")
+                                      output.append(f"**Dekaf is {ratio:.2f}x faster** than Confluent.Kafka for consumer throughput!")
+                                      output.append(f":::")
+                                  elif ratio < 1.0:
+                                      output.append(f":::note")
+                                      output.append(f"Confluent.Kafka is {1/ratio:.2f}x faster for this consumer scenario.")
+                                      output.append(f":::")
+                                  else:
+                                      output.append(f":::note")
+                                      output.append(f"Dekaf and Confluent.Kafka have similar consumer performance.")
+                                      output.append(f":::")
+                              output.append("")
+
+                  except Exception as e:
+                      print(f"Error processing {json_file}: {e}")
+          else:
+              output.append("## No Results Available")
+              output.append("")
+              output.append("Stress test results will appear here after the first successful run.")
+              output.append("")
+
+          output.append("---")
+          output.append("")
+          output.append("## About These Tests")
+          output.append("")
+          output.append("Stress tests measure sustained performance over extended periods:")
+          output.append("")
+          output.append("- **Real Kafka**: Tests run against actual Apache Kafka instances")
+          output.append("- **Both Clients**: Direct comparison between Dekaf and Confluent.Kafka")
+          output.append("- **Production Scenarios**: Fire-and-forget, acknowledgments, batching, consumption")
+          output.append("- **Memory Monitoring**: Tracks GC behavior and memory usage over time")
+          output.append("- **Error Rates**: Ensures stability under load")
+          output.append("")
+          output.append("These results complement the micro-benchmarks by showing how both clients")
+          output.append("perform under realistic, sustained workloads.")
+
+          # Write to docs
+          os.makedirs('docs/docs', exist_ok=True)
+          with open('docs/docs/stress-tests.md', 'w') as f:
+              f.write('\n'.join(output))
+
+          print(f"Generated stress-tests.md with {len(output)} lines")
+          EOF
+
+      - name: Commit and Push Stress Test Results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/docs/stress-tests.md
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "docs: Update stress test results [skip ci]"
+            git push
+          fi
