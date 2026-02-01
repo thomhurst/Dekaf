@@ -115,66 +115,99 @@ public sealed class ConnectionPool : IConnectionPool
         var connections = new IKafkaConnection[_connectionsPerBroker];
         var tasks = new Task<IKafkaConnection>[_connectionsPerBroker];
 
-        for (var i = 0; i < _connectionsPerBroker; i++)
+        // Create timeout token - intentionally not disposed because token is captured in async lambdas
+        // that may still be running when this method returns. Disposing here would cause ObjectDisposedException
+        // in the background tasks. The GC will collect these short-lived objects after async operations complete.
+        var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
+        var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            timeoutCts.Token);
+
+        try
         {
-            var index = i;
-            // Use GetOrAdd pattern for each connection to avoid duplicates
-            var lazyTask = _connectionGroupCreationTasks.GetOrAdd(
-                (brokerId, index),
-                _ => new Lazy<ValueTask<IKafkaConnection>>(() =>
-                    CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, CancellationToken.None)));
+            for (var i = 0; i < _connectionsPerBroker; i++)
+            {
+                var index = i;
+                // Use GetOrAdd pattern for each connection to avoid duplicates
+                var lazyTask = _connectionGroupCreationTasks.GetOrAdd(
+                    (brokerId, index),
+                    _ => new Lazy<ValueTask<IKafkaConnection>>(() =>
+                        CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, linkedCts.Token)));
 
-            tasks[i] = lazyTask.Value.AsTask();
+                tasks[i] = lazyTask.Value.AsTask();
+            }
+
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+
+            for (var i = 0; i < _connectionsPerBroker; i++)
+            {
+                connections[i] = tasks[i].Result;
+                _connectionGroupCreationTasks.TryRemove((brokerId, i), out _);
+            }
+
+            // Atomically set the connection group
+            _connectionGroupsById[brokerId] = connections;
+            _connectionGroupsByEndpoint[new EndpointKey(brokerInfo.Host, brokerInfo.Port)] = connections;
+
+            _logger?.LogDebug("Created connection group with {Count} connections to broker {BrokerId}", _connectionsPerBroker, brokerId);
+
+            // Return the first connection
+            return connections[0];
         }
-
-        await Task.WhenAll(tasks).ConfigureAwait(false);
-
-        for (var i = 0; i < _connectionsPerBroker; i++)
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
-            connections[i] = tasks[i].Result;
-            _connectionGroupCreationTasks.TryRemove((brokerId, i), out _);
+            // Timeout occurred - clean up failed connection attempts
+            for (var i = 0; i < _connectionsPerBroker; i++)
+            {
+                _connectionGroupCreationTasks.TryRemove((brokerId, i), out _);
+            }
+
+            throw new KafkaException(
+                $"Connection group creation timeout after {_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
         }
-
-        // Atomically set the connection group
-        _connectionGroupsById[brokerId] = connections;
-        _connectionGroupsByEndpoint[new EndpointKey(brokerInfo.Host, brokerInfo.Port)] = connections;
-
-        _logger?.LogDebug("Created connection group with {Count} connections to broker {BrokerId}", _connectionsPerBroker, brokerId);
-
-        // Return the first connection
-        return connections[0];
+        // No finally block - tokens intentionally not disposed to prevent race condition with async lambdas
     }
 
     private async ValueTask<IKafkaConnection> ReplaceConnectionInGroupAsync(int brokerId, BrokerInfo brokerInfo, int index, CancellationToken cancellationToken)
     {
         // Use GetOrAdd pattern to ensure only one replacement happens
-        var lazyTask = _connectionGroupCreationTasks.GetOrAdd(
-            (brokerId, index),
-            _ => new Lazy<ValueTask<IKafkaConnection>>(() =>
-                CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, CancellationToken.None)));
+        // Create timeout token - intentionally not disposed because token is captured in async lambda
+        // that may still be running when this method returns. Disposing here would cause ObjectDisposedException
+        // in the background task. The GC will collect these short-lived objects after async operation completes.
+        var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
+        var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            timeoutCts.Token);
 
         try
         {
-            var newConnection = await lazyTask.Value.ConfigureAwait(false);
+            var lazyTask = _connectionGroupCreationTasks.GetOrAdd(
+                (brokerId, index),
+                _ => new Lazy<ValueTask<IKafkaConnection>>(() =>
+                    CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, linkedCts.Token)));
 
-            // Update the connection in the group
+            var connection = await lazyTask.Value.ConfigureAwait(false);
+
+            // Update the connection group array
             if (_connectionGroupsById.TryGetValue(brokerId, out var connections))
             {
-                var oldConnection = Interlocked.Exchange(ref connections[index], newConnection);
-                if (oldConnection is not null && oldConnection != newConnection)
-                {
-                    await oldConnection.DisposeAsync().ConfigureAwait(false);
-                }
+                connections[index] = connection;
             }
 
+            // Remove from creation tasks
             _connectionGroupCreationTasks.TryRemove((brokerId, index), out _);
-            return newConnection;
+
+            return connection;
         }
-        catch
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
+            // Timeout occurred - clean up failed connection attempt
             _connectionGroupCreationTasks.TryRemove((brokerId, index), out _);
-            throw;
+
+            throw new KafkaException(
+                $"Connection replacement timeout after {_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} index {index}");
         }
+        // No finally block - tokens intentionally not disposed to prevent race condition with async lambda
     }
 
     private async ValueTask<IKafkaConnection> CreateConnectionForGroupAsync(int brokerId, string host, int port, int index, CancellationToken cancellationToken)
@@ -226,10 +259,15 @@ public sealed class ConnectionPool : IConnectionPool
 
         var endpoint = new EndpointKey(host, port);
 
+        // Create timeout token
+        using var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            timeoutCts.Token);
+
         // Lock-free pattern: Use GetOrAdd with Lazy to ensure only one connection creation per endpoint
-        // Note: CancellationToken.None is used to avoid capturing the caller's token in the Lazy delegate
         var lazyConnection = _connectionCreationTasks.GetOrAdd(endpoint,
-            _ => new Lazy<ValueTask<IKafkaConnection>>(() => CreateConnectionAsync(brokerId, host, port, CancellationToken.None)));
+            _ => new Lazy<ValueTask<IKafkaConnection>>(() => CreateConnectionAsync(brokerId, host, port, linkedCts.Token)));
 
         try
         {
@@ -252,6 +290,14 @@ public sealed class ConnectionPool : IConnectionPool
             _connectionCreationTasks.TryRemove(endpoint, out _);
 
             return connection;
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        {
+            // Remove failed connection attempt from cache to allow retry
+            _connectionCreationTasks.TryRemove(endpoint, out _);
+
+            throw new KafkaException(
+                $"Connection timeout after {_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} ({host}:{port})");
         }
         catch
         {
