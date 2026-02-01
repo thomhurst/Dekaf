@@ -115,9 +115,6 @@ public sealed class ConnectionPool : IConnectionPool
         var connections = new IKafkaConnection[_connectionsPerBroker];
         var tasks = new Task<IKafkaConnection>[_connectionsPerBroker];
 
-        // Create timeout token - intentionally not disposed because token is captured in async lambdas
-        // that may still be running when this method returns. Disposing here would cause ObjectDisposedException
-        // in the background tasks. The GC will collect these short-lived objects after async operations complete.
         var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
         var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
@@ -165,15 +162,16 @@ public sealed class ConnectionPool : IConnectionPool
             throw new KafkaException(
                 $"Connection group creation timeout after {_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
         }
-        // No finally block - tokens intentionally not disposed to prevent race condition with async lambdas
+        finally
+        {
+            linkedCts.Dispose();
+            timeoutCts.Dispose();
+        }
     }
 
     private async ValueTask<IKafkaConnection> ReplaceConnectionInGroupAsync(int brokerId, BrokerInfo brokerInfo, int index, CancellationToken cancellationToken)
     {
         // Use GetOrAdd pattern to ensure only one replacement happens
-        // Create timeout token - intentionally not disposed because token is captured in async lambda
-        // that may still be running when this method returns. Disposing here would cause ObjectDisposedException
-        // in the background task. The GC will collect these short-lived objects after async operation completes.
         var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
         var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
@@ -207,7 +205,11 @@ public sealed class ConnectionPool : IConnectionPool
             throw new KafkaException(
                 $"Connection replacement timeout after {_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} index {index}");
         }
-        // No finally block - tokens intentionally not disposed to prevent race condition with async lambda
+        finally
+        {
+            linkedCts.Dispose();
+            timeoutCts.Dispose();
+        }
     }
 
     private async ValueTask<IKafkaConnection> CreateConnectionForGroupAsync(int brokerId, string host, int port, int index, CancellationToken cancellationToken)
