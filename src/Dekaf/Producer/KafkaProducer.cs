@@ -541,16 +541,29 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         IReadOnlyList<RecordHeader>? recordHeaders,
         ref RecordHeader[]? pooledHeaderArray)
     {
+        // STEP 1: Calculate record size BEFORE any work
+        var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, recordHeaders);
+
+        // STEP 2: Try to reserve BufferMemory (non-blocking check)
+        if (!_accumulator.TryReserveMemory(recordSize))
+        {
+            return false; // Buffer full - fall back to slow path with backpressure
+        }
+
+        // STEP 3: Memory reserved - must ensure cleanup on ANY failure from this point
+
         // Check thread-local batch cache first (avoids dictionary lookup)
         var cachedBatch = GetCachedBatch(topic, partition);
         if (cachedBatch is null)
         {
+            _accumulator.ReleaseMemory(recordSize);
             return false; // No cached batch, use slow path
         }
 
         var arena = cachedBatch.Arena;
         if (arena is null)
         {
+            _accumulator.ReleaseMemory(recordSize);
             return false; // Batch completed, use slow path
         }
 
@@ -558,6 +571,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         var totalSize = keyLength + valueLength;
         if (arena.RemainingCapacity < totalSize)
         {
+            _accumulator.ReleaseMemory(recordSize);
             return false; // Not enough space, use slow path (which will rotate)
         }
 
@@ -567,6 +581,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             if (!arena.TryAllocate(keyLength, out var keySpan, out var keyOffset))
             {
+                _accumulator.ReleaseMemory(recordSize);
                 return false; // Allocation failed, use slow path
             }
             t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(keySpan);
@@ -576,6 +591,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Allocate value in arena
         if (!arena.TryAllocate(valueLength, out var valueSpan, out var valueOffset))
         {
+            _accumulator.ReleaseMemory(recordSize);
             return false; // Allocation failed (shouldn't happen after size check, but be safe)
         }
         t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(valueSpan);
@@ -586,10 +602,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         if (!result.Success)
         {
+            _accumulator.ReleaseMemory(recordSize);
             return false; // Batch full or completed, use slow path
         }
 
         // Success - batch now owns the pooled header array
+        // Memory stays reserved until batch completes (no ReleaseMemory call)
         pooledHeaderArray = null;
         return true;
     }

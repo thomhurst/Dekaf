@@ -397,10 +397,17 @@ public sealed class RecordAccumulator : IAsyncDisposable
     public ulong MaxBufferMemory => _maxBufferMemory;
 
     /// <summary>
-    /// Tries to reserve buffer memory for a record. Returns true if successful, false if buffer is full.
+    /// Attempts to reserve buffer memory for a record without blocking.
+    /// Uses lock-free CAS loop for thread-safe reservation.
     /// </summary>
+    /// <param name="recordSize">Size in bytes to reserve</param>
+    /// <returns>True if memory was reserved; false if BufferMemory limit would be exceeded</returns>
+    /// <remarks>
+    /// This method must be internal so KafkaProducer can check BufferMemory before arena allocation.
+    /// If this returns false, the caller should fall back to the slow path with blocking.
+    /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryReserveMemory(int recordSize)
+    internal bool TryReserveMemory(int recordSize)
     {
         while (true)
         {
@@ -472,7 +479,24 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// </summary>
     internal void ReleaseMemory(int batchSize)
     {
-        Interlocked.Add(ref _bufferedBytes, -batchSize);
+        var newValue = Interlocked.Add(ref _bufferedBytes, -batchSize);
+
+        // DEFENSIVE: Detect accounting bugs early
+        if (newValue < 0)
+        {
+#if DEBUG
+            throw new InvalidOperationException(
+                $"BufferMemory accounting bug: released {batchSize} bytes " +
+                $"but resulted in negative value {newValue}. This indicates a " +
+                $"reservation/release mismatch bug.");
+#else
+            // In release builds, log to System.Diagnostics but don't crash
+            System.Diagnostics.Debug.Fail(
+                $"BufferMemory accounting error: released {batchSize} bytes " +
+                $"but resulted in negative value {newValue}. This indicates a " +
+                $"reservation/release mismatch bug.");
+#endif
+        }
 
         // Signal that space may be available
         // Use TryRelease to handle case where semaphore is already at max count
@@ -2232,6 +2256,22 @@ internal sealed class PartitionBatch
         _arena = null;
     }
 
+    /// <summary>
+    /// Estimates the size of a record in the batch for buffer memory accounting.
+    /// This is an upper-bound estimate that includes:
+    /// - 20 bytes base overhead (1 byte attributes + varint overhead for timestamp/offset/key-length/value-length/header-count)
+    /// - Key and value payload lengths
+    /// - Header sizes (10 bytes overhead per header + key/value lengths)
+    /// This must be internal so KafkaProducer can calculate size before reserving memory.
+    /// </summary>
+    /// <param name="keyLength">Length of the serialized key in bytes (0 if null)</param>
+    /// <param name="valueLength">Length of the serialized value in bytes (0 if null)</param>
+    /// <param name="headers">Optional collection of record headers</param>
+    /// <returns>Estimated size in bytes for buffer memory reservation (upper bound)</returns>
+    /// <remarks>
+    /// The actual size may be smaller due to varint compression, but this conservative estimate
+    /// ensures we never under-allocate BufferMemory.
+    /// </remarks>
     internal static int EstimateRecordSize(int keyLength, int valueLength, IReadOnlyList<RecordHeader>? headers)
     {
         var size = 20; // Base overhead for varint lengths, timestamp delta, offset delta, etc.

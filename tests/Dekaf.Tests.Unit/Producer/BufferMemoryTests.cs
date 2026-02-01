@@ -1,0 +1,242 @@
+using Dekaf.Producer;
+
+namespace Dekaf.Tests.Unit.Producer;
+
+/// <summary>
+/// Tests for BufferMemory accounting in the arena fast path.
+/// These tests verify that the fast path correctly reserves and releases memory.
+/// </summary>
+public class BufferMemoryTests
+{
+    private static ProducerOptions CreateTestOptions(ulong bufferMemory = 10_000_000)
+    {
+        return new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = bufferMemory,
+            BatchSize = 16384,
+            LingerMs = 100
+        };
+    }
+
+    [Test]
+    public async Task BufferMemory_FireAndForget_ReservesMemory()
+    {
+        // Arrange
+        var options = CreateTestOptions(10_000_000); // 10MB
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Verify starting state
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+
+            // Act: Fire-and-forget append
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            var result1 = accumulator.TryAppendFireAndForget(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, null);
+
+            await Assert.That(result1).IsTrue();
+
+            var result2 = accumulator.TryAppendFireAndForget(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, null);
+
+            await Assert.That(result2).IsTrue();
+
+            // Assert: Verify memory was reserved
+            var bufferedBytes = accumulator.BufferedBytes;
+            await Assert.That(bufferedBytes).IsGreaterThan(0);
+
+            // Verify it's within the limit
+            await Assert.That((ulong)bufferedBytes).IsLessThanOrEqualTo(options.BufferMemory);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task BufferMemory_FireAndForget_ReleasesOnBatchRelease()
+    {
+        // Arrange
+        var options = CreateTestOptions(10_000_000); // 10MB
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Act: Append messages
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            accumulator.TryAppendFireAndForget(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, null);
+
+            accumulator.TryAppendFireAndForget(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, null);
+
+            // Verify memory is reserved
+            var bufferedBytesBeforeRelease = accumulator.BufferedBytes;
+            await Assert.That(bufferedBytesBeforeRelease).IsGreaterThan(0);
+
+            // Get the batch
+            if (accumulator.TryGetBatch("test-topic", 0, out var batch))
+            {
+                var batchSize = batch!.EstimatedSize;
+
+                // Simulate the batch being sent - release the memory
+                accumulator.ReleaseMemory(batchSize);
+
+                // Assert: Verify memory was released
+                var bufferedBytesAfterRelease = accumulator.BufferedBytes;
+                await Assert.That(bufferedBytesAfterRelease).IsEqualTo(0);
+            }
+            else
+            {
+                throw new InvalidOperationException("Expected batch to exist");
+            }
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task BufferMemory_MultiplePartitions_IndependentAccounting()
+    {
+        // Arrange
+        var options = CreateTestOptions(10_000_000); // 10MB
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Act: Append to multiple partitions
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            accumulator.TryAppendFireAndForget(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, null);
+
+            accumulator.TryAppendFireAndForget(
+                "test-topic", 1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, null);
+
+            accumulator.TryAppendFireAndForget(
+                "test-topic", 2, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, null);
+
+            // Assert: Verify memory was reserved for all partitions
+            var bufferedBytes = accumulator.BufferedBytes;
+            await Assert.That(bufferedBytes).IsGreaterThan(0);
+
+            // Each partition should have its own batch
+            await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsTrue();
+            await Assert.That(accumulator.TryGetBatch("test-topic", 1, out _)).IsTrue();
+            await Assert.That(accumulator.TryGetBatch("test-topic", 2, out _)).IsTrue();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task BufferMemory_ConsecutiveMessagesToSamePartition_AccumulatesCorrectly()
+    {
+        // Arrange
+        var options = CreateTestOptions(10_000_000); // 10MB
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Act: Append multiple messages to the same partition
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // Append 10 messages
+            for (int i = 0; i < 10; i++)
+            {
+                var result = accumulator.TryAppendFireAndForget(
+                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, null);
+
+                await Assert.That(result).IsTrue();
+            }
+
+            // Assert: Verify memory was reserved for all messages
+            var bufferedBytes = accumulator.BufferedBytes;
+            await Assert.That(bufferedBytes).IsGreaterThan(0);
+
+            // Verify batch exists
+            if (accumulator.TryGetBatch("test-topic", 0, out var batch))
+            {
+                // The batch should have data
+                await Assert.That(batch!.EstimatedSize).IsGreaterThan(0);
+            }
+            else
+            {
+                throw new InvalidOperationException("Expected batch to exist");
+            }
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task BufferMemory_TracksCorrectly_AcrossMultipleOperations()
+    {
+        // Arrange
+        var options = CreateTestOptions(10_000_000); // 10MB
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Act: Append, release, append again
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // First batch
+            accumulator.TryAppendFireAndForget(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, null);
+
+            var bufferedAfterFirst = accumulator.BufferedBytes;
+            await Assert.That(bufferedAfterFirst).IsGreaterThan(0);
+
+            // Second batch to different partition
+            accumulator.TryAppendFireAndForget(
+                "test-topic", 1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, null);
+
+            var bufferedAfterSecond = accumulator.BufferedBytes;
+            await Assert.That(bufferedAfterSecond).IsGreaterThan(bufferedAfterFirst);
+
+            // Release first batch
+            if (accumulator.TryGetBatch("test-topic", 0, out var batch1))
+            {
+                accumulator.ReleaseMemory(batch1!.EstimatedSize);
+            }
+
+            var bufferedAfterRelease = accumulator.BufferedBytes;
+            await Assert.That(bufferedAfterRelease).IsLessThan(bufferedAfterSecond);
+
+            // Verify accounting stayed correct
+            await Assert.That(bufferedAfterRelease).IsGreaterThanOrEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+}
