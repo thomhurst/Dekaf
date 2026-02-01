@@ -442,7 +442,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         // Slow path: wait for space to become available with timeout protection
         // Use semaphore to avoid busy spinning - released when batches are completed
-        var deadline = Environment.TickCount64 + _options.DeliveryTimeoutMs;
+        // Protect against overflow if DeliveryTimeoutMs is configured to a very large value
+        var currentTicks = Environment.TickCount64;
+        var deadline = (long.MaxValue - currentTicks > _options.DeliveryTimeoutMs)
+            ? currentTicks + _options.DeliveryTimeoutMs
+            : long.MaxValue;
 
         while (!TryReserveMemory(recordSize))
         {
@@ -481,7 +485,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         // Slow path: spin-wait for space to become available with timeout protection
         var spinWait = new SpinWait();
-        var deadline = Environment.TickCount64 + _options.DeliveryTimeoutMs;
+        // Protect against overflow if DeliveryTimeoutMs is configured to a very large value
+        var currentTicks = Environment.TickCount64;
+        var deadline = (long.MaxValue - currentTicks > _options.DeliveryTimeoutMs)
+            ? currentTicks + _options.DeliveryTimeoutMs
+            : long.MaxValue;
 
         while (!TryReserveMemory(recordSize))
         {
