@@ -1450,6 +1450,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         // Clear the batch pool
         _batchPool.Clear();
+
+        // Dispose the semaphore to prevent resource leak
+        _bufferSpaceAvailable?.Dispose();
     }
 }
 
