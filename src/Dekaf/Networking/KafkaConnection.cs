@@ -501,7 +501,7 @@ public sealed class KafkaConnection : IKafkaConnection
                 _options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
             throw new KafkaException(
-                $"Flush timeout after {_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
+                $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
         }
 
         if (result.IsCompleted || result.IsCanceled)
@@ -542,7 +542,7 @@ public sealed class KafkaConnection : IKafkaConnection
                     _disposed = true;
 
                     throw new KafkaException(
-                        $"Receive timeout after {_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
+                        $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
                 }
 
                 var buffer = result.Buffer;

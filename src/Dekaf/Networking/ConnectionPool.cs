@@ -163,7 +163,7 @@ public sealed class ConnectionPool : IConnectionPool
             }
 
             throw new KafkaException(
-                $"Connection group creation timeout after {_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
+                $"Connection group creation timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
         }
         finally
         {
@@ -206,7 +206,7 @@ public sealed class ConnectionPool : IConnectionPool
             _connectionGroupCreationTasks.TryRemove((brokerId, index), out _);
 
             throw new KafkaException(
-                $"Connection replacement timeout after {_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} index {index}");
+                $"Connection replacement timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} index {index}");
         }
         finally
         {
@@ -304,7 +304,7 @@ public sealed class ConnectionPool : IConnectionPool
             _connectionCreationTasks.TryRemove(endpoint, out _);
 
             throw new KafkaException(
-                $"Connection timeout after {_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} ({host}:{port})");
+                $"Connection timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} ({host}:{port})");
         }
         catch
         {
