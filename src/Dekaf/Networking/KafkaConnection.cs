@@ -509,7 +509,30 @@ public sealed class KafkaConnection : IKafkaConnection
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                var result = await _reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+                // Apply RequestTimeout to each read operation
+                using var timeoutCts = new CancellationTokenSource(_options.RequestTimeout);
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    timeoutCts.Token);
+
+                ReadResult result;
+                try
+                {
+                    result = await _reader.ReadAsync(linkedCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+                {
+                    _logger?.LogError(
+                        "Receive timeout after {Timeout}ms on broker {BrokerId} - marking connection as failed",
+                        _options.RequestTimeout.TotalMilliseconds, BrokerId);
+
+                    // Mark connection as failed to trigger reconnection
+                    _disposed = true;
+
+                    throw new KafkaException(
+                        $"Receive timeout after {_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
+                }
+
                 var buffer = result.Buffer;
 
                 _logger?.LogTrace("Received {Length} bytes from {Host}:{Port}", buffer.Length, _host, _port);
