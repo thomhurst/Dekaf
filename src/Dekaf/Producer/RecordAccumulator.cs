@@ -397,10 +397,17 @@ public sealed class RecordAccumulator : IAsyncDisposable
     public ulong MaxBufferMemory => _maxBufferMemory;
 
     /// <summary>
-    /// Tries to reserve buffer memory for a record. Returns true if successful, false if buffer is full.
+    /// Attempts to reserve buffer memory for a record without blocking.
+    /// Uses lock-free CAS loop for thread-safe reservation.
     /// </summary>
+    /// <param name="recordSize">Size in bytes to reserve</param>
+    /// <returns>True if memory was reserved; false if BufferMemory limit would be exceeded</returns>
+    /// <remarks>
+    /// This method must be internal so KafkaProducer can check BufferMemory before arena allocation.
+    /// If this returns false, the caller should fall back to the slow path with blocking.
+    /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryReserveMemory(int recordSize)
+    internal bool TryReserveMemory(int recordSize)
     {
         while (true)
         {
