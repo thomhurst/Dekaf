@@ -749,8 +749,19 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     // Try synchronous write first to avoid async state machine allocation
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
                     {
-                        // Backpressure happens here: WriteAsync blocks when channel is full
-                        await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                        try
+                        {
+                            // Backpressure happens here: WriteAsync blocks when channel is full
+                            await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                        }
+                        catch
+                        {
+                            // CRITICAL: If WriteAsync fails (cancellation or disposal), fail the batch
+                            // and release memory to prevent permanent leak
+                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                            ReleaseMemory(readyBatch.DataSize);
+                            throw;
+                        }
                     }
 
                     // Return the completed batch shell to the pool for reuse
@@ -1243,8 +1254,19 @@ public sealed class RecordAccumulator : IAsyncDisposable
                         // Try synchronous write first to avoid async state machine allocation
                         if (!_readyBatches.Writer.TryWrite(readyBatch))
                         {
-                            // Channel is bounded or busy, fall back to async
-                            await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                            try
+                            {
+                                // Channel is bounded or busy, fall back to async
+                                await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                            }
+                            catch
+                            {
+                                // CRITICAL: If WriteAsync fails (cancellation or disposal), fail the batch
+                                // and release memory to prevent permanent leak
+                                readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                                ReleaseMemory(readyBatch.DataSize);
+                                throw;
+                            }
                         }
 
                         // Return the completed batch shell to the pool for reuse
@@ -1287,8 +1309,19 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     // Try synchronous write first to avoid async state machine allocation
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
                     {
-                        // Channel is bounded or busy, fall back to async
-                        await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                        try
+                        {
+                            // Channel is bounded or busy, fall back to async
+                            await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                        }
+                        catch
+                        {
+                            // CRITICAL: If WriteAsync fails (cancellation or disposal), fail the batch
+                            // and release memory to prevent permanent leak
+                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                            ReleaseMemory(readyBatch.DataSize);
+                            throw;
+                        }
                     }
 
                     // Return the completed batch shell to the pool for reuse
