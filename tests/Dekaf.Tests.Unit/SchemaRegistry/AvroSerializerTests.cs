@@ -31,6 +31,16 @@ public class AvroSerializerTests
             Component = isKey ? SerializationComponent.Key : SerializationComponent.Value
         };
 
+    private static byte[] SerializeAvroRecord(GenericRecord record, Avro.RecordSchema schema)
+    {
+        using var ms = new MemoryStream();
+        var encoder = new BinaryEncoder(ms);
+        var writer = new GenericDatumWriter<GenericRecord>(schema);
+        writer.Write(record, encoder);
+        encoder.Flush();
+        return ms.ToArray();
+    }
+
     [Test]
     public async Task Serializer_SerializesGenericRecord_WithWireFormat()
     {
@@ -76,6 +86,9 @@ public class AvroSerializerTests
 
         await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(schemaRegistry);
 
+        // Warm up the deserializer cache with the schema
+        await deserializer.WarmupAsync(schemaId);
+
         // Create wire format message manually
         var avroSchema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
         var originalRecord = new GenericRecord(avroSchema!);
@@ -83,12 +96,7 @@ public class AvroSerializerTests
         originalRecord.Add("name", "test");
 
         // Serialize Avro payload
-        using var ms = new MemoryStream();
-        var encoder = new BinaryEncoder(ms);
-        var writer = new GenericDatumWriter<GenericRecord>(avroSchema!);
-        writer.Write(originalRecord, encoder);
-        encoder.Flush();
-        var avroPayload = ms.ToArray();
+        var avroPayload = SerializeAvroRecord(originalRecord, avroSchema!);
 
         // Create wire format
         var wireFormat = new byte[1 + 4 + avroPayload.Length];
