@@ -711,6 +711,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // - Loop retries with the new batch (created by us or another thread)
         while (true)
         {
+            // Check disposal and cancellation at top of loop
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(RecordAccumulator));
+
+            cancellationToken.ThrowIfCancellationRequested();
+
             // Hot path optimization: TryGetValue first to avoid factory invocation when batch exists.
             // Most appends hit an existing batch, so this avoids GetOrAdd overhead.
             if (!_batches.TryGetValue(topicPartition, out var batch))
@@ -814,6 +820,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Loop until we successfully append the record.
         while (true)
         {
+            // Check disposal at top of loop
+            if (_disposed)
+            {
+                // Release memory before returning
+                ReleaseMemory(recordSize);
+                return false;
+            }
+
             // Hot path optimization: TryGetValue first to avoid factory invocation when batch exists.
             if (!_batches.TryGetValue(topicPartition, out var batch))
             {
@@ -1045,9 +1059,20 @@ public sealed class RecordAccumulator : IAsyncDisposable
         }
         var cacheIndex = partition & (MultiPartitionCacheSize - 1);
 
+        // Calculate record size for memory release if needed
+        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
+
         // Loop until we successfully append the record.
         while (true)
         {
+            // Check disposal at top of loop
+            if (_disposed)
+            {
+                // Release memory before returning
+                ReleaseMemory(recordSize);
+                return false;
+            }
+
             // Hot path optimization: TryGetValue first to avoid factory invocation when batch exists.
             if (!_batches.TryGetValue(topicPartition, out var batch))
             {
