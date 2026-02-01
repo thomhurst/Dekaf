@@ -363,7 +363,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
         try
         {
             // Produce a message
-            await using var producer = Dekaf.CreateProducer<string, string>()
+            await using var producer = Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(kafka.BootstrapServers)
                 .WithClientId("test-producer")
                 .Build();
@@ -376,7 +376,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
             }).ConfigureAwait(false);
 
             // Consume and commit
-            await using (var consumer = Dekaf.CreateConsumer<string, string>()
+            await using (var consumer = Kafka.CreateConsumer<string, string>()
                 .WithBootstrapServers(kafka.BootstrapServers)
                 .WithClientId("test-consumer")
                 .WithGroupId(groupId)
@@ -481,7 +481,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
         await using var admin = CreateAdminClient();
 
         // Produce some messages
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -526,7 +526,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
         await Task.Delay(100).ConfigureAwait(false); // Small delay to ensure timestamp difference
 
         // Produce messages
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();

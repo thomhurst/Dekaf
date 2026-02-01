@@ -61,7 +61,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
         record.Add("name", "Integration Test");
 
         // Act - Produce
-        await using var producer = Dekaf.CreateProducer<string, GenericRecord>()
+        await using var producer = Kafka.CreateProducer<string, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("avro-test-producer")
             .WithValueSerializer(serializer)
@@ -77,7 +77,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Act - Consume
-        await using var consumer = Dekaf.CreateConsumer<string, GenericRecord>()
+        await using var consumer = Kafka.CreateConsumer<string, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("avro-test-consumer")
             .WithGroupId($"avro-test-group-{Guid.NewGuid():N}")
@@ -120,7 +120,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
         var schema = AvroSchema.Parse(UserRecordSchema) as Avro.RecordSchema;
 
         // Act - Produce multiple messages
-        await using var producer = Dekaf.CreateProducer<string, GenericRecord>()
+        await using var producer = Kafka.CreateProducer<string, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("avro-multi-producer")
             .WithValueSerializer(serializer)
@@ -145,7 +145,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
         await producer.FlushAsync();
 
         // Act - Consume all messages
-        await using var consumer = Dekaf.CreateConsumer<string, GenericRecord>()
+        await using var consumer = Kafka.CreateConsumer<string, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("avro-multi-consumer")
             .WithGroupId($"avro-multi-group-{Guid.NewGuid():N}")
@@ -200,7 +200,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
         record.Add("createdAt", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
         // Act - Produce
-        await using var producer = Dekaf.CreateProducer<string, GenericRecord>()
+        await using var producer = Kafka.CreateProducer<string, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("avro-null-producer")
             .WithValueSerializer(serializer)
@@ -214,7 +214,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
         });
 
         // Act - Consume
-        await using var consumer = Dekaf.CreateConsumer<string, GenericRecord>()
+        await using var consumer = Kafka.CreateConsumer<string, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("avro-null-consumer")
             .WithGroupId($"avro-null-group-{Guid.NewGuid():N}")
@@ -270,7 +270,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
         valueRecord.Add("createdAt", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
         // Act - Produce
-        await using var producer = Dekaf.CreateProducer<GenericRecord, GenericRecord>()
+        await using var producer = Kafka.CreateProducer<GenericRecord, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("avro-key-producer")
             .WithKeySerializer(keySerializer)
@@ -285,7 +285,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
         });
 
         // Act - Consume
-        await using var consumer = Dekaf.CreateConsumer<GenericRecord, GenericRecord>()
+        await using var consumer = Kafka.CreateConsumer<GenericRecord, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("avro-key-consumer")
             .WithGroupId($"avro-key-group-{Guid.NewGuid():N}")
@@ -337,7 +337,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
         record.Add("name", "schema-test");
 
         // Act
-        await using var producer = Dekaf.CreateProducer<string, GenericRecord>()
+        await using var producer = Kafka.CreateProducer<string, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("avro-schema-producer")
             .WithValueSerializer(serializer)

@@ -15,7 +15,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka)
         // Arrange
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
@@ -37,7 +37,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
 
         // Produce some messages first
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -53,7 +53,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka)
         }
 
         // Act - consume messages
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -83,7 +83,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
 
         // Produce some messages
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -99,7 +99,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka)
         }
 
         // Act - query watermarks directly from cluster
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
@@ -118,7 +118,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka)
         // Arrange - create topic but don't produce any messages
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
@@ -139,7 +139,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka)
         // Arrange
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -155,7 +155,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka)
             });
         }
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
@@ -194,7 +194,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka)
         // Arrange
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -206,7 +206,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka)
             Value = "value"
         });
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
@@ -233,7 +233,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka)
         // Arrange - create topic with multiple partitions
         var topic = await kafka.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -258,7 +258,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka)
             });
         }
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();

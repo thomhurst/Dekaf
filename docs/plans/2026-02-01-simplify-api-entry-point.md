@@ -257,7 +257,7 @@ public class ZeroCeremonyApiTests
         // This will throw because no Kafka broker, but proves the method is accessible
         var exception = Assert.Throws<AggregateException>(() =>
         {
-            var producer = Dekaf.CreateTopicProducer<string, string>("localhost:9092", "test-topic");
+            var producer = Kafka.CreateTopicProducer<string, string>("localhost:9092", "test-topic");
         });
 
         // Just verify the method is callable without using directive
@@ -342,7 +342,7 @@ await producer.FlushAsync();
 When you're always producing to the same topic, use a topic producer for a cleaner API:
 
 ```csharp
-await using var producer = Dekaf.CreateTopicProducer<string, string>(
+await using var producer = Kafka.CreateTopicProducer<string, string>(
     "localhost:9092", "orders");
 
 // No topic parameter needed

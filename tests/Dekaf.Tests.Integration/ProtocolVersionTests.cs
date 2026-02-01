@@ -218,7 +218,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
         // and can produce messages using the negotiated version
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer-version")
             .Build();
@@ -243,7 +243,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -256,7 +256,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
         });
 
         // Act - consumer should negotiate versions automatically
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer-version")
             .WithGroupId(groupId)
@@ -281,7 +281,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer-flexible")
             .Build();
@@ -301,7 +301,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
         });
 
         // Consume
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer-flexible")
             .WithGroupId(groupId)
@@ -327,7 +327,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer-batch")
             .Build();
@@ -345,7 +345,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
         }
 
         // Consume all
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer-batch")
             .WithGroupId(groupId)

@@ -16,7 +16,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync(partitions: 3);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -34,7 +34,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         }
 
         // Act
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -67,7 +67,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync(partitions: 4);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -85,7 +85,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         }
 
         // Start first consumer
-        await using var consumer1 = Dekaf.CreateConsumer<string, string>()
+        await using var consumer1 = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
@@ -113,7 +113,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -130,7 +130,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         }
 
         // Act - consume with AutoOffsetReset.Earliest (new group, no committed offsets)
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -161,7 +161,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -178,7 +178,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         }
 
         // First consumer: consume 3 messages and commit
-        await using (var consumer1 = Dekaf.CreateConsumer<string, string>()
+        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
@@ -203,7 +203,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         }
 
         // Second consumer: should start from committed offset
-        await using var consumer2 = Dekaf.CreateConsumer<string, string>()
+        await using var consumer2 = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
@@ -232,7 +232,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         var topic2 = await kafka.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -253,7 +253,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         });
 
         // Act
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -285,7 +285,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -311,7 +311,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -327,7 +327,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
             });
         }
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -356,7 +356,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         // Arrange
         var topic = await kafka.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -371,7 +371,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         });
 
         // Act - manually assign without group
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -398,7 +398,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         var groupId = $"test-group-{Guid.NewGuid():N}";
         var instanceId = $"static-member-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -411,7 +411,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         });
 
         // First consumer with static membership
-        await using (var consumer1 = Dekaf.CreateConsumer<string, string>()
+        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
@@ -441,7 +441,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         });
 
         // Second consumer with same static membership should rejoin quickly
-        await using var consumer2 = Dekaf.CreateConsumer<string, string>()
+        await using var consumer2 = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
@@ -467,7 +467,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -483,7 +483,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
             });
         }
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -521,7 +521,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -537,7 +537,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
             });
         }
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -572,7 +572,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -588,7 +588,7 @@ public class ConsumerGroupTests(KafkaTestContainer kafka)
             });
         }
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)

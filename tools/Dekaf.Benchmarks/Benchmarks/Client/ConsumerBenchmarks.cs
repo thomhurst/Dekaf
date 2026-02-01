@@ -108,7 +108,7 @@ public class ConsumerBenchmarks
     {
         var count = 0;
 
-        await using var consumer = DekafLib.Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(_kafka.BootstrapServers)
             .WithClientId("dekaf-consumer-benchmark")
             .WithGroupId($"dekaf-benchmark-{Guid.NewGuid():N}")
@@ -156,7 +156,7 @@ public class ConsumerBenchmarks
     [Benchmark]
     public async Task<DekafConsumer.ConsumeResult<string, string>?> Dekaf_PollSingle()
     {
-        await using var consumer = DekafLib.Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(_kafka.BootstrapServers)
             .WithClientId("dekaf-poll-benchmark")
             .WithGroupId($"dekaf-poll-{Guid.NewGuid():N}")

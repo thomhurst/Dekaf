@@ -133,7 +133,7 @@ public static class Program
     {
         var messageValue = new string('x', messageSize);
 
-        await using var producer = DekafLib.Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("profiling-producer")
             .WithAcks(Acks.Leader)
@@ -183,7 +183,7 @@ public static class Program
     {
         var messageValue = new string('x', messageSize);
 
-        await using var producer = DekafLib.Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("profiling-producer-acked")
             .WithAcks(Acks.All)
@@ -242,7 +242,7 @@ public static class Program
     {
         var messageValue = new string('x', messageSize);
 
-        await using var producer = DekafLib.Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("profiling-producer-batch")
             .WithAcks(Acks.Leader)
@@ -309,7 +309,7 @@ public static class Program
         var messageValue = new string('x', messageSize);
         var messagesToSeed = batchSize * 100; // Seed plenty of messages
 
-        await using (var producer = DekafLib.Dekaf.CreateProducer<string, string>()
+        await using (var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("profiling-seeder")
             .WithAcks(Acks.Leader)
@@ -325,7 +325,7 @@ public static class Program
         Console.WriteLine($"  Seeded {messagesToSeed:N0} messages");
 
         // Now consume
-        await using var consumer = DekafLib.Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("profiling-consumer")
             .WithGroupId($"profiling-group-{Guid.NewGuid():N}")
@@ -371,14 +371,14 @@ public static class Program
 
         await kafka.CreateTopicAsync(roundtripTopic, partitions: 1).ConfigureAwait(false);
 
-        await using var producer = DekafLib.Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("profiling-roundtrip-producer")
             .WithAcks(Acks.Leader)
             .WithLingerMs(1)
             .Build();
 
-        await using var consumer = DekafLib.Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("profiling-roundtrip-consumer")
             .WithGroupId($"profiling-roundtrip-{Guid.NewGuid():N}")
@@ -493,7 +493,7 @@ public static class Program
             try
             {
                 // Try to create a producer and send a test message
-                await using var producer = DekafLib.Dekaf.CreateProducer<string, string>()
+                await using var producer = Kafka.CreateProducer<string, string>()
                     .WithBootstrapServers(bootstrapServers)
                     .WithClientId("kafka-ready-check")
                     .WithAcks(Acks.Leader)

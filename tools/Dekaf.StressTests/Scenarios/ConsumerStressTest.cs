@@ -15,7 +15,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         var throughput = new ThroughputTracker();
         var startedAt = DateTime.UtcNow;
 
-        await using var consumer = DekafLib.Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-consumer-dekaf")
             .WithGroupId($"stress-group-dekaf-{Guid.NewGuid():N}")
