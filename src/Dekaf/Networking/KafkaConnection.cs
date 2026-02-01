@@ -77,6 +77,8 @@ public sealed class KafkaConnection : IKafkaConnection
     private readonly string? _clientId;
     private readonly ILogger<KafkaConnection>? _logger;
     private readonly ConnectionOptions _options;
+    private readonly ulong _bufferMemory;
+    private readonly int _connectionsPerBroker;
 
     private Socket? _socket;
     private Stream? _stream;
@@ -123,13 +125,17 @@ public sealed class KafkaConnection : IKafkaConnection
         int port,
         string? clientId = null,
         ConnectionOptions? options = null,
-        ILogger<KafkaConnection>? logger = null)
+        ILogger<KafkaConnection>? logger = null,
+        ulong bufferMemory = 33554432,
+        int connectionsPerBroker = 1)
     {
         _host = host;
         _port = port;
         _clientId = clientId;
         _options = options ?? new ConnectionOptions();
         _logger = logger;
+        _bufferMemory = bufferMemory;
+        _connectionsPerBroker = connectionsPerBroker;
     }
 
     public KafkaConnection(
@@ -138,8 +144,10 @@ public sealed class KafkaConnection : IKafkaConnection
         int port,
         string? clientId = null,
         ConnectionOptions? options = null,
-        ILogger<KafkaConnection>? logger = null)
-        : this(host, port, clientId, options, logger)
+        ILogger<KafkaConnection>? logger = null,
+        ulong bufferMemory = 33554432,
+        int connectionsPerBroker = 1)
+        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker)
     {
         BrokerId = brokerId;
     }
@@ -185,10 +193,21 @@ public sealed class KafkaConnection : IKafkaConnection
             await PerformSaslAuthenticationAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        // Calculate pipeline backpressure thresholds based on BufferMemory
+        var (pauseThreshold, resumeThreshold) = ConnectionHelper.CalculatePipelineThresholds(
+            _bufferMemory,
+            _connectionsPerBroker);
+
+        _logger?.LogDebug(
+            "Configuring pipe for broker {BrokerId}: pauseThreshold={PauseThreshold} bytes, resumeThreshold={ResumeThreshold} bytes",
+            BrokerId, pauseThreshold, resumeThreshold);
+
         var pipe = new Pipe(new PipeOptions(
             pool: MemoryPool<byte>.Shared,
             minimumSegmentSize: _options.MinimumSegmentSize,
-            useSynchronizationContext: false));
+            useSynchronizationContext: false,
+            pauseWriterThreshold: pauseThreshold,
+            resumeWriterThreshold: resumeThreshold));
 
         _reader = PipeReader.Create(_stream, new StreamPipeReaderOptions(
             pool: MemoryPool<byte>.Shared,

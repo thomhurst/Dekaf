@@ -212,13 +212,18 @@ public sealed class ConnectionPool : IConnectionPool
 
     private async ValueTask<IKafkaConnection> CreateConnectionForGroupAsync(int brokerId, string host, int port, int index, CancellationToken cancellationToken)
     {
+        const ulong defaultBufferMemory = 33554432; // 33 MB default
+        var connectionsPerBroker = _connectionsPerBroker;
+
         var connection = new KafkaConnection(
             brokerId,
             host,
             port,
             _clientId,
             _connectionOptions,
-            _loggerFactory?.CreateLogger<KafkaConnection>());
+            _loggerFactory?.CreateLogger<KafkaConnection>(),
+            defaultBufferMemory,
+            connectionsPerBroker);
 
         await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
@@ -331,13 +336,20 @@ public sealed class ConnectionPool : IConnectionPool
         }
 
         // Create new connection
+        // Pass BufferMemory info from producer options if available
+        // For now, use default values - will be wired up from producer later
+        const ulong defaultBufferMemory = 33554432; // 33 MB default
+        var connectionsPerBroker = _connectionsPerBroker;
+
         var connection = new KafkaConnection(
             brokerId,
             host,
             port,
             _clientId,
             _connectionOptions,
-            _loggerFactory?.CreateLogger<KafkaConnection>());
+            _loggerFactory?.CreateLogger<KafkaConnection>(),
+            defaultBufferMemory,
+            connectionsPerBroker);
 
         await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
