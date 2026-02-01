@@ -9,7 +9,7 @@ public class OffsetCommitModeTests
     public async Task ConsumerBuilder_WithOffsetCommitMode_ConfiguresOption()
     {
         // Verify the builder method exists and returns the builder for chaining
-        var builder = Dekaf.CreateConsumer<string, string>()
+        var builder = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithOffsetCommitMode(OffsetCommitMode.Auto); // Chain test
