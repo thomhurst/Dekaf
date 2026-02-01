@@ -98,6 +98,8 @@ var schemaRegistry = new CachedSchemaRegistryClient(config);
 ## Consumer
 
 ```csharp
+using Dekaf;
+
 var consumer = Kafka.CreateConsumer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("order-processors")

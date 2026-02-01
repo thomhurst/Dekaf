@@ -1,11 +1,11 @@
-using Dekaf;
+namespace Dekaf;
+
 using Dekaf.Consumer;
 using Dekaf.Producer;
 
 /// <summary>
 /// Main entry point for creating Kafka clients.
 /// </summary>
-[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1050:Declare types in namespaces", Justification = "Global namespace entry point enables zero-ceremony API usage")]
 public static class Kafka
 {
     /// <summary>

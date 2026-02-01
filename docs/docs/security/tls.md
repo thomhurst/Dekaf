@@ -11,6 +11,8 @@ Encrypt communication between Dekaf and Kafka brokers using TLS.
 Enable TLS for encrypted connections:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls()
@@ -24,6 +26,8 @@ This uses system CA certificates to validate the broker's certificate.
 If your Kafka uses a private CA:
 
 ```csharp
+using Dekaf;
+
 var tlsConfig = new TlsConfig
 {
     CaCertificatePath = "/path/to/ca.crt"
@@ -40,6 +44,8 @@ var producer = Kafka.CreateProducer<string, string>()
 For client certificate authentication:
 
 ```csharp
+using Dekaf;
+
 // Using file paths
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
@@ -64,6 +70,8 @@ var producer = Kafka.CreateProducer<string, string>()
 ## TLS Configuration Options
 
 ```csharp
+using Dekaf;
+
 var tlsConfig = new TlsConfig
 {
     // CA certificate for server validation
@@ -92,6 +100,8 @@ var producer = Kafka.CreateProducer<string, string>()
 ### AWS MSK with IAM
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("broker1.msk.us-east-1.amazonaws.com:9098")
     .UseTls()
@@ -102,6 +112,8 @@ var producer = Kafka.CreateProducer<string, string>()
 ### Confluent Cloud
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("pkc-xxxxx.us-east-1.aws.confluent.cloud:9092")
     .UseTls()

@@ -23,6 +23,8 @@ public interface IDeserializer<T>
 ## Basic Example
 
 ```csharp
+using Dekaf;
+
 public class OrderSerializer : ISerializer<Order>, IDeserializer<Order>
 {
     public void Serialize(Order value, IBufferWriter<byte> output, SerializationContext context)
@@ -95,6 +97,8 @@ public class ContextAwareSerializer : ISerializer<MyType>
 High-performance binary serialization:
 
 ```csharp
+using Dekaf;
+
 using MessagePack;
 
 public class MessagePackSerializer<T> : ISerializer<T>, IDeserializer<T>
@@ -156,6 +160,8 @@ public class NullableSerializer<T> : ISerializer<T?>, IDeserializer<T?>
 Implement both interfaces in one class for convenience:
 
 ```csharp
+using Dekaf;
+
 public class OrderCodec : ISerializer<Order>, IDeserializer<Order>
 {
     public void Serialize(Order value, IBufferWriter<byte> output, SerializationContext context)

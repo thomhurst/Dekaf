@@ -11,6 +11,8 @@ SASL (Simple Authentication and Security Layer) provides username/password authe
 Simple username/password authentication:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()  // Always use TLS with PLAIN to encrypt credentials
@@ -29,6 +31,8 @@ Challenge-response authentication that doesn't send passwords:
 ### SCRAM-SHA-256
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
@@ -39,6 +43,8 @@ var producer = Kafka.CreateProducer<string, string>()
 ### SCRAM-SHA-512 (Recommended)
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
@@ -51,6 +57,8 @@ var producer = Kafka.CreateProducer<string, string>()
 For Kerberos authentication:
 
 ```csharp
+using Dekaf;
+
 var gssapiConfig = new GssapiConfig
 {
     ServicePrincipal = "kafka/broker.example.com@EXAMPLE.COM",
@@ -69,6 +77,8 @@ var producer = Kafka.CreateProducer<string, string>()
 Same methods work for consumers:
 
 ```csharp
+using Dekaf;
+
 var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .WithGroupId("my-group")
@@ -81,6 +91,8 @@ var consumer = Kafka.CreateConsumer<string, string>()
 ## Confluent Cloud Example
 
 ```csharp
+using Dekaf;
+
 var apiKey = Environment.GetEnvironmentVariable("CONFLUENT_API_KEY");
 var apiSecret = Environment.GetEnvironmentVariable("CONFLUENT_API_SECRET");
 
@@ -112,6 +124,8 @@ var password = await secretManager.GetSecretAsync("kafka-password");
 ## Complete Example
 
 ```csharp
+using Dekaf;
+
 public class SecureKafkaClient
 {
     private readonly IConfiguration _config;

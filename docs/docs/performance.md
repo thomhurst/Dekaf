@@ -60,6 +60,8 @@ Different workloads need different settings. Here's how to configure Dekaf for c
 When you need to push as many messages as possible:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()  // Preset configuration
@@ -80,6 +82,8 @@ var producer = Kafka.CreateProducer<string, string>()
 When every millisecond counts:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForLowLatency()  // Preset configuration
@@ -99,6 +103,8 @@ var producer = Kafka.CreateProducer<string, string>()
 When you absolutely cannot lose a message:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForReliability()  // Preset configuration
@@ -117,6 +123,8 @@ var producer = Kafka.CreateProducer<string, string>()
 #### High Throughput
 
 ```csharp
+using Dekaf;
+
 var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
@@ -135,6 +143,8 @@ await foreach (var batch in consumer.ConsumeAsync(cts.Token).Batch(100))
 #### Low Latency
 
 ```csharp
+using Dekaf;
+
 var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
@@ -163,6 +173,8 @@ Compression can dramatically reduce network usage, but it costs CPU. Here's how 
 - **Compatibility**: Use Gzip (universal support)
 
 ```csharp
+using Dekaf;
+
 // LZ4 for balanced performance
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
@@ -200,6 +212,8 @@ The zero-allocation design pays off here. Once warmed up, Dekaf doesn't trigger 
 Hook into Dekaf's metrics to see what's happening:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithMetrics(metrics =>
@@ -217,6 +231,8 @@ var producer = Kafka.CreateProducer<string, string>()
 Enable debug logging for performance troubleshooting:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithLoggerFactory(loggerFactory)
@@ -230,6 +246,8 @@ var producer = Kafka.CreateProducer<string, string>()
 Producers and consumers are expensive to create—they establish connections, negotiate protocol versions, and fetch metadata. Create them once and reuse:
 
 ```csharp
+using Dekaf;
+
 // Good - singleton
 public class MessageService
 {
@@ -315,6 +333,8 @@ If you're not hitting the performance you expect, measure before optimizing.
 Set up proper benchmarks to measure your specific patterns:
 
 ```csharp
+using Dekaf;
+
 [MemoryDiagnoser]
 public class MyBenchmarks
 {

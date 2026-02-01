@@ -59,6 +59,8 @@ await foreach (var message in consumer.ConsumeAsync(ct))
 Configure System.Text.Json behavior:
 
 ```csharp
+using Dekaf;
+
 var options = new JsonSerializerOptions
 {
     PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -77,6 +79,8 @@ var producer = Kafka.CreateProducer<string, Order>()
 Serialize both key and value as JSON:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<OrderKey, OrderEvent>()
     .WithBootstrapServers("localhost:9092")
     .WithKeySerializer(new JsonSerializer<OrderKey>())
@@ -147,6 +151,8 @@ var serializer = new JsonSerializer<Order>(options);
 ## Complete Example
 
 ```csharp
+using Dekaf;
+
 public record Order(
     string Id,
     string CustomerId,

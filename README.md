@@ -26,6 +26,8 @@ dotnet add package Dekaf
 The simplest way to send a message:
 
 ```csharp
+using Dekaf;
+
 await using var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .Build();
@@ -73,6 +75,8 @@ await events.ProduceAsync("event-1", eventJson);
 ### Consuming Messages
 
 ```csharp
+using Dekaf;
+
 await using var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-consumer-group")
@@ -90,6 +94,8 @@ await foreach (var message in consumer.ConsumeAsync(cancellationToken))
 Not sure which settings to use? We've got you covered with presets for common scenarios:
 
 ```csharp
+using Dekaf;
+
 // Maximize throughput (batching, compression, relaxed durability)
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
@@ -142,6 +148,8 @@ var results = await producer.ProduceAllAsync("orders", new[]
 Headers are great for metadata like correlation IDs, trace context, or routing hints:
 
 ```csharp
+using Dekaf;
+
 var headers = Headers.Create()
     .Add("correlation-id", correlationId)
     .Add("source", "order-service")
@@ -183,6 +191,8 @@ await consumer.ForEachAsync(async msg =>
 Dekaf gives you control over when offsets are committed:
 
 ```csharp
+using Dekaf;
+
 // Auto mode (default): Offsets committed automatically in the background
 // Good for: Log processing, analytics, cases where losing a message is OK
 var consumer = Kafka.CreateConsumer<string, string>()
@@ -222,6 +232,8 @@ dotnet add package Dekaf.Compression.Snappy  # Balanced
 Then enable it:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .UseLz4Compression()
@@ -243,6 +255,8 @@ dotnet add package Dekaf.Serialization.Json
 ```
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new JsonSerializer<Order>())
@@ -256,6 +270,8 @@ await producer.ProduceAsync("orders", order.Id, order);
 ### TLS
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls()
@@ -265,6 +281,8 @@ var producer = Kafka.CreateProducer<string, string>()
 ### SASL Authentication
 
 ```csharp
+using Dekaf;
+
 // SASL/PLAIN
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")

@@ -13,6 +13,8 @@ Not sure which settings to use? Dekaf provides configuration presets for common 
 Optimized for sending many messages with maximum efficiency:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()
@@ -34,6 +36,8 @@ var producer = Kafka.CreateProducer<string, string>()
 Optimized for minimal delay between sending and delivery:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForLowLatency()
@@ -54,6 +58,8 @@ var producer = Kafka.CreateProducer<string, string>()
 Optimized for maximum durability and exactly-once semantics:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForReliability()
@@ -75,6 +81,8 @@ var producer = Kafka.CreateProducer<string, string>()
 Optimized for processing many messages efficiently:
 
 ```csharp
+using Dekaf;
+
 var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
@@ -96,6 +104,8 @@ var consumer = Kafka.CreateConsumer<string, string>()
 Optimized for processing messages as quickly as possible:
 
 ```csharp
+using Dekaf;
+
 var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
@@ -117,6 +127,8 @@ var consumer = Kafka.CreateConsumer<string, string>()
 Presets are just starting points. Override any setting by calling the appropriate method after the preset:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()
@@ -128,6 +140,8 @@ var producer = Kafka.CreateProducer<string, string>()
 The order matters - later calls override earlier ones:
 
 ```csharp
+using Dekaf;
+
 // Final acks will be Leader (from ForLowLatency)
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
@@ -141,6 +155,8 @@ var producer = Kafka.CreateProducer<string, string>()
 Presets work alongside security configuration:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls()
@@ -154,6 +170,8 @@ var producer = Kafka.CreateProducer<string, string>()
 Create your own preset extensions for consistency across your application:
 
 ```csharp
+using Dekaf;
+
 public static class DekafPresets
 {
     public static ProducerBuilder<TKey, TValue> ForOrderProcessing<TKey, TValue>(
@@ -200,6 +218,8 @@ var producer = Kafka.CreateProducer<string, Order>()
 If none of the presets match your needs, configure settings individually:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.All)

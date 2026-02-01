@@ -9,6 +9,8 @@ OAUTHBEARER authentication allows using OAuth 2.0 tokens for Kafka authenticatio
 ## Using OAuth Configuration
 
 ```csharp
+using Dekaf;
+
 var oauthConfig = new OAuthBearerConfig
 {
     TokenEndpoint = "https://auth.example.com/oauth2/token",
@@ -29,6 +31,8 @@ var producer = Kafka.CreateProducer<string, string>()
 For more control, implement a custom token provider:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
@@ -48,6 +52,8 @@ var producer = Kafka.CreateProducer<string, string>()
 ## Azure AD Example
 
 ```csharp
+using Dekaf;
+
 var credential = new DefaultAzureCredential();
 
 var producer = Kafka.CreateProducer<string, string>()
@@ -74,6 +80,8 @@ var producer = Kafka.CreateProducer<string, string>()
 For AWS MSK with IAM authentication:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("broker.msk.us-east-1.amazonaws.com:9098")
     .UseTls()
@@ -110,6 +118,8 @@ Dekaf automatically refreshes tokens before they expire. The token provider is c
 ## Complete Example
 
 ```csharp
+using Dekaf;
+
 public class OAuthKafkaClientFactory
 {
     private readonly ITokenService _tokenService;

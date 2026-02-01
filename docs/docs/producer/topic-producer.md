@@ -13,6 +13,8 @@ When your application produces to a single topic, you can use `ITopicProducer<TK
 The simplest way to create a topic producer:
 
 ```csharp
+using Dekaf;
+
 await using var producer = Kafka.CreateTopicProducer<string, string>(
     "localhost:9092", "orders");
 
@@ -24,6 +26,8 @@ await producer.ProduceAsync("order-123", orderJson);
 Use the builder for more configuration options:
 
 ```csharp
+using Dekaf;
+
 await using var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.All)
@@ -38,6 +42,8 @@ await producer.ProduceAsync("order-123", orderJson);
 Create topic producers from a shared base producer. This is useful when you have a few fixed topics but want to share connections and resources:
 
 ```csharp
+using Dekaf;
+
 await using var baseProducer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.All)
@@ -159,6 +165,8 @@ The disposal behavior depends on how the topic producer was created:
 This allows safe resource sharing:
 
 ```csharp
+using Dekaf;
+
 await using var baseProducer = Kafka.CreateProducer<string, string>("localhost:9092");
 
 var orders = baseProducer.ForTopic("orders");
@@ -189,6 +197,8 @@ await baseProducer.ProduceAsync("audit", "key", "value");
 Topic producers work well with DI:
 
 ```csharp
+using Dekaf;
+
 // Registration
 services.AddSingleton<ITopicProducer<string, OrderEvent>>(sp =>
 {

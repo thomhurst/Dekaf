@@ -11,6 +11,8 @@ The producer sends messages to Kafka. Let's cover the essentials: creating a pro
 Use the fluent builder API to create a producer:
 
 ```csharp
+using Dekaf;
+
 await using var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .Build();
@@ -72,6 +74,8 @@ await producer.ProduceAsync(message);
 The `Acks` setting controls when the broker considers a message "delivered":
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.All)  // Wait for all in-sync replicas
@@ -93,6 +97,8 @@ For most applications, use `Acks.All` (the default) to ensure messages aren't lo
 Dekaf automatically batches messages for efficiency. You can tune the batching behavior:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithLingerMs(5)       // Wait up to 5ms to collect more messages
@@ -108,6 +114,8 @@ var producer = Kafka.CreateProducer<string, string>()
 Enable compression to reduce network usage:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .UseLz4Compression()  // Fast and good compression
@@ -132,6 +140,8 @@ LZ4 is recommended for most use cases - it provides a good balance of speed and 
 Enable idempotence to prevent duplicate messages during retries:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .EnableIdempotence()

@@ -19,6 +19,8 @@ Transactions are useful when you need to:
 Create a producer with a transactional ID:
 
 ```csharp
+using Dekaf;
+
 await using var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithTransactionalId("my-service-instance-1")  // Must be unique per instance
@@ -61,6 +63,8 @@ catch (Exception ex)
 The most common use case for transactions is exactly-once stream processing:
 
 ```csharp
+using Dekaf;
+
 await using var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("processor-group")
@@ -128,6 +132,8 @@ Use `ReadCommitted` when consuming from topics that receive transactional writes
 Transactions have a timeout to prevent hanging transactions:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithTransactionalId("my-service")

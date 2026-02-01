@@ -1,30 +1,25 @@
-// IMPORTANT: No using Dekaf directive here - we're testing zero-ceremony API
-// This file proves that Kafka.CreateProducer() and Kafka.CreateConsumer() work
-// from the global namespace without needing 'using Dekaf;'
-//
-// NOTE: These tests compile successfully but may not appear in test discovery
-// due to namespace resolution complexities when testing code in the global namespace
-// from within a Dekaf.* namespace. The successful compilation is the key validation.
+// Tests for the static Kafka entry point API
+// The Kafka class is in the Dekaf namespace, so with 'using Dekaf;' it's available directly
 
 namespace Dekaf.Tests.Unit;
 
 public class ZeroCeremonyApiTests
 {
     [Test]
-    public async Task CreateProducer_WithoutUsingDirective_CreatesBuilder()
+    public async Task CreateProducer_CreatesBuilder()
     {
-        // Arrange & Act - Note: No 'using Dekaf;' needed!
-        var builder = global::Kafka.CreateProducer<string, string>();
+        // Arrange & Act - Kafka class available via 'using Dekaf;'
+        var builder = Kafka.CreateProducer<string, string>();
 
         // Assert
         await Assert.That(builder).IsNotNull();
     }
 
     [Test]
-    public async Task CreateConsumer_WithoutUsingDirective_CreatesBuilder()
+    public async Task CreateConsumer_CreatesBuilder()
     {
-        // Arrange & Act - Note: No 'using Dekaf;' needed!
-        var builder = global::Kafka.CreateConsumer<string, string>();
+        // Arrange & Act - Kafka class available via 'using Dekaf;'
+        var builder = Kafka.CreateConsumer<string, string>();
 
         // Assert
         await Assert.That(builder).IsNotNull();
@@ -34,7 +29,7 @@ public class ZeroCeremonyApiTests
     public async Task ProducerBuilder_Build_ThrowsWithoutConfiguration()
     {
         // Arrange
-        var builder = global::Kafka.CreateProducer<string, string>();
+        var builder = Kafka.CreateProducer<string, string>();
 
         // Act & Assert - Should throw because BootstrapServers is required
         await Assert.That(() => builder.Build()).Throws<InvalidOperationException>();
@@ -44,7 +39,7 @@ public class ZeroCeremonyApiTests
     public async Task ConsumerBuilder_Build_ThrowsWithoutConfiguration()
     {
         // Arrange
-        var builder = global::Kafka.CreateConsumer<string, string>();
+        var builder = Kafka.CreateConsumer<string, string>();
 
         // Act & Assert - Should throw because BootstrapServers is required
         await Assert.That(() => builder.Build()).Throws<InvalidOperationException>();

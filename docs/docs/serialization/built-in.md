@@ -23,6 +23,8 @@ Dekaf includes serializers for common types that are automatically used when you
 When you create a producer or consumer without specifying serializers, Dekaf automatically uses the appropriate built-in serializer:
 
 ```csharp
+using Dekaf;
+
 // Automatically uses Serializers.String for both key and value
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
@@ -39,6 +41,8 @@ var producer = Kafka.CreateProducer<string, long>()
 Encodes strings as UTF-8:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .Build();
@@ -53,6 +57,8 @@ Null strings are handled as null Kafka values.
 Passes bytes through unchanged:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, byte[]>()
     .WithBootstrapServers("localhost:9092")
     .Build();
@@ -65,6 +71,8 @@ await producer.ProduceAsync("topic", "key", new byte[] { 1, 2, 3, 4 });
 Zero-copy byte handling:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, ReadOnlyMemory<byte>>()
     .WithBootstrapServers("localhost:9092")
     .Build();
@@ -78,6 +86,8 @@ await producer.ProduceAsync("topic", "key", data);
 Big-endian encoding (network byte order):
 
 ```csharp
+using Dekaf;
+
 // 32-bit integer
 var producer32 = Kafka.CreateProducer<int, string>()
     .WithBootstrapServers("localhost:9092")
@@ -98,6 +108,8 @@ await producer64.ProduceAsync("topic", 123456789L, "value");
 16-byte binary representation:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<Guid, string>()
     .WithBootstrapServers("localhost:9092")
     .Build();
@@ -110,6 +122,8 @@ await producer.ProduceAsync("topic", Guid.NewGuid(), "value");
 For topics where you don't need keys:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<Ignore, string>()
     .WithBootstrapServers("localhost:9092")
     .Build();
@@ -123,6 +137,8 @@ await producer.ProduceAsync("topic", Ignore.Value, "value");
 You can also use the built-in serializers explicitly:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithKeySerializer(Serializers.String)
@@ -135,6 +151,8 @@ var producer = Kafka.CreateProducer<string, string>()
 If you use a type without a built-in serializer:
 
 ```csharp
+using Dekaf;
+
 // This throws InvalidOperationException at Build()
 var producer = Kafka.CreateProducer<string, MyCustomType>()
     .WithBootstrapServers("localhost:9092")

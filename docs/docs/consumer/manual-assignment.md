@@ -20,6 +20,8 @@ Manual assignment is useful when:
 Use `Assign` instead of `Subscribe`:
 
 ```csharp
+using Dekaf;
+
 var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     // No group ID needed for manual assignment
@@ -67,6 +69,8 @@ Don't mix `Subscribe` and `Assign` on the same consumer. Use one or the other.
 With manual assignment, you're responsible for tracking offsets:
 
 ```csharp
+using Dekaf;
+
 var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .Build();
@@ -136,6 +140,8 @@ consumer.Unassign();
 ## Complete Example: Partition Reader
 
 ```csharp
+using Dekaf;
+
 public class PartitionReader
 {
     public async Task ReadPartitionAsync(
@@ -183,6 +189,8 @@ await reader.ReadPartitionAsync(
 ## Complete Example: Multi-Partition Worker
 
 ```csharp
+using Dekaf;
+
 public class MultiPartitionWorker
 {
     private readonly IKafkaConsumer<string, string> _consumer;

@@ -33,6 +33,8 @@ Group "my-group" with 4 consumers:
 Each consumer instance needs the same group ID:
 
 ```csharp
+using Dekaf;
+
 // Instance 1
 var consumer1 = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
@@ -62,6 +64,8 @@ When the group membership changes, Kafka rebalances partitions:
 Get notified when partitions are assigned or revoked:
 
 ```csharp
+using Dekaf;
+
 public class MyRebalanceListener : IRebalanceListener
 {
     public async ValueTask OnPartitionsAssignedAsync(
@@ -101,6 +105,8 @@ var consumer = Kafka.CreateConsumer<string, string>()
 Dekaf uses cooperative (incremental) rebalancing by default, which minimizes disruption:
 
 ```csharp
+using Dekaf;
+
 // Default: CooperativeSticky assignor
 var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
@@ -125,6 +131,8 @@ With cooperative rebalancing:
 For faster rebalances with planned restarts, use static membership:
 
 ```csharp
+using Dekaf;
+
 var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
@@ -144,6 +152,8 @@ Each instance in the group must have a unique `GroupInstanceId`. Using the same 
 ## Session and Heartbeat Configuration
 
 ```csharp
+using Dekaf;
+
 var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
@@ -201,6 +211,8 @@ Topic with 4 partitions:
 Different groups consume the same topic independently:
 
 ```csharp
+using Dekaf;
+
 // Analytics group - processes all messages
 var analyticsConsumer = Kafka.CreateConsumer<string, string>()
     .WithGroupId("analytics")
@@ -222,6 +234,8 @@ Each group:
 ## Complete Example
 
 ```csharp
+using Dekaf;
+
 public class OrderProcessor
 {
     private readonly ILogger<OrderProcessor> _logger;

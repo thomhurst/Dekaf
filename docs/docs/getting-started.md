@@ -29,23 +29,27 @@ dotnet add package Dekaf.Compression.Snappy # Alternative fast codec
 
 ## Using Dekaf
 
-Dekaf's entry point is available globally - no `using` directive needed:
+Dekaf's entry point is available through the `Dekaf` namespace:
 
 ```csharp
+using Dekaf;
+
 var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .Build();
 ```
 
-For advanced scenarios where you reference types directly (builders, interfaces, options), add:
+The `using Dekaf;` directive gives you access to:
+- The static `Kafka` class for creating producers and consumers
+- Common types like `Headers`, `TopicPartition`, `TopicPartitionOffset`
+- Extension methods for consumers and producers
+
+For more advanced scenarios, you may also need:
 
 ```csharp
-using Dekaf;
-using Dekaf.Producer;
-using Dekaf.Consumer;
+using Dekaf.Producer;  // For ProducerOptions, Acks, etc.
+using Dekaf.Consumer;  // For ConsumerOptions, OffsetCommitMode, etc.
 ```
-
-But for typical usage, the static `Kafka` class is all you need.
 
 ## Running Kafka Locally
 
@@ -69,6 +73,8 @@ docker run -d --name kafka \
 Let's send a message to Kafka:
 
 ```csharp
+using Dekaf;
+
 // Create a producer
 await using var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
@@ -95,6 +101,8 @@ That's it! Let's break down what's happening:
 Now let's consume messages:
 
 ```csharp
+using Dekaf;
+
 // Create a consumer
 await using var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
