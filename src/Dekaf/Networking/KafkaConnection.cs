@@ -25,8 +25,20 @@ internal static class ConnectionHelper
     // Minimum pause threshold for pipeline backpressure (16 MB)
     private const long MinimumPauseThresholdBytes = 16L * 1024 * 1024;
 
-    // Divisor for per-connection budget allocation
-    // Reserves 1/4 of per-connection memory for pipeline buffering
+    // Divisor for per-connection pipeline budget allocation (25% = 1/4)
+    //
+    // Rationale for 25% allocation:
+    // - BufferMemory is primarily for producer batch accumulation (main memory pool)
+    // - Pipeline buffering is a separate, transient layer for network I/O
+    // - 25% provides sufficient headroom for TCP send buffers and in-flight data
+    // - Leaves 75% for producer batches, maintaining primary allocation semantics
+    // - Prevents pipeline from consuming producer's batch memory pool
+    //
+    // Example with 32 MB BufferMemory, 2 connections per broker, 3 brokers:
+    // - Per-connection budget: 32 MB / (2 * 3) = 5.3 MB
+    // - Pipeline allocation: 5.3 MB / 4 = 1.3 MB per connection
+    // - Total pipeline memory: 1.3 MB * 6 connections = 8 MB (25% of total)
+    // - Producer batch memory: 24 MB (75% of total)
     private const int BufferMemoryDivisor = 4;
 
     /// <summary>
