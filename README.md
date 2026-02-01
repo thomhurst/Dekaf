@@ -4,6 +4,8 @@
 
 Dekaf is a high-performance, pure C# Apache Kafka client for .NET 10+. No JVM, no interop, no native dependencies—just clean, modern C# all the way down.
 
+**[View Full Documentation](https://thomhurst.github.io/Dekaf/)**
+
 ## Why Dekaf?
 
 Unlike libraries that wrap librdkafka, Dekaf is a native .NET implementation with no external dependencies:
