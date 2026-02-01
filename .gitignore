@@ -10,6 +10,9 @@
 # Claude Code local overrides
 .claude.local.md
 
+# Git worktrees
+.worktrees/
+
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/
