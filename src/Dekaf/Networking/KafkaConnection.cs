@@ -17,6 +17,55 @@ using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Networking;
 
+/// <summary>
+/// Helper methods for connection configuration.
+/// </summary>
+internal static class ConnectionHelper
+{
+    // Minimum pause threshold for pipeline backpressure (16 MB)
+    private const long MinimumPauseThresholdBytes = 16L * 1024 * 1024;
+
+    // Divisor for per-connection budget allocation
+    // Reserves 1/4 of per-connection memory for pipeline buffering
+    private const int BufferMemoryDivisor = 4;
+
+    /// <summary>
+    /// Calculates pipeline backpressure thresholds based on BufferMemory configuration.
+    /// Uses 16 MB floor for modern RAM environments, scales up proportionally with BufferMemory.
+    /// </summary>
+    /// <param name="bufferMemory">Total producer BufferMemory in bytes</param>
+    /// <param name="connectionsPerBroker">Number of connections per broker (must be positive)</param>
+    /// <returns>Tuple of (pauseThreshold, resumeThreshold) in bytes</returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown when connectionsPerBroker is less than or equal to zero.
+    /// </exception>
+    public static (long PauseThreshold, long ResumeThreshold) CalculatePipelineThresholds(
+        ulong bufferMemory,
+        int connectionsPerBroker)
+    {
+        if (connectionsPerBroker <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(connectionsPerBroker),
+                connectionsPerBroker,
+                "Connections per broker must be positive");
+        }
+
+        // Calculate per-pipe budget: BufferMemory / ConnectionsPerBroker / BufferMemoryDivisor
+        // Division by BufferMemoryDivisor reserves 1/4 of per-connection memory for pipeline buffering
+        // Use 16 MB floor for high-throughput modern environments
+        var perPipeBudget = bufferMemory / (ulong)connectionsPerBroker / BufferMemoryDivisor;
+
+        // Ensure we don't overflow long when casting
+        var pauseThreshold = perPipeBudget > (ulong)long.MaxValue
+            ? long.MaxValue
+            : Math.Max(MinimumPauseThresholdBytes, (long)perPipeBudget);
+
+        var resumeThreshold = pauseThreshold / 2;
+
+        return (pauseThreshold, resumeThreshold);
+    }
+}
 
 /// <summary>
 /// A multiplexed connection to a Kafka broker using System.IO.Pipelines.
