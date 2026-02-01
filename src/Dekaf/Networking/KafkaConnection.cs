@@ -471,7 +471,26 @@ public sealed class KafkaConnection : IKafkaConnection
 
         _writer.Advance(4 + totalSize);
 
-        var result = await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+        // Apply RequestTimeout to flush operation
+        using var timeoutCts = new CancellationTokenSource(_options.RequestTimeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            timeoutCts.Token);
+
+        FlushResult result;
+        try
+        {
+            result = await _writer.FlushAsync(linkedCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        {
+            _logger?.LogError(
+                "Flush timeout after {Timeout}ms for request {CorrelationId} to broker {BrokerId}",
+                _options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
+
+            throw new KafkaException(
+                $"Flush timeout after {_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
+        }
 
         if (result.IsCompleted || result.IsCanceled)
         {
