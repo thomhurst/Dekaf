@@ -17,7 +17,7 @@ var oauthConfig = new OAuthBearerConfig
     Scope = "kafka"
 };
 
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
     .WithOAuthBearer(oauthConfig)
@@ -29,7 +29,7 @@ var producer = Dekaf.CreateProducer<string, string>()
 For more control, implement a custom token provider:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
     .WithOAuthBearer(async ct =>
@@ -50,7 +50,7 @@ var producer = Dekaf.CreateProducer<string, string>()
 ```csharp
 var credential = new DefaultAzureCredential();
 
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
     .WithOAuthBearer(async ct =>
@@ -74,7 +74,7 @@ var producer = Dekaf.CreateProducer<string, string>()
 For AWS MSK with IAM authentication:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("broker.msk.us-east-1.amazonaws.com:9098")
     .UseTls()
     .WithOAuthBearer(async ct =>
@@ -123,7 +123,7 @@ public class OAuthKafkaClientFactory
 
     public IKafkaProducer<string, string> CreateProducer()
     {
-        return Dekaf.CreateProducer<string, string>()
+        return Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_config["Kafka:BootstrapServers"])
             .UseTls()
             .WithOAuthBearer(GetTokenAsync)

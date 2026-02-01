@@ -31,7 +31,7 @@ var schemaRegistry = new CachedSchemaRegistryClient(
     new SchemaRegistryConfig { Url = "http://localhost:8081" }
 );
 
-var producer = Dekaf.CreateProducer<string, Order>()
+var producer = Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new AvroSerializer<Order>(schemaRegistry))
     .Build();
@@ -70,7 +70,7 @@ var schemaRegistry = new CachedSchemaRegistryClient(
     new SchemaRegistryConfig { Url = "http://localhost:8081" }
 );
 
-var producer = Dekaf.CreateProducer<string, OrderProto>()
+var producer = Kafka.CreateProducer<string, OrderProto>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new ProtobufSerializer<OrderProto>(schemaRegistry))
     .Build();
@@ -98,7 +98,7 @@ var schemaRegistry = new CachedSchemaRegistryClient(config);
 ## Consumer
 
 ```csharp
-var consumer = Dekaf.CreateConsumer<string, Order>()
+var consumer = Kafka.CreateConsumer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("order-processors")
     .WithValueDeserializer(new AvroDeserializer<Order>(schemaRegistry))

@@ -11,7 +11,7 @@ SASL (Simple Authentication and Security Layer) provides username/password authe
 Simple username/password authentication:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()  // Always use TLS with PLAIN to encrypt credentials
     .WithSaslPlain("username", "password")
@@ -29,7 +29,7 @@ Challenge-response authentication that doesn't send passwords:
 ### SCRAM-SHA-256
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
     .WithSaslScramSha256("username", "password")
@@ -39,7 +39,7 @@ var producer = Dekaf.CreateProducer<string, string>()
 ### SCRAM-SHA-512 (Recommended)
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
     .WithSaslScramSha512("username", "password")
@@ -58,7 +58,7 @@ var gssapiConfig = new GssapiConfig
     Principal = "client@EXAMPLE.COM"
 };
 
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .WithGssapi(gssapiConfig)
     .Build();
@@ -69,7 +69,7 @@ var producer = Dekaf.CreateProducer<string, string>()
 Same methods work for consumers:
 
 ```csharp
-var consumer = Dekaf.CreateConsumer<string, string>()
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .WithGroupId("my-group")
     .UseTls()
@@ -84,7 +84,7 @@ var consumer = Dekaf.CreateConsumer<string, string>()
 var apiKey = Environment.GetEnvironmentVariable("CONFLUENT_API_KEY");
 var apiSecret = Environment.GetEnvironmentVariable("CONFLUENT_API_SECRET");
 
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("pkc-xxxxx.us-east-1.aws.confluent.cloud:9092")
     .UseTls()
     .WithSaslPlain(apiKey, apiSecret)
@@ -118,7 +118,7 @@ public class SecureKafkaClient
 
     public IKafkaProducer<string, string> CreateProducer()
     {
-        return Dekaf.CreateProducer<string, string>()
+        return Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_config["Kafka:BootstrapServers"])
             .UseTls()
             .WithSaslScramSha512(

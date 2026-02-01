@@ -41,7 +41,7 @@ public class OrderSerializer : ISerializer<Order>, IDeserializer<Order>
 }
 
 // Usage
-var producer = Dekaf.CreateProducer<string, Order>()
+var producer = Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new OrderSerializer())
     .Build();
@@ -111,7 +111,7 @@ public class MessagePackSerializer<T> : ISerializer<T>, IDeserializer<T>
 }
 
 // Usage
-var producer = Dekaf.CreateProducer<string, Order>()
+var producer = Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new MessagePackSerializer<Order>())
     .Build();
@@ -172,11 +172,11 @@ public class OrderCodec : ISerializer<Order>, IDeserializer<Order>
 // Use same instance for both
 var codec = new OrderCodec();
 
-var producer = Dekaf.CreateProducer<string, Order>()
+var producer = Kafka.CreateProducer<string, Order>()
     .WithValueSerializer(codec)
     .Build();
 
-var consumer = Dekaf.CreateConsumer<string, Order>()
+var consumer = Kafka.CreateConsumer<string, Order>()
     .WithValueDeserializer(codec)
     .Build();
 ```

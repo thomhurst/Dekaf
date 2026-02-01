@@ -34,14 +34,14 @@ Each consumer instance needs the same group ID:
 
 ```csharp
 // Instance 1
-var consumer1 = Dekaf.CreateConsumer<string, string>()
+var consumer1 = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("order-processors")  // Same group ID
     .SubscribeTo("orders")
     .Build();
 
 // Instance 2 (different machine/process)
-var consumer2 = Dekaf.CreateConsumer<string, string>()
+var consumer2 = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("order-processors")  // Same group ID
     .SubscribeTo("orders")
@@ -89,7 +89,7 @@ public class MyRebalanceListener : IRebalanceListener
     }
 }
 
-var consumer = Dekaf.CreateConsumer<string, string>()
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithRebalanceListener(new MyRebalanceListener())
@@ -102,13 +102,13 @@ Dekaf uses cooperative (incremental) rebalancing by default, which minimizes dis
 
 ```csharp
 // Default: CooperativeSticky assignor
-var consumer = Dekaf.CreateConsumer<string, string>()
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .Build();
 
 // Or explicitly set the assignor
-var consumer = Dekaf.CreateConsumer<string, string>()
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithPartitionAssignmentStrategy(PartitionAssignmentStrategy.CooperativeSticky)
@@ -125,7 +125,7 @@ With cooperative rebalancing:
 For faster rebalances with planned restarts, use static membership:
 
 ```csharp
-var consumer = Dekaf.CreateConsumer<string, string>()
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithGroupInstanceId("instance-1")  // Must be unique within the group
@@ -144,7 +144,7 @@ Each instance in the group must have a unique `GroupInstanceId`. Using the same 
 ## Session and Heartbeat Configuration
 
 ```csharp
-var consumer = Dekaf.CreateConsumer<string, string>()
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithSessionTimeout(TimeSpan.FromSeconds(45))    // Max time before considered dead
@@ -202,13 +202,13 @@ Different groups consume the same topic independently:
 
 ```csharp
 // Analytics group - processes all messages
-var analyticsConsumer = Dekaf.CreateConsumer<string, string>()
+var analyticsConsumer = Kafka.CreateConsumer<string, string>()
     .WithGroupId("analytics")
     .SubscribeTo("orders")
     .Build();
 
 // Notification group - also processes all messages
-var notificationConsumer = Dekaf.CreateConsumer<string, string>()
+var notificationConsumer = Kafka.CreateConsumer<string, string>()
     .WithGroupId("notifications")
     .SubscribeTo("orders")
     .Build();
@@ -228,7 +228,7 @@ public class OrderProcessor
 
     public async Task RunAsync(string instanceId, CancellationToken ct)
     {
-        await using var consumer = Dekaf.CreateConsumer<string, Order>()
+        await using var consumer = Kafka.CreateConsumer<string, Order>()
             .WithBootstrapServers("localhost:9092")
             .WithGroupId("order-processors")
             .WithGroupInstanceId(instanceId)  // Static membership

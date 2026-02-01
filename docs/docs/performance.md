@@ -60,13 +60,13 @@ Different workloads need different settings. Here's how to configure Dekaf for c
 When you need to push as many messages as possible:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()  // Preset configuration
     .Build();
 
 // Or manual configuration
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.Leader)           // Don't wait for all replicas
     .WithLingerMs(5)                  // Batch for 5ms
@@ -80,13 +80,13 @@ var producer = Dekaf.CreateProducer<string, string>()
 When every millisecond counts:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForLowLatency()  // Preset configuration
     .Build();
 
 // Or manual configuration
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.Leader)
     .WithLingerMs(0)      // Send immediately
@@ -99,13 +99,13 @@ var producer = Dekaf.CreateProducer<string, string>()
 When you absolutely cannot lose a message:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForReliability()  // Preset configuration
     .Build();
 
 // Or manual configuration
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.All)
     .WithIdempotence(true)
@@ -117,7 +117,7 @@ var producer = Dekaf.CreateProducer<string, string>()
 #### High Throughput
 
 ```csharp
-var consumer = Dekaf.CreateConsumer<string, string>()
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .ForHighThroughput()
@@ -135,7 +135,7 @@ await foreach (var batch in consumer.ConsumeAsync(cts.Token).Batch(100))
 #### Low Latency
 
 ```csharp
-var consumer = Dekaf.CreateConsumer<string, string>()
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .ForLowLatency()
@@ -164,7 +164,7 @@ Compression can dramatically reduce network usage, but it costs CPU. Here's how 
 
 ```csharp
 // LZ4 for balanced performance
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithCompression(CompressionType.Lz4)
     .Build();
@@ -200,7 +200,7 @@ The zero-allocation design pays off here. Once warmed up, Dekaf doesn't trigger 
 Hook into Dekaf's metrics to see what's happening:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithMetrics(metrics =>
     {
@@ -217,7 +217,7 @@ var producer = Dekaf.CreateProducer<string, string>()
 Enable debug logging for performance troubleshooting:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithLoggerFactory(loggerFactory)
     .Build();
@@ -244,7 +244,7 @@ public class MessageService
 // Bad - creating per request
 public async Task SendAsync(string message)
 {
-    await using var producer = Dekaf.CreateProducer<string, string>()
+    await using var producer = Kafka.CreateProducer<string, string>()
         .WithBootstrapServers("localhost:9092")
         .Build();
     // ...
@@ -323,7 +323,7 @@ public class MyBenchmarks
     [GlobalSetup]
     public void Setup()
     {
-        _producer = Dekaf.CreateProducer<string, string>()
+        _producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .Build();
     }

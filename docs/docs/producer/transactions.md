@@ -19,7 +19,7 @@ Transactions are useful when you need to:
 Create a producer with a transactional ID:
 
 ```csharp
-await using var producer = Dekaf.CreateProducer<string, string>()
+await using var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithTransactionalId("my-service-instance-1")  // Must be unique per instance
     .Build();
@@ -61,7 +61,7 @@ catch (Exception ex)
 The most common use case for transactions is exactly-once stream processing:
 
 ```csharp
-await using var consumer = Dekaf.CreateConsumer<string, string>()
+await using var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("processor-group")
     .WithOffsetCommitMode(OffsetCommitMode.Manual)  // We'll commit via transaction
@@ -69,7 +69,7 @@ await using var consumer = Dekaf.CreateConsumer<string, string>()
     .SubscribeTo("input-topic")
     .Build();
 
-await using var producer = Dekaf.CreateProducer<string, string>()
+await using var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithTransactionalId($"processor-{Environment.MachineName}")
     .Build();
@@ -128,7 +128,7 @@ Use `ReadCommitted` when consuming from topics that receive transactional writes
 Transactions have a timeout to prevent hanging transactions:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithTransactionalId("my-service")
     .WithTransactionTimeout(TimeSpan.FromMinutes(2))  // Default is 1 minute
