@@ -430,6 +430,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Waits until buffer space is available, then reserves memory for a record.
+    /// Throws TimeoutException if buffer space doesn't become available within DeliveryTimeoutMs.
     /// </summary>
     private async ValueTask ReserveMemoryAsync(int recordSize, CancellationToken cancellationToken)
     {
@@ -439,20 +440,36 @@ public sealed class RecordAccumulator : IAsyncDisposable
             return;
         }
 
-        // Slow path: wait for space to become available
+        // Slow path: wait for space to become available with timeout protection
         // Use semaphore to avoid busy spinning - released when batches are completed
+        var deadline = Environment.TickCount64 + _options.DeliveryTimeoutMs;
+
         while (!TryReserveMemory(recordSize))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            // Check if we've exceeded the delivery timeout
+            var remainingMs = deadline - Environment.TickCount64;
+            if (remainingMs <= 0)
+            {
+                throw new TimeoutException(
+                    $"Timeout waiting for buffer memory after {_options.DeliveryTimeoutMs}ms. " +
+                    $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes. " +
+                    $"Producer is generating messages faster than the network can send them. " +
+                    $"Consider: increasing BufferMemory, reducing production rate, or checking network connectivity.");
+            }
+
             // Wait with timeout to periodically retry in case we missed a signal
-            await _bufferSpaceAvailable.WaitAsync(100, cancellationToken).ConfigureAwait(false);
+            // Use the smaller of 100ms or remaining time
+            var waitMs = (int)Math.Min(100, remainingMs);
+            await _bufferSpaceAvailable.WaitAsync(waitMs, cancellationToken).ConfigureAwait(false);
         }
     }
 
     /// <summary>
     /// Synchronous version of ReserveMemoryAsync for fire-and-forget paths.
     /// Blocks the calling thread until buffer space is available.
+    /// Throws TimeoutException if buffer space doesn't become available within DeliveryTimeoutMs.
     /// </summary>
     private void ReserveMemorySync(int recordSize)
     {
@@ -462,14 +479,32 @@ public sealed class RecordAccumulator : IAsyncDisposable
             return;
         }
 
-        // Slow path: spin-wait for space to become available
+        // Slow path: spin-wait for space to become available with timeout protection
         var spinWait = new SpinWait();
+        var deadline = Environment.TickCount64 + _options.DeliveryTimeoutMs;
+
         while (!TryReserveMemory(recordSize))
         {
             if (_disposed)
                 return;
 
-            // SpinWait starts with spinning, then yields, then sleeps(0), then sleeps(1)
+            // SpinWait starts with spinning (busy loop), then yields, then sleeps(0), then sleeps(1)
+            // Only check timeout after we transition out of the busy spin phase to minimize overhead
+            // NextSpinWillYield is true after ~10 spins, which takes ~100-200ns total
+            if (spinWait.NextSpinWillYield)
+            {
+                // Check if we've exceeded the delivery timeout
+                // Only checked when yielding/sleeping, not during fast spinning
+                if (Environment.TickCount64 > deadline)
+                {
+                    throw new TimeoutException(
+                        $"Timeout waiting for buffer memory after {_options.DeliveryTimeoutMs}ms. " +
+                        $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes. " +
+                        $"Producer is generating messages faster than the network can send them. " +
+                        $"Consider: increasing BufferMemory, reducing production rate, or checking network connectivity.");
+                }
+            }
+
             spinWait.SpinOnce();
         }
     }

@@ -1,3 +1,4 @@
+using System.Buffers;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -239,4 +240,74 @@ public class BufferMemoryTests
             await accumulator.DisposeAsync();
         }
     }
+
+    [Test]
+    public async Task BufferMemory_ThrowsTimeoutException_WhenExhausted()
+    {
+        // Arrange: Create producer with very small buffer and short timeout
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 1000, // Very small buffer - 1KB
+            BatchSize = 16384,
+            LingerMs = 100,
+            DeliveryTimeoutMs = 500 // Short timeout - 500ms
+        };
+
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Act: Fill the buffer by appending many messages
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+
+            var messageCount = 0;
+            var startTime = Environment.TickCount64;
+            var timeoutThrown = false;
+
+            // Keep appending until we get a timeout
+            // The timeout should occur because we're not draining batches (no sender loop)
+            try
+            {
+                for (int i = 0; i < 100; i++) // Try to append many messages
+                {
+                    // Rent from ArrayPool for each message to avoid reusing the same array
+                    var valueBytes = ArrayPool<byte>.Shared.Rent(200);
+                    var pooledValue = new PooledMemory(valueBytes, 200);
+
+                    accumulator.TryAppendFireAndForget(
+                        "test-topic",
+                        0,
+                        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        pooledKey,
+                        pooledValue,
+                        null,
+                        null);
+                    messageCount++;
+                }
+            }
+            catch (TimeoutException)
+            {
+                timeoutThrown = true;
+            }
+
+            var elapsedMs = Environment.TickCount64 - startTime;
+
+            // Verify timeout was thrown
+            await Assert.That(timeoutThrown).IsTrue();
+
+            // Verify timeout occurred within reasonable time (should be ~500ms + some overhead)
+            await Assert.That(elapsedMs).IsGreaterThanOrEqualTo(400); // At least 400ms
+            await Assert.That(elapsedMs).IsLessThan(1500); // But not too long (< 1.5s)
+
+            // Verify we filled the buffer before timing out
+            await Assert.That(messageCount).IsGreaterThan(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
 }
