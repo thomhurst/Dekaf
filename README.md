@@ -26,7 +26,7 @@ dotnet add package Dekaf
 The simplest way to send a message:
 
 ```csharp
-await using var producer = Dekaf.CreateProducer<string, string>()
+await using var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .Build();
 
@@ -50,7 +50,7 @@ await producer.FlushAsync();
 When you're always producing to the same topic, use a topic producer for a cleaner API:
 
 ```csharp
-await using var producer = Dekaf.CreateTopicProducer<string, string>(
+await using var producer = Kafka.CreateTopicProducer<string, string>(
     "localhost:9092", "orders");
 
 // No topic parameter needed
@@ -61,7 +61,7 @@ producer.Send("order-456", orderJson);
 You can also create multiple topic producers that share the same connection:
 
 ```csharp
-await using var baseProducer = Dekaf.CreateProducer<string, string>("localhost:9092");
+await using var baseProducer = Kafka.CreateProducer<string, string>("localhost:9092");
 
 var orders = baseProducer.ForTopic("orders");
 var events = baseProducer.ForTopic("events");
@@ -73,7 +73,7 @@ await events.ProduceAsync("event-1", eventJson);
 ### Consuming Messages
 
 ```csharp
-await using var consumer = Dekaf.CreateConsumer<string, string>()
+await using var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-consumer-group")
     .SubscribeTo("my-topic")
@@ -91,19 +91,19 @@ Not sure which settings to use? We've got you covered with presets for common sc
 
 ```csharp
 // Maximize throughput (batching, compression, relaxed durability)
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()
     .Build();
 
 // Minimize latency (no batching delay, smaller batches)
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForLowLatency()
     .Build();
 
 // Maximum reliability (all replicas must ack, idempotent)
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForReliability()
     .Build();
@@ -185,7 +185,7 @@ Dekaf gives you control over when offsets are committed:
 ```csharp
 // Auto mode (default): Offsets committed automatically in the background
 // Good for: Log processing, analytics, cases where losing a message is OK
-var consumer = Dekaf.CreateConsumer<string, string>()
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithOffsetCommitMode(OffsetCommitMode.Auto)
@@ -196,7 +196,7 @@ var consumer = Dekaf.CreateConsumer<string, string>()
 // consumed position for each partition. This gives you at-least-once semantics:
 // if your app crashes before committing, messages will be redelivered on restart.
 // Good for: Payment processing, order handling, anything where you can't lose messages
-var consumer = Dekaf.CreateConsumer<string, string>()
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithOffsetCommitMode(OffsetCommitMode.Manual)
@@ -222,7 +222,7 @@ dotnet add package Dekaf.Compression.Snappy  # Balanced
 Then enable it:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .UseLz4Compression()
     .Build();
@@ -243,7 +243,7 @@ dotnet add package Dekaf.Serialization.Json
 ```
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, Order>()
+var producer = Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new JsonSerializer<Order>())
     .Build();
@@ -256,7 +256,7 @@ await producer.ProduceAsync("orders", order.Id, order);
 ### TLS
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls()
     .Build();
@@ -266,14 +266,14 @@ var producer = Dekaf.CreateProducer<string, string>()
 
 ```csharp
 // SASL/PLAIN
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls()
     .WithSaslPlain("username", "password")
     .Build();
 
 // SASL/SCRAM-SHA-512
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls()
     .WithSaslScramSha512("username", "password")
