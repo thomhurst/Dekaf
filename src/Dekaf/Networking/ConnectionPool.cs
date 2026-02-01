@@ -381,6 +381,8 @@ public sealed class ConnectionPool : IConnectionPool
         await _disposeLock.WaitAsync().ConfigureAwait(false);
         try
         {
+            _logger?.LogDebug("Closing all connections");
+
             var tasks = new List<ValueTask>();
 
             // Close single connections (used when _connectionsPerBroker == 1)
@@ -403,15 +405,34 @@ public sealed class ConnectionPool : IConnectionPool
                 }
             }
 
+            _logger?.LogDebug("Disposing {Count} connections with graceful timeout", tasks.Count);
+
+            // Apply graceful timeout to each connection disposal
             foreach (var task in tasks)
             {
+                using var cts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
                 try
                 {
-                    await task.ConfigureAwait(false);
+                    await task.AsTask().WaitAsync(cts.Token).ConfigureAwait(false);
                 }
-                catch
+                catch (TimeoutException)
                 {
-                    // Ignore errors during cleanup
+                    _logger?.LogWarning(
+                        "Connection disposal exceeded timeout ({Timeout}ms), forcing shutdown",
+                        _connectionOptions.ConnectionTimeout.TotalMilliseconds);
+                    // Continue disposing other connections
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger?.LogWarning(
+                        "Connection disposal timed out ({Timeout}ms), forcing shutdown",
+                        _connectionOptions.ConnectionTimeout.TotalMilliseconds);
+                    // Continue disposing other connections
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogError(ex, "Error during connection disposal");
+                    // Continue disposing other connections
                 }
             }
 
@@ -421,6 +442,8 @@ public sealed class ConnectionPool : IConnectionPool
             _connectionGroupsById.Clear();
             _connectionGroupsByEndpoint.Clear();
             _connectionGroupCreationTasks.Clear();
+
+            _logger?.LogInformation("All connections closed");
         }
         finally
         {
