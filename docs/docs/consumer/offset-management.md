@@ -28,7 +28,9 @@ Dekaf provides two modes for managing offsets, matching standard Apache Kafka's 
 Offsets are automatically committed in the background:
 
 ```csharp
-var consumer = Dekaf.CreateConsumer<string, string>()
+using Dekaf;
+
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithOffsetCommitMode(OffsetCommitMode.Auto)
@@ -53,7 +55,9 @@ If your application crashes after committing but before processing, messages may
 You control when offsets are committed by calling `CommitAsync()`:
 
 ```csharp
-var consumer = Dekaf.CreateConsumer<string, string>()
+using Dekaf;
+
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithOffsetCommitMode(OffsetCommitMode.Manual)

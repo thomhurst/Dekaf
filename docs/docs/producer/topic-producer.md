@@ -13,7 +13,9 @@ When your application produces to a single topic, you can use `ITopicProducer<TK
 The simplest way to create a topic producer:
 
 ```csharp
-await using var producer = Dekaf.CreateTopicProducer<string, string>(
+using Dekaf;
+
+await using var producer = Kafka.CreateTopicProducer<string, string>(
     "localhost:9092", "orders");
 
 await producer.ProduceAsync("order-123", orderJson);
@@ -24,7 +26,9 @@ await producer.ProduceAsync("order-123", orderJson);
 Use the builder for more configuration options:
 
 ```csharp
-await using var producer = Dekaf.CreateProducer<string, string>()
+using Dekaf;
+
+await using var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.All)
     .EnableIdempotence()
@@ -38,7 +42,9 @@ await producer.ProduceAsync("order-123", orderJson);
 Create topic producers from a shared base producer. This is useful when you have a few fixed topics but want to share connections and resources:
 
 ```csharp
-await using var baseProducer = Dekaf.CreateProducer<string, string>()
+using Dekaf;
+
+await using var baseProducer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.All)
     .Build();
@@ -159,7 +165,9 @@ The disposal behavior depends on how the topic producer was created:
 This allows safe resource sharing:
 
 ```csharp
-await using var baseProducer = Dekaf.CreateProducer<string, string>("localhost:9092");
+using Dekaf;
+
+await using var baseProducer = Kafka.CreateProducer<string, string>("localhost:9092");
 
 var orders = baseProducer.ForTopic("orders");
 var events = baseProducer.ForTopic("events");
@@ -189,10 +197,12 @@ await baseProducer.ProduceAsync("audit", "key", "value");
 Topic producers work well with DI:
 
 ```csharp
+using Dekaf;
+
 // Registration
 services.AddSingleton<ITopicProducer<string, OrderEvent>>(sp =>
 {
-    return Dekaf.CreateProducer<string, OrderEvent>()
+    return Kafka.CreateProducer<string, OrderEvent>()
         .WithBootstrapServers(config["Kafka:BootstrapServers"])
         .WithValueSerializer(new JsonSerializer<OrderEvent>())
         .BuildForTopic("orders");

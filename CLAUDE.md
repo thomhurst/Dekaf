@@ -158,7 +158,9 @@ lock (_lock)
 
 ```csharp
 // CORRECT: Fluent builder
-var producer = Dekaf.CreateProducer<string, string>()
+using Dekaf;
+
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithClientId("my-producer")
     .WithAcks(Acks.All)
@@ -206,13 +208,15 @@ public class SerializerTests
 ### Integration Tests (Testcontainers)
 
 ```csharp
+using Dekaf;
+
 [ClassDataSource<KafkaContainerDataSource>]
 public class ProducerTests(KafkaContainer kafka)
 {
     [Test]
     public async Task Producer_SendMessage_Succeeds()
     {
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.GetBootstrapAddress())
             .Build();
 

@@ -16,7 +16,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
         // Arrange - produce some messages first
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -33,7 +33,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
         }
 
         // Act - create consumer with EnablePartitionEof and consume
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -77,7 +77,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
         // Arrange
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -90,7 +90,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
         });
 
         // Act - consumer without EnablePartitionEof (default is false)
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -141,7 +141,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
         // Arrange
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -154,7 +154,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
             Value = "value-1"
         });
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -222,7 +222,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
         // Arrange
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -238,7 +238,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
             });
         }
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -292,7 +292,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
         // Arrange - create a topic with no messages
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -338,7 +338,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
         // Arrange - create a topic with multiple partitions
         var topic = await kafka.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -355,7 +355,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
             });
         }
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)

@@ -162,7 +162,7 @@ public static class Program
         // Seed 500K messages - enough to test consumer throughput without excessive disk/time
         var totalMessages = 500_000;
 
-        await using var producer = DekafLib.Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("stress-seeder")
             .WithAcks(Acks.Leader)

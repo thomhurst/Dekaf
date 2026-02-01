@@ -23,6 +23,8 @@ public interface IDeserializer<T>
 ## Basic Example
 
 ```csharp
+using Dekaf;
+
 public class OrderSerializer : ISerializer<Order>, IDeserializer<Order>
 {
     public void Serialize(Order value, IBufferWriter<byte> output, SerializationContext context)
@@ -41,7 +43,7 @@ public class OrderSerializer : ISerializer<Order>, IDeserializer<Order>
 }
 
 // Usage
-var producer = Dekaf.CreateProducer<string, Order>()
+var producer = Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new OrderSerializer())
     .Build();
@@ -95,6 +97,8 @@ public class ContextAwareSerializer : ISerializer<MyType>
 High-performance binary serialization:
 
 ```csharp
+using Dekaf;
+
 using MessagePack;
 
 public class MessagePackSerializer<T> : ISerializer<T>, IDeserializer<T>
@@ -111,7 +115,7 @@ public class MessagePackSerializer<T> : ISerializer<T>, IDeserializer<T>
 }
 
 // Usage
-var producer = Dekaf.CreateProducer<string, Order>()
+var producer = Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new MessagePackSerializer<Order>())
     .Build();
@@ -156,6 +160,8 @@ public class NullableSerializer<T> : ISerializer<T?>, IDeserializer<T?>
 Implement both interfaces in one class for convenience:
 
 ```csharp
+using Dekaf;
+
 public class OrderCodec : ISerializer<Order>, IDeserializer<Order>
 {
     public void Serialize(Order value, IBufferWriter<byte> output, SerializationContext context)
@@ -172,11 +178,11 @@ public class OrderCodec : ISerializer<Order>, IDeserializer<Order>
 // Use same instance for both
 var codec = new OrderCodec();
 
-var producer = Dekaf.CreateProducer<string, Order>()
+var producer = Kafka.CreateProducer<string, Order>()
     .WithValueSerializer(codec)
     .Build();
 
-var consumer = Dekaf.CreateConsumer<string, Order>()
+var consumer = Kafka.CreateConsumer<string, Order>()
     .WithValueDeserializer(codec)
     .Build();
 ```

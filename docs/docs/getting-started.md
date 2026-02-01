@@ -27,6 +27,30 @@ dotnet add package Dekaf.Compression.Zstd   # Best compression ratio
 dotnet add package Dekaf.Compression.Snappy # Alternative fast codec
 ```
 
+## Using Dekaf
+
+Dekaf's entry point is available through the `Dekaf` namespace:
+
+```csharp
+using Dekaf;
+
+var producer = Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .Build();
+```
+
+The `using Dekaf;` directive gives you access to:
+- The static `Kafka` class for creating producers and consumers
+- Common types like `Headers`, `TopicPartition`, `TopicPartitionOffset`
+- Extension methods for consumers and producers
+
+For more advanced scenarios, you may also need:
+
+```csharp
+using Dekaf.Producer;  // For ProducerOptions, Acks, etc.
+using Dekaf.Consumer;  // For ConsumerOptions, OffsetCommitMode, etc.
+```
+
 ## Running Kafka Locally
 
 If you don't have a Kafka cluster, the easiest way to get one running is with Docker:
@@ -50,10 +74,9 @@ Let's send a message to Kafka:
 
 ```csharp
 using Dekaf;
-using Dekaf.Producer;
 
 // Create a producer
-await using var producer = Dekaf.CreateProducer<string, string>()
+await using var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .Build();
 
@@ -65,7 +88,7 @@ Console.WriteLine($"Message sent to partition {metadata.Partition} at offset {me
 
 That's it! Let's break down what's happening:
 
-1. **`Dekaf.CreateProducer<TKey, TValue>()`** - Creates a builder for the producer. The type parameters define the key and value types.
+1. **`Kafka.CreateProducer<TKey, TValue>()`** - Creates a builder for the producer. The type parameters define the key and value types.
 
 2. **`WithBootstrapServers()`** - Tells the producer where to find your Kafka cluster. It will discover other brokers automatically.
 
@@ -79,10 +102,9 @@ Now let's consume messages:
 
 ```csharp
 using Dekaf;
-using Dekaf.Consumer;
 
 // Create a consumer
-await using var consumer = Dekaf.CreateConsumer<string, string>()
+await using var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-first-consumer")
     .SubscribeTo("my-topic")
@@ -124,7 +146,7 @@ const string topic = "getting-started";
 var cts = new CancellationTokenSource();
 var consumerTask = Task.Run(async () =>
 {
-    await using var consumer = Dekaf.CreateConsumer<string, string>()
+    await using var consumer = Kafka.CreateConsumer<string, string>()
         .WithBootstrapServers(bootstrapServers)
         .WithGroupId("getting-started-group")
         .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -141,7 +163,7 @@ var consumerTask = Task.Run(async () =>
 await Task.Delay(2000);
 
 // Produce some messages
-await using var producer = Dekaf.CreateProducer<string, string>()
+await using var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers(bootstrapServers)
     .Build();
 

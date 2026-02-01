@@ -16,7 +16,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka)
         // Arrange
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -54,7 +54,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka)
         }
 
         // Act
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
@@ -84,7 +84,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka)
         // Arrange
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -101,7 +101,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka)
         }
 
         // Act
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
@@ -128,7 +128,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka)
         // Arrange
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -145,7 +145,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka)
         }
 
         // Act
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
@@ -172,7 +172,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka)
         // Arrange
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
@@ -193,7 +193,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka)
         // Arrange
         var topic = await kafka.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -214,7 +214,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka)
         }
 
         // Act
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
@@ -259,7 +259,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka)
         // Don't produce any messages - partition is empty
 
         // Act
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
@@ -293,7 +293,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka)
         // Arrange - this tests the common use case of seeking to a timestamp
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -325,7 +325,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka)
         }
 
         // Act
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
@@ -361,7 +361,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka)
         // Arrange
         var topic = await kafka.CreateTestTopicAsync();
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
@@ -378,7 +378,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka)
         }
 
         // Act
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();

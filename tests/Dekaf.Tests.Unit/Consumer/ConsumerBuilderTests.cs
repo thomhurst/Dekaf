@@ -6,7 +6,7 @@ public class ConsumerBuilderTests
     public async Task WithPartitionEof_DefaultsToTrue()
     {
         // WithPartitionEof() with no argument should enable partition EOF
-        var builder = Dekaf.CreateConsumer<string, string>()
+        var builder = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithPartitionEof();
 
@@ -18,7 +18,7 @@ public class ConsumerBuilderTests
     [Test]
     public async Task WithPartitionEof_CanBeExplicitlyEnabled()
     {
-        var builder = Dekaf.CreateConsumer<string, string>()
+        var builder = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithPartitionEof(enabled: true);
 
@@ -28,7 +28,7 @@ public class ConsumerBuilderTests
     [Test]
     public async Task WithPartitionEof_CanBeExplicitlyDisabled()
     {
-        var builder = Dekaf.CreateConsumer<string, string>()
+        var builder = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithPartitionEof(enabled: false);
 
@@ -38,7 +38,7 @@ public class ConsumerBuilderTests
     [Test]
     public async Task WithPartitionEof_ReturnsBuilderForChaining()
     {
-        var originalBuilder = Dekaf.CreateConsumer<string, string>()
+        var originalBuilder = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092");
 
         var returnedBuilder = originalBuilder.WithPartitionEof();

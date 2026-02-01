@@ -161,7 +161,7 @@ public class ApiImprovementsTests
     {
         // We can't easily test the builder output without mocking,
         // but we can verify the enum exists and the builder method compiles
-        var builder = Dekaf.CreateConsumer<string, string>()
+        var builder = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithGroupId("test-group")
             .WithOffsetCommitMode(OffsetCommitMode.Auto);
@@ -172,7 +172,7 @@ public class ApiImprovementsTests
     [Test]
     public async Task ConsumerBuilder_WithOffsetCommitMode_Manual_SetsCorrectOptions()
     {
-        var builder = Dekaf.CreateConsumer<string, string>()
+        var builder = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithGroupId("test-group")
             .WithOffsetCommitMode(OffsetCommitMode.Manual);
@@ -187,7 +187,7 @@ public class ApiImprovementsTests
     [Test]
     public async Task ProducerBuilder_ForHighThroughput_ReturnsBuilder()
     {
-        var builder = Dekaf.CreateProducer<string, string>()
+        var builder = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .ForHighThroughput();
 
@@ -197,7 +197,7 @@ public class ApiImprovementsTests
     [Test]
     public async Task ProducerBuilder_ForLowLatency_ReturnsBuilder()
     {
-        var builder = Dekaf.CreateProducer<string, string>()
+        var builder = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .ForLowLatency();
 
@@ -207,7 +207,7 @@ public class ApiImprovementsTests
     [Test]
     public async Task ProducerBuilder_ForReliability_ReturnsBuilder()
     {
-        var builder = Dekaf.CreateProducer<string, string>()
+        var builder = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .ForReliability();
 
@@ -218,7 +218,7 @@ public class ApiImprovementsTests
     public async Task ProducerBuilder_PresetsAreChainable_OverridesWork()
     {
         // Verify we can call presets and then override values
-        var builder = Dekaf.CreateProducer<string, string>()
+        var builder = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .ForHighThroughput()
             .WithAcks(Acks.All);  // Override the Leader acks from preset
@@ -229,7 +229,7 @@ public class ApiImprovementsTests
     [Test]
     public async Task ConsumerBuilder_ForHighThroughput_ReturnsBuilder()
     {
-        var builder = Dekaf.CreateConsumer<string, string>()
+        var builder = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithGroupId("test-group")
             .ForHighThroughput();
@@ -240,7 +240,7 @@ public class ApiImprovementsTests
     [Test]
     public async Task ConsumerBuilder_ForLowLatency_ReturnsBuilder()
     {
-        var builder = Dekaf.CreateConsumer<string, string>()
+        var builder = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithGroupId("test-group")
             .ForLowLatency();

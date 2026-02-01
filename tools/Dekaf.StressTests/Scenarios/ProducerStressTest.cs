@@ -21,7 +21,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
         var latency = new LatencyTracker();
         var startedAt = DateTime.UtcNow;
 
-        var producer = DekafLib.Dekaf.CreateProducer<string, string>()
+        var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-producer-dekaf")
             .WithAcks(Acks.Leader)

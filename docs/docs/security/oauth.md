@@ -9,6 +9,8 @@ OAUTHBEARER authentication allows using OAuth 2.0 tokens for Kafka authenticatio
 ## Using OAuth Configuration
 
 ```csharp
+using Dekaf;
+
 var oauthConfig = new OAuthBearerConfig
 {
     TokenEndpoint = "https://auth.example.com/oauth2/token",
@@ -17,7 +19,7 @@ var oauthConfig = new OAuthBearerConfig
     Scope = "kafka"
 };
 
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
     .WithOAuthBearer(oauthConfig)
@@ -29,7 +31,9 @@ var producer = Dekaf.CreateProducer<string, string>()
 For more control, implement a custom token provider:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+using Dekaf;
+
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
     .WithOAuthBearer(async ct =>
@@ -48,9 +52,11 @@ var producer = Dekaf.CreateProducer<string, string>()
 ## Azure AD Example
 
 ```csharp
+using Dekaf;
+
 var credential = new DefaultAzureCredential();
 
-var producer = Dekaf.CreateProducer<string, string>()
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
     .WithOAuthBearer(async ct =>
@@ -74,7 +80,9 @@ var producer = Dekaf.CreateProducer<string, string>()
 For AWS MSK with IAM authentication:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+using Dekaf;
+
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("broker.msk.us-east-1.amazonaws.com:9098")
     .UseTls()
     .WithOAuthBearer(async ct =>
@@ -110,6 +118,8 @@ Dekaf automatically refreshes tokens before they expire. The token provider is c
 ## Complete Example
 
 ```csharp
+using Dekaf;
+
 public class OAuthKafkaClientFactory
 {
     private readonly ITokenService _tokenService;
@@ -123,7 +133,7 @@ public class OAuthKafkaClientFactory
 
     public IKafkaProducer<string, string> CreateProducer()
     {
-        return Dekaf.CreateProducer<string, string>()
+        return Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_config["Kafka:BootstrapServers"])
             .UseTls()
             .WithOAuthBearer(GetTokenAsync)

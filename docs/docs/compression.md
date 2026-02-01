@@ -37,7 +37,9 @@ Gzip is built into .NET, no additional package needed.
 ### Using Convenience Methods
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+using Dekaf;
+
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .UseLz4Compression()    // or UseZstdCompression(), UseSnappyCompression(), UseGzipCompression()
     .Build();
@@ -120,7 +122,9 @@ Maximum compatibility:
 Compression works best with batching. Configure linger time to allow batches to fill:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+using Dekaf;
+
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .UseLz4Compression()
     .WithLingerMs(5)        // Wait up to 5ms to fill batches
@@ -133,8 +137,10 @@ var producer = Dekaf.CreateProducer<string, string>()
 Consumers automatically detect and decompress messages. No configuration needed:
 
 ```csharp
+using Dekaf;
+
 // Consumer handles decompression automatically
-var consumer = Dekaf.CreateConsumer<string, string>()
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .Build();
@@ -180,7 +186,9 @@ Typical performance characteristics:
 ## Example: High-Throughput with Compression
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+using Dekaf;
+
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()     // Sets batching parameters
     .UseLz4Compression()     // Add compression

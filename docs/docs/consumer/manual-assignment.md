@@ -20,7 +20,9 @@ Manual assignment is useful when:
 Use `Assign` instead of `Subscribe`:
 
 ```csharp
-var consumer = Dekaf.CreateConsumer<string, string>()
+using Dekaf;
+
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     // No group ID needed for manual assignment
     .Build();
@@ -67,7 +69,9 @@ Don't mix `Subscribe` and `Assign` on the same consumer. Use one or the other.
 With manual assignment, you're responsible for tracking offsets:
 
 ```csharp
-var consumer = Dekaf.CreateConsumer<string, string>()
+using Dekaf;
+
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .Build();
 
@@ -136,6 +140,8 @@ consumer.Unassign();
 ## Complete Example: Partition Reader
 
 ```csharp
+using Dekaf;
+
 public class PartitionReader
 {
     public async Task ReadPartitionAsync(
@@ -147,7 +153,7 @@ public class PartitionReader
         Func<ConsumeResult<string, string>, Task> processor,
         CancellationToken ct)
     {
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.None)
             .Build();
@@ -183,6 +189,8 @@ await reader.ReadPartitionAsync(
 ## Complete Example: Multi-Partition Worker
 
 ```csharp
+using Dekaf;
+
 public class MultiPartitionWorker
 {
     private readonly IKafkaConsumer<string, string> _consumer;
@@ -190,7 +198,7 @@ public class MultiPartitionWorker
 
     public MultiPartitionWorker(string bootstrapServers)
     {
-        _consumer = Dekaf.CreateConsumer<string, string>()
+        _consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .Build();
     }

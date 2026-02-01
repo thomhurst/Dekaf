@@ -183,7 +183,9 @@ await publisher.DisposeAsync();
 For maximum throughput with fire-and-forget, tune the batching settings:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+using Dekaf;
+
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()  // Preset with good defaults
     .WithLingerMs(10)     // Allow more time for batching

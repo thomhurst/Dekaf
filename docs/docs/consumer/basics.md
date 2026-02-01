@@ -11,7 +11,9 @@ The consumer reads messages from Kafka topics. We use `IAsyncEnumerable` so you 
 Use the fluent builder API:
 
 ```csharp
-await using var consumer = Dekaf.CreateConsumer<string, string>()
+using Dekaf;
+
+await using var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-consumer-group")
     .Build();
@@ -24,6 +26,8 @@ The type parameters `<TKey, TValue>` define the expected key and value types.
 Before consuming, subscribe to one or more topics:
 
 ```csharp
+using Dekaf;
+
 // Single topic
 consumer.Subscribe("my-topic");
 
@@ -31,7 +35,7 @@ consumer.Subscribe("my-topic");
 consumer.Subscribe("topic1", "topic2", "topic3");
 
 // Using the builder
-var consumer = Dekaf.CreateConsumer<string, string>()
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .SubscribeTo("my-topic")  // Subscribe during build
@@ -94,7 +98,9 @@ else
 When a consumer starts with no committed offset, `AutoOffsetReset` determines where to begin:
 
 ```csharp
-var consumer = Dekaf.CreateConsumer<string, string>()
+using Dekaf;
+
+var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithAutoOffsetReset(AutoOffsetReset.Earliest)  // Start from beginning
@@ -142,7 +148,9 @@ catch (ConsumeException ex)
 Always dispose the consumer properly:
 
 ```csharp
-await using var consumer = Dekaf.CreateConsumer<string, string>()
+using Dekaf;
+
+await using var consumer = Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .SubscribeTo("my-topic")
@@ -208,6 +216,8 @@ string? memberId = consumer.MemberId;
 ## Complete Example
 
 ```csharp
+using Dekaf;
+
 public class OrderConsumer : BackgroundService
 {
     private readonly ILogger<OrderConsumer> _logger;
@@ -219,7 +229,7 @@ public class OrderConsumer : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await using var consumer = Dekaf.CreateConsumer<string, Order>()
+        await using var consumer = Kafka.CreateConsumer<string, Order>()
             .WithBootstrapServers("localhost:9092")
             .WithGroupId("order-processor")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)

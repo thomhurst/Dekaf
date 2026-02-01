@@ -17,12 +17,12 @@ public class RoundTripTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -59,12 +59,12 @@ public class RoundTripTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -110,12 +110,12 @@ public class RoundTripTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -149,12 +149,12 @@ public class RoundTripTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -189,12 +189,12 @@ public class RoundTripTests(KafkaTestContainer kafka)
         var groupId = $"test-group-{Guid.NewGuid():N}";
         var largeValue = new string('A', 50_000); // 50KB
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -229,12 +229,12 @@ public class RoundTripTests(KafkaTestContainer kafka)
         var groupId = $"test-group-{Guid.NewGuid():N}";
         const int messageCount = 20;
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -282,12 +282,12 @@ public class RoundTripTests(KafkaTestContainer kafka)
         var unicodeKey = "键-Ключ-キー-مفتاح";
         var unicodeValue = "值-Значение-値-قيمة-🎉🚀💡";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -321,12 +321,12 @@ public class RoundTripTests(KafkaTestContainer kafka)
         var topic = await kafka.CreateTestTopicAsync(partitions: 3);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -363,12 +363,12 @@ public class RoundTripTests(KafkaTestContainer kafka)
         var groupId = $"test-group-{Guid.NewGuid():N}";
         var timestamp = DateTimeOffset.UtcNow;
 
-        await using var producer = Dekaf.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -407,13 +407,13 @@ public class RoundTripTests(KafkaTestContainer kafka)
         var producers = new List<IKafkaProducer<string, string>>();
         for (var i = 0; i < producerCount; i++)
         {
-            producers.Add(Dekaf.CreateProducer<string, string>()
+            producers.Add(Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(kafka.BootstrapServers)
                 .WithClientId($"test-producer-{i}")
                 .Build());
         }
 
-        await using var consumer = Dekaf.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
@@ -472,12 +472,12 @@ public class RoundTripTests(KafkaTestContainer kafka)
         var keyBytes = new byte[] { 1, 2, 3, 4, 5 };
         var valueBytes = new byte[] { 10, 20, 30, 40, 50, 60, 70, 80, 90, 100 };
 
-        await using var producer = Dekaf.CreateProducer<byte[], byte[]>()
+        await using var producer = Kafka.CreateProducer<byte[], byte[]>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
-        await using var consumer = Dekaf.CreateConsumer<byte[], byte[]>()
+        await using var consumer = Kafka.CreateConsumer<byte[], byte[]>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)

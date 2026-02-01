@@ -78,7 +78,9 @@ await producer.ProduceAsync("events", null, "event3");
 Dekaf supports different partitioning strategies:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+using Dekaf;
+
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithPartitioner(PartitionerType.Sticky)  // Change partitioner
     .Build();
@@ -95,7 +97,9 @@ var producer = Dekaf.CreateProducer<string, string>()
 The sticky partitioner improves batching efficiency for null-key messages:
 
 ```csharp
-var producer = Dekaf.CreateProducer<string, string>()
+using Dekaf;
+
+var producer = Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithPartitioner(PartitionerType.Sticky)
     .WithLingerMs(5)

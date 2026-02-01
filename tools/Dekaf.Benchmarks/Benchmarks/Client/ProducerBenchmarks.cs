@@ -38,7 +38,7 @@ public class ProducerBenchmarks
 
         _messageValue = new string('x', MessageSize);
 
-        _dekafProducer = DekafLib.Dekaf.CreateProducer<string, string>()
+        _dekafProducer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_kafka.BootstrapServers)
             .WithClientId("dekaf-benchmark")
             .WithAcks(DekafProducer.Acks.Leader)

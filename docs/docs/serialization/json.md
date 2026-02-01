@@ -19,7 +19,7 @@ dotnet add package Dekaf.Serialization.Json
 ```csharp
 using Dekaf.Serialization.Json;
 
-var producer = Dekaf.CreateProducer<string, Order>()
+var producer = Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new JsonSerializer<Order>())
     .Build();
@@ -40,7 +40,7 @@ await producer.ProduceAsync("orders", order.Id, order);
 ```csharp
 using Dekaf.Serialization.Json;
 
-var consumer = Dekaf.CreateConsumer<string, Order>()
+var consumer = Kafka.CreateConsumer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("order-processors")
     .WithValueDeserializer(new JsonDeserializer<Order>())
@@ -59,6 +59,8 @@ await foreach (var message in consumer.ConsumeAsync(ct))
 Configure System.Text.Json behavior:
 
 ```csharp
+using Dekaf;
+
 var options = new JsonSerializerOptions
 {
     PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -66,7 +68,7 @@ var options = new JsonSerializerOptions
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
 };
 
-var producer = Dekaf.CreateProducer<string, Order>()
+var producer = Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new JsonSerializer<Order>(options))
     .Build();
@@ -77,7 +79,9 @@ var producer = Dekaf.CreateProducer<string, Order>()
 Serialize both key and value as JSON:
 
 ```csharp
-var producer = Dekaf.CreateProducer<OrderKey, OrderEvent>()
+using Dekaf;
+
+var producer = Kafka.CreateProducer<OrderKey, OrderEvent>()
     .WithBootstrapServers("localhost:9092")
     .WithKeySerializer(new JsonSerializer<OrderKey>())
     .WithValueSerializer(new JsonSerializer<OrderEvent>())
@@ -147,6 +151,8 @@ var serializer = new JsonSerializer<Order>(options);
 ## Complete Example
 
 ```csharp
+using Dekaf;
+
 public record Order(
     string Id,
     string CustomerId,
@@ -163,7 +169,7 @@ var jsonOptions = new JsonSerializerOptions
     PropertyNamingPolicy = JsonNamingPolicy.CamelCase
 };
 
-await using var producer = Dekaf.CreateProducer<string, Order>()
+await using var producer = Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new JsonSerializer<Order>(jsonOptions))
     .Build();
@@ -183,7 +189,7 @@ var order = new Order(
 await producer.ProduceAsync("orders", order.Id, order);
 
 // Consumer
-await using var consumer = Dekaf.CreateConsumer<string, Order>()
+await using var consumer = Kafka.CreateConsumer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("order-processors")
     .WithValueDeserializer(new JsonDeserializer<Order>(jsonOptions))
