@@ -1815,6 +1815,10 @@ internal sealed class PartitionBatch
         var spinner = new SpinWait();
         while (true)
         {
+            // Early exit if already completed
+            if (_isCompleted != 0)
+                return new RecordAppendResult(false);
+
             spinner.SpinOnce();
 
             if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
@@ -2067,6 +2071,10 @@ internal sealed class PartitionBatch
         var spin = new SpinWait();
         while (true)
         {
+            // Early exit if already completed
+            if (_isCompleted != 0)
+                return new RecordAppendResult(false);
+
             if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
             {
                 try
@@ -2100,6 +2108,10 @@ internal sealed class PartitionBatch
 
         while (true)
         {
+            // Early exit if already completed
+            if (_isCompleted != 0)
+                return new RecordAppendResult(false);
+
             // Try to claim exclusive access
             if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
             {
@@ -2135,6 +2147,10 @@ internal sealed class PartitionBatch
         var spinner = new SpinWait();
         while (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) != 0)
         {
+            // Early exit if already completed
+            if (_isCompleted != 0)
+                return 0;
+
             spinner.SpinOnce();
         }
 
@@ -2274,6 +2290,10 @@ internal sealed class PartitionBatch
         var spinner = new SpinWait();
         while (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) != 0)
         {
+            // Early exit if already completed by another thread
+            if (_isCompleted != 0)
+                return _completedBatch;
+
             spinner.SpinOnce();
         }
 
