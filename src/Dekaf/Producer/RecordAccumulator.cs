@@ -479,7 +479,24 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// </summary>
     internal void ReleaseMemory(int batchSize)
     {
-        Interlocked.Add(ref _bufferedBytes, -batchSize);
+        var newValue = Interlocked.Add(ref _bufferedBytes, -batchSize);
+
+        // DEFENSIVE: Detect accounting bugs early
+        if (newValue < 0)
+        {
+#if DEBUG
+            throw new InvalidOperationException(
+                $"BufferMemory accounting bug: released {batchSize} bytes " +
+                $"but resulted in negative value {newValue}. This indicates a " +
+                $"reservation/release mismatch bug.");
+#else
+            // In release builds, log to System.Diagnostics but don't crash
+            System.Diagnostics.Debug.Fail(
+                $"BufferMemory accounting error: released {batchSize} bytes " +
+                $"but resulted in negative value {newValue}. This indicates a " +
+                $"reservation/release mismatch bug.");
+#endif
+        }
 
         // Signal that space may be available
         // Use TryRelease to handle case where semaphore is already at max count
