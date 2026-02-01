@@ -57,4 +57,7 @@ CodeCoverage/
 # NUnit
 *.VisualState.xml
 TestResult.xml
-nunit-*.xmldocs/plans/
+nunit-*.xml
+
+# Development artifacts
+docs/plans/
