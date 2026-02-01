@@ -370,6 +370,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             {
                 ProduceSyncCoreFireAndForgetDirect(topic, key, value, partition, timestamp, headers, topicInfo!);
             }
+            catch (TimeoutException)
+            {
+                // CRITICAL: BufferMemory backpressure timeout must propagate to caller
+                // This indicates producer is faster than network can drain
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger?.LogDebug(ex, "Fire-and-forget produce failed for topic {Topic}", topic);
@@ -402,6 +408,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         try
         {
             ProduceSyncCoreFireAndForgetDirect(topic, key, value, partition, timestamp, headers, topicInfo);
+        }
+        catch (TimeoutException)
+        {
+            // CRITICAL: BufferMemory backpressure timeout must propagate to caller
+            // This indicates producer is faster than network can drain
+            throw;
         }
         catch (Exception ex)
         {
@@ -551,65 +563,74 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
 
         // STEP 3: Memory reserved - must ensure cleanup on ANY failure from this point
-
-        // Check thread-local batch cache first (avoids dictionary lookup)
-        var cachedBatch = GetCachedBatch(topic, partition);
-        if (cachedBatch is null)
+        try
         {
-            _accumulator.ReleaseMemory(recordSize);
-            return false; // No cached batch, use slow path
-        }
-
-        var arena = cachedBatch.Arena;
-        if (arena is null)
-        {
-            _accumulator.ReleaseMemory(recordSize);
-            return false; // Batch completed, use slow path
-        }
-
-        // Calculate total size needed and check if it fits
-        var totalSize = keyLength + valueLength;
-        if (arena.RemainingCapacity < totalSize)
-        {
-            _accumulator.ReleaseMemory(recordSize);
-            return false; // Not enough space, use slow path (which will rotate)
-        }
-
-        // Allocate key in arena
-        ArenaSlice keySlice = default;
-        if (!keyIsNull && keyLength > 0)
-        {
-            if (!arena.TryAllocate(keyLength, out var keySpan, out var keyOffset))
+            // Check thread-local batch cache first (avoids dictionary lookup)
+            var cachedBatch = GetCachedBatch(topic, partition);
+            if (cachedBatch is null)
             {
                 _accumulator.ReleaseMemory(recordSize);
-                return false; // Allocation failed, use slow path
+                return false; // No cached batch, use slow path
             }
-            t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(keySpan);
-            keySlice = new ArenaSlice(keyOffset, keyLength);
-        }
 
-        // Allocate value in arena
-        if (!arena.TryAllocate(valueLength, out var valueSpan, out var valueOffset))
+            var arena = cachedBatch.Arena;
+            if (arena is null)
+            {
+                _accumulator.ReleaseMemory(recordSize);
+                return false; // Batch completed, use slow path
+            }
+
+            // Calculate total size needed and check if it fits
+            var totalSize = keyLength + valueLength;
+            if (arena.RemainingCapacity < totalSize)
+            {
+                _accumulator.ReleaseMemory(recordSize);
+                return false; // Not enough space, use slow path (which will rotate)
+            }
+
+            // Allocate key in arena
+            ArenaSlice keySlice = default;
+            if (!keyIsNull && keyLength > 0)
+            {
+                if (!arena.TryAllocate(keyLength, out var keySpan, out var keyOffset))
+                {
+                    _accumulator.ReleaseMemory(recordSize);
+                    return false; // Allocation failed, use slow path
+                }
+                t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(keySpan);
+                keySlice = new ArenaSlice(keyOffset, keyLength);
+            }
+
+            // Allocate value in arena
+            if (!arena.TryAllocate(valueLength, out var valueSpan, out var valueOffset))
+            {
+                _accumulator.ReleaseMemory(recordSize);
+                return false; // Allocation failed (shouldn't happen after size check, but be safe)
+            }
+            t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(valueSpan);
+            var valueSlice = new ArenaSlice(valueOffset, valueLength);
+
+            // Append using arena-based method
+            var result = cachedBatch.TryAppendFromArena(timestampMs, keySlice, keyIsNull, valueSlice, recordHeaders, pooledHeaderArray);
+
+            if (!result.Success)
+            {
+                _accumulator.ReleaseMemory(recordSize);
+                return false; // Batch full or completed, use slow path
+            }
+
+            // Success - batch now owns the pooled header array
+            // Memory stays reserved until batch completes (no ReleaseMemory call)
+            pooledHeaderArray = null;
+            return true;
+        }
+        catch
         {
+            // CRITICAL: If any exception occurs after memory reservation, release it
+            // Prevents permanent BufferMemory leak
             _accumulator.ReleaseMemory(recordSize);
-            return false; // Allocation failed (shouldn't happen after size check, but be safe)
+            throw;
         }
-        t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(valueSpan);
-        var valueSlice = new ArenaSlice(valueOffset, valueLength);
-
-        // Append using arena-based method
-        var result = cachedBatch.TryAppendFromArena(timestampMs, keySlice, keyIsNull, valueSlice, recordHeaders, pooledHeaderArray);
-
-        if (!result.Success)
-        {
-            _accumulator.ReleaseMemory(recordSize);
-            return false; // Batch full or completed, use slow path
-        }
-
-        // Success - batch now owns the pooled header array
-        // Memory stays reserved until batch completes (no ReleaseMemory call)
-        pooledHeaderArray = null;
-        return true;
     }
 
     /// <summary>
