@@ -19,6 +19,7 @@ Dekaf is a high-performance, pure C# Apache Kafka client library for .NET 10+. T
 - **Test Projects Require Docker**: Integration tests use Testcontainers.Kafka. Ensure Docker is running before executing integration tests.
 - **Benchmarks Compare Against Confluent.Kafka**: Producer/Consumer benchmarks spin up real Kafka instances. Memory/Serialization benchmarks run without Docker.
 - **Protocol Code Uses Unsafe**: The `Dekaf.Protocol` namespace uses unsafe code for performance. Changes here require extra scrutiny.
+- **BufferMemory Has Limits**: Producer `BufferMemory` setting enforces strict limits to prevent unbounded growth. Exceeding this blocks `ProduceAsync` until space is available.
 
 ## Project Structure
 
@@ -31,14 +32,17 @@ src/
     Networking/             # Connection pool, multiplexed I/O
     Serialization/          # ISerializer<T>/IDeserializer<T> interfaces
   Dekaf.Compression.*/      # Pluggable compression codecs (Lz4, Snappy, Zstd)
-  Dekaf.Serialization.*/    # Pluggable serializers (Json, Avro, MessagePack, Protobuf)
+  Dekaf.Serialization.Json/ # JSON serialization
   Dekaf.Extensions.*/       # DI and Hosting integrations
-  Dekaf.SchemaRegistry/     # Confluent Schema Registry integration
+  Dekaf.SchemaRegistry/     # Confluent Schema Registry base
+  Dekaf.SchemaRegistry.Avro/     # Avro serialization with Schema Registry
+  Dekaf.SchemaRegistry.Protobuf/ # Protobuf serialization with Schema Registry
 tests/
   Dekaf.Tests.Unit/         # Unit tests (TUnit)
   Dekaf.Tests.Integration/  # Integration tests (TUnit + Testcontainers)
 tools/
   Dekaf.Benchmarks/         # BenchmarkDotNet benchmarks
+  Dekaf.StressTests/        # Long-running stress tests
 ```
 
 ## Build Commands
@@ -57,6 +61,13 @@ dotnet build tests/Dekaf.Tests.Integration --configuration Release
 
 # Run benchmarks
 dotnet run --project tools/Dekaf.Benchmarks --configuration Release -- --filter "*Memory*"
+
+# Run stress tests (requires Docker)
+dotnet run --project tools/Dekaf.StressTests --configuration Release -- \
+  --duration 15 \
+  --message-size 1000 \
+  --scenario all \
+  --client all
 ```
 
 ### Test Filtering (TUnit)
