@@ -317,6 +317,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
     // Initialize with large capacity (1024) to avoid resizing under load
     private readonly ConcurrentDictionary<Task, byte> _inFlightDeliveryTasks = new(concurrencyLevel: Environment.ProcessorCount, capacity: 1024);
 
+    // Threshold for proactive cleanup of completed tasks to prevent unbounded dictionary growth
+    // Set to 2x initial capacity to allow normal operation without frequent cleanup
+    private const int InFlightTaskCleanupThreshold = 2048;
+
     private volatile bool _disposed;
     private volatile bool _closed;
 
@@ -1484,10 +1488,33 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Proactively clean up completed tasks to avoid dictionary growth
             // Continue immediately if not completed (common case)
             if (!task.IsCompleted)
+            {
+                // Check if dictionary has grown beyond threshold - if so, clean up completed tasks
+                // This prevents unbounded growth in long-running producers that use fire-and-forget
+                if (_inFlightDeliveryTasks.Count > InFlightTaskCleanupThreshold)
+                {
+                    CleanupCompletedTasks();
+                }
                 return;
+            }
 
             // Task completed synchronously (rare) - clean up immediately
             _inFlightDeliveryTasks.TryRemove(task, out _);
+        }
+    }
+
+    /// <summary>
+    /// Removes all completed tasks from the in-flight tracking dictionary.
+    /// Called when the dictionary grows beyond the threshold to prevent unbounded growth.
+    /// </summary>
+    private void CleanupCompletedTasks()
+    {
+        foreach (var kvp in _inFlightDeliveryTasks)
+        {
+            if (kvp.Key.IsCompleted)
+            {
+                _inFlightDeliveryTasks.TryRemove(kvp.Key, out _);
+            }
         }
     }
 
