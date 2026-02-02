@@ -49,6 +49,53 @@ jobs:
         uses: gittools/actions/gitversion/execute@v3
         continue-on-error: true  # Don't fail if GitVersion has issues on PR branches
 
+      - name: Setup Docker (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          # Start Docker Desktop service
+          Start-Service docker
+          # Wait for Docker to be ready
+          $timeout = 60
+          $elapsed = 0
+          while ($elapsed -lt $timeout) {
+            try {
+              docker info > $null 2>&1
+              if ($LASTEXITCODE -eq 0) {
+                Write-Host "Docker is ready"
+                break
+              }
+            } catch {}
+            Start-Sleep -Seconds 2
+            $elapsed += 2
+          }
+          # Pre-pull Kafka image for Testcontainers
+          docker pull confluentinc/cp-kafka:7.5.0
+        shell: pwsh
+
+      - name: Setup Docker (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # Install and start Docker Desktop
+          brew install --cask docker
+          open -a Docker
+          # Wait for Docker to be ready
+          timeout=60
+          elapsed=0
+          while [ $elapsed -lt $timeout ]; do
+            if docker info >/dev/null 2>&1; then
+              echo "Docker is ready"
+              break
+            fi
+            sleep 2
+            elapsed=$((elapsed + 2))
+          done
+          # Pre-pull Kafka image for Testcontainers
+          docker pull confluentinc/cp-kafka:7.5.0
+
+      - name: Pre-pull Kafka Image (Ubuntu)
+        if: runner.os == 'Linux'
+        run: docker pull confluentinc/cp-kafka:7.5.0
+
       - name: Run Pipeline
         env:
           NuGet__ShouldPublish: ${{ inputs.publish_nuget == true && 'true' || 'false' }}
