@@ -1555,7 +1555,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 return;
             }
 
-            // Task completed synchronously (rare) - clean up immediately
+            // Task completed synchronously (rare) - observe exception and clean up immediately
+            if (task.IsFaulted)
+                _ = task.Exception;
             _inFlightDeliveryTasks.TryRemove(task, out _);
         }
     }
