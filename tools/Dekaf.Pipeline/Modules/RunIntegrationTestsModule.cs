@@ -17,6 +17,15 @@ public class RunIntegrationTestsModule : Module<IReadOnlyList<CommandResult>>
     protected override async Task<IReadOnlyList<CommandResult>?> ExecuteAsync(
         IModuleContext context, CancellationToken cancellationToken)
     {
+        // Integration tests require Docker with Linux containers
+        // Skip on Windows and macOS where Kafka containers don't work
+        if (!OperatingSystem.IsLinux())
+        {
+            context.Logger.LogInformation("Skipping integration tests on {OS} (requires Linux for Docker containers)",
+                OperatingSystem.IsWindows() ? "Windows" : "macOS");
+            return null;
+        }
+
         var results = new List<CommandResult>();
 
         var project = context.Git().RootDirectory.FindFile(x => x.Name == "Dekaf.Tests.Integration.csproj");
