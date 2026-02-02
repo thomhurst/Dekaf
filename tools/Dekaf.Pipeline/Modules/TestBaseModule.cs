@@ -41,6 +41,7 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
                     NoBuild = true,
                     Configuration = "Release",
                     Framework = framework,
+                    Arguments = ["--", "--log-level", "Trace", "--output", "Detailed"]
                 },
                 new CommandExecutionOptions
                 {
