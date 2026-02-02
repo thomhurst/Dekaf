@@ -49,62 +49,32 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
         var position = source.Start;
         var remaining = source.Length;
 
-        // Rent buffer for compressed data
-        var maxCompressedLength = Snappier.Snappy.GetMaxCompressedLength(_blockSize);
-        var compressedBuffer = ArrayPool<byte>.Shared.Rent(maxCompressedLength);
+        // Temporary buffer to capture compressed output (needed to get size for header)
+        var compressedBuffer = new ArrayBufferWriter<byte>(Snappier.Snappy.GetMaxCompressedLength(_blockSize));
 
-        // Buffer for multi-segment sequences (rented on demand)
-        byte[]? uncompressedBuffer = null;
-
-        try
+        while (remaining > 0)
         {
-            while (remaining > 0)
-            {
-                var blockLength = (int)Math.Min(remaining, _blockSize);
-                var blockSequence = source.Slice(position, blockLength);
+            var blockLength = (int)Math.Min(remaining, _blockSize);
+            var blockSequence = source.Slice(position, blockLength);
 
-                // Get contiguous span for this block, handling multi-segment sequences
-                ReadOnlySpan<byte> uncompressedBlock;
-                if (blockSequence.IsSingleSegment)
-                {
-                    uncompressedBlock = blockSequence.FirstSpan;
-                }
-                else
-                {
-                    // Ensure uncompressed buffer is large enough
-                    if (uncompressedBuffer == null || uncompressedBuffer.Length < blockLength)
-                    {
-                        if (uncompressedBuffer != null)
-                            ArrayPool<byte>.Shared.Return(uncompressedBuffer);
-                        uncompressedBuffer = ArrayPool<byte>.Shared.Rent(blockLength);
-                    }
-                    blockSequence.CopyTo(uncompressedBuffer);
-                    uncompressedBlock = uncompressedBuffer.AsSpan(0, blockLength);
-                }
+            // Compress the block using ReadOnlySequence/IBufferWriter overload
+            compressedBuffer.Clear();
+            Snappier.Snappy.Compress(blockSequence, compressedBuffer);
+            var compressedLength = compressedBuffer.WrittenCount;
 
-                // Compress the block
-                var compressedLength = Snappier.Snappy.Compress(uncompressedBlock, compressedBuffer);
+            // Write block header: [compressed size (4 bytes BE)][uncompressed size (4 bytes BE)]
+            var blockHeaderSpan = destination.GetSpan(8);
+            BinaryPrimitives.WriteInt32BigEndian(blockHeaderSpan, compressedLength);
+            BinaryPrimitives.WriteInt32BigEndian(blockHeaderSpan.Slice(4), blockLength);
+            destination.Advance(8);
 
-                // Write block header: [compressed size (4 bytes BE)][uncompressed size (4 bytes BE)]
-                var blockHeaderSpan = destination.GetSpan(8);
-                BinaryPrimitives.WriteInt32BigEndian(blockHeaderSpan, compressedLength);
-                BinaryPrimitives.WriteInt32BigEndian(blockHeaderSpan.Slice(4), blockLength);
-                destination.Advance(8);
+            // Write compressed data
+            var compressedSpan = destination.GetSpan(compressedLength);
+            compressedBuffer.WrittenSpan.CopyTo(compressedSpan);
+            destination.Advance(compressedLength);
 
-                // Write compressed data
-                var compressedSpan = destination.GetSpan(compressedLength);
-                compressedBuffer.AsSpan(0, compressedLength).CopyTo(compressedSpan);
-                destination.Advance(compressedLength);
-
-                position = source.GetPosition(blockLength, position);
-                remaining -= blockLength;
-            }
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(compressedBuffer);
-            if (uncompressedBuffer != null)
-                ArrayPool<byte>.Shared.Return(uncompressedBuffer);
+            position = source.GetPosition(blockLength, position);
+            remaining -= blockLength;
         }
     }
 
@@ -126,61 +96,35 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
 
         // Process blocks
         Span<byte> blockHeader = stackalloc byte[8];
-        byte[]? compressedBuffer = null;
 
-        try
+        while (remaining >= 8)
         {
-            while (remaining >= 8)
-            {
-                // Read block header
-                source.Slice(position, 8).CopyTo(blockHeader);
-                var compressedSize = BinaryPrimitives.ReadInt32BigEndian(blockHeader);
-                var uncompressedSize = BinaryPrimitives.ReadInt32BigEndian(blockHeader.Slice(4));
+            // Read block header
+            source.Slice(position, 8).CopyTo(blockHeader);
+            var compressedSize = BinaryPrimitives.ReadInt32BigEndian(blockHeader);
+            var uncompressedSize = BinaryPrimitives.ReadInt32BigEndian(blockHeader.Slice(4));
 
-                position = source.GetPosition(8, position);
-                remaining -= 8;
+            position = source.GetPosition(8, position);
+            remaining -= 8;
 
-                if (compressedSize < 0 || uncompressedSize < 0)
-                    throw new InvalidDataException("Invalid block size in xerial-snappy data.");
+            if (compressedSize < 0 || uncompressedSize < 0)
+                throw new InvalidDataException("Invalid block size in xerial-snappy data.");
 
-                if (remaining < compressedSize)
-                    throw new InvalidDataException("Truncated xerial-snappy block.");
+            if (remaining < compressedSize)
+                throw new InvalidDataException("Truncated xerial-snappy block.");
 
-                // Ensure compressed buffer is large enough
-                if (compressedBuffer == null || compressedBuffer.Length < compressedSize)
-                {
-                    if (compressedBuffer != null)
-                        ArrayPool<byte>.Shared.Return(compressedBuffer);
-                    compressedBuffer = ArrayPool<byte>.Shared.Rent(compressedSize);
-                }
+            var compressedSequence = source.Slice(position, compressedSize);
 
-                // Copy compressed data to contiguous buffer
-                source.Slice(position, compressedSize).CopyTo(compressedBuffer);
+            // Decompress using ReadOnlySequence/IBufferWriter overload
+            // Snappier validates the compressed data internally and will throw if corrupted
+            Snappier.Snappy.Decompress(compressedSequence, destination);
 
-                // Decompress directly into destination
-                var decompressedSpan = destination.GetSpan(uncompressedSize);
-                var actualDecompressedLength = Snappier.Snappy.Decompress(
-                    compressedBuffer.AsSpan(0, compressedSize),
-                    decompressedSpan);
-
-                if (actualDecompressedLength != uncompressedSize)
-                    throw new InvalidDataException(
-                        $"Decompressed size mismatch. Expected {uncompressedSize}, got {actualDecompressedLength}.");
-
-                destination.Advance(uncompressedSize);
-
-                position = source.GetPosition(compressedSize, position);
-                remaining -= compressedSize;
-            }
-
-            if (remaining != 0)
-                throw new InvalidDataException("Trailing data after last xerial-snappy block.");
+            position = source.GetPosition(compressedSize, position);
+            remaining -= compressedSize;
         }
-        finally
-        {
-            if (compressedBuffer != null)
-                ArrayPool<byte>.Shared.Return(compressedBuffer);
-        }
+
+        if (remaining != 0)
+            throw new InvalidDataException("Trailing data after last xerial-snappy block.");
     }
 
 }
