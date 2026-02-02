@@ -35,25 +35,36 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
                 throw new InvalidOperationException($"Project {ProjectFileName} not found");
             }
 
-            var testResult = await context.DotNet().Run(
-                new DotNetRunOptions
-                {
-                    NoBuild = true,
-                    Configuration = "Release",
-                    Framework = framework,
-                    Arguments = ["--", "--log-level", "Trace", "--output", "Detailed"]
-                },
-                new CommandExecutionOptions
-                {
-                    WorkingDirectory = project.Folder!.Path,
-                    EnvironmentVariables = new Dictionary<string, string?>
-                    {
-                        ["NET_VERSION"] = framework,
-                    }
-                },
-                cancellationToken);
+            // Add 10-minute timeout to prevent indefinite hangs
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
-            results.Add(testResult);
+            try
+            {
+                var testResult = await context.DotNet().Run(
+                    new DotNetRunOptions
+                    {
+                        NoBuild = true,
+                        Configuration = "Release",
+                        Framework = framework,
+                        Arguments = ["--", "--log-level", "Trace", "--output", "Detailed"]
+                    },
+                    new CommandExecutionOptions
+                    {
+                        WorkingDirectory = project.Folder!.Path,
+                        EnvironmentVariables = new Dictionary<string, string?>
+                        {
+                            ["NET_VERSION"] = framework,
+                        }
+                    },
+                    linkedCts.Token);
+
+                results.Add(testResult);
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+            {
+                throw new TimeoutException($"Test execution for {ProjectFileName} ({framework}) exceeded 10 minute timeout");
+            }
         }
 
         return results;
