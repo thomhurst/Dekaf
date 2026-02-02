@@ -1707,15 +1707,16 @@ public sealed class RecordAccumulator : IAsyncDisposable
         var allTasks = _inFlightDeliveryTasks.Keys.ToArray();
         if (allTasks.Length > 0)
         {
-            try
+            // Wait for all tasks to complete (don't throw on first exception)
+            await Task.WhenAll(allTasks).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+
+            // CRITICAL: Task.WhenAll only observes the FIRST exception in its AggregateException
+            // When 100+ batches fail during disposal, we must observe EACH task's exception individually
+            // Otherwise the finalizer will throw UnobservedTaskException for all the other faulted tasks
+            foreach (var task in allTasks)
             {
-                // Wait for all tasks, observing any exceptions
-                await Task.WhenAll(allTasks).ConfigureAwait(false);
-            }
-            catch
-            {
-                // Expected - tasks will throw ObjectDisposedException during disposal
-                // We observe the exceptions here to prevent unobserved task exceptions
+                if (task.IsFaulted)
+                    _ = task.Exception; // Observe exception to prevent UnobservedTaskException
             }
 
             // Clean up tracked tasks
