@@ -223,19 +223,48 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // This bypasses channel overhead for 99%+ of calls after warmup.
         if (TryProduceSyncForAsync(message, out var completion))
         {
-            // If cancellation requested, return cancelled task
+            // If cancellation not possible, return task directly
             if (!cancellationToken.CanBeCanceled)
             {
                 return completion!.Task;
             }
 
-            // Return task with cancellation support
-            return new ValueTask<RecordMetadata>(completion!.Task.AsTask().WaitAsync(cancellationToken));
+            // Register cancellation to cancel the completion source
+            return RegisterCancellation(completion!, cancellationToken);
         }
 
         // Slow path: Fall back to channel-based async processing.
         // This handles first-time metadata initialization or cache misses.
         return ProduceAsyncSlow(message, cancellationToken);
+    }
+
+    private ValueTask<RecordMetadata> RegisterCancellation(
+        PooledValueTaskSource<RecordMetadata> completion,
+        CancellationToken cancellationToken)
+    {
+        // Register callback to cancel the completion source when token is cancelled
+        var registration = cancellationToken.Register(static state =>
+        {
+            var source = (PooledValueTaskSource<RecordMetadata>)state!;
+            source.TrySetCanceled(default);
+        }, completion);
+
+        // Return a task that cleans up the registration when complete
+        return new ValueTask<RecordMetadata>(AwaitWithCleanup(completion.Task, registration));
+    }
+
+    private static async Task<RecordMetadata> AwaitWithCleanup(
+        ValueTask<RecordMetadata> task,
+        CancellationTokenRegistration registration)
+    {
+        try
+        {
+            return await task.ConfigureAwait(false);
+        }
+        finally
+        {
+            await registration.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -307,8 +336,27 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Write to channel (backpressure if full)
         await _workChannel.Writer.WriteAsync(workItem, cancellationToken).ConfigureAwait(false);
 
-        // Await the result with cancellation support - source auto-returns to pool when GetResult() is called
-        return await completion.Task.AsTask().WaitAsync(cancellationToken).ConfigureAwait(false);
+        // Register cancellation if token can be cancelled
+        if (!cancellationToken.CanBeCanceled)
+        {
+            return await completion.Task.ConfigureAwait(false);
+        }
+
+        // Register cancellation to cancel the completion source
+        var registration = cancellationToken.Register(static state =>
+        {
+            var source = (PooledValueTaskSource<RecordMetadata>)state!;
+            source.TrySetCanceled(default);
+        }, completion);
+
+        try
+        {
+            return await completion.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            await registration.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     /// <inheritdoc />
