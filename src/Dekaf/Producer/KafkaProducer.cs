@@ -1639,11 +1639,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             try
             {
-                await Task.WhenAll(_workerTasks).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                // BUG FIX: Await BOTH workers and sender to ensure in-flight batches complete
+                // This prevents DeliveryTasks from hanging if timeout occurred during FlushAsync
+                await Task.WhenAll(_workerTasks.Append(_senderTask))
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false);
             }
             catch
             {
-                // Ignore
+                // Ignore timeout or cancellation - we tried our best to complete gracefully
             }
         }
 

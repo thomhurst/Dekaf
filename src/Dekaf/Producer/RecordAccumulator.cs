@@ -1166,8 +1166,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         int partition,
         ReadOnlySpan<ProducerRecordData> items)
     {
-        if (_disposed || items.Length == 0)
-            return !_disposed;
+        // BUG FIX: Check empty BEFORE reservation to avoid unnecessary memory allocation
+        if (items.Length == 0)
+            return true;
 
         // CRITICAL: Reserve BufferMemory for all records upfront
         // Calculate total estimated size for all records in the batch
@@ -1181,6 +1182,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Reserve memory before appending any records
         // This ensures we respect the BufferMemory limit and apply backpressure
         ReserveMemorySync(totalEstimatedSize);
+
+        // BUG FIX: Check disposal AFTER reservation to ensure cleanup in finally block
+        // If disposed, release the reserved memory and return
+        if (_disposed)
+        {
+            ReleaseMemory(totalEstimatedSize);
+            return false;
+        }
 
         // Track actual memory used for proper accounting
         var memoryUsed = 0;
@@ -1245,21 +1254,35 @@ public sealed class RecordAccumulator : IAsyncDisposable
                             // Track memory for this batch - it will be released when sent or on failure
                             memoryUsed += readyBatch.DataSize;
 
-                            if (!_readyBatches.Writer.TryWrite(readyBatch))
+                            // BUG FIX: Wrap in try-catch to ensure ReadyBatch cleanup if exception occurs
+                            // between Complete() and successful channel write
+                            try
                             {
-                                readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                                // Release the batch's buffer memory since it won't go through producer
-                                // Note: This releases the actual batch memory, not from our reserved pool
-                                ReleaseMemory(readyBatch.DataSize);
-                                // Subtract from our tracking since we released it
-                                memoryUsed -= readyBatch.DataSize;
-                                t_cachedBatch = null;
-                                return false;
-                            }
+                                if (!_readyBatches.Writer.TryWrite(readyBatch))
+                                {
+                                    readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                                    // Release the batch's buffer memory since it won't go through producer
+                                    // Note: This releases the actual batch memory, not from our reserved pool
+                                    ReleaseMemory(readyBatch.DataSize);
+                                    // Subtract from our tracking since we released it
+                                    memoryUsed -= readyBatch.DataSize;
+                                    t_cachedBatch = null;
+                                    return false;
+                                }
 
-                            // Batch successfully sent to channel - sender will release its memory
-                            // Return the completed batch shell to the pool for reuse
-                            _batchPool.Return(batch);
+                                // Batch successfully sent to channel - sender will release its memory
+                                // Return the completed batch shell to the pool for reuse
+                                _batchPool.Return(batch);
+                            }
+                            catch
+                            {
+                                // CRITICAL: If exception occurs after Complete(), must clean up ReadyBatch
+                                // to prevent ArrayPool leaks from pooled arrays in the batch
+                                readyBatch.Fail(new InvalidOperationException("Batch append failed"));
+                                ReleaseMemory(readyBatch.DataSize);
+                                memoryUsed -= readyBatch.DataSize;
+                                throw;
+                            }
                         }
                     }
                     t_cachedBatch = null;
