@@ -617,11 +617,22 @@ public class BufferMemoryTests
             // Act: Dispose while the task is blocked waiting for memory
             await accumulator.DisposeAsync();
 
-            // Assert: The blocking task should throw OperationCanceledException promptly
-            var exception = await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            // Assert: The blocking task should throw either OperationCanceledException or ObjectDisposedException promptly
+            // (Race condition: on fast systems, disposal might complete before the task enters ReserveMemorySync)
+            Exception? exception = null;
+            try
             {
                 await blockingTask;
-            });
+                Assert.Fail("Expected OperationCanceledException or ObjectDisposedException to be thrown");
+            }
+            catch (OperationCanceledException ex)
+            {
+                exception = ex;
+            }
+            catch (ObjectDisposedException ex)
+            {
+                exception = ex;
+            }
 
             var elapsedMs = Environment.TickCount64 - startTime;
 
