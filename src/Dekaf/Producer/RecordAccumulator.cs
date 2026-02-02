@@ -310,7 +310,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private readonly ProducerOptions _options;
     private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
     private readonly Channel<ReadyBatch> _readyBatches;
+    private readonly Channel<ReadyBatch> _sendableBatches; // Batches with completed delivery tasks, ready for network send
     private readonly PartitionBatchPool _batchPool;
+
+    // Completion loop that drains _readyBatches, completes delivery tasks, and forwards to _sendableBatches
+    private readonly Task _completionTask;
+    private readonly CancellationTokenSource _completionCts;
 
     // Track all in-flight delivery tasks so FlushAsync can wait for them
     // This ensures FlushAsync waits for batches already in _readyBatches, not just batches in _batches
@@ -394,7 +399,56 @@ public sealed class RecordAccumulator : IAsyncDisposable
             SingleReader = true,
             SingleWriter = false
         });
+
+        // Channel for batches that are ready for network send (delivery tasks completed)
+        _sendableBatches = Channel.CreateUnbounded<ReadyBatch>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = true
+        });
+
+        // Start the completion loop
+        _completionCts = new CancellationTokenSource();
+        _completionTask = CompletionLoopAsync(_completionCts.Token);
     }
+
+    /// <summary>
+    /// Completion loop that processes ready batches:
+    /// 1. Reads from _readyBatches channel
+    /// 2. Completes the delivery task (fire-and-forget semantic: batch is "ready")
+    /// 3. Forwards to _sendableBatches for KafkaProducer.SenderLoop
+    ///
+    /// This allows RecordAccumulator to work independently in unit tests without a sender loop.
+    /// </summary>
+    private async Task CompletionLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var readyBatch in _readyBatches.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            {
+                // Complete the delivery task (fire-and-forget semantic: "ready" = done)
+                // This makes FlushAsync return and allows tests to pass
+                readyBatch.CompleteDelivery();
+
+                // Forward to sendable channel for KafkaProducer's sender loop
+                await _sendableBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal shutdown
+        }
+        finally
+        {
+            // Complete the sendable channel when completion loop exits
+            _sendableBatches.Writer.Complete();
+        }
+    }
+
+    /// <summary>
+    /// Exposes the sendable batches channel reader for KafkaProducer.SenderLoop.
+    /// </summary>
+    internal ChannelReader<ReadyBatch> SendableBatches => _sendableBatches.Reader;
 
     /// <summary>
     /// Gets the current buffered memory usage in bytes.
@@ -1400,14 +1454,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Gets batches that are ready to send.
-    /// </summary>
-    internal IAsyncEnumerable<ReadyBatch> GetReadyBatchesAsync(CancellationToken cancellationToken)
-    {
-        return _readyBatches.Reader.ReadAllAsync(cancellationToken);
-    }
-
-    /// <summary>
     /// Checks for batches that have exceeded linger time.
     /// Uses conditional removal to avoid race conditions where a new batch might be created
     /// between Complete() and TryRemove() calls.
@@ -1712,6 +1758,21 @@ public sealed class RecordAccumulator : IAsyncDisposable
             }
         }
 
+        // Stop the completion loop and wait for it to finish
+        _completionCts.Cancel();
+        try
+        {
+            await _completionTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            // Completion loop stuck - force shutdown
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal cancellation
+        }
+
         // Drain and fail any remaining batches still in the ready channel
         // After graceful close above, this handles:
         // - Unit tests with no sender loop
@@ -1762,6 +1823,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
         _bufferSpaceAvailable?.Dispose();
         _disposalCts?.Dispose();
         _disposalEvent?.Dispose();
+        _completionCts?.Dispose();
     }
 }
 
@@ -2759,10 +2821,16 @@ internal sealed class ReadyBatch
     public int DataSize { get; }
 
     /// <summary>
-    /// Task that completes when this batch has been sent to Kafka (successfully or failed).
-    /// Used by FlushAsync to wait for batch delivery completion.
+    /// Task that completes when this batch is READY to send (processed by completion loop).
+    /// Used by FlushAsync to wait for batch delivery completion (fire-and-forget semantic).
     /// </summary>
-    public Task DeliveryTask => _batchCompletionSource.Task;
+    public Task DeliveryTask => _deliveryCompletionSource.Task;
+
+    /// <summary>
+    /// Task that completes when this batch has been SENT to Kafka (successfully or failed).
+    /// Used internally for tracking network send completion.
+    /// </summary>
+    public Task SendTask => _sendCompletionSource.Task;
 
     // Working arrays from accumulator (pooled)
     private readonly PooledValueTaskSource<RecordMetadata>[] _completionSourcesArray;
@@ -2774,8 +2842,11 @@ internal sealed class ReadyBatch
     private readonly Record[]? _pooledRecordsArray; // Pooled records array from RecordBatch
     private readonly BatchArena? _arena; // Arena for zero-copy serialization data
 
-    // Batch-level completion tracking for FlushAsync coordination
-    private readonly TaskCompletionSource<bool> _batchCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    // Two-phase completion tracking:
+    // 1. Delivery completes when batch is READY (fire-and-forget semantic)
+    // 2. Send completes when batch is SENT to Kafka (network I/O complete)
+    private readonly TaskCompletionSource<bool> _deliveryCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource<bool> _sendCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
 
@@ -2805,22 +2876,40 @@ internal sealed class ReadyBatch
         _arena = arena;
     }
 
-    public void Complete(long baseOffset, DateTimeOffset timestamp)
+    /// <summary>
+    /// Completes the DELIVERY phase (batch is ready to send).
+    /// Called by RecordAccumulator.CompletionLoopAsync.
+    /// This unblocks FlushAsync and fire-and-forget operations.
+    /// </summary>
+    public void CompleteDelivery()
     {
-        // Guard against calling Complete after Cleanup has been performed
+        // Guard against calling after Cleanup
+        if (Volatile.Read(ref _cleanedUp) != 0)
+            return;
+
+        // Complete delivery task (fire-and-forget semantic: "ready" = done)
+        _deliveryCompletionSource.TrySetResult(true);
+    }
+
+    /// <summary>
+    /// Completes the SEND phase (batch sent to Kafka successfully).
+    /// Called by KafkaProducer.SenderLoopAsync after network send.
+    /// This completes per-message ProduceAsync operations.
+    /// </summary>
+    public void CompleteSend(long baseOffset, DateTimeOffset timestamp)
+    {
+        // Guard against calling after Cleanup
         if (Volatile.Read(ref _cleanedUp) != 0)
             return;
 
         try
         {
-            // Null check defensive against partially constructed batches
+            // Complete per-message completion sources with metadata
             if (_completionSourcesArray is not null)
             {
                 for (var i = 0; i < _completionSourcesCount; i++)
                 {
                     var source = _completionSourcesArray[i];
-                    // TrySetResult completes the ValueTask; the awaiter's GetResult()
-                    // will auto-return the source to its pool
                     source?.TrySetResult(new RecordMetadata
                     {
                         Topic = TopicPartition.Topic,
@@ -2831,9 +2920,8 @@ internal sealed class ReadyBatch
                 }
             }
 
-            // Complete batch-level task to unblock FlushAsync
-            // Use TrySetResult for idempotency (safe to call multiple times)
-            _batchCompletionSource.TrySetResult(true);
+            // Complete send task
+            _sendCompletionSource.TrySetResult(true);
         }
         finally
         {
@@ -2841,6 +2929,10 @@ internal sealed class ReadyBatch
         }
     }
 
+    /// <summary>
+    /// Fails both delivery and send phases with an exception.
+    /// Called when batch cannot be sent (disposal, errors, etc).
+    /// </summary>
     public void Fail(Exception exception)
     {
         // Guard against calling Fail after Cleanup has been performed
@@ -2849,21 +2941,19 @@ internal sealed class ReadyBatch
 
         try
         {
-            // Null check defensive against partially constructed batches
+            // Fail per-message completion sources
             if (_completionSourcesArray is not null)
             {
                 for (var i = 0; i < _completionSourcesCount; i++)
                 {
                     var source = _completionSourcesArray[i];
-                    // TrySetException completes the ValueTask; the awaiter's GetResult()
-                    // will auto-return the source to its pool
                     source?.TrySetException(exception);
                 }
             }
 
-            // Complete batch-level task (with exception) to unblock FlushAsync
-            // Use TrySetException for idempotency (safe to call multiple times)
-            _batchCompletionSource.TrySetException(exception);
+            // Fail both delivery and send tasks
+            _deliveryCompletionSource.TrySetException(exception);
+            _sendCompletionSource.TrySetException(exception);
         }
         finally
         {

@@ -1225,7 +1225,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     private async Task SenderLoopAsync(CancellationToken cancellationToken)
     {
-        await foreach (var batch in _accumulator.GetReadyBatchesAsync(cancellationToken).ConfigureAwait(false))
+        await foreach (var batch in _accumulator.SendableBatches.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
             try
             {
@@ -1383,7 +1383,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 // Offset is unknown (-1) for fire-and-forget
                 _logger?.LogDebug("[SendBatch] COMPLETE (fire-and-forget) {Topic}-{Partition}",
                     batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                batch.Complete(-1, DateTimeOffset.UtcNow);
+                batch.CompleteSend(-1, DateTimeOffset.UtcNow);
 
                 // Memory will be released in finally block
                 return;
@@ -1489,7 +1489,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             _logger?.LogDebug("[SendBatch] COMPLETE (normal) {Topic}-{Partition} at offset {Offset}",
                 batch.TopicPartition.Topic, batch.TopicPartition.Partition, partitionResponse.BaseOffset);
-            batch.Complete(partitionResponse.BaseOffset, timestamp);
+            batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
 
 
             // Memory will be released in finally block
