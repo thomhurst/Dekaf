@@ -318,6 +318,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private readonly ulong _maxBufferMemory;
     private long _bufferedBytes;
     private readonly SemaphoreSlim _bufferSpaceAvailable = new(1, 1);
+    private readonly CancellationTokenSource _disposalCts = new();
 
     // Thread-local cache for fast path when consecutive messages go to the same partition.
     // This eliminates ConcurrentDictionary lookups for the common case of sending multiple
@@ -487,9 +488,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
             return;
         }
 
-        // Slow path: spin-wait for space to become available with timeout protection
+        // Slow path: wait for space with timeout and cancellation support
         var spinWait = new SpinWait();
-        // Protect against overflow if DeliveryTimeoutMs is configured to a very large value
         var currentTicks = Environment.TickCount64;
         var deadline = (long.MaxValue - currentTicks > _options.DeliveryTimeoutMs)
             ? currentTicks + _options.DeliveryTimeoutMs
@@ -497,16 +497,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         while (!TryReserveMemory(recordSize))
         {
-            if (_disposed)
-                return;
+            // Check cancellation on every iteration to ensure prompt disposal detection
+            _disposalCts.Token.ThrowIfCancellationRequested();
 
-            // SpinWait starts with spinning (busy loop), then yields, then sleeps(0), then sleeps(1)
-            // Only check timeout after we transition out of the busy spin phase to minimize overhead
-            // NextSpinWillYield is true after ~10 spins, which takes ~100-200ns total
+            // Check timeout after we transition out of the busy spin phase
             if (spinWait.NextSpinWillYield)
             {
-                // Check if we've exceeded the delivery timeout
-                // Only checked when yielding/sleeping, not during fast spinning
                 if (Environment.TickCount64 > deadline)
                 {
                     throw new TimeoutException(
@@ -517,7 +513,28 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 }
             }
 
-            spinWait.SpinOnce();
+            // Use SpinOnce for the first ~10 iterations (busy spin), then custom sleep
+            // This ensures responsive cancellation while maintaining good performance
+            if (spinWait.Count < 10)
+            {
+                spinWait.SpinOnce();
+            }
+            else
+            {
+                // After initial spinning, use short sleeps that check cancellation frequently
+                // Use Thread.Sleep(0) to yield, then Thread.Sleep(1) for longer waits
+                // This allows cancellation checks every 1ms instead of waiting for SpinWait's sleep
+                if (spinWait.Count < 20)
+                {
+                    Thread.Sleep(0); // Yield to other threads
+                }
+                else
+                {
+                    // Sleep for 1ms max, allowing cancellation check every millisecond
+                    Thread.Sleep(1);
+                }
+                spinWait.SpinOnce(-1); // Increment count without the sleep logic
+            }
         }
     }
 
@@ -1537,6 +1554,16 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         _disposed = true;
 
+        // Cancel the disposal token to interrupt any blocked operations
+        try
+        {
+            _disposalCts.Cancel();
+        }
+        catch
+        {
+            // Ignore exceptions during cancellation
+        }
+
         // Invalidate thread-local caches if they point to this accumulator
         if (t_cachedAccumulator == this)
         {
@@ -1595,8 +1622,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Clear the batch pool
         _batchPool.Clear();
 
-        // Dispose the semaphore to prevent resource leak
+        // Dispose resources to prevent leaks
         _bufferSpaceAvailable?.Dispose();
+        _disposalCts?.Dispose();
     }
 }
 

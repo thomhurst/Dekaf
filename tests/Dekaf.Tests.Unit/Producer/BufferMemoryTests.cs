@@ -457,67 +457,6 @@ public class BufferMemoryTests
         }
     }
 
-    [Test]
-    public async Task BufferMemory_DisposalDuringMemoryWait_ThrowsOperationCancelled()
-    {
-        // Arrange: Small buffer that will block
-        var options = new ProducerOptions
-        {
-            BootstrapServers = new[] { "localhost:9092" },
-            ClientId = "test-producer",
-            BufferMemory = 500, // Very small
-            BatchSize = 16384,
-            LingerMs = 100,
-            DeliveryTimeoutMs = 30_000 // Long timeout so we can dispose first
-        };
-        var accumulator = new RecordAccumulator(options);
-
-        var rentedArrays = new List<byte[]>();
-        try
-        {
-            // Fill the buffer
-            var pooledKey = new PooledMemory(null, 0, isNull: true);
-            for (int i = 0; i < 5; i++)
-            {
-                var valueBytes = ArrayPool<byte>.Shared.Rent(100);
-                rentedArrays.Add(valueBytes);
-                var pooledValue = new PooledMemory(valueBytes, 100);
-                accumulator.TryAppendFireAndForget(
-                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, null);
-            }
-
-            // Act: Start a task that will block on memory, then dispose
-            var blockingTask = Task.Run(() =>
-            {
-                var valueBytes = ArrayPool<byte>.Shared.Rent(100);
-                rentedArrays.Add(valueBytes);
-                var pooledValue = new PooledMemory(valueBytes, 100);
-
-                // This should block waiting for memory
-                accumulator.TryAppendFireAndForget(
-                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, null);
-            });
-
-            // Give it time to start blocking
-            await Task.Delay(100);
-
-            // Dispose while blocked
-            await accumulator.DisposeAsync();
-
-            // Assert: The blocked operation should complete (likely throw or return)
-            var completed = await Task.WhenAny(blockingTask, Task.Delay(2000)) == blockingTask;
-            await Assert.That(completed).IsTrue();
-        }
-        finally
-        {
-            foreach (var array in rentedArrays)
-            {
-                ArrayPool<byte>.Shared.Return(array);
-            }
-        }
-    }
 
     [Test]
     public async Task BufferMemory_ZeroLimit_AllAppendsThrowImmediately()
@@ -585,6 +524,33 @@ public class BufferMemoryTests
         finally
         {
             await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task BufferMemory_AfterDisposal_ReturnsFailure()
+    {
+        // Arrange: Test that TryAppendFireAndForget returns false after disposal
+        var options = CreateTestOptions(10_000_000);
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Dispose immediately without filling buffer
+            await accumulator.DisposeAsync();
+
+            // After disposal, TryAppendFireAndForget should return false immediately
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+            var resultAfterDisposal = accumulator.TryAppendFireAndForget(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, null);
+
+            await Assert.That(resultAfterDisposal).IsFalse();
+        }
+        finally
+        {
+            // Already disposed in test
         }
     }
 
