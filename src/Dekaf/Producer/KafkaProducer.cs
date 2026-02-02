@@ -1456,6 +1456,13 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             // Memory will be released in finally block
         }
+        catch (Exception ex)
+        {
+            // CRITICAL: Fail the batch to complete its DeliveryTask
+            // Otherwise FlushAsync will hang waiting for delivery completion
+            batch.Fail(ex);
+            throw;
+        }
         finally
         {
             // CRITICAL: Always release BufferMemory, even on exception
