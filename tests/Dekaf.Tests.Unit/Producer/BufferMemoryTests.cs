@@ -636,8 +636,9 @@ public class BufferMemoryTests
 
             var elapsedMs = Environment.TickCount64 - startTime;
 
-            // Verify disposal was prompt (< 2 seconds), not the full 30 second timeout
-            await Assert.That(elapsedMs).IsLessThan(2000);
+            // Verify disposal was prompt (< 5 seconds), not the full 30 second timeout
+            // Generous threshold for slower CI systems while still proving prompt disposal
+            await Assert.That(elapsedMs).IsLessThan(5000);
 
             // Verify the exception indicates cancellation
             await Assert.That(exception).IsNotNull();

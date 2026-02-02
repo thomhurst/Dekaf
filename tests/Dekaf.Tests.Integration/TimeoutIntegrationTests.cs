@@ -93,20 +93,28 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             .WithClientId("test-producer-disposal-timeout")
             .Build();
 
-        // Act - Produce a message to establish connection
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        try
         {
-            Topic = topic,
-            Key = "key1",
-            Value = "value1"
-        }).ConfigureAwait(false);
+            // Act - Produce a message to establish connection
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = "key1",
+                Value = "value1"
+            }).ConfigureAwait(false);
 
-        // Dispose with timeout to ensure it doesn't hang
-        var disposeTask = producer.DisposeAsync().AsTask();
-        var completedInTime = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(35))).ConfigureAwait(false) == disposeTask;
+            // Dispose with timeout to ensure it doesn't hang
+            var disposeTask = producer.DisposeAsync().AsTask();
+            var completedInTime = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(35))).ConfigureAwait(false) == disposeTask;
 
-        // Assert - Disposal completed within timeout (30s default + 5s buffer)
-        await Assert.That(completedInTime).IsTrue();
+            // Assert - Disposal completed within timeout (30s default + 5s buffer)
+            await Assert.That(completedInTime).IsTrue();
+        }
+        finally
+        {
+            // Ensure cleanup even if test fails
+            try { await producer.DisposeAsync().ConfigureAwait(false); } catch { /* already disposed or disposing */ }
+        }
     }
 
     [Test]
@@ -317,13 +325,21 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             .WithClientId("test-producer-dispose-unused")
             .Build();
 
-        // Act - Dispose without producing
-        var startTime = Environment.TickCount64;
-        await producer.DisposeAsync().ConfigureAwait(false);
-        var elapsed = Environment.TickCount64 - startTime;
+        try
+        {
+            // Act - Dispose without producing
+            var startTime = Environment.TickCount64;
+            await producer.DisposeAsync().ConfigureAwait(false);
+            var elapsed = Environment.TickCount64 - startTime;
 
-        // Assert - Should complete quickly (< 2 seconds)
-        await Assert.That(elapsed).IsLessThan(2000);
+            // Assert - Should complete quickly (< 2 seconds)
+            await Assert.That(elapsed).IsLessThan(2000);
+        }
+        finally
+        {
+            // Ensure cleanup even if test fails
+            try { await producer.DisposeAsync().ConfigureAwait(false); } catch { /* already disposed */ }
+        }
     }
 
     [Test]
@@ -335,27 +351,35 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             .WithClientId("test-producer-dispose-after-failure")
             .Build();
 
-        // Try to produce (will fail to connect)
         try
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            // Try to produce (will fail to connect)
+            try
             {
-                Topic = "test-topic",
-                Key = "key1",
-                Value = "value1"
-            }).ConfigureAwait(false);
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = "test-topic",
+                    Key = "key1",
+                    Value = "value1"
+                }).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Expected to fail
+            }
+
+            // Act - Dispose after failed connection
+            var disposeTask = producer.DisposeAsync().AsTask();
+            var completedInTime = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(10))).ConfigureAwait(false) == disposeTask;
+
+            // Assert - Should complete within timeout
+            await Assert.That(completedInTime).IsTrue();
         }
-        catch
+        finally
         {
-            // Expected to fail
+            // Ensure cleanup even if test fails
+            try { await producer.DisposeAsync().ConfigureAwait(false); } catch { /* already disposed or disposing */ }
         }
-
-        // Act - Dispose after failed connection
-        var disposeTask = producer.DisposeAsync().AsTask();
-        var completedInTime = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(10))).ConfigureAwait(false) == disposeTask;
-
-        // Assert - Should complete within timeout
-        await Assert.That(completedInTime).IsTrue();
     }
 
     [Test]
@@ -403,23 +427,31 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             .WithClientId("test-producer-concurrent-dispose")
             .Build();
 
-        // Produce a message to establish connection
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        try
         {
-            Topic = topic,
-            Key = "key1",
-            Value = "value1"
-        }).ConfigureAwait(false);
+            // Produce a message to establish connection
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = "key1",
+                Value = "value1"
+            }).ConfigureAwait(false);
 
-        // Act - Dispose from multiple threads simultaneously
-        var disposeTasks = new List<Task>();
-        for (int i = 0; i < 5; i++)
-        {
-            disposeTasks.Add(Task.Run(async () => await producer.DisposeAsync().AsTask().ConfigureAwait(false)));
+            // Act - Dispose from multiple threads simultaneously
+            var disposeTasks = new List<Task>();
+            for (int i = 0; i < 5; i++)
+            {
+                disposeTasks.Add(Task.Run(async () => await producer.DisposeAsync().AsTask().ConfigureAwait(false)));
+            }
+
+            // Assert - All dispose calls complete without exception
+            await Task.WhenAll(disposeTasks).ConfigureAwait(false);
         }
-
-        // Assert - All dispose calls complete without exception
-        await Task.WhenAll(disposeTasks).ConfigureAwait(false);
+        finally
+        {
+            // Ensure cleanup even if test fails
+            try { await producer.DisposeAsync().ConfigureAwait(false); } catch { /* already disposed */ }
+        }
     }
 
     // ==================== COMPREHENSIVE CANCELLATION EDGE CASES ====================
@@ -763,19 +795,26 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             .WithClientId("test-dispose-during-produce")
             .Build();
 
-        // Act - Dispose immediately
-        await producer.DisposeAsync().ConfigureAwait(false);
-
-        // Assert - Should throw ObjectDisposedException
-        await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+        try
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            // Act - Dispose immediately
+            await producer.DisposeAsync().ConfigureAwait(false);
+
+            // Assert - Should throw ObjectDisposedException
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
             {
-                Topic = topic,
-                Key = "key1",
-                Value = "value1"
-            }).ConfigureAwait(false);
-        });
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = "key1",
+                    Value = "value1"
+                }).ConfigureAwait(false);
+            });
+        }
+        finally
+        {
+            try { await producer.DisposeAsync().ConfigureAwait(false); } catch { /* already disposed */ }
+        }
     }
 
     [Test]
