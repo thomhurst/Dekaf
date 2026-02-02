@@ -555,6 +555,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
         {
             // Already at max count, ignore
         }
+        catch (ObjectDisposedException)
+        {
+            // Accumulator is disposed, semaphore no longer valid - ignore
+        }
     }
 
     /// <summary>
@@ -752,7 +756,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
             var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
 
             if (result.Success)
+            {
+                // Release the difference between estimated and actual size to prevent memory leak
+                // The actual batch memory will be released when the batch is sent via SendBatchAsync
+                var overestimate = recordSize - result.ActualSizeAdded;
+                if (overestimate > 0)
+                    ReleaseMemory(overestimate);
                 return result;
+            }
 
             // Batch is full - atomically remove it from dictionary BEFORE completing.
             // Only the thread that wins the TryRemove race will complete the batch.
@@ -856,7 +867,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
             var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
 
             if (result.Success)
+            {
+                // Release the difference between estimated and actual size to prevent memory leak
+                // The actual batch memory will be released when the batch is sent via SendBatchAsync
+                var overestimate = recordSize - result.ActualSizeAdded;
+                if (overestimate > 0)
+                    ReleaseMemory(overestimate);
                 return true;
+            }
 
             // Batch is full - atomically remove it from dictionary BEFORE completing.
             // Only the thread that wins the TryRemove race will complete the batch.
@@ -917,13 +935,25 @@ public sealed class RecordAccumulator : IAsyncDisposable
         {
             var result = cachedBatch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
             if (result.Success)
+            {
+                // Release the difference between estimated and actual size to prevent memory leak
+                var overestimate = recordSize - result.ActualSizeAdded;
+                if (overestimate > 0)
+                    ReleaseMemory(overestimate);
                 return true;
+            }
 
             // Cached batch is full - try fast-path rotation using cached TopicPartition
             if (t_cachedTopicPartition.Topic == topic && t_cachedTopicPartition.Partition == partition)
             {
-                return TryRotateBatchFastPath(cachedBatch, t_cachedTopicPartition, topic, partition,
-                    timestamp, key, value, headers, pooledHeaderArray);
+                var rotated = TryRotateBatchFastPath(cachedBatch, t_cachedTopicPartition, topic, partition,
+                    timestamp, key, value, headers, pooledHeaderArray, recordSize);
+
+                // If rotation failed, release reserved memory before returning
+                if (!rotated)
+                    ReleaseMemory(recordSize);
+
+                return rotated;
             }
         }
 
@@ -938,6 +968,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var result = mpCachedBatch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
                 if (result.Success)
                 {
+                    // Release the difference between estimated and actual size to prevent memory leak
+                    var overestimate = recordSize - result.ActualSizeAdded;
+                    if (overestimate > 0)
+                        ReleaseMemory(overestimate);
+
                     // Also update single-partition cache for potential consecutive hits
                     t_cachedAccumulator = this;
                     t_cachedTopic = topic;
@@ -968,7 +1003,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
         PooledMemory key,
         PooledMemory value,
         IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray)
+        RecordHeader[]? pooledHeaderArray,
+        int recordSize)
     {
         // Atomically remove the old batch from dictionary BEFORE completing.
         // Only the thread that wins the TryRemove race will complete the batch.
@@ -1013,6 +1049,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         if (result.Success)
         {
+            // Release the difference between estimated and actual size to prevent memory leak
+            var overestimate = recordSize - result.ActualSizeAdded;
+            if (overestimate > 0)
+                ReleaseMemory(overestimate);
+
             // Update caches
             t_cachedBatch = newBatch;
 
@@ -1102,6 +1143,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
             if (result.Success)
             {
+                // Release the difference between estimated and actual size to prevent memory leak
+                var overestimate = recordSize - result.ActualSizeAdded;
+                if (overestimate > 0)
+                    ReleaseMemory(overestimate);
+
                 // Update single-partition cache for consecutive hits
                 t_cachedAccumulator = this;
                 t_cachedTopic = topic;
@@ -1166,82 +1212,147 @@ public sealed class RecordAccumulator : IAsyncDisposable
         int partition,
         ReadOnlySpan<ProducerRecordData> items)
     {
-        if (_disposed || items.Length == 0)
-            return !_disposed;
+        // BUG FIX: Check empty BEFORE reservation to avoid unnecessary memory allocation
+        if (items.Length == 0)
+            return true;
 
-        // Get or create TopicPartition (cached)
-        var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
-        var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
-
-        var startIndex = 0;
-
-        // Loop until all records are appended
-        while (startIndex < items.Length)
+        // CRITICAL: Reserve BufferMemory for all records upfront
+        // Calculate total estimated size for all records in the batch
+        var totalEstimatedSize = 0;
+        for (var i = 0; i < items.Length; i++)
         {
-            // Get or create batch
-            if (!_batches.TryGetValue(topicPartition, out var batch))
-            {
-                // Rent from pool and try to add
-                var newBatch = _batchPool.Rent(topicPartition);
-                if (!_batches.TryAdd(topicPartition, newBatch))
-                {
-                    // Another thread added a batch, return ours to pool
-                    _batchPool.Return(newBatch);
-                    // Use TryGetValue since the batch might have been removed already
-                    if (!_batches.TryGetValue(topicPartition, out batch))
-                    {
-                        continue; // Retry the loop
-                    }
-                }
-                else
-                {
-                    batch = newBatch;
-                }
-            }
-
-            // Try to append remaining records
-            var appended = batch.TryAppendFireAndForgetBatch(items, startIndex);
-
-            if (appended > 0)
-            {
-                startIndex += appended;
-
-                // Update thread-local cache
-                t_cachedAccumulator = this;
-                t_cachedTopic = topic;
-                t_cachedPartition = partition;
-                t_cachedTopicPartition = topicPartition;
-                t_cachedBatch = batch;
-            }
-
-            // If we haven't appended all, batch is full
-            if (startIndex < items.Length)
-            {
-                // Atomically remove the completed batch BEFORE completing.
-                // Only the thread that wins the TryRemove race will complete the batch.
-                if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
-                {
-                    var readyBatch = batch.Complete();
-                    if (readyBatch is not null)
-                    {
-                        if (!_readyBatches.Writer.TryWrite(readyBatch))
-                        {
-                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            // Release the batch's buffer memory since it won't go through producer
-                            ReleaseMemory(readyBatch.DataSize);
-                            t_cachedBatch = null;
-                            return false;
-                        }
-
-                        // Return the completed batch shell to the pool for reuse
-                        _batchPool.Return(batch);
-                    }
-                }
-                t_cachedBatch = null;
-            }
+            var item = items[i];
+            totalEstimatedSize += PartitionBatch.EstimateRecordSize(item.Key.Length, item.Value.Length, item.Headers);
         }
 
-        return true;
+        // Reserve memory before appending any records
+        // This ensures we respect the BufferMemory limit and apply backpressure
+        ReserveMemorySync(totalEstimatedSize);
+
+        // BUG FIX: Check disposal AFTER reservation to ensure cleanup in finally block
+        // If disposed, release the reserved memory and return
+        if (_disposed)
+        {
+            ReleaseMemory(totalEstimatedSize);
+            return false;
+        }
+
+        // Track actual memory used for proper accounting
+        var memoryUsed = 0;
+
+        try
+        {
+            // Get or create TopicPartition (cached)
+            var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
+            var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
+
+            var startIndex = 0;
+
+            // Loop until all records are appended
+            while (startIndex < items.Length)
+            {
+                // Get or create batch
+                if (!_batches.TryGetValue(topicPartition, out var batch))
+                {
+                    // Rent from pool and try to add
+                    var newBatch = _batchPool.Rent(topicPartition);
+                    if (!_batches.TryAdd(topicPartition, newBatch))
+                    {
+                        // Another thread added a batch, return ours to pool
+                        _batchPool.Return(newBatch);
+                        // Use TryGetValue since the batch might have been removed already
+                        if (!_batches.TryGetValue(topicPartition, out batch))
+                        {
+                            continue; // Retry the loop
+                        }
+                    }
+                    else
+                    {
+                        batch = newBatch;
+                    }
+                }
+
+                // Try to append remaining records
+                var appended = batch.TryAppendFireAndForgetBatch(items, startIndex);
+
+                if (appended > 0)
+                {
+                    startIndex += appended;
+
+                    // Update thread-local cache
+                    t_cachedAccumulator = this;
+                    t_cachedTopic = topic;
+                    t_cachedPartition = partition;
+                    t_cachedTopicPartition = topicPartition;
+                    t_cachedBatch = batch;
+                }
+
+                // If we haven't appended all, batch is full
+                if (startIndex < items.Length)
+                {
+                    // Atomically remove the completed batch BEFORE completing.
+                    // Only the thread that wins the TryRemove race will complete the batch.
+                    if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
+                    {
+                        var readyBatch = batch.Complete();
+                        if (readyBatch is not null)
+                        {
+                            // Track memory for this batch - it will be released when sent or on failure
+                            memoryUsed += readyBatch.DataSize;
+
+                            // BUG FIX: Wrap in try-catch to ensure ReadyBatch cleanup if exception occurs
+                            // between Complete() and successful channel write
+                            try
+                            {
+                                if (!_readyBatches.Writer.TryWrite(readyBatch))
+                                {
+                                    readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                                    // Release the batch's buffer memory since it won't go through producer
+                                    // Note: This releases the actual batch memory, not from our reserved pool
+                                    ReleaseMemory(readyBatch.DataSize);
+                                    // Subtract from our tracking since we released it
+                                    memoryUsed -= readyBatch.DataSize;
+                                    t_cachedBatch = null;
+                                    return false;
+                                }
+
+                                // Batch successfully sent to channel - sender will release its memory
+                                // Return the completed batch shell to the pool for reuse
+                                _batchPool.Return(batch);
+                            }
+                            catch
+                            {
+                                // CRITICAL: If exception occurs after Complete(), must clean up ReadyBatch
+                                // to prevent ArrayPool leaks from pooled arrays in the batch
+                                readyBatch.Fail(new InvalidOperationException("Batch append failed"));
+                                // Release the batch memory here since it won't reach SendBatchAsync
+                                ReleaseMemory(readyBatch.DataSize);
+                                // NOTE: Don't decrement memoryUsed - this keeps the accounting correct:
+                                // - Catch releases: readyBatch.DataSize (actual batch)
+                                // - Finally releases: totalEstimatedSize - memoryUsed (overestimate portion)
+                                // - Together they equal totalEstimatedSize (correct accounting)
+                                throw;
+                            }
+                        }
+                    }
+                    t_cachedBatch = null;
+                }
+            }
+
+            return true;
+        }
+        finally
+        {
+            // CRITICAL: Release any unused reserved memory
+            // We reserved totalEstimatedSize but only used memoryUsed (actual batch sizes)
+            // The difference must be released to prevent permanent memory leak
+            // Note: memoryUsed batches will be released by SendBatchAsync when sent
+            var unusedMemory = totalEstimatedSize - memoryUsed;
+            if (unusedMemory > 0)
+            {
+                ReleaseMemory(unusedMemory);
+            }
+        }
     }
 
     /// <summary>
@@ -1315,10 +1426,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Flushes all batches.
+    /// Flushes all batches and waits for them to be delivered to Kafka.
     /// </summary>
     /// <remarks>
     /// Optimized to avoid async state machine allocation when there are no batches to flush.
+    /// Respects caller's cancellation token - if no timeout is provided, will wait indefinitely.
     /// </remarks>
     public ValueTask FlushAsync(CancellationToken cancellationToken)
     {
@@ -1333,6 +1445,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     private async ValueTask FlushAsyncCore(CancellationToken cancellationToken)
     {
+        Console.WriteLine($"[FlushAsync] START - batches count: {_batches.Count}");
+
+        // Step 1: Collect all batch delivery tasks BEFORE writing to channel
+        // This prevents race where batch completes before we collect its task
+        var deliveryTasks = new List<Task>();
+
         foreach (var kvp in _batches)
         {
             var batch = kvp.Value;
@@ -1343,6 +1461,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
+                    // Collect the delivery task BEFORE writing to channel
+                    deliveryTasks.Add(readyBatch.DeliveryTask);
+
                     // Try synchronous write first to avoid async state machine allocation
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
                     {
@@ -1353,10 +1474,17 @@ public sealed class RecordAccumulator : IAsyncDisposable
                         }
                         catch
                         {
-                            // CRITICAL: If WriteAsync fails (cancellation or disposal), fail the batch
-                            // and release memory to prevent permanent leak
-                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            ReleaseMemory(readyBatch.DataSize);
+                            // CRITICAL: Use nested try-finally to ensure memory is ALWAYS released
+                            // even if readyBatch.Fail() itself throws an exception
+                            try
+                            {
+                                readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                            }
+                            finally
+                            {
+                                // ALWAYS release memory to prevent permanent leak
+                                ReleaseMemory(readyBatch.DataSize);
+                            }
                             throw;
                         }
                     }
@@ -1365,6 +1493,22 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     _batchPool.Return(batch);
                 }
             }
+        }
+
+        Console.WriteLine($"[FlushAsync] Collected {deliveryTasks.Count} delivery tasks, now waiting...");
+
+        // Step 2: Wait for all batches to be delivered
+        // CRITICAL: No locks are held during this await, preventing deadlock
+        // The sender loop will complete these tasks when batches are sent
+        // Respect cancellation token to allow caller to timeout the wait
+        if (deliveryTasks.Count > 0)
+        {
+            await Task.WhenAll(deliveryTasks).WaitAsync(cancellationToken).ConfigureAwait(false);
+            Console.WriteLine($"[FlushAsync] All {deliveryTasks.Count} batches delivered!");
+        }
+        else
+        {
+            Console.WriteLine($"[FlushAsync] No batches to flush");
         }
     }
 
@@ -1802,7 +1946,7 @@ internal sealed class PartitionBatch
         // Use the passed-in completion source - no allocation here
         _completionSources[_completionSourceCount++] = completion;
 
-        return new RecordAppendResult(true);
+        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
     }
 
     /// <summary>
@@ -1965,7 +2109,7 @@ internal sealed class PartitionBatch
         _records[_recordCount++] = record;
         _estimatedSize += recordSize;
 
-        return new RecordAppendResult(true);
+        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
     }
 
     /// <summary>
@@ -2425,7 +2569,9 @@ internal sealed class PartitionBatch
 /// <summary>
 /// Result of appending a record.
 /// </summary>
-public readonly record struct RecordAppendResult(bool Success);
+/// <param name="Success">Whether the append succeeded</param>
+/// <param name="ActualSizeAdded">Actual size added to batch (for memory accounting). Only valid when Success=true.</param>
+public readonly record struct RecordAppendResult(bool Success, int ActualSizeAdded = 0);
 
 /// <summary>
 /// A batch ready to be sent.
@@ -2447,6 +2593,12 @@ internal sealed class ReadyBatch
     /// </summary>
     public int DataSize { get; }
 
+    /// <summary>
+    /// Task that completes when this batch has been sent to Kafka (successfully or failed).
+    /// Used by FlushAsync to wait for batch delivery completion.
+    /// </summary>
+    public Task DeliveryTask => _batchCompletionSource.Task;
+
     // Working arrays from accumulator (pooled)
     private readonly PooledValueTaskSource<RecordMetadata>[] _completionSourcesArray;
     private readonly int _completionSourcesCount;
@@ -2456,6 +2608,9 @@ internal sealed class ReadyBatch
     private readonly int _pooledHeaderArraysCount;
     private readonly Record[]? _pooledRecordsArray; // Pooled records array from RecordBatch
     private readonly BatchArena? _arena; // Arena for zero-copy serialization data
+
+    // Batch-level completion tracking for FlushAsync coordination
+    private readonly TaskCompletionSource<bool> _batchCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
 
@@ -2510,6 +2665,10 @@ internal sealed class ReadyBatch
                     });
                 }
             }
+
+            // Complete batch-level task to unblock FlushAsync
+            // Use TrySetResult for idempotency (safe to call multiple times)
+            _batchCompletionSource.TrySetResult(true);
         }
         finally
         {
@@ -2536,6 +2695,10 @@ internal sealed class ReadyBatch
                     source?.TrySetException(exception);
                 }
             }
+
+            // Complete batch-level task (with exception) to unblock FlushAsync
+            // Use TrySetException for idempotency (safe to call multiple times)
+            _batchCompletionSource.TrySetException(exception);
         }
         finally
         {

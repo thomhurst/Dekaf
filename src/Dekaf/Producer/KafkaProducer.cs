@@ -1214,10 +1214,20 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     batch.TopicPartition.Partition,
                     batch.CompletionSourcesCount);
 
-                batch.Fail(ex);
+                // CRITICAL: Protect against exceptions from batch.Fail() to prevent sender loop crash
+                try
+                {
+                    batch.Fail(ex);
+                }
+                catch (Exception failEx)
+                {
+                    // batch.Fail() should never throw, but be defensive to prevent sender loop crash
+                    _logger?.LogError(failEx, "batch.Fail() threw unexpectedly for {Topic}-{Partition}",
+                        batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+                }
 
-                // Release buffer memory now that batch is complete
-                _accumulator.ReleaseMemory(batch.DataSize);
+                // NOTE: BufferMemory is released in SendBatchAsync's finally block
+                // No need to release here to avoid double-release
             }
         }
     }
@@ -1252,46 +1262,54 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     private async Task SendBatchAsync(ReadyBatch batch, CancellationToken cancellationToken)
     {
-        var leader = await _metadataManager.GetPartitionLeaderAsync(
-            batch.TopicPartition.Topic,
-            batch.TopicPartition.Partition,
-            cancellationToken).ConfigureAwait(false);
+        // DIAGNOSTIC: Track batch entry
+        _logger?.LogDebug("[SendBatch] START {Topic}-{Partition} with {Count} messages",
+            batch.TopicPartition.Topic, batch.TopicPartition.Partition, batch.CompletionSourcesCount);
 
-        if (leader is null)
+        // CRITICAL: Use try-finally to ensure BufferMemory is ALWAYS released
+        // This prevents memory leaks when exceptions occur during batch sending
+        try
         {
-            throw new InvalidOperationException(
-                $"No leader for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}");
-        }
+            var leader = await _metadataManager.GetPartitionLeaderAsync(
+                batch.TopicPartition.Topic,
+                batch.TopicPartition.Partition,
+                cancellationToken).ConfigureAwait(false);
 
-        var connection = await _connectionPool.GetConnectionAsync(leader.NodeId, cancellationToken)
-            .ConfigureAwait(false);
+            if (leader is null)
+            {
+                throw new InvalidOperationException(
+                    $"No leader for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}");
+            }
 
-        // Ensure API version is negotiated (thread-safe initialization)
-        var apiVersion = _produceApiVersion;
-        if (apiVersion < 0)
-        {
-            apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.Produce,
-                ProduceRequest.LowestSupportedVersion,
-                ProduceRequest.HighestSupportedVersion);
-            // Use Interlocked to avoid racing with other threads
-            Interlocked.CompareExchange(ref _produceApiVersion, apiVersion, -1);
-            // Re-read in case another thread won the race
-            apiVersion = _produceApiVersion;
-        }
+            var connection = await _connectionPool.GetConnectionAsync(leader.NodeId, cancellationToken)
+                .ConfigureAwait(false);
 
-        // Capture topic name locally to ensure it doesn't change
-        var expectedTopic = batch.TopicPartition.Topic;
-        var expectedPartition = batch.TopicPartition.Partition;
+            // Ensure API version is negotiated (thread-safe initialization)
+            var apiVersion = _produceApiVersion;
+            if (apiVersion < 0)
+            {
+                apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    ApiKey.Produce,
+                    ProduceRequest.LowestSupportedVersion,
+                    ProduceRequest.HighestSupportedVersion);
+                // Use Interlocked to avoid racing with other threads
+                Interlocked.CompareExchange(ref _produceApiVersion, apiVersion, -1);
+                // Re-read in case another thread won the race
+                apiVersion = _produceApiVersion;
+            }
 
-        var request = new ProduceRequest
-        {
-            Acks = (short)_options.Acks,
-            TimeoutMs = _options.RequestTimeoutMs,
-            TransactionalId = _options.TransactionalId,
-            TopicData =
-            [
-                new ProduceRequestTopicData
+            // Capture topic name locally to ensure it doesn't change
+            var expectedTopic = batch.TopicPartition.Topic;
+            var expectedPartition = batch.TopicPartition.Partition;
+
+            var request = new ProduceRequest
+            {
+                Acks = (short)_options.Acks,
+                TimeoutMs = _options.RequestTimeoutMs,
+                TransactionalId = _options.TransactionalId,
+                TopicData =
+                [
+                    new ProduceRequestTopicData
                 {
                     Name = expectedTopic,
                     PartitionData =
@@ -1304,145 +1322,164 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                         }
                     ]
                 }
-            ]
-        };
+                ]
+            };
 
-        // Sanity check: verify the request was built correctly
-        System.Diagnostics.Debug.Assert(
-            request.TopicData[0].Name == expectedTopic,
-            $"Request topic mismatch: expected '{expectedTopic}', got '{request.TopicData[0].Name}'");
+            // Sanity check: verify the request was built correctly
+            System.Diagnostics.Debug.Assert(
+                request.TopicData[0].Name == expectedTopic,
+                $"Request topic mismatch: expected '{expectedTopic}', got '{request.TopicData[0].Name}'");
 
-        var messageCount = batch.CompletionSourcesCount;
-        var requestStartTime = DateTimeOffset.UtcNow;
+            var messageCount = batch.CompletionSourcesCount;
+            var requestStartTime = DateTimeOffset.UtcNow;
 
-        // Track request sent
-        _statisticsCollector.RecordRequestSent();
+            // Track request sent
+            _statisticsCollector.RecordRequestSent();
 
-        // Handle Acks.None (fire-and-forget) - broker doesn't send response
-        if (_options.Acks == Acks.None)
-        {
-            await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
+            // Handle Acks.None (fire-and-forget) - broker doesn't send response
+            if (_options.Acks == Acks.None)
+            {
+                await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
+                    request,
+                    (short)apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                // Track batch delivered (fire-and-forget assumes success)
+                _statisticsCollector.RecordBatchDelivered(
+                    batch.TopicPartition.Topic,
+                    batch.TopicPartition.Partition,
+                    messageCount);
+
+                // Complete with synthetic metadata since we don't get a response
+                // Offset is unknown (-1) for fire-and-forget
+                _logger?.LogDebug("[SendBatch] COMPLETE (fire-and-forget) {Topic}-{Partition}",
+                    batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+                batch.Complete(-1, DateTimeOffset.UtcNow);
+
+                // Memory will be released in finally block
+                return;
+            }
+
+            var response = await connection.SendAsync<ProduceRequest, ProduceResponse>(
                 request,
                 (short)apiVersion,
                 cancellationToken).ConfigureAwait(false);
 
-            // Track batch delivered (fire-and-forget assumes success)
+            // Track response received with latency
+            var latencyMs = (long)(DateTimeOffset.UtcNow - requestStartTime).TotalMilliseconds;
+            _statisticsCollector.RecordResponseReceived(latencyMs);
+
+            // Process response - use imperative loops to avoid LINQ allocations
+            ProduceResponseTopicData? topicResponse = null;
+            foreach (var topic in response.Responses)
+            {
+                if (topic.Name == expectedTopic)
+                {
+                    topicResponse = topic;
+                    break;
+                }
+            }
+
+            ProduceResponsePartitionData? partitionResponse = null;
+            if (topicResponse is not null)
+            {
+                foreach (var partition in topicResponse.PartitionResponses)
+                {
+                    if (partition.Index == expectedPartition)
+                    {
+                        partitionResponse = partition;
+                        break;
+                    }
+                }
+            }
+
+            if (partitionResponse is null)
+            {
+                // Track batch failed
+                _statisticsCollector.RecordBatchFailed(
+                    batch.TopicPartition.Topic,
+                    batch.TopicPartition.Partition,
+                    messageCount);
+
+                // Build diagnostic message (avoid LINQ for zero-allocation principle)
+                var sb = new System.Text.StringBuilder();
+                sb.Append("No response for partition. Expected: ");
+                sb.Append(expectedTopic);
+                sb.Append('[');
+                sb.Append(expectedPartition);
+                sb.Append("], Request topic: ");
+                sb.Append(request.TopicData[0].Name);
+                sb.Append('[');
+                sb.Append(request.TopicData[0].PartitionData[0].Index);
+                sb.Append("], Response: ");
+                for (var i = 0; i < response.Responses.Count; i++)
+                {
+                    if (i > 0) sb.Append(", ");
+                    var t = response.Responses[i];
+                    sb.Append(t.Name);
+                    sb.Append('[');
+                    for (var j = 0; j < t.PartitionResponses.Count; j++)
+                    {
+                        if (j > 0) sb.Append(',');
+                        sb.Append(t.PartitionResponses[j].Index);
+                    }
+                    sb.Append(']');
+                }
+                sb.Append(". API version: ");
+                sb.Append(apiVersion);
+                sb.Append(", Broker: ");
+                sb.Append(connection.Host);
+                sb.Append(':');
+                sb.Append(connection.Port);
+                sb.Append(", Connection #");
+                sb.Append(connection.ConnectionInstanceId);
+
+                throw new InvalidOperationException(sb.ToString());
+            }
+
+            if (partitionResponse.ErrorCode != ErrorCode.None)
+            {
+                // Track batch failed
+                _statisticsCollector.RecordBatchFailed(
+                    batch.TopicPartition.Topic,
+                    batch.TopicPartition.Partition,
+                    messageCount);
+                throw new KafkaException(partitionResponse.ErrorCode,
+                    $"Produce failed: {partitionResponse.ErrorCode}");
+            }
+
+            // Track batch delivered
             _statisticsCollector.RecordBatchDelivered(
                 batch.TopicPartition.Topic,
                 batch.TopicPartition.Partition,
                 messageCount);
 
-            // Complete with synthetic metadata since we don't get a response
-            // Offset is unknown (-1) for fire-and-forget
-            batch.Complete(-1, DateTimeOffset.UtcNow);
+            var timestamp = partitionResponse.LogAppendTimeMs > 0
+                ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
+                : DateTimeOffset.UtcNow;
 
-            // Release buffer memory now that batch is complete
+            _logger?.LogDebug("[SendBatch] COMPLETE (normal) {Topic}-{Partition} at offset {Offset}",
+                batch.TopicPartition.Topic, batch.TopicPartition.Partition, partitionResponse.BaseOffset);
+            batch.Complete(partitionResponse.BaseOffset, timestamp);
+
+            // Memory will be released in finally block
+        }
+        catch (Exception ex)
+        {
+            // CRITICAL: Fail the batch to complete its DeliveryTask
+            // Otherwise FlushAsync will hang waiting for delivery completion
+            _logger?.LogError(ex, "[SendBatch] FAIL {Topic}-{Partition} - calling batch.Fail()",
+                batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+            batch.Fail(ex);
+            throw;
+        }
+        finally
+        {
+            // CRITICAL: Always release BufferMemory, even on exception
+            // This prevents permanent memory leaks that can deadlock the producer
+            // This replaces the inline ReleaseMemory calls and the catch block in SenderLoopAsync
             _accumulator.ReleaseMemory(batch.DataSize);
-            return;
         }
-
-        var response = await connection.SendAsync<ProduceRequest, ProduceResponse>(
-            request,
-            (short)apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        // Track response received with latency
-        var latencyMs = (long)(DateTimeOffset.UtcNow - requestStartTime).TotalMilliseconds;
-        _statisticsCollector.RecordResponseReceived(latencyMs);
-
-        // Process response - use imperative loops to avoid LINQ allocations
-        ProduceResponseTopicData? topicResponse = null;
-        foreach (var topic in response.Responses)
-        {
-            if (topic.Name == expectedTopic)
-            {
-                topicResponse = topic;
-                break;
-            }
-        }
-
-        ProduceResponsePartitionData? partitionResponse = null;
-        if (topicResponse is not null)
-        {
-            foreach (var partition in topicResponse.PartitionResponses)
-            {
-                if (partition.Index == expectedPartition)
-                {
-                    partitionResponse = partition;
-                    break;
-                }
-            }
-        }
-
-        if (partitionResponse is null)
-        {
-            // Track batch failed
-            _statisticsCollector.RecordBatchFailed(
-                batch.TopicPartition.Topic,
-                batch.TopicPartition.Partition,
-                messageCount);
-
-            // Build diagnostic message (avoid LINQ for zero-allocation principle)
-            var sb = new System.Text.StringBuilder();
-            sb.Append("No response for partition. Expected: ");
-            sb.Append(expectedTopic);
-            sb.Append('[');
-            sb.Append(expectedPartition);
-            sb.Append("], Request topic: ");
-            sb.Append(request.TopicData[0].Name);
-            sb.Append('[');
-            sb.Append(request.TopicData[0].PartitionData[0].Index);
-            sb.Append("], Response: ");
-            for (var i = 0; i < response.Responses.Count; i++)
-            {
-                if (i > 0) sb.Append(", ");
-                var t = response.Responses[i];
-                sb.Append(t.Name);
-                sb.Append('[');
-                for (var j = 0; j < t.PartitionResponses.Count; j++)
-                {
-                    if (j > 0) sb.Append(',');
-                    sb.Append(t.PartitionResponses[j].Index);
-                }
-                sb.Append(']');
-            }
-            sb.Append(". API version: ");
-            sb.Append(apiVersion);
-            sb.Append(", Broker: ");
-            sb.Append(connection.Host);
-            sb.Append(':');
-            sb.Append(connection.Port);
-            sb.Append(", Connection #");
-            sb.Append(connection.ConnectionInstanceId);
-
-            throw new InvalidOperationException(sb.ToString());
-        }
-
-        if (partitionResponse.ErrorCode != ErrorCode.None)
-        {
-            // Track batch failed
-            _statisticsCollector.RecordBatchFailed(
-                batch.TopicPartition.Topic,
-                batch.TopicPartition.Partition,
-                messageCount);
-            throw new KafkaException(partitionResponse.ErrorCode,
-                $"Produce failed: {partitionResponse.ErrorCode}");
-        }
-
-        // Track batch delivered
-        _statisticsCollector.RecordBatchDelivered(
-            batch.TopicPartition.Topic,
-            batch.TopicPartition.Partition,
-            messageCount);
-
-        var timestamp = partitionResponse.LogAppendTimeMs > 0
-            ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
-            : DateTimeOffset.UtcNow;
-
-        batch.Complete(partitionResponse.BaseOffset, timestamp);
-
-        // Release buffer memory now that batch is complete
-        _accumulator.ReleaseMemory(batch.DataSize);
     }
 
     /// <summary>
@@ -1590,14 +1627,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // 3. Flush accumulator and complete its channel - sender will process remaining batches
             await _accumulator.CloseAsync(shutdownCts.Token).ConfigureAwait(false);
 
-            // 4. Cancel linger loop (no longer needed) but let sender finish
-            _senderCts.Cancel();
-
-            // 5. Wait for sender to drain remaining batches
+            // 4. Wait for sender to drain remaining batches
+            // CRITICAL: Don't cancel _senderCts yet - sender needs to process flushed batches
+            // The sender will exit naturally when the ready batches channel completes (done in CloseAsync)
             if (hasTimeout)
                 await _senderTask.WaitAsync(shutdownCts.Token).ConfigureAwait(false);
             else
                 await _senderTask.ConfigureAwait(false);
+
+            // 5. Now safe to cancel linger loop (it's already exited or will exit soon)
+            _senderCts.Cancel();
         }
         catch (OperationCanceledException)
         {
@@ -1617,11 +1656,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             try
             {
-                await Task.WhenAll(_workerTasks).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                // BUG FIX: Await BOTH workers and sender to ensure in-flight batches complete
+                // This prevents DeliveryTasks from hanging if timeout occurred during FlushAsync
+                await Task.WhenAll(_workerTasks.Append(_senderTask))
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false);
             }
             catch
             {
-                // Ignore
+                // Ignore timeout or cancellation - we tried our best to complete gracefully
             }
         }
 
