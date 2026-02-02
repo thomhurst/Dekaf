@@ -1491,6 +1491,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 // This prevents unbounded memory growth in long-running fire-and-forget scenarios
                 _ = task.ContinueWith(static (t, state) =>
                 {
+                    // Observe any exception to prevent unobserved task exception
+                    if (t.IsFaulted)
+                        _ = t.Exception;
+
                     var dict = (ConcurrentDictionary<Task, byte>)state!;
                     dict.TryRemove(t, out _);
                 }, _inFlightDeliveryTasks,
