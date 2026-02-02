@@ -209,6 +209,29 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         };
     }
 
+    /// <summary>
+    /// Asynchronously produces a message to the specified topic.
+    /// </summary>
+    /// <param name="message">The message to produce.</param>
+    /// <param name="cancellationToken">
+    /// Cancellation token that can cancel the operation <b>before</b> the message is appended to a batch.
+    /// Once appended (typically within 1-2ms), the message is committed to being sent and cancellation
+    /// will not prevent delivery. This matches Confluent.Kafka semantics.
+    /// <para>
+    /// <b>Cancellable phases:</b> Metadata lookup, channel write, memory reservation.<br/>
+    /// <b>Non-cancellable phases:</b> After message is appended to batch (message will be delivered).
+    /// </para>
+    /// </param>
+    /// <returns>
+    /// A <see cref="ValueTask{RecordMetadata}"/> representing the produce operation.
+    /// The result contains metadata about the produced message (topic, partition, offset).
+    /// </returns>
+    /// <exception cref="OperationCanceledException">
+    /// Thrown if the cancellation token is cancelled before the message is appended to a batch.
+    /// </exception>
+    /// <exception cref="ObjectDisposedException">
+    /// Thrown if the producer has been disposed.
+    /// </exception>
     public ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken = default)
@@ -223,48 +246,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // This bypasses channel overhead for 99%+ of calls after warmup.
         if (TryProduceSyncForAsync(message, out var completion))
         {
-            // If cancellation not possible, return task directly
-            if (!cancellationToken.CanBeCanceled)
-            {
-                return completion!.Task;
-            }
-
-            // Register cancellation to cancel the completion source
-            return RegisterCancellation(completion!, cancellationToken);
+            // POST-QUEUE: Message appended to batch, committed to being sent
+            // Return task directly without cancellation support (message will be delivered)
+            return completion!.Task;
         }
 
         // Slow path: Fall back to channel-based async processing.
         // This handles first-time metadata initialization or cache misses.
         return ProduceAsyncSlow(message, cancellationToken);
-    }
-
-    private ValueTask<RecordMetadata> RegisterCancellation(
-        PooledValueTaskSource<RecordMetadata> completion,
-        CancellationToken cancellationToken)
-    {
-        // Register callback to cancel the completion source when token is cancelled
-        var registration = cancellationToken.Register(static state =>
-        {
-            var source = (PooledValueTaskSource<RecordMetadata>)state!;
-            source.TrySetCanceled(default);
-        }, completion);
-
-        // Return a task that cleans up the registration when complete
-        return new ValueTask<RecordMetadata>(AwaitWithCleanup(completion.Task, registration));
-    }
-
-    private static async Task<RecordMetadata> AwaitWithCleanup(
-        ValueTask<RecordMetadata> task,
-        CancellationTokenRegistration registration)
-    {
-        try
-        {
-            return await task.ConfigureAwait(false);
-        }
-        finally
-        {
-            await registration.DisposeAsync().ConfigureAwait(false);
-        }
     }
 
     /// <summary>
@@ -333,30 +322,13 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, cancellationToken);
 
-        // Write to channel (backpressure if full)
+        // PRE-QUEUE: Channel write can be cancelled (throws OperationCanceledException)
+        // If cancelled here, completion source never gets used and returns to pool
         await _workChannel.Writer.WriteAsync(workItem, cancellationToken).ConfigureAwait(false);
 
-        // Register cancellation if token can be cancelled
-        if (!cancellationToken.CanBeCanceled)
-        {
-            return await completion.Task.ConfigureAwait(false);
-        }
-
-        // Register cancellation to cancel the completion source
-        var registration = cancellationToken.Register(static state =>
-        {
-            var source = (PooledValueTaskSource<RecordMetadata>)state!;
-            source.TrySetCanceled(default);
-        }, completion);
-
-        try
-        {
-            return await completion.Task.ConfigureAwait(false);
-        }
-        finally
-        {
-            await registration.DisposeAsync().ConfigureAwait(false);
-        }
+        // POST-QUEUE: Message in worker pipeline, committed to being sent
+        // Await result without cancellation support - source auto-returns to pool when GetResult() is called
+        return await completion.Task.ConfigureAwait(false);
     }
 
     /// <inheritdoc />
