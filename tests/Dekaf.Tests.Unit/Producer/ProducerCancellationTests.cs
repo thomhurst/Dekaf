@@ -42,42 +42,38 @@ public class ProducerCancellationTests
     }
 
     [Test]
-    public async Task RecordAccumulator_FlushAsync_CancelledDuringWait_ThrowsOperationCancelled()
+    public async Task RecordAccumulator_FlushAsync_CompletesQuicklyDueToCompletionLoop()
     {
-        // Arrange - Add messages to batches that will take time to deliver
+        // Arrange - With the new completion loop architecture, delivery tasks complete
+        // immediately when batches become ready, making fire-and-forget truly fast
         var options = new ProducerOptions
         {
             BootstrapServers = new[] { "localhost:9092" },
             ClientId = "test-producer",
             BufferMemory = 1_000_000,
             BatchSize = 16384,
-            LingerMs = 10000, // Long linger so batches don't send immediately
+            LingerMs = 10000, // Long linger, but FlushAsync expires batches immediately
             DeliveryTimeoutMs = 30_000
         };
         var accumulator = new RecordAccumulator(options);
 
         try
         {
-            // Add a message to create a batch (fire-and-forget so it won't complete)
+            // Add a message to create a batch
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
             accumulator.TryAppendFireAndForget(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 pooledKey, pooledValue, null, null);
 
-            // Act - Start flush with cancellation token
-            using var cts = new CancellationTokenSource();
-            var flushTask = accumulator.FlushAsync(cts.Token);
+            // Act - FlushAsync completes quickly because completion loop completes delivery immediately
+            using var cts = new CancellationTokenSource(100); // Generous timeout
+            var startTime = Environment.TickCount64;
+            await accumulator.FlushAsync(cts.Token);
+            var elapsed = Environment.TickCount64 - startTime;
 
-            // Cancel after a short delay
-            await Task.Delay(10);
-            cts.Cancel();
-
-            // Assert - Should throw OperationCanceledException
-            await Assert.ThrowsAsync<OperationCanceledException>(async () =>
-            {
-                await flushTask;
-            });
+            // Assert - Should complete in well under 100ms (completion loop is synchronous)
+            await Assert.That(elapsed).IsLessThan(100);
         }
         finally
         {
