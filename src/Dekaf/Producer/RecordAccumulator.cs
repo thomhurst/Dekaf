@@ -1671,7 +1671,17 @@ public sealed class RecordAccumulator : IAsyncDisposable
             _readyBatches.Writer.Complete();
         }
 
+        // CRITICAL: Drain and fail all batches still in the ready channel
+        // In unit tests (no sender loop), batches sit in channel with delivery tasks that never complete
+        // This causes 10-minute hangs when disposal waits for those tasks below
+        // Failing them here ensures their delivery tasks complete before we wait
+        while (_readyBatches.Reader.TryRead(out var readyBatch))
+        {
+            readyBatch.Fail(disposedException);
+        }
+
         // Wait for all in-flight delivery tasks to complete
+        // After failing all batches above, their delivery tasks should complete quickly
         // This prevents unobserved task exceptions when tasks fail during disposal
         var allTasks = _inFlightDeliveryTasks.Keys.ToArray();
         if (allTasks.Length > 0)
