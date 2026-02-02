@@ -1,5 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Reflection;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -466,5 +468,260 @@ public class BufferMemoryTests
     // Background tasks in RecordAccumulator continue running after DisposeAsync() completes,
     // which is expected for prompt disposal but creates GC finalization issues in tests.
     // The behavior (prompt disposal without 30-second hang) is still tested by integration tests.
+
+    // ==================== COMPLETION LOOP ARCHITECTURE TESTS ====================
+
+    [Test]
+    public async Task RecordAccumulator_DisposeWithPendingFireAndForget_CompletesGracefully()
+    {
+        // This test verifies that disposal with pending fire-and-forget batches
+        // completes gracefully via the completion loop
+
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+
+        // Add fire-and-forget messages
+        for (int i = 0; i < 10; i++)
+        {
+            accumulator.TryAppendFireAndForget(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                new PooledMemory(null, 0, isNull: true),
+                new PooledMemory(null, 0, isNull: true),
+                null, null);
+        }
+
+        // Dispose should complete quickly (completion loop processes batches)
+        var sw = Stopwatch.StartNew();
+        await accumulator.DisposeAsync();
+        sw.Stop();
+
+        // Should complete in under 3 seconds
+        await Assert.That(sw.ElapsedMilliseconds).IsLessThan(3000);
+    }
+
+    [Test]
+    public async Task ReadyBatch_TwoPhaseCompletion_DeliveryCompletesBeforeSend()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 10_000_000,
+            BatchSize = 16384,
+            LingerMs = 50 // Short linger
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Append to create batch
+            accumulator.TryAppendFireAndForget(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                new PooledMemory(null, 0, isNull: true),
+                new PooledMemory(null, 0, isNull: true),
+                null, null);
+
+            // Flush to make batch ready immediately (bypasses linger)
+            await accumulator.FlushAsync(CancellationToken.None);
+
+            // Read from SendableBatches (simulating KafkaProducer)
+            using var cts = new CancellationTokenSource(500);
+            var enumerator = accumulator.SendableBatches.ReadAllAsync(cts.Token).GetAsyncEnumerator();
+
+            var hasNext = await enumerator.MoveNextAsync();
+            await Assert.That(hasNext).IsTrue();
+
+            var batch = enumerator.Current;
+
+            // DeliveryTask should already be completed (by completion loop)
+            await Assert.That(batch.DeliveryTask.IsCompleted).IsTrue();
+
+            // SendTask should NOT be completed yet
+            await Assert.That(batch.SendTask.IsCompleted).IsFalse();
+
+            // Complete send phase
+            batch.CompleteSend(0, DateTimeOffset.UtcNow);
+
+            // Now SendTask should be completed
+            await Assert.That(batch.SendTask.IsCompleted).IsTrue();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task CompletionLoop_ProcessesAllBatches_BeforeDisposal()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 10_000_000,
+            BatchSize = 16384,
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            var batchCount = 10;
+
+            // Create multiple batches across different partitions
+            for (int i = 0; i < batchCount; i++)
+            {
+                accumulator.TryAppendFireAndForget(
+                    "test-topic", i, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    new PooledMemory(null, 0, isNull: true),
+                    new PooledMemory(null, 0, isNull: true),
+                    null, null);
+            }
+
+            // Flush to make all batches ready (bypasses linger)
+            await accumulator.FlushAsync(CancellationToken.None);
+
+            // Read all batches from SendableBatches to verify they were processed
+            var receivedCount = 0;
+            using var cts = new CancellationTokenSource(500);
+            await foreach (var batch in accumulator.SendableBatches.ReadAllAsync(cts.Token))
+            {
+                // DeliveryTask should be completed by completion loop
+                await Assert.That(batch.DeliveryTask.IsCompleted).IsTrue();
+
+                // Complete the send phase
+                batch.CompleteSend(0, DateTimeOffset.UtcNow);
+
+                receivedCount++;
+                if (receivedCount >= batchCount)
+                    break;
+            }
+
+            await Assert.That(receivedCount).IsEqualTo(batchCount);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task FlushAsync_WithoutSenderLoop_CompletesSuccessfully()
+    {
+        // This verifies the core architectural fix - FlushAsync should work
+        // even when there's no KafkaProducer sender loop consuming batches
+
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 10_000_000,
+            BatchSize = 16384,
+            LingerMs = 5000
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Add multiple fire-and-forget messages
+            for (int i = 0; i < 50; i++)
+            {
+                accumulator.TryAppendFireAndForget(
+                    "test-topic", i % 5, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    new PooledMemory(null, 0, isNull: true),
+                    new PooledMemory(null, 0, isNull: true),
+                    null, null);
+            }
+
+            // FlushAsync should complete quickly via completion loop
+            var sw = Stopwatch.StartNew();
+            await accumulator.FlushAsync(CancellationToken.None);
+            sw.Stop();
+
+            // Should complete in well under 1 second (completion loop is fast)
+            await Assert.That(sw.ElapsedMilliseconds).IsLessThan(1000);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task SendableBatches_ReceivesAllBatchesFromCompletionLoop()
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 10_000_000,
+            BatchSize = 16384,
+            LingerMs = 10
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            var batchCount = 5;
+
+            // Create batches
+            for (int i = 0; i < batchCount; i++)
+            {
+                accumulator.TryAppendFireAndForget(
+                    "test-topic", i, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    new PooledMemory(null, 0, isNull: true),
+                    new PooledMemory(null, 0, isNull: true),
+                    null, null);
+            }
+
+            // Flush to make batches ready (bypasses linger)
+            await accumulator.FlushAsync(CancellationToken.None);
+
+            // Read from SendableBatches (simulating KafkaProducer.SenderLoop)
+            var receivedBatches = 0;
+            await foreach (var batch in accumulator.SendableBatches.ReadAllAsync(
+                new CancellationTokenSource(500).Token))
+            {
+                receivedBatches++;
+
+                // Simulate sending
+                batch.CompleteSend(0, DateTimeOffset.UtcNow);
+
+                if (receivedBatches >= batchCount)
+                    break;
+            }
+
+            await Assert.That(receivedBatches).IsEqualTo(batchCount);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task CompletionLoop_StopsGracefully_OnDisposal()
+    {
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+
+        // Add some messages
+        for (int i = 0; i < 10; i++)
+        {
+            accumulator.TryAppendFireAndForget(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                new PooledMemory(null, 0, isNull: true),
+                new PooledMemory(null, 0, isNull: true),
+                null, null);
+        }
+
+        // Disposal should complete quickly (completion loop stops)
+        var sw = Stopwatch.StartNew();
+        await accumulator.DisposeAsync();
+        sw.Stop();
+
+        // Should complete in under 3 seconds
+        await Assert.That(sw.ElapsedMilliseconds).IsLessThan(3000);
+    }
 
 }
