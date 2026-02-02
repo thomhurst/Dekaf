@@ -1325,9 +1325,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
                                 // CRITICAL: If exception occurs after Complete(), must clean up ReadyBatch
                                 // to prevent ArrayPool leaks from pooled arrays in the batch
                                 readyBatch.Fail(new InvalidOperationException("Batch append failed"));
+                                // Release the batch memory here since it won't reach SendBatchAsync
                                 ReleaseMemory(readyBatch.DataSize);
-                                // NOTE: Don't decrement memoryUsed here - let finally handle all accounting
-                                // Decrementing here would cause over-release: catch releases + finally releases difference
+                                // NOTE: Don't decrement memoryUsed - this keeps the accounting correct:
+                                // - Catch releases: readyBatch.DataSize (actual batch)
+                                // - Finally releases: totalEstimatedSize - memoryUsed (overestimate portion)
+                                // - Together they equal totalEstimatedSize (correct accounting)
                                 throw;
                             }
                         }
