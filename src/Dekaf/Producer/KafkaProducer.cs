@@ -216,12 +216,21 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
+        // Check cancellation upfront before any work
+        cancellationToken.ThrowIfCancellationRequested();
+
         // Fast path: Try synchronous produce if metadata is initialized and cached.
         // This bypasses channel overhead for 99%+ of calls after warmup.
         if (TryProduceSyncForAsync(message, out var completion))
         {
-            // Return the ValueTask directly - no async state machine needed
-            return completion!.Task;
+            // If cancellation requested, return cancelled task
+            if (!cancellationToken.CanBeCanceled)
+            {
+                return completion!.Task;
+            }
+
+            // Return task with cancellation support
+            return new ValueTask<RecordMetadata>(completion!.Task.AsTask().WaitAsync(cancellationToken));
         }
 
         // Slow path: Fall back to channel-based async processing.
@@ -298,8 +307,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Write to channel (backpressure if full)
         await _workChannel.Writer.WriteAsync(workItem, cancellationToken).ConfigureAwait(false);
 
-        // Await the result - source auto-returns to pool when GetResult() is called
-        return await completion.Task.ConfigureAwait(false);
+        // Await the result with cancellation support - source auto-returns to pool when GetResult() is called
+        return await completion.Task.AsTask().WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
