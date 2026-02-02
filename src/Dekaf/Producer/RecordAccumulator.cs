@@ -450,6 +450,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         while (!TryReserveMemory(recordSize))
         {
+            // Check disposal first
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(RecordAccumulator));
+
             cancellationToken.ThrowIfCancellationRequested();
 
             // Check if we've exceeded the delivery timeout
@@ -711,6 +715,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // - Loop retries with the new batch (created by us or another thread)
         while (true)
         {
+            // Check disposal and cancellation at top of loop
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(RecordAccumulator));
+
+            cancellationToken.ThrowIfCancellationRequested();
+
             // Hot path optimization: TryGetValue first to avoid factory invocation when batch exists.
             // Most appends hit an existing batch, so this avoids GetOrAdd overhead.
             if (!_batches.TryGetValue(topicPartition, out var batch))
@@ -814,6 +824,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Loop until we successfully append the record.
         while (true)
         {
+            // Check disposal at top of loop
+            if (_disposed)
+            {
+                // Release memory before returning
+                ReleaseMemory(recordSize);
+                return false;
+            }
+
             // Hot path optimization: TryGetValue first to avoid factory invocation when batch exists.
             if (!_batches.TryGetValue(topicPartition, out var batch))
             {
@@ -1045,9 +1063,20 @@ public sealed class RecordAccumulator : IAsyncDisposable
         }
         var cacheIndex = partition & (MultiPartitionCacheSize - 1);
 
+        // Calculate record size for memory release if needed
+        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
+
         // Loop until we successfully append the record.
         while (true)
         {
+            // Check disposal at top of loop
+            if (_disposed)
+            {
+                // Release memory before returning
+                ReleaseMemory(recordSize);
+                return false;
+            }
+
             // Hot path optimization: TryGetValue first to avoid factory invocation when batch exists.
             if (!_batches.TryGetValue(topicPartition, out var batch))
             {
@@ -1421,6 +1450,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         // Clear the batch pool
         _batchPool.Clear();
+
+        // Dispose the semaphore to prevent resource leak
+        _bufferSpaceAvailable?.Dispose();
     }
 }
 
@@ -1790,6 +1822,10 @@ internal sealed class PartitionBatch
         var spinner = new SpinWait();
         while (true)
         {
+            // Early exit if already completed
+            if (_isCompleted != 0)
+                return new RecordAppendResult(false);
+
             spinner.SpinOnce();
 
             if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
@@ -2042,6 +2078,10 @@ internal sealed class PartitionBatch
         var spin = new SpinWait();
         while (true)
         {
+            // Early exit if already completed
+            if (_isCompleted != 0)
+                return new RecordAppendResult(false);
+
             if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
             {
                 try
@@ -2075,6 +2115,10 @@ internal sealed class PartitionBatch
 
         while (true)
         {
+            // Early exit if already completed
+            if (_isCompleted != 0)
+                return new RecordAppendResult(false);
+
             // Try to claim exclusive access
             if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
             {
@@ -2110,6 +2154,10 @@ internal sealed class PartitionBatch
         var spinner = new SpinWait();
         while (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) != 0)
         {
+            // Early exit if already completed
+            if (_isCompleted != 0)
+                return 0;
+
             spinner.SpinOnce();
         }
 
@@ -2249,6 +2297,10 @@ internal sealed class PartitionBatch
         var spinner = new SpinWait();
         while (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) != 0)
         {
+            // Early exit if already completed by another thread
+            if (_isCompleted != 0)
+                return _completedBatch;
+
             spinner.SpinOnce();
         }
 

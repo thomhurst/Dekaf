@@ -17,6 +17,67 @@ using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Networking;
 
+/// <summary>
+/// Helper methods for connection configuration.
+/// </summary>
+internal static class ConnectionHelper
+{
+    // Minimum pause threshold for pipeline backpressure (16 MB)
+    private const long MinimumPauseThresholdBytes = 16L * 1024 * 1024;
+
+    // Divisor for per-connection pipeline budget allocation (25% = 1/4)
+    //
+    // Rationale for 25% allocation:
+    // - BufferMemory is primarily for producer batch accumulation (main memory pool)
+    // - Pipeline buffering is a separate, transient layer for network I/O
+    // - 25% provides sufficient headroom for TCP send buffers and in-flight data
+    // - Leaves 75% for producer batches, maintaining primary allocation semantics
+    // - Prevents pipeline from consuming producer's batch memory pool
+    //
+    // Example with 32 MB BufferMemory, 2 connections per broker, 3 brokers:
+    // - Per-connection budget: 32 MB / (2 * 3) = 5.3 MB
+    // - Pipeline allocation: 5.3 MB / 4 = 1.3 MB per connection
+    // - Total pipeline memory: 1.3 MB * 6 connections = 8 MB (25% of total)
+    // - Producer batch memory: 24 MB (75% of total)
+    private const int BufferMemoryDivisor = 4;
+
+    /// <summary>
+    /// Calculates pipeline backpressure thresholds based on BufferMemory configuration.
+    /// Uses 16 MB floor for modern RAM environments, scales up proportionally with BufferMemory.
+    /// </summary>
+    /// <param name="bufferMemory">Total producer BufferMemory in bytes</param>
+    /// <param name="connectionsPerBroker">Number of connections per broker (must be positive)</param>
+    /// <returns>Tuple of (pauseThreshold, resumeThreshold) in bytes</returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown when connectionsPerBroker is less than or equal to zero.
+    /// </exception>
+    public static (long PauseThreshold, long ResumeThreshold) CalculatePipelineThresholds(
+        ulong bufferMemory,
+        int connectionsPerBroker)
+    {
+        if (connectionsPerBroker <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(connectionsPerBroker),
+                connectionsPerBroker,
+                "Connections per broker must be positive");
+        }
+
+        // Calculate per-pipe budget: BufferMemory / ConnectionsPerBroker / BufferMemoryDivisor
+        // Division by BufferMemoryDivisor reserves 1/4 of per-connection memory for pipeline buffering
+        // Use 16 MB floor for high-throughput modern environments
+        var perPipeBudget = bufferMemory / (ulong)connectionsPerBroker / BufferMemoryDivisor;
+
+        // Ensure we don't overflow long when casting
+        var pauseThreshold = perPipeBudget > (ulong)long.MaxValue
+            ? long.MaxValue
+            : Math.Max(MinimumPauseThresholdBytes, (long)perPipeBudget);
+
+        var resumeThreshold = pauseThreshold / 2;
+
+        return (pauseThreshold, resumeThreshold);
+    }
+}
 
 /// <summary>
 /// A multiplexed connection to a Kafka broker using System.IO.Pipelines.
@@ -28,6 +89,8 @@ public sealed class KafkaConnection : IKafkaConnection
     private readonly string? _clientId;
     private readonly ILogger<KafkaConnection>? _logger;
     private readonly ConnectionOptions _options;
+    private readonly ulong _bufferMemory;
+    private readonly int _connectionsPerBroker;
 
     private Socket? _socket;
     private Stream? _stream;
@@ -74,13 +137,17 @@ public sealed class KafkaConnection : IKafkaConnection
         int port,
         string? clientId = null,
         ConnectionOptions? options = null,
-        ILogger<KafkaConnection>? logger = null)
+        ILogger<KafkaConnection>? logger = null,
+        ulong bufferMemory = 33554432,
+        int connectionsPerBroker = 1)
     {
         _host = host;
         _port = port;
         _clientId = clientId;
         _options = options ?? new ConnectionOptions();
         _logger = logger;
+        _bufferMemory = bufferMemory;
+        _connectionsPerBroker = connectionsPerBroker;
     }
 
     public KafkaConnection(
@@ -89,8 +156,10 @@ public sealed class KafkaConnection : IKafkaConnection
         int port,
         string? clientId = null,
         ConnectionOptions? options = null,
-        ILogger<KafkaConnection>? logger = null)
-        : this(host, port, clientId, options, logger)
+        ILogger<KafkaConnection>? logger = null,
+        ulong bufferMemory = 33554432,
+        int connectionsPerBroker = 1)
+        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker)
     {
         BrokerId = brokerId;
     }
@@ -136,10 +205,21 @@ public sealed class KafkaConnection : IKafkaConnection
             await PerformSaslAuthenticationAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        // Calculate pipeline backpressure thresholds based on BufferMemory
+        var (pauseThreshold, resumeThreshold) = ConnectionHelper.CalculatePipelineThresholds(
+            _bufferMemory,
+            _connectionsPerBroker);
+
+        _logger?.LogDebug(
+            "Configuring pipe for broker {BrokerId}: pauseThreshold={PauseThreshold} bytes, resumeThreshold={ResumeThreshold} bytes",
+            BrokerId, pauseThreshold, resumeThreshold);
+
         var pipe = new Pipe(new PipeOptions(
             pool: MemoryPool<byte>.Shared,
             minimumSegmentSize: _options.MinimumSegmentSize,
-            useSynchronizationContext: false));
+            useSynchronizationContext: false,
+            pauseWriterThreshold: pauseThreshold,
+            resumeWriterThreshold: resumeThreshold));
 
         _reader = PipeReader.Create(_stream, new StreamPipeReaderOptions(
             pool: MemoryPool<byte>.Shared,
@@ -403,7 +483,26 @@ public sealed class KafkaConnection : IKafkaConnection
 
         _writer.Advance(4 + totalSize);
 
-        var result = await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+        // Apply RequestTimeout to flush operation
+        using var timeoutCts = new CancellationTokenSource(_options.RequestTimeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            timeoutCts.Token);
+
+        FlushResult result;
+        try
+        {
+            result = await _writer.FlushAsync(linkedCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        {
+            _logger?.LogError(
+                "Flush timeout after {Timeout}ms for request {CorrelationId} to broker {BrokerId}",
+                _options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
+
+            throw new KafkaException(
+                $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
+        }
 
         if (result.IsCompleted || result.IsCanceled)
         {
@@ -422,7 +521,30 @@ public sealed class KafkaConnection : IKafkaConnection
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                var result = await _reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+                // Apply RequestTimeout to each read operation
+                using var timeoutCts = new CancellationTokenSource(_options.RequestTimeout);
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    timeoutCts.Token);
+
+                ReadResult result;
+                try
+                {
+                    result = await _reader.ReadAsync(linkedCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+                {
+                    _logger?.LogError(
+                        "Receive timeout after {Timeout}ms on broker {BrokerId} - marking connection as failed",
+                        _options.RequestTimeout.TotalMilliseconds, BrokerId);
+
+                    // Mark connection as failed to trigger reconnection
+                    _disposed = true;
+
+                    throw new KafkaException(
+                        $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
+                }
+
                 var buffer = result.Buffer;
 
                 _logger?.LogTrace("Received {Length} bytes from {Host}:{Port}", buffer.Length, _host, _port);
