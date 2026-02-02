@@ -197,4 +197,256 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
         }
     }
+
+    // ==================== EDGE CASE TESTS ====================
+
+    [Test]
+    public async Task Producer_ProduceAsync_WithCancelledToken_ThrowsImmediately()
+    {
+        // Arrange - Test that pre-cancelled token throws immediately
+        var topic = await kafka.CreateTestTopicAsync();
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer-cancelled-token")
+            .Build();
+
+        // Act & Assert - Pass pre-cancelled token
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = "key1",
+                Value = "value1"
+            }, cts.Token);
+        });
+    }
+
+    [Test]
+    public async Task Producer_ProduceAsync_CancelledDuringWait_ThrowsOperationCancelled()
+    {
+        // Arrange - Test cancellation during produce operation
+        var topic = await kafka.CreateTestTopicAsync();
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer-cancel-during-produce")
+            .WithLingerMs(5000) // Long linger to give time to cancel
+            .Build();
+
+        // Act - Start produce, then cancel
+        using var cts = new CancellationTokenSource();
+
+        var produceTask = producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key1",
+            Value = "value1"
+        }, cts.Token);
+
+        // Cancel after a short delay
+        await Task.Delay(100);
+        cts.Cancel();
+
+        // Assert - Should throw OperationCanceledException
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        {
+            await produceTask;
+        });
+    }
+
+    [Test]
+    public async Task Producer_FlushAsync_WithCancelledToken_ThrowsImmediately()
+    {
+        // Arrange - Test that pre-cancelled token throws immediately
+        var topic = await kafka.CreateTestTopicAsync();
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer-flush-cancelled-token")
+            .Build();
+
+        // Send some messages
+        producer.Send(topic, "key1", "value1");
+
+        // Act & Assert - Pass pre-cancelled token to flush
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        {
+            await producer.FlushAsync(cts.Token);
+        });
+    }
+
+    [Test]
+    public async Task Producer_FlushAsync_CancelledDuringFlush_ThrowsOperationCancelled()
+    {
+        // Arrange - Test cancellation during flush
+        var topic = await kafka.CreateTestTopicAsync();
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer-cancel-during-flush")
+            .WithLingerMs(100)
+            .Build();
+
+        // Send many messages
+        for (int i = 0; i < 100; i++)
+        {
+            producer.Send(topic, $"key{i}", $"value{i}");
+        }
+
+        // Act - Start flush, then cancel
+        using var cts = new CancellationTokenSource();
+        var flushTask = producer.FlushAsync(cts.Token);
+
+        // Cancel after short delay
+        await Task.Delay(50);
+        cts.Cancel();
+
+        // Assert - Should throw OperationCanceledException
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        {
+            await flushTask;
+        });
+    }
+
+    [Test]
+    public async Task Producer_FlushEmpty_CompletesImmediately()
+    {
+        // Arrange - Test flushing producer with no messages
+        await kafka.CreateTestTopicAsync(); // Create topic but don't use it
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer-flush-empty")
+            .Build();
+
+        // Act - Flush without sending any messages
+        var startTime = Environment.TickCount64;
+        await producer.FlushAsync();
+        var elapsed = Environment.TickCount64 - startTime;
+
+        // Assert - Should complete quickly (< 1 second)
+        await Assert.That(elapsed).IsLessThan(1000);
+    }
+
+    [Test]
+    public async Task Producer_DisposeWithoutProduction_CompletesQuickly()
+    {
+        // Arrange - Create producer but never send messages
+        var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer-dispose-unused")
+            .Build();
+
+        // Act - Dispose without producing
+        var startTime = Environment.TickCount64;
+        await producer.DisposeAsync();
+        var elapsed = Environment.TickCount64 - startTime;
+
+        // Assert - Should complete quickly (< 2 seconds)
+        await Assert.That(elapsed).IsLessThan(2000);
+    }
+
+    [Test]
+    public async Task Producer_DisposeAfterFailedConnection_CompletesWithinTimeout()
+    {
+        // Arrange - Create producer with invalid bootstrap servers
+        var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("invalid-host:9092")
+            .WithClientId("test-producer-dispose-after-failure")
+            .Build();
+
+        // Try to produce (will fail to connect)
+        try
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = "test-topic",
+                Key = "key1",
+                Value = "value1"
+            });
+        }
+        catch
+        {
+            // Expected to fail
+        }
+
+        // Act - Dispose after failed connection
+        var disposeTask = producer.DisposeAsync().AsTask();
+        var completedInTime = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(10))) == disposeTask;
+
+        // Assert - Should complete within timeout
+        await Assert.That(completedInTime).IsTrue();
+    }
+
+    [Test]
+    public async Task Producer_ConcurrentFlushAndProduce_BothComplete()
+    {
+        // Arrange - Test concurrent flush and produce operations
+        var topic = await kafka.CreateTestTopicAsync();
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer-concurrent-flush-produce")
+            .WithLingerMs(50)
+            .Build();
+
+        // Send initial messages
+        for (int i = 0; i < 50; i++)
+        {
+            producer.Send(topic, $"key{i}", $"value{i}");
+        }
+
+        // Act - Flush and produce concurrently
+        var flushTask = producer.FlushAsync().AsTask();
+        var produceTask = producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "concurrent-key",
+            Value = "concurrent-value"
+        }).AsTask();
+
+        await Task.WhenAll(flushTask, produceTask);
+
+        // Assert - Both operations completed successfully
+        var metadata = await produceTask;
+        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+    }
+
+    [Test]
+    public async Task Producer_ConcurrentDispose_IsIdempotent()
+    {
+        // Arrange - Test multiple threads disposing simultaneously
+        var topic = await kafka.CreateTestTopicAsync();
+
+        var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer-concurrent-dispose")
+            .Build();
+
+        // Produce a message to establish connection
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key1",
+            Value = "value1"
+        });
+
+        // Act - Dispose from multiple threads simultaneously
+        var disposeTasks = new List<Task>();
+        for (int i = 0; i < 5; i++)
+        {
+            disposeTasks.Add(Task.Run(async () => await producer.DisposeAsync().AsTask()));
+        }
+
+        // Assert - All dispose calls complete without exception
+        await Task.WhenAll(disposeTasks);
+    }
 }

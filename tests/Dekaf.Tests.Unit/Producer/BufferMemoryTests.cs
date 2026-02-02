@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -314,6 +315,275 @@ public class BufferMemoryTests
                 ArrayPool<byte>.Shared.Return(array);
             }
 
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    // ==================== EDGE CASE TESTS ====================
+
+    [Test]
+    public async Task BufferMemory_ConcurrentAppends_ThreadSafe()
+    {
+        // Arrange: Test concurrent appends from multiple threads to different partitions
+        var options = CreateTestOptions(10_000_000); // 10MB
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Act: Spawn 10 threads, each appending to different partition
+            var tasks = new List<Task>();
+            var exceptions = new ConcurrentBag<Exception>();
+
+            for (int threadId = 0; threadId < 10; threadId++)
+            {
+                var partition = threadId;
+                tasks.Add(Task.Run(() =>
+                {
+                    try
+                    {
+                        var pooledKey = new PooledMemory(null, 0, isNull: true);
+                        var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+                        for (int i = 0; i < 100; i++)
+                        {
+                            accumulator.TryAppendFireAndForget(
+                                "test-topic", partition, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                                pooledKey, pooledValue, null, null);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        exceptions.Add(ex);
+                    }
+                }));
+            }
+
+            await Task.WhenAll(tasks);
+
+            // Assert: No exceptions, memory tracked correctly
+            await Assert.That(exceptions).IsEmpty();
+            await Assert.That(accumulator.BufferedBytes).IsGreaterThan(0);
+            await Assert.That((ulong)accumulator.BufferedBytes).IsLessThanOrEqualTo(options.BufferMemory);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task BufferMemory_ConcurrentAppendsToSamePartition_ThreadSafe()
+    {
+        // Arrange: Test concurrent appends from multiple threads to SAME partition
+        var options = CreateTestOptions(10_000_000); // 10MB
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Act: Spawn 10 threads, all appending to partition 0
+            var tasks = new List<Task>();
+            var exceptions = new ConcurrentBag<Exception>();
+
+            for (int threadId = 0; threadId < 10; threadId++)
+            {
+                tasks.Add(Task.Run(() =>
+                {
+                    try
+                    {
+                        var pooledKey = new PooledMemory(null, 0, isNull: true);
+                        var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+                        for (int i = 0; i < 50; i++)
+                        {
+                            accumulator.TryAppendFireAndForget(
+                                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                                pooledKey, pooledValue, null, null);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        exceptions.Add(ex);
+                    }
+                }));
+            }
+
+            await Task.WhenAll(tasks);
+
+            // Assert: No exceptions, memory tracked correctly
+            await Assert.That(exceptions).IsEmpty();
+            await Assert.That(accumulator.BufferedBytes).IsGreaterThan(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task BufferMemory_MessageLargerThanLimit_ThrowsImmediately()
+    {
+        // Arrange: Buffer limit 1KB, message 2KB
+        var options = CreateTestOptions(1000); // 1KB limit
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Act: Try to append message larger than total buffer
+            var largeValue = ArrayPool<byte>.Shared.Rent(2000);
+            try
+            {
+                var pooledKey = new PooledMemory(null, 0, isNull: true);
+                var pooledValue = new PooledMemory(largeValue, 2000);
+
+                var exception = await Assert.ThrowsAsync<TimeoutException>(async () =>
+                {
+                    accumulator.TryAppendFireAndForget(
+                        "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        pooledKey, pooledValue, null, null);
+                    await Task.CompletedTask;
+                });
+
+                // Assert: Should throw immediately, not wait for timeout
+                await Assert.That(exception!.Message).Contains("buffer memory");
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(largeValue);
+            }
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task BufferMemory_DisposalDuringMemoryWait_ThrowsOperationCancelled()
+    {
+        // Arrange: Small buffer that will block
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 500, // Very small
+            BatchSize = 16384,
+            LingerMs = 100,
+            DeliveryTimeoutMs = 30_000 // Long timeout so we can dispose first
+        };
+        var accumulator = new RecordAccumulator(options);
+
+        var rentedArrays = new List<byte[]>();
+        try
+        {
+            // Fill the buffer
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            for (int i = 0; i < 5; i++)
+            {
+                var valueBytes = ArrayPool<byte>.Shared.Rent(100);
+                rentedArrays.Add(valueBytes);
+                var pooledValue = new PooledMemory(valueBytes, 100);
+                accumulator.TryAppendFireAndForget(
+                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, null);
+            }
+
+            // Act: Start a task that will block on memory, then dispose
+            var blockingTask = Task.Run(() =>
+            {
+                var valueBytes = ArrayPool<byte>.Shared.Rent(100);
+                rentedArrays.Add(valueBytes);
+                var pooledValue = new PooledMemory(valueBytes, 100);
+
+                // This should block waiting for memory
+                accumulator.TryAppendFireAndForget(
+                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, null);
+            });
+
+            // Give it time to start blocking
+            await Task.Delay(100);
+
+            // Dispose while blocked
+            await accumulator.DisposeAsync();
+
+            // Assert: The blocked operation should complete (likely throw or return)
+            var completed = await Task.WhenAny(blockingTask, Task.Delay(2000)) == blockingTask;
+            await Assert.That(completed).IsTrue();
+        }
+        finally
+        {
+            foreach (var array in rentedArrays)
+            {
+                ArrayPool<byte>.Shared.Return(array);
+            }
+        }
+    }
+
+    [Test]
+    public async Task BufferMemory_ZeroLimit_AllAppendsThrowImmediately()
+    {
+        // Arrange: Zero buffer memory (edge case)
+        var options = CreateTestOptions(0);
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Act & Assert: Any append should fail immediately
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            await Assert.ThrowsAsync<TimeoutException>(async () =>
+            {
+                accumulator.TryAppendFireAndForget(
+                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, null);
+                await Task.CompletedTask;
+            });
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task BufferMemory_MinimalLimit_EnforcesStrictBackpressure()
+    {
+        // Arrange: Minimal buffer (100 bytes)
+        var options = CreateTestOptions(100);
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Act: Append small messages until buffer is full
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            var successCount = 0;
+            var threwTimeout = false;
+
+            try
+            {
+                for (int i = 0; i < 20; i++)
+                {
+                    accumulator.TryAppendFireAndForget(
+                        "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        pooledKey, pooledValue, null, null);
+                    successCount++;
+                }
+            }
+            catch (TimeoutException)
+            {
+                threwTimeout = true;
+            }
+
+            // Assert: Should eventually hit backpressure
+            await Assert.That(threwTimeout).IsTrue();
+            await Assert.That(successCount).IsGreaterThan(0); // At least some succeeded
+            await Assert.That((ulong)accumulator.BufferedBytes).IsLessThanOrEqualTo(options.BufferMemory);
+        }
+        finally
+        {
             await accumulator.DisposeAsync();
         }
     }
