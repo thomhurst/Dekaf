@@ -533,17 +533,11 @@ public class BufferMemoryTests
 
             var batch = enumerator.Current;
 
-            // DeliveryTask should already be completed (by completion loop)
-            await Assert.That(batch.DeliveryTask.IsCompleted).IsTrue();
+            // DoneTask should already be completed (by completion loop calling CompleteDelivery)
+            await Assert.That(batch.DoneTask.IsCompleted).IsTrue();
 
-            // SendTask should NOT be completed yet
-            await Assert.That(batch.SendTask.IsCompleted).IsFalse();
-
-            // Complete send phase
+            // Complete send phase (handles per-message completions)
             batch.CompleteSend(0, DateTimeOffset.UtcNow);
-
-            // Now SendTask should be completed
-            await Assert.That(batch.SendTask.IsCompleted).IsTrue();
         }
         finally
         {
@@ -586,8 +580,8 @@ public class BufferMemoryTests
             using var cts = new CancellationTokenSource(500);
             await foreach (var batch in accumulator.SendableBatches.ReadAllAsync(cts.Token))
             {
-                // DeliveryTask should be completed by completion loop
-                await Assert.That(batch.DeliveryTask.IsCompleted).IsTrue();
+                // DoneTask should be completed by completion loop
+                await Assert.That(batch.DoneTask.IsCompleted).IsTrue();
 
                 // Complete the send phase
                 batch.CompleteSend(0, DateTimeOffset.UtcNow);

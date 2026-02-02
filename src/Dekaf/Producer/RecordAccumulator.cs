@@ -1519,7 +1519,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Registers a ReadyBatch delivery task for tracking by FlushAsync.
+    /// Registers a ReadyBatch for tracking by FlushAsync.
     /// Completed tasks automatically remove themselves from tracking to prevent memory leaks.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1527,7 +1527,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     {
         if (readyBatch is not null)
         {
-            var task = readyBatch.DeliveryTask;
+            var task = readyBatch.DoneTask;
             _inFlightDeliveryTasks.TryAdd(task, 0);
 
             if (!task.IsCompleted)
@@ -1536,16 +1536,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 // Allocation cost: ~100 bytes per batch (not per message)
                 // Amortized: ~0.1 bytes per message (batch = ~1000 messages)
                 // This prevents unbounded memory growth in long-running fire-and-forget scenarios
+                // NOTE: No exception observation needed - DoneTask never faults (uses TrySetResult)
                 _ = task.ContinueWith(static (t, state) =>
                 {
-                    // Observe any exception to prevent unobserved task exception
-                    if (t.IsFaulted)
-                        _ = t.Exception;
-
                     var accumulator = (RecordAccumulator)state!;
 
-                    // Don't remove during disposal - disposal will observe all tasks and clear dictionary
-                    // This prevents race: task completes → removed → disposal misses observing it
+                    // Don't remove during disposal - disposal will clear dictionary
                     if (!accumulator._disposing)
                         accumulator._inFlightDeliveryTasks.TryRemove(t, out _);
                 }, this,
@@ -1555,9 +1551,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 return;
             }
 
-            // Task completed synchronously (rare) - observe exception and clean up immediately
-            if (task.IsFaulted)
-                _ = task.Exception;
+            // Task completed synchronously (rare) - clean up immediately
+            // NOTE: No exception observation needed - DoneTask never faults
             _inFlightDeliveryTasks.TryRemove(task, out _);
         }
     }
@@ -1772,8 +1767,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 if (readyBatch is not null)
                 {
                     readyBatch.Fail(disposedException);
-                    // CRITICAL: Observe exception immediately to prevent UnobservedTaskException
-                    _ = readyBatch.DeliveryTask.Exception;
                     // Release the batch's buffer memory
                     ReleaseMemory(readyBatch.DataSize);
                 }
@@ -1788,27 +1781,16 @@ public sealed class RecordAccumulator : IAsyncDisposable
         while (_readyBatches.Reader.TryRead(out var readyBatch))
         {
             readyBatch.Fail(disposedException);
-            // CRITICAL: Observe exception immediately to prevent UnobservedTaskException
-            _ = readyBatch.DeliveryTask.Exception;
         }
 
-        // Wait for all in-flight delivery tasks to complete
-        // After failing all batches above, their delivery tasks should complete quickly
-        // This prevents unobserved task exceptions when tasks fail during disposal
+        // Wait for all in-flight batch tasks to complete
+        // After failing all batches above, their DoneTasks should complete quickly
+        // NOTE: No exception observation needed - DoneTask never faults (uses TrySetResult)
         var allTasks = _inFlightDeliveryTasks.Keys.ToArray();
         if (allTasks.Length > 0)
         {
-            // Wait for all tasks to complete (don't throw on first exception)
-            await Task.WhenAll(allTasks).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-
-            // CRITICAL: Task.WhenAll only observes the FIRST exception in its AggregateException
-            // When 100+ batches fail during disposal, we must observe EACH task's exception individually
-            // Otherwise the finalizer will throw UnobservedTaskException for all the other faulted tasks
-            foreach (var task in allTasks)
-            {
-                if (task.IsFaulted)
-                    _ = task.Exception; // Observe exception to prevent UnobservedTaskException
-            }
+            // Wait for all tasks to complete
+            await Task.WhenAll(allTasks).ConfigureAwait(false);
 
             // Clean up tracked tasks
             _inFlightDeliveryTasks.Clear();
@@ -1820,8 +1802,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
             if (batch is not null)
             {
                 batch.Fail(disposedException);
-                // CRITICAL: Observe exception immediately to prevent UnobservedTaskException
-                _ = batch.DeliveryTask.Exception;
                 // Release the batch's buffer memory
                 ReleaseMemory(batch.DataSize);
             }
@@ -2832,16 +2812,13 @@ internal sealed class ReadyBatch
     public int DataSize { get; }
 
     /// <summary>
-    /// Task that completes when this batch is READY to send (processed by completion loop).
-    /// Used by FlushAsync to wait for batch delivery completion (fire-and-forget semantic).
+    /// Task that completes when this batch is done (either sent successfully or failed).
+    /// Used by FlushAsync to wait for batch completion.
+    /// IMPORTANT: This task never faults - it completes with true (success) or false (failure).
+    /// This design eliminates UnobservedTaskException issues for fire-and-forget scenarios.
+    /// Per-message exceptions are handled via the completion sources array, not this task.
     /// </summary>
-    public Task DeliveryTask => _deliveryCompletionSource.Task;
-
-    /// <summary>
-    /// Task that completes when this batch has been SENT to Kafka (successfully or failed).
-    /// Used internally for tracking network send completion.
-    /// </summary>
-    public Task SendTask => _sendCompletionSource.Task;
+    public Task DoneTask => _doneCompletionSource.Task;
 
     // Working arrays from accumulator (pooled)
     private readonly PooledValueTaskSource<RecordMetadata>[] _completionSourcesArray;
@@ -2853,11 +2830,9 @@ internal sealed class ReadyBatch
     private readonly Record[]? _pooledRecordsArray; // Pooled records array from RecordBatch
     private readonly BatchArena? _arena; // Arena for zero-copy serialization data
 
-    // Two-phase completion tracking:
-    // 1. Delivery completes when batch is READY (fire-and-forget semantic)
-    // 2. Send completes when batch is SENT to Kafka (network I/O complete)
-    private readonly TaskCompletionSource<bool> _deliveryCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly TaskCompletionSource<bool> _sendCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    // Batch-level completion tracking - signals "batch is done" (success or failure)
+    // Never faults - uses TrySetResult(true) for success, TrySetResult(false) for failure
+    private readonly TaskCompletionSource<bool> _doneCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
 
@@ -2888,9 +2863,10 @@ internal sealed class ReadyBatch
     }
 
     /// <summary>
-    /// Completes the DELIVERY phase (batch is ready to send).
+    /// Marks batch as "ready" (processed by completion loop).
     /// Called by RecordAccumulator.CompletionLoopAsync.
-    /// This unblocks FlushAsync and fire-and-forget operations.
+    /// This unblocks FlushAsync for fire-and-forget scenarios.
+    /// For unit tests without a sender loop, this is the final completion.
     /// </summary>
     public void CompleteDelivery()
     {
@@ -2898,14 +2874,16 @@ internal sealed class ReadyBatch
         if (Volatile.Read(ref _cleanedUp) != 0)
             return;
 
-        // Complete delivery task (fire-and-forget semantic: "ready" = done)
-        _deliveryCompletionSource.TrySetResult(true);
+        // Signal batch is done (ready for fire-and-forget semantic)
+        // This uses TrySetResult, not TrySetException, to avoid UnobservedTaskException
+        _doneCompletionSource.TrySetResult(true);
     }
 
     /// <summary>
-    /// Completes the SEND phase (batch sent to Kafka successfully).
+    /// Marks batch as successfully sent to Kafka.
     /// Called by KafkaProducer.SenderLoopAsync after network send.
-    /// This completes per-message ProduceAsync operations.
+    /// This completes per-message ProduceAsync operations with success metadata.
+    /// NOTE: DoneTask is already completed by CompleteDelivery(), so this is a no-op for that.
     /// </summary>
     public void CompleteSend(long baseOffset, DateTimeOffset timestamp)
     {
@@ -2931,8 +2909,8 @@ internal sealed class ReadyBatch
                 }
             }
 
-            // Complete send task
-            _sendCompletionSource.TrySetResult(true);
+            // Signal batch is done (successfully)
+            _doneCompletionSource.TrySetResult(true);
         }
         finally
         {
@@ -2941,8 +2919,10 @@ internal sealed class ReadyBatch
     }
 
     /// <summary>
-    /// Fails both delivery and send phases with an exception.
+    /// Marks batch as failed with an exception.
     /// Called when batch cannot be sent (disposal, errors, etc).
+    /// Per-message completion sources receive the exception for ProduceAsync callers.
+    /// DoneTask completes with false (no exception) to avoid UnobservedTaskException.
     /// </summary>
     public void Fail(Exception exception)
     {
@@ -2952,7 +2932,7 @@ internal sealed class ReadyBatch
 
         try
         {
-            // Fail per-message completion sources
+            // Fail per-message completion sources - these throw for ProduceAsync callers
             if (_completionSourcesArray is not null)
             {
                 for (var i = 0; i < _completionSourcesCount; i++)
@@ -2962,9 +2942,10 @@ internal sealed class ReadyBatch
                 }
             }
 
-            // Fail both delivery and send tasks
-            _deliveryCompletionSource.TrySetException(exception);
-            _sendCompletionSource.TrySetException(exception);
+            // Signal batch is done (failed) - NO EXCEPTION to avoid UnobservedTaskException
+            // For fire-and-forget, no one awaits this, so exception would go unobserved
+            // For FlushAsync, it just needs to know "done", not success/failure details
+            _doneCompletionSource.TrySetResult(false);
         }
         finally
         {
