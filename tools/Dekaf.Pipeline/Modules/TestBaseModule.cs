@@ -35,8 +35,8 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
                 throw new InvalidOperationException($"Project {ProjectFileName} not found");
             }
 
-            // Add 10-minute timeout to prevent indefinite hangs
-            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+            // Add 15-minute pipeline timeout as safety fallback
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
             try
@@ -47,7 +47,7 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
                         NoBuild = true,
                         Configuration = "Release",
                         Framework = framework,
-                        Arguments = ["--", "--log-level", "Trace", "--output", "Detailed"]
+                        Arguments = ["--", "--timeout", "10m", "--log-level", "Trace", "--output", "Detailed"]
                     },
                     new CommandExecutionOptions
                     {
@@ -63,7 +63,7 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
             {
-                throw new TimeoutException($"Test execution for {ProjectFileName} ({framework}) exceeded 10 minute timeout");
+                throw new TimeoutException($"Test execution for {ProjectFileName} ({framework}) exceeded 15 minute pipeline timeout");
             }
         }
 
