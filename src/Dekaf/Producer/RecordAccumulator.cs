@@ -1665,16 +1665,33 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Clear the TopicPartition cache to release memory
         _topicPartitionCache.Clear();
 
-        // Complete the channel if not already closed by CloseAsync
+        // Try graceful shutdown first (send remaining batches) with timeout
+        // This matches Confluent.Kafka behavior and prevents data loss
         if (!_closed)
         {
-            _readyBatches.Writer.Complete();
+            try
+            {
+                // 5-second grace period to flush and send remaining batches
+                using var cts = new CancellationTokenSource(5000);
+                await CloseAsync(cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Timeout or cancellation - proceed with immediate shutdown
+                _readyBatches.Writer.Complete();
+            }
+            catch
+            {
+                // Other exceptions (e.g., no connection) - proceed with immediate shutdown
+                _readyBatches.Writer.Complete();
+            }
         }
 
-        // CRITICAL: Drain and fail all batches still in the ready channel
-        // In unit tests (no sender loop), batches sit in channel with delivery tasks that never complete
-        // This causes 10-minute hangs when disposal waits for those tasks below
-        // Failing them here ensures their delivery tasks complete before we wait
+        // Drain and fail any remaining batches still in the ready channel
+        // After graceful close above, this handles:
+        // - Unit tests with no sender loop
+        // - Timeout scenarios where batches didn't send in time
+        // - Batches that were added after close but before disposal completed
         while (_readyBatches.Reader.TryRead(out var readyBatch))
         {
             readyBatch.Fail(disposedException);
