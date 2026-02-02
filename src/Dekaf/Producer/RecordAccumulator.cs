@@ -311,6 +311,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
     private readonly Channel<ReadyBatch> _readyBatches;
     private readonly PartitionBatchPool _batchPool;
+
+    // Track all in-flight delivery tasks so FlushAsync can wait for them
+    // This ensures FlushAsync waits for batches already in _readyBatches, not just batches in _batches
+    // Initialize with large capacity (1024) to avoid resizing under load
+    private readonly ConcurrentDictionary<Task, byte> _inFlightDeliveryTasks = new(concurrencyLevel: Environment.ProcessorCount, capacity: 1024);
+
     private volatile bool _disposed;
     private volatile bool _closed;
 
@@ -799,6 +805,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
+                    // Track delivery task for FlushAsync
+                    TrackDeliveryTask(readyBatch);
+
                     // Try synchronous write first to avoid async state machine allocation
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
                     {
@@ -907,6 +916,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
+                    // Track delivery task for FlushAsync
+                    TrackDeliveryTask(readyBatch);
+
                     // Non-blocking write to unbounded channel - should always succeed
                     // If it fails (channel completed), the producer is being disposed
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
@@ -1195,6 +1207,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
+                    // Track delivery task for FlushAsync
+                    TrackDeliveryTask(readyBatch);
+
                     // Non-blocking write to unbounded channel - should always succeed
                     // If it fails (channel completed), the producer is being disposed
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
@@ -1321,6 +1336,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                         var readyBatch = batch.Complete();
                         if (readyBatch is not null)
                         {
+                            // Track delivery task for FlushAsync
+                            TrackDeliveryTask(readyBatch);
+
                             // Track memory for this batch - it will be released when sent or on failure
                             memoryUsed += readyBatch.DataSize;
 
@@ -1423,6 +1441,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     var readyBatch = batch.Complete();
                     if (readyBatch is not null)
                     {
+                        // Track delivery task for FlushAsync
+                        TrackDeliveryTask(readyBatch);
+
                         // Try synchronous write first to avoid async state machine allocation
                         if (!_readyBatches.Writer.TryWrite(readyBatch))
                         {
@@ -1450,6 +1471,27 @@ public sealed class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Registers a ReadyBatch delivery task for tracking by FlushAsync.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void TrackDeliveryTask(ReadyBatch readyBatch)
+    {
+        if (readyBatch is not null)
+        {
+            var task = readyBatch.DeliveryTask;
+            _inFlightDeliveryTasks.TryAdd(task, 0);
+
+            // Proactively clean up completed tasks to avoid dictionary growth
+            // Continue immediately if not completed (common case)
+            if (!task.IsCompleted)
+                return;
+
+            // Task completed synchronously (rare) - clean up immediately
+            _inFlightDeliveryTasks.TryRemove(task, out _);
+        }
+    }
+
+    /// <summary>
     /// Flushes all batches and waits for them to be delivered to Kafka.
     /// </summary>
     /// <remarks>
@@ -1461,8 +1503,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Check cancellation upfront - must throw immediately if already cancelled
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Fast path: no batches to flush - avoid enumeration and async overhead entirely
-        if (_batches.IsEmpty)
+        // Fast path: no batches to flush AND no in-flight batches - avoid enumeration and async overhead entirely
+        if (_batches.IsEmpty && _inFlightDeliveryTasks.IsEmpty)
         {
             return ValueTask.CompletedTask;
         }
@@ -1472,12 +1514,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     private async ValueTask FlushAsyncCore(CancellationToken cancellationToken)
     {
-        Console.WriteLine($"[FlushAsync] START - batches count: {_batches.Count}");
-
-        // Step 1: Collect all batch delivery tasks BEFORE writing to channel
-        // This prevents race where batch completes before we collect its task
-        var deliveryTasks = new List<Task>();
-
+        // Step 1: Flush all batches from _batches dictionary
         foreach (var kvp in _batches)
         {
             var batch = kvp.Value;
@@ -1488,9 +1525,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
-                    // Collect the delivery task BEFORE writing to channel
-                    deliveryTasks.Add(readyBatch.DeliveryTask);
-
                     // Try synchronous write first to avoid async state machine allocation
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
                     {
@@ -1522,20 +1556,24 @@ public sealed class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        Console.WriteLine($"[FlushAsync] Collected {deliveryTasks.Count} delivery tasks, now waiting...");
+        // Step 2: Take a snapshot of all in-flight delivery tasks
+        // This ensures we wait for batches that were expired by linger loop before FlushAsync was called
+        // Use ToArray() for atomic snapshot (avoids enumeration issues if tasks complete during iteration)
+        var allTasks = _inFlightDeliveryTasks.Keys.ToArray();
 
-        // Step 2: Wait for all batches to be delivered
         // CRITICAL: No locks are held during this await, preventing deadlock
         // The sender loop will complete these tasks when batches are sent
         // Respect cancellation token to allow caller to timeout the wait
-        if (deliveryTasks.Count > 0)
+        if (allTasks.Length > 0)
         {
-            await Task.WhenAll(deliveryTasks).WaitAsync(cancellationToken).ConfigureAwait(false);
-            Console.WriteLine($"[FlushAsync] All {deliveryTasks.Count} batches delivered!");
-        }
-        else
-        {
-            Console.WriteLine($"[FlushAsync] No batches to flush");
+            await Task.WhenAll(allTasks).WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            // Clean up completed tasks from tracking dictionary
+            // Use for loop to avoid allocation-heavy foreach with array
+            for (int i = 0; i < allTasks.Length; i++)
+            {
+                _inFlightDeliveryTasks.TryRemove(allTasks[i], out _);
+            }
         }
     }
 

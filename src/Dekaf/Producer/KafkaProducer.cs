@@ -1491,6 +1491,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 batch.TopicPartition.Topic, batch.TopicPartition.Partition, partitionResponse.BaseOffset);
             batch.Complete(partitionResponse.BaseOffset, timestamp);
 
+
             // Memory will be released in finally block
         }
         catch (Exception ex)
