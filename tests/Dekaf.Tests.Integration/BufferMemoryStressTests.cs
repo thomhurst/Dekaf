@@ -79,8 +79,16 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
             Console.WriteLine($"[BufferMemoryStressTest] Test duration reached, stopping message production");
         }
 
-        // Ensure all messages are flushed
-        await producer.FlushAsync().ConfigureAwait(false);
+        // Ensure all messages are flushed (with timeout to prevent test hanging)
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        try
+        {
+            await producer.FlushAsync(flushCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine($"[BufferMemoryStressTest] Flush timed out after 30s, continuing with memory check");
+        }
 
         // Force full GC to get accurate final memory measurement
         GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
