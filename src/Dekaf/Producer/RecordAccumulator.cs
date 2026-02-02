@@ -1657,6 +1657,26 @@ public sealed class RecordAccumulator : IAsyncDisposable
             _readyBatches.Writer.Complete();
         }
 
+        // Wait for all in-flight delivery tasks to complete
+        // This prevents unobserved task exceptions when tasks fail during disposal
+        var allTasks = _inFlightDeliveryTasks.Keys.ToArray();
+        if (allTasks.Length > 0)
+        {
+            try
+            {
+                // Wait for all tasks, observing any exceptions
+                await Task.WhenAll(allTasks).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Expected - tasks will throw ObjectDisposedException during disposal
+                // We observe the exceptions here to prevent unobserved task exceptions
+            }
+
+            // Clean up tracked tasks
+            _inFlightDeliveryTasks.Clear();
+        }
+
         // Drain any batches that were in the channel but not yet processed
         while (_readyBatches.Reader.TryRead(out var batch))
         {
