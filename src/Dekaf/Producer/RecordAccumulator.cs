@@ -1315,10 +1315,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Flushes all batches.
+    /// Flushes all batches and waits for them to be delivered to Kafka.
     /// </summary>
     /// <remarks>
     /// Optimized to avoid async state machine allocation when there are no batches to flush.
+    /// Respects caller's cancellation token - if no timeout is provided, will wait indefinitely.
     /// </remarks>
     public ValueTask FlushAsync(CancellationToken cancellationToken)
     {
@@ -1333,6 +1334,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     private async ValueTask FlushAsyncCore(CancellationToken cancellationToken)
     {
+        // Step 1: Collect all batch delivery tasks BEFORE writing to channel
+        // This prevents race where batch completes before we collect its task
+        var deliveryTasks = new List<Task>();
+
         foreach (var kvp in _batches)
         {
             var batch = kvp.Value;
@@ -1343,6 +1348,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
+                    // Collect the delivery task BEFORE writing to channel
+                    deliveryTasks.Add(readyBatch.DeliveryTask);
+
                     // Try synchronous write first to avoid async state machine allocation
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
                     {
@@ -1353,10 +1361,17 @@ public sealed class RecordAccumulator : IAsyncDisposable
                         }
                         catch
                         {
-                            // CRITICAL: If WriteAsync fails (cancellation or disposal), fail the batch
-                            // and release memory to prevent permanent leak
-                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            ReleaseMemory(readyBatch.DataSize);
+                            // CRITICAL: Use nested try-finally to ensure memory is ALWAYS released
+                            // even if readyBatch.Fail() itself throws an exception
+                            try
+                            {
+                                readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                            }
+                            finally
+                            {
+                                // ALWAYS release memory to prevent permanent leak
+                                ReleaseMemory(readyBatch.DataSize);
+                            }
                             throw;
                         }
                     }
@@ -1365,6 +1380,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     _batchPool.Return(batch);
                 }
             }
+        }
+
+        // Step 2: Wait for all batches to be delivered
+        // CRITICAL: No locks are held during this await, preventing deadlock
+        // The sender loop will complete these tasks when batches are sent
+        if (deliveryTasks.Count > 0)
+        {
+            await Task.WhenAll(deliveryTasks).ConfigureAwait(false);
         }
     }
 
@@ -2447,6 +2470,12 @@ internal sealed class ReadyBatch
     /// </summary>
     public int DataSize { get; }
 
+    /// <summary>
+    /// Task that completes when this batch has been sent to Kafka (successfully or failed).
+    /// Used by FlushAsync to wait for batch delivery completion.
+    /// </summary>
+    public Task DeliveryTask => _batchCompletionSource.Task;
+
     // Working arrays from accumulator (pooled)
     private readonly PooledValueTaskSource<RecordMetadata>[] _completionSourcesArray;
     private readonly int _completionSourcesCount;
@@ -2456,6 +2485,9 @@ internal sealed class ReadyBatch
     private readonly int _pooledHeaderArraysCount;
     private readonly Record[]? _pooledRecordsArray; // Pooled records array from RecordBatch
     private readonly BatchArena? _arena; // Arena for zero-copy serialization data
+
+    // Batch-level completion tracking for FlushAsync coordination
+    private readonly TaskCompletionSource<bool> _batchCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
 
@@ -2510,6 +2542,10 @@ internal sealed class ReadyBatch
                     });
                 }
             }
+
+            // Complete batch-level task to unblock FlushAsync
+            // Use TrySetResult for idempotency (safe to call multiple times)
+            _batchCompletionSource.TrySetResult(true);
         }
         finally
         {
@@ -2536,6 +2572,10 @@ internal sealed class ReadyBatch
                     source?.TrySetException(exception);
                 }
             }
+
+            // Complete batch-level task (with exception) to unblock FlushAsync
+            // Use TrySetException for idempotency (safe to call multiple times)
+            _batchCompletionSource.TrySetException(exception);
         }
         finally
         {

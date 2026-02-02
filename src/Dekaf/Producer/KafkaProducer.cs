@@ -1214,10 +1214,20 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     batch.TopicPartition.Partition,
                     batch.CompletionSourcesCount);
 
-                batch.Fail(ex);
+                // CRITICAL: Protect against exceptions from batch.Fail() to prevent sender loop crash
+                try
+                {
+                    batch.Fail(ex);
+                }
+                catch (Exception failEx)
+                {
+                    // batch.Fail() should never throw, but be defensive to prevent sender loop crash
+                    _logger?.LogError(failEx, "batch.Fail() threw unexpectedly for {Topic}-{Partition}",
+                        batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+                }
 
-                // Release buffer memory now that batch is complete
-                _accumulator.ReleaseMemory(batch.DataSize);
+                // NOTE: BufferMemory is released in SendBatchAsync's finally block
+                // No need to release here to avoid double-release
             }
         }
     }
@@ -1252,16 +1262,20 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     private async Task SendBatchAsync(ReadyBatch batch, CancellationToken cancellationToken)
     {
-        var leader = await _metadataManager.GetPartitionLeaderAsync(
-            batch.TopicPartition.Topic,
-            batch.TopicPartition.Partition,
-            cancellationToken).ConfigureAwait(false);
-
-        if (leader is null)
+        // CRITICAL: Use try-finally to ensure BufferMemory is ALWAYS released
+        // This prevents memory leaks when exceptions occur during batch sending
+        try
         {
-            throw new InvalidOperationException(
-                $"No leader for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}");
-        }
+            var leader = await _metadataManager.GetPartitionLeaderAsync(
+                batch.TopicPartition.Topic,
+                batch.TopicPartition.Partition,
+                cancellationToken).ConfigureAwait(false);
+
+            if (leader is null)
+            {
+                throw new InvalidOperationException(
+                    $"No leader for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}");
+            }
 
         var connection = await _connectionPool.GetConnectionAsync(leader.NodeId, cancellationToken)
             .ConfigureAwait(false);
@@ -1336,8 +1350,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // Offset is unknown (-1) for fire-and-forget
             batch.Complete(-1, DateTimeOffset.UtcNow);
 
-            // Release buffer memory now that batch is complete
-            _accumulator.ReleaseMemory(batch.DataSize);
+            // Memory will be released in finally block
             return;
         }
 
@@ -1441,8 +1454,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         batch.Complete(partitionResponse.BaseOffset, timestamp);
 
-        // Release buffer memory now that batch is complete
-        _accumulator.ReleaseMemory(batch.DataSize);
+        // Memory will be released in finally block
+        }
+        finally
+        {
+            // CRITICAL: Always release BufferMemory, even on exception
+            // This prevents permanent memory leaks that can deadlock the producer
+            // This replaces the inline ReleaseMemory calls and the catch block in SenderLoopAsync
+            _accumulator.ReleaseMemory(batch.DataSize);
+        }
     }
 
     /// <summary>
@@ -1590,14 +1610,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // 3. Flush accumulator and complete its channel - sender will process remaining batches
             await _accumulator.CloseAsync(shutdownCts.Token).ConfigureAwait(false);
 
-            // 4. Cancel linger loop (no longer needed) but let sender finish
-            _senderCts.Cancel();
-
-            // 5. Wait for sender to drain remaining batches
+            // 4. Wait for sender to drain remaining batches
+            // CRITICAL: Don't cancel _senderCts yet - sender needs to process flushed batches
+            // The sender will exit naturally when the ready batches channel completes (done in CloseAsync)
             if (hasTimeout)
                 await _senderTask.WaitAsync(shutdownCts.Token).ConfigureAwait(false);
             else
                 await _senderTask.ConfigureAwait(false);
+
+            // 5. Now safe to cancel linger loop (it's already exited or will exit soon)
+            _senderCts.Cancel();
         }
         catch (OperationCanceledException)
         {
