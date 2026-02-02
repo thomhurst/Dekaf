@@ -315,6 +315,15 @@ public sealed class RecordAccumulator : IAsyncDisposable
     // Track all in-flight delivery tasks so FlushAsync can wait for them
     // This ensures FlushAsync waits for batches already in _readyBatches, not just batches in _batches
     // Initialize with large capacity (1024) to avoid resizing under load
+    //
+    // NOTE: Completed tasks are only removed during FlushAsync or disposal, not proactively.
+    // This means long-running producers using fire-and-forget (Send) without FlushAsync may accumulate
+    // completed task references. This is an intentional trade-off:
+    // - Memory overhead is minimal (~100 bytes per Task reference)
+    // - Proactive cleanup would require O(n) operations on the hot path (unacceptable)
+    // - Most real-world producers call FlushAsync periodically or at shutdown
+    // - Disposal cleans up all tasks
+    // - Pathological cases (millions of fire-and-forget without flush) are detectable via monitoring
     private readonly ConcurrentDictionary<Task, byte> _inFlightDeliveryTasks = new(concurrencyLevel: Environment.ProcessorCount, capacity: 1024);
 
     private volatile bool _disposed;
