@@ -1689,17 +1689,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
         _disposed = true;
         _disposing = true; // Prevent continuations from removing tasks during disposal
 
-        // Cancel the disposal token and signal the disposal event to interrupt any blocked operations
-        try
-        {
-            _disposalCts.Cancel();
-            _disposalEvent.Set();
-        }
-        catch
-        {
-            // Ignore exceptions during cancellation
-        }
-
         // Invalidate thread-local caches if they point to this accumulator
         if (t_cachedAccumulator == this)
         {
@@ -1716,30 +1705,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Fail all pending batches that haven't been sent yet
-        var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
-
-        foreach (var kvp in _batches)
-        {
-            // Use TryRemove to ensure only one thread handles each batch during disposal.
-            // This prevents races where a batch is completed and recycled while we're disposing.
-            if (_batches.TryRemove(kvp))
-            {
-                var readyBatch = kvp.Value.Complete();
-                if (readyBatch is not null)
-                {
-                    readyBatch.Fail(disposedException);
-                    // Release the batch's buffer memory
-                    ReleaseMemory(readyBatch.DataSize);
-                }
-            }
-        }
-
         // Clear the TopicPartition cache to release memory
         _topicPartitionCache.Clear();
 
-        // Try graceful shutdown first (send remaining batches) with timeout
+        // FIRST: Try graceful shutdown (send remaining batches) with timeout
         // This matches Confluent.Kafka behavior and prevents data loss
+        // We do this BEFORE failing batches to give them a chance to be sent
         if (!_closed)
         {
             try
@@ -1760,6 +1731,18 @@ public sealed class RecordAccumulator : IAsyncDisposable
             }
         }
 
+        // Cancel the disposal token and signal the disposal event to interrupt any blocked operations
+        // Do this AFTER graceful shutdown attempt so FlushAsync can complete normally
+        try
+        {
+            _disposalCts.Cancel();
+            _disposalEvent.Set();
+        }
+        catch
+        {
+            // Ignore exceptions during cancellation
+        }
+
         // Stop the completion loop and wait for it to finish
         _completionCts.Cancel();
         try
@@ -1775,6 +1758,28 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Normal cancellation
         }
 
+        // NOW fail any remaining batches that couldn't be sent during graceful shutdown
+        var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
+
+        // Fail incomplete batches still in the dictionary (weren't flushed in time)
+        foreach (var kvp in _batches)
+        {
+            // Use TryRemove to ensure only one thread handles each batch during disposal.
+            // This prevents races where a batch is completed and recycled while we're disposing.
+            if (_batches.TryRemove(kvp))
+            {
+                var readyBatch = kvp.Value.Complete();
+                if (readyBatch is not null)
+                {
+                    readyBatch.Fail(disposedException);
+                    // CRITICAL: Observe exception immediately to prevent UnobservedTaskException
+                    _ = readyBatch.DeliveryTask.Exception;
+                    // Release the batch's buffer memory
+                    ReleaseMemory(readyBatch.DataSize);
+                }
+            }
+        }
+
         // Drain and fail any remaining batches still in the ready channel
         // After graceful close above, this handles:
         // - Unit tests with no sender loop
@@ -1783,6 +1788,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
         while (_readyBatches.Reader.TryRead(out var readyBatch))
         {
             readyBatch.Fail(disposedException);
+            // CRITICAL: Observe exception immediately to prevent UnobservedTaskException
+            _ = readyBatch.DeliveryTask.Exception;
         }
 
         // Wait for all in-flight delivery tasks to complete
@@ -1807,12 +1814,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
             _inFlightDeliveryTasks.Clear();
         }
 
-        // Drain any batches that were in the channel but not yet processed
+        // Final drain: catch any batches that may have been added during our cleanup
         while (_readyBatches.Reader.TryRead(out var batch))
         {
             if (batch is not null)
             {
                 batch.Fail(disposedException);
+                // CRITICAL: Observe exception immediately to prevent UnobservedTaskException
+                _ = batch.DeliveryTask.Exception;
                 // Release the batch's buffer memory
                 ReleaseMemory(batch.DataSize);
             }
