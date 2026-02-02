@@ -44,28 +44,39 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
 
         // Act: Send messages continuously for 2 minutes
         // Using the same key ensures messages go to the same partition, triggering the arena fast path
-        while (DateTime.UtcNow - startTime < testDuration)
+        // Use CancellationToken to ensure test doesn't hang waiting for in-flight messages
+        using var cts = new CancellationTokenSource(testDuration);
+
+        try
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            while (!cts.Token.IsCancellationRequested)
             {
-                Topic = topic,
-                Key = "same-key", // Same key = same partition = arena fast path
-                Value = $"value-{messageCount}"
-            }).ConfigureAwait(false);
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = "same-key", // Same key = same partition = arena fast path
+                    Value = $"value-{messageCount}"
+                }, cts.Token).ConfigureAwait(false);
 
-            messageCount++;
+                messageCount++;
 
-            // Log memory every 30 seconds
-            var elapsed = DateTime.UtcNow - lastLogTime;
-            if (elapsed.TotalSeconds >= 30)
-            {
-                var currentMemory = GC.GetTotalMemory(forceFullCollection: false);
-                var growthMB = (currentMemory - initialMemory) / 1_000_000.0;
-                var rate = messageCount / (DateTime.UtcNow - startTime).TotalSeconds;
-                Console.WriteLine($"[BufferMemoryStressTest] {(DateTime.UtcNow - startTime).TotalSeconds:F0}s: " +
-                                 $"{messageCount:N0} messages ({rate:F0} msg/s), Memory growth: {growthMB:F1} MB");
-                lastLogTime = DateTime.UtcNow;
+                // Log memory every 30 seconds
+                var elapsed = DateTime.UtcNow - lastLogTime;
+                if (elapsed.TotalSeconds >= 30)
+                {
+                    var currentMemory = GC.GetTotalMemory(forceFullCollection: false);
+                    var growthMB = (currentMemory - initialMemory) / 1_000_000.0;
+                    var rate = messageCount / (DateTime.UtcNow - startTime).TotalSeconds;
+                    Console.WriteLine($"[BufferMemoryStressTest] {(DateTime.UtcNow - startTime).TotalSeconds:F0}s: " +
+                                     $"{messageCount:N0} messages ({rate:F0} msg/s), Memory growth: {growthMB:F1} MB");
+                    lastLogTime = DateTime.UtcNow;
+                }
             }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected when test duration expires
+            Console.WriteLine($"[BufferMemoryStressTest] Test duration reached, stopping message production");
         }
 
         // Ensure all messages are flushed
