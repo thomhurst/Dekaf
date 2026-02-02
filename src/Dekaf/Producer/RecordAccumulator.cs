@@ -1458,6 +1458,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// </remarks>
     public ValueTask FlushAsync(CancellationToken cancellationToken)
     {
+        // Check cancellation upfront - must throw immediately if already cancelled
+        cancellationToken.ThrowIfCancellationRequested();
+
         // Fast path: no batches to flush - avoid enumeration and async overhead entirely
         if (_batches.IsEmpty)
         {
