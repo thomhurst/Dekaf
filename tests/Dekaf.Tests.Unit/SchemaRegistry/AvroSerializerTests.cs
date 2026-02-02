@@ -45,7 +45,7 @@ public class AvroSerializerTests
     public async Task Serializer_SerializesGenericRecord_WithWireFormat()
     {
         // Arrange
-        var schemaRegistry = new MockSchemaRegistryClient();
+        using var schemaRegistry = new MockSchemaRegistryClient();
         await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
 
         var schema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
@@ -74,7 +74,7 @@ public class AvroSerializerTests
     public async Task Deserializer_DeserializesGenericRecord_FromWireFormat()
     {
         // Arrange
-        var schemaRegistry = new MockSchemaRegistryClient();
+        using var schemaRegistry = new MockSchemaRegistryClient();
 
         // Pre-register schema
         var schemaObj = new RegistrySchema
@@ -119,7 +119,7 @@ public class AvroSerializerTests
     public async Task Serializer_RoundTrips_GenericRecord()
     {
         // Arrange
-        var schemaRegistry = new MockSchemaRegistryClient();
+        using var schemaRegistry = new MockSchemaRegistryClient();
         await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
         await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(schemaRegistry);
 
@@ -144,7 +144,7 @@ public class AvroSerializerTests
     public async Task Serializer_CachesSchemaId_ForSameSubject()
     {
         // Arrange
-        var schemaRegistry = new MockSchemaRegistryClient();
+        using var schemaRegistry = new MockSchemaRegistryClient();
         await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
 
         var schema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
@@ -174,7 +174,7 @@ public class AvroSerializerTests
     public async Task Serializer_UsesTopicNameStrategy_ByDefault()
     {
         // Arrange
-        var schemaRegistry = new MockSchemaRegistryClient();
+        using var schemaRegistry = new MockSchemaRegistryClient();
         await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
 
         var schema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
@@ -197,7 +197,7 @@ public class AvroSerializerTests
     public async Task Serializer_UsesKeySubject_ForKeyComponent()
     {
         // Arrange
-        var schemaRegistry = new MockSchemaRegistryClient();
+        using var schemaRegistry = new MockSchemaRegistryClient();
         await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
 
         var schema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
@@ -220,7 +220,7 @@ public class AvroSerializerTests
     public async Task Deserializer_ThrowsOnInvalidMagicByte()
     {
         // Arrange
-        var schemaRegistry = new MockSchemaRegistryClient();
+        using var schemaRegistry = new MockSchemaRegistryClient();
         await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(schemaRegistry);
 
         var invalidData = new byte[] { 0x01, 0x00, 0x00, 0x00, 0x01, 0x00 }; // Wrong magic byte
@@ -236,7 +236,7 @@ public class AvroSerializerTests
     public async Task Deserializer_ThrowsOnTooShortData()
     {
         // Arrange
-        var schemaRegistry = new MockSchemaRegistryClient();
+        using var schemaRegistry = new MockSchemaRegistryClient();
         await using var deserializer = new AvroSchemaRegistryDeserializer<GenericRecord>(schemaRegistry);
 
         var shortData = new byte[] { 0x00, 0x01, 0x02 }; // Less than 5 bytes
@@ -273,7 +273,7 @@ public class AvroSerializerTests
     public async Task Serializer_WarmupAsync_PreCachesSchemaId()
     {
         // Arrange
-        var schemaRegistry = new MockSchemaRegistryClient();
+        using var schemaRegistry = new MockSchemaRegistryClient();
         await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
 
         var schema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
@@ -298,7 +298,7 @@ public class AvroSerializerTests
     public async Task Deserializer_WarmupAsync_PreCachesSchema()
     {
         // Arrange
-        var schemaRegistry = new MockSchemaRegistryClient();
+        using var schemaRegistry = new MockSchemaRegistryClient();
 
         // Pre-register schema
         var schemaObj = new RegistrySchema

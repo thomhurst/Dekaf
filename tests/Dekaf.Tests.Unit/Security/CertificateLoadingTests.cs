@@ -248,10 +248,8 @@ public class CertificateLoadingTests : IDisposable
         // This helps avoid ASN.1 encoding issues with auto-generated serial numbers
         request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
 
-        var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddYears(1));
-
-        // Export and re-import to get a certificate that can be exported using modern API
-        var pfx = cert.Export(X509ContentType.Pfx);
-        return X509CertificateLoader.LoadPkcs12(pfx, password: null, keyStorageFlags: X509KeyStorageFlags.Exportable);
+        // CreateSelfSigned creates a certificate with an exportable ephemeral key by default
+        // No need for PFX round-trip that can corrupt RSA parameters
+        return request.CreateSelfSigned(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddYears(1));
     }
 }
