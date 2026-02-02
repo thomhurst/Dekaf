@@ -32,6 +32,7 @@ public class RunIntegrationTestsModule : Module<IReadOnlyList<CommandResult>>
                 NoBuild = true,
                 Configuration = "Release",
                 Framework = "net10.0",
+                Arguments = ["--", "--minimum-log-level", "Trace"]
             },
             new CommandExecutionOptions
             {
