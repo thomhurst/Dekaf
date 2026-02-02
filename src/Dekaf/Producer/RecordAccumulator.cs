@@ -1169,79 +1169,117 @@ public sealed class RecordAccumulator : IAsyncDisposable
         if (_disposed || items.Length == 0)
             return !_disposed;
 
-        // Get or create TopicPartition (cached)
-        var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
-        var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
-
-        var startIndex = 0;
-
-        // Loop until all records are appended
-        while (startIndex < items.Length)
+        // CRITICAL: Reserve BufferMemory for all records upfront
+        // Calculate total estimated size for all records in the batch
+        var totalEstimatedSize = 0;
+        for (var i = 0; i < items.Length; i++)
         {
-            // Get or create batch
-            if (!_batches.TryGetValue(topicPartition, out var batch))
-            {
-                // Rent from pool and try to add
-                var newBatch = _batchPool.Rent(topicPartition);
-                if (!_batches.TryAdd(topicPartition, newBatch))
-                {
-                    // Another thread added a batch, return ours to pool
-                    _batchPool.Return(newBatch);
-                    // Use TryGetValue since the batch might have been removed already
-                    if (!_batches.TryGetValue(topicPartition, out batch))
-                    {
-                        continue; // Retry the loop
-                    }
-                }
-                else
-                {
-                    batch = newBatch;
-                }
-            }
-
-            // Try to append remaining records
-            var appended = batch.TryAppendFireAndForgetBatch(items, startIndex);
-
-            if (appended > 0)
-            {
-                startIndex += appended;
-
-                // Update thread-local cache
-                t_cachedAccumulator = this;
-                t_cachedTopic = topic;
-                t_cachedPartition = partition;
-                t_cachedTopicPartition = topicPartition;
-                t_cachedBatch = batch;
-            }
-
-            // If we haven't appended all, batch is full
-            if (startIndex < items.Length)
-            {
-                // Atomically remove the completed batch BEFORE completing.
-                // Only the thread that wins the TryRemove race will complete the batch.
-                if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
-                {
-                    var readyBatch = batch.Complete();
-                    if (readyBatch is not null)
-                    {
-                        if (!_readyBatches.Writer.TryWrite(readyBatch))
-                        {
-                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            // Release the batch's buffer memory since it won't go through producer
-                            ReleaseMemory(readyBatch.DataSize);
-                            t_cachedBatch = null;
-                            return false;
-                        }
-
-                        // Return the completed batch shell to the pool for reuse
-                        _batchPool.Return(batch);
-                    }
-                }
-                t_cachedBatch = null;
-            }
+            var item = items[i];
+            totalEstimatedSize += PartitionBatch.EstimateRecordSize(item.Key.Length, item.Value.Length, item.Headers);
         }
 
-        return true;
+        // Reserve memory before appending any records
+        // This ensures we respect the BufferMemory limit and apply backpressure
+        ReserveMemorySync(totalEstimatedSize);
+
+        // Track actual memory used for proper accounting
+        var memoryUsed = 0;
+
+        try
+        {
+            // Get or create TopicPartition (cached)
+            var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
+            var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
+
+            var startIndex = 0;
+
+            // Loop until all records are appended
+            while (startIndex < items.Length)
+            {
+                // Get or create batch
+                if (!_batches.TryGetValue(topicPartition, out var batch))
+                {
+                    // Rent from pool and try to add
+                    var newBatch = _batchPool.Rent(topicPartition);
+                    if (!_batches.TryAdd(topicPartition, newBatch))
+                    {
+                        // Another thread added a batch, return ours to pool
+                        _batchPool.Return(newBatch);
+                        // Use TryGetValue since the batch might have been removed already
+                        if (!_batches.TryGetValue(topicPartition, out batch))
+                        {
+                            continue; // Retry the loop
+                        }
+                    }
+                    else
+                    {
+                        batch = newBatch;
+                    }
+                }
+
+                // Try to append remaining records
+                var appended = batch.TryAppendFireAndForgetBatch(items, startIndex);
+
+                if (appended > 0)
+                {
+                    startIndex += appended;
+
+                    // Update thread-local cache
+                    t_cachedAccumulator = this;
+                    t_cachedTopic = topic;
+                    t_cachedPartition = partition;
+                    t_cachedTopicPartition = topicPartition;
+                    t_cachedBatch = batch;
+                }
+
+                // If we haven't appended all, batch is full
+                if (startIndex < items.Length)
+                {
+                    // Atomically remove the completed batch BEFORE completing.
+                    // Only the thread that wins the TryRemove race will complete the batch.
+                    if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
+                    {
+                        var readyBatch = batch.Complete();
+                        if (readyBatch is not null)
+                        {
+                            // Track memory for this batch - it will be released when sent or on failure
+                            memoryUsed += readyBatch.DataSize;
+
+                            if (!_readyBatches.Writer.TryWrite(readyBatch))
+                            {
+                                readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                                // Release the batch's buffer memory since it won't go through producer
+                                // Note: This releases the actual batch memory, not from our reserved pool
+                                ReleaseMemory(readyBatch.DataSize);
+                                // Subtract from our tracking since we released it
+                                memoryUsed -= readyBatch.DataSize;
+                                t_cachedBatch = null;
+                                return false;
+                            }
+
+                            // Batch successfully sent to channel - sender will release its memory
+                            // Return the completed batch shell to the pool for reuse
+                            _batchPool.Return(batch);
+                        }
+                    }
+                    t_cachedBatch = null;
+                }
+            }
+
+            return true;
+        }
+        finally
+        {
+            // CRITICAL: Release any unused reserved memory
+            // We reserved totalEstimatedSize but only used memoryUsed (actual batch sizes)
+            // The difference must be released to prevent permanent memory leak
+            // Note: memoryUsed batches will be released by SendBatchAsync when sent
+            var unusedMemory = totalEstimatedSize - memoryUsed;
+            if (unusedMemory > 0)
+            {
+                ReleaseMemory(unusedMemory);
+            }
+        }
     }
 
     /// <summary>
@@ -1385,9 +1423,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Step 2: Wait for all batches to be delivered
         // CRITICAL: No locks are held during this await, preventing deadlock
         // The sender loop will complete these tasks when batches are sent
+        // Respect cancellation token to allow caller to timeout the wait
         if (deliveryTasks.Count > 0)
         {
-            await Task.WhenAll(deliveryTasks).ConfigureAwait(false);
+            await Task.WhenAll(deliveryTasks).WaitAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 

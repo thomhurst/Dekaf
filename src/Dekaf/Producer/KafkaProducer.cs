@@ -1277,35 +1277,35 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     $"No leader for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}");
             }
 
-        var connection = await _connectionPool.GetConnectionAsync(leader.NodeId, cancellationToken)
-            .ConfigureAwait(false);
+            var connection = await _connectionPool.GetConnectionAsync(leader.NodeId, cancellationToken)
+                .ConfigureAwait(false);
 
-        // Ensure API version is negotiated (thread-safe initialization)
-        var apiVersion = _produceApiVersion;
-        if (apiVersion < 0)
-        {
-            apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                ApiKey.Produce,
-                ProduceRequest.LowestSupportedVersion,
-                ProduceRequest.HighestSupportedVersion);
-            // Use Interlocked to avoid racing with other threads
-            Interlocked.CompareExchange(ref _produceApiVersion, apiVersion, -1);
-            // Re-read in case another thread won the race
-            apiVersion = _produceApiVersion;
-        }
+            // Ensure API version is negotiated (thread-safe initialization)
+            var apiVersion = _produceApiVersion;
+            if (apiVersion < 0)
+            {
+                apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    ApiKey.Produce,
+                    ProduceRequest.LowestSupportedVersion,
+                    ProduceRequest.HighestSupportedVersion);
+                // Use Interlocked to avoid racing with other threads
+                Interlocked.CompareExchange(ref _produceApiVersion, apiVersion, -1);
+                // Re-read in case another thread won the race
+                apiVersion = _produceApiVersion;
+            }
 
-        // Capture topic name locally to ensure it doesn't change
-        var expectedTopic = batch.TopicPartition.Topic;
-        var expectedPartition = batch.TopicPartition.Partition;
+            // Capture topic name locally to ensure it doesn't change
+            var expectedTopic = batch.TopicPartition.Topic;
+            var expectedPartition = batch.TopicPartition.Partition;
 
-        var request = new ProduceRequest
-        {
-            Acks = (short)_options.Acks,
-            TimeoutMs = _options.RequestTimeoutMs,
-            TransactionalId = _options.TransactionalId,
-            TopicData =
-            [
-                new ProduceRequestTopicData
+            var request = new ProduceRequest
+            {
+                Acks = (short)_options.Acks,
+                TimeoutMs = _options.RequestTimeoutMs,
+                TransactionalId = _options.TransactionalId,
+                TopicData =
+                [
+                    new ProduceRequestTopicData
                 {
                     Name = expectedTopic,
                     PartitionData =
@@ -1318,143 +1318,143 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                         }
                     ]
                 }
-            ]
-        };
+                ]
+            };
 
-        // Sanity check: verify the request was built correctly
-        System.Diagnostics.Debug.Assert(
-            request.TopicData[0].Name == expectedTopic,
-            $"Request topic mismatch: expected '{expectedTopic}', got '{request.TopicData[0].Name}'");
+            // Sanity check: verify the request was built correctly
+            System.Diagnostics.Debug.Assert(
+                request.TopicData[0].Name == expectedTopic,
+                $"Request topic mismatch: expected '{expectedTopic}', got '{request.TopicData[0].Name}'");
 
-        var messageCount = batch.CompletionSourcesCount;
-        var requestStartTime = DateTimeOffset.UtcNow;
+            var messageCount = batch.CompletionSourcesCount;
+            var requestStartTime = DateTimeOffset.UtcNow;
 
-        // Track request sent
-        _statisticsCollector.RecordRequestSent();
+            // Track request sent
+            _statisticsCollector.RecordRequestSent();
 
-        // Handle Acks.None (fire-and-forget) - broker doesn't send response
-        if (_options.Acks == Acks.None)
-        {
-            await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
+            // Handle Acks.None (fire-and-forget) - broker doesn't send response
+            if (_options.Acks == Acks.None)
+            {
+                await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
+                    request,
+                    (short)apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                // Track batch delivered (fire-and-forget assumes success)
+                _statisticsCollector.RecordBatchDelivered(
+                    batch.TopicPartition.Topic,
+                    batch.TopicPartition.Partition,
+                    messageCount);
+
+                // Complete with synthetic metadata since we don't get a response
+                // Offset is unknown (-1) for fire-and-forget
+                batch.Complete(-1, DateTimeOffset.UtcNow);
+
+                // Memory will be released in finally block
+                return;
+            }
+
+            var response = await connection.SendAsync<ProduceRequest, ProduceResponse>(
                 request,
                 (short)apiVersion,
                 cancellationToken).ConfigureAwait(false);
 
-            // Track batch delivered (fire-and-forget assumes success)
+            // Track response received with latency
+            var latencyMs = (long)(DateTimeOffset.UtcNow - requestStartTime).TotalMilliseconds;
+            _statisticsCollector.RecordResponseReceived(latencyMs);
+
+            // Process response - use imperative loops to avoid LINQ allocations
+            ProduceResponseTopicData? topicResponse = null;
+            foreach (var topic in response.Responses)
+            {
+                if (topic.Name == expectedTopic)
+                {
+                    topicResponse = topic;
+                    break;
+                }
+            }
+
+            ProduceResponsePartitionData? partitionResponse = null;
+            if (topicResponse is not null)
+            {
+                foreach (var partition in topicResponse.PartitionResponses)
+                {
+                    if (partition.Index == expectedPartition)
+                    {
+                        partitionResponse = partition;
+                        break;
+                    }
+                }
+            }
+
+            if (partitionResponse is null)
+            {
+                // Track batch failed
+                _statisticsCollector.RecordBatchFailed(
+                    batch.TopicPartition.Topic,
+                    batch.TopicPartition.Partition,
+                    messageCount);
+
+                // Build diagnostic message (avoid LINQ for zero-allocation principle)
+                var sb = new System.Text.StringBuilder();
+                sb.Append("No response for partition. Expected: ");
+                sb.Append(expectedTopic);
+                sb.Append('[');
+                sb.Append(expectedPartition);
+                sb.Append("], Request topic: ");
+                sb.Append(request.TopicData[0].Name);
+                sb.Append('[');
+                sb.Append(request.TopicData[0].PartitionData[0].Index);
+                sb.Append("], Response: ");
+                for (var i = 0; i < response.Responses.Count; i++)
+                {
+                    if (i > 0) sb.Append(", ");
+                    var t = response.Responses[i];
+                    sb.Append(t.Name);
+                    sb.Append('[');
+                    for (var j = 0; j < t.PartitionResponses.Count; j++)
+                    {
+                        if (j > 0) sb.Append(',');
+                        sb.Append(t.PartitionResponses[j].Index);
+                    }
+                    sb.Append(']');
+                }
+                sb.Append(". API version: ");
+                sb.Append(apiVersion);
+                sb.Append(", Broker: ");
+                sb.Append(connection.Host);
+                sb.Append(':');
+                sb.Append(connection.Port);
+                sb.Append(", Connection #");
+                sb.Append(connection.ConnectionInstanceId);
+
+                throw new InvalidOperationException(sb.ToString());
+            }
+
+            if (partitionResponse.ErrorCode != ErrorCode.None)
+            {
+                // Track batch failed
+                _statisticsCollector.RecordBatchFailed(
+                    batch.TopicPartition.Topic,
+                    batch.TopicPartition.Partition,
+                    messageCount);
+                throw new KafkaException(partitionResponse.ErrorCode,
+                    $"Produce failed: {partitionResponse.ErrorCode}");
+            }
+
+            // Track batch delivered
             _statisticsCollector.RecordBatchDelivered(
                 batch.TopicPartition.Topic,
                 batch.TopicPartition.Partition,
                 messageCount);
 
-            // Complete with synthetic metadata since we don't get a response
-            // Offset is unknown (-1) for fire-and-forget
-            batch.Complete(-1, DateTimeOffset.UtcNow);
+            var timestamp = partitionResponse.LogAppendTimeMs > 0
+                ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
+                : DateTimeOffset.UtcNow;
+
+            batch.Complete(partitionResponse.BaseOffset, timestamp);
 
             // Memory will be released in finally block
-            return;
-        }
-
-        var response = await connection.SendAsync<ProduceRequest, ProduceResponse>(
-            request,
-            (short)apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        // Track response received with latency
-        var latencyMs = (long)(DateTimeOffset.UtcNow - requestStartTime).TotalMilliseconds;
-        _statisticsCollector.RecordResponseReceived(latencyMs);
-
-        // Process response - use imperative loops to avoid LINQ allocations
-        ProduceResponseTopicData? topicResponse = null;
-        foreach (var topic in response.Responses)
-        {
-            if (topic.Name == expectedTopic)
-            {
-                topicResponse = topic;
-                break;
-            }
-        }
-
-        ProduceResponsePartitionData? partitionResponse = null;
-        if (topicResponse is not null)
-        {
-            foreach (var partition in topicResponse.PartitionResponses)
-            {
-                if (partition.Index == expectedPartition)
-                {
-                    partitionResponse = partition;
-                    break;
-                }
-            }
-        }
-
-        if (partitionResponse is null)
-        {
-            // Track batch failed
-            _statisticsCollector.RecordBatchFailed(
-                batch.TopicPartition.Topic,
-                batch.TopicPartition.Partition,
-                messageCount);
-
-            // Build diagnostic message (avoid LINQ for zero-allocation principle)
-            var sb = new System.Text.StringBuilder();
-            sb.Append("No response for partition. Expected: ");
-            sb.Append(expectedTopic);
-            sb.Append('[');
-            sb.Append(expectedPartition);
-            sb.Append("], Request topic: ");
-            sb.Append(request.TopicData[0].Name);
-            sb.Append('[');
-            sb.Append(request.TopicData[0].PartitionData[0].Index);
-            sb.Append("], Response: ");
-            for (var i = 0; i < response.Responses.Count; i++)
-            {
-                if (i > 0) sb.Append(", ");
-                var t = response.Responses[i];
-                sb.Append(t.Name);
-                sb.Append('[');
-                for (var j = 0; j < t.PartitionResponses.Count; j++)
-                {
-                    if (j > 0) sb.Append(',');
-                    sb.Append(t.PartitionResponses[j].Index);
-                }
-                sb.Append(']');
-            }
-            sb.Append(". API version: ");
-            sb.Append(apiVersion);
-            sb.Append(", Broker: ");
-            sb.Append(connection.Host);
-            sb.Append(':');
-            sb.Append(connection.Port);
-            sb.Append(", Connection #");
-            sb.Append(connection.ConnectionInstanceId);
-
-            throw new InvalidOperationException(sb.ToString());
-        }
-
-        if (partitionResponse.ErrorCode != ErrorCode.None)
-        {
-            // Track batch failed
-            _statisticsCollector.RecordBatchFailed(
-                batch.TopicPartition.Topic,
-                batch.TopicPartition.Partition,
-                messageCount);
-            throw new KafkaException(partitionResponse.ErrorCode,
-                $"Produce failed: {partitionResponse.ErrorCode}");
-        }
-
-        // Track batch delivered
-        _statisticsCollector.RecordBatchDelivered(
-            batch.TopicPartition.Topic,
-            batch.TopicPartition.Partition,
-            messageCount);
-
-        var timestamp = partitionResponse.LogAppendTimeMs > 0
-            ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
-            : DateTimeOffset.UtcNow;
-
-        batch.Complete(partitionResponse.BaseOffset, timestamp);
-
-        // Memory will be released in finally block
         }
         finally
         {
