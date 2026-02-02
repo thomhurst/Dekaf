@@ -1589,7 +1589,22 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Respect cancellation token to allow caller to timeout the wait
         if (allTasks.Length > 0)
         {
-            await Task.WhenAll(allTasks).WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await Task.WhenAll(allTasks).WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // FlushAsync was cancelled - observe all task exceptions before rethrowing
+                // In unit tests with no sender loop, these tasks will fail with ObjectDisposedException
+                // If we don't observe them here, GC finalizer will throw UnobservedTaskException
+                foreach (var task in allTasks)
+                {
+                    if (task.IsFaulted)
+                        _ = task.Exception;
+                }
+                throw;
+            }
 
             // Clean up completed tasks from tracking dictionary
             // Use for loop to avoid allocation-heavy foreach with array
