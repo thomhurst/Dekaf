@@ -555,6 +555,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
         {
             // Already at max count, ignore
         }
+        catch (ObjectDisposedException)
+        {
+            // Accumulator is disposed, semaphore no longer valid - ignore
+        }
     }
 
     /// <summary>
@@ -752,7 +756,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
             var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
 
             if (result.Success)
+            {
+                // Release the difference between estimated and actual size to prevent memory leak
+                // The actual batch memory will be released when the batch is sent via SendBatchAsync
+                var overestimate = recordSize - result.ActualSizeAdded;
+                if (overestimate > 0)
+                    ReleaseMemory(overestimate);
                 return result;
+            }
 
             // Batch is full - atomically remove it from dictionary BEFORE completing.
             // Only the thread that wins the TryRemove race will complete the batch.
@@ -856,7 +867,14 @@ public sealed class RecordAccumulator : IAsyncDisposable
             var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
 
             if (result.Success)
+            {
+                // Release the difference between estimated and actual size to prevent memory leak
+                // The actual batch memory will be released when the batch is sent via SendBatchAsync
+                var overestimate = recordSize - result.ActualSizeAdded;
+                if (overestimate > 0)
+                    ReleaseMemory(overestimate);
                 return true;
+            }
 
             // Batch is full - atomically remove it from dictionary BEFORE completing.
             // Only the thread that wins the TryRemove race will complete the batch.
@@ -917,13 +935,25 @@ public sealed class RecordAccumulator : IAsyncDisposable
         {
             var result = cachedBatch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
             if (result.Success)
+            {
+                // Release the difference between estimated and actual size to prevent memory leak
+                var overestimate = recordSize - result.ActualSizeAdded;
+                if (overestimate > 0)
+                    ReleaseMemory(overestimate);
                 return true;
+            }
 
             // Cached batch is full - try fast-path rotation using cached TopicPartition
             if (t_cachedTopicPartition.Topic == topic && t_cachedTopicPartition.Partition == partition)
             {
-                return TryRotateBatchFastPath(cachedBatch, t_cachedTopicPartition, topic, partition,
-                    timestamp, key, value, headers, pooledHeaderArray);
+                var rotated = TryRotateBatchFastPath(cachedBatch, t_cachedTopicPartition, topic, partition,
+                    timestamp, key, value, headers, pooledHeaderArray, recordSize);
+
+                // If rotation failed, release reserved memory before returning
+                if (!rotated)
+                    ReleaseMemory(recordSize);
+
+                return rotated;
             }
         }
 
@@ -938,6 +968,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var result = mpCachedBatch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
                 if (result.Success)
                 {
+                    // Release the difference between estimated and actual size to prevent memory leak
+                    var overestimate = recordSize - result.ActualSizeAdded;
+                    if (overestimate > 0)
+                        ReleaseMemory(overestimate);
+
                     // Also update single-partition cache for potential consecutive hits
                     t_cachedAccumulator = this;
                     t_cachedTopic = topic;
@@ -968,7 +1003,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
         PooledMemory key,
         PooledMemory value,
         IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray)
+        RecordHeader[]? pooledHeaderArray,
+        int recordSize)
     {
         // Atomically remove the old batch from dictionary BEFORE completing.
         // Only the thread that wins the TryRemove race will complete the batch.
@@ -1013,6 +1049,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         if (result.Success)
         {
+            // Release the difference between estimated and actual size to prevent memory leak
+            var overestimate = recordSize - result.ActualSizeAdded;
+            if (overestimate > 0)
+                ReleaseMemory(overestimate);
+
             // Update caches
             t_cachedBatch = newBatch;
 
@@ -1102,6 +1143,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
             if (result.Success)
             {
+                // Release the difference between estimated and actual size to prevent memory leak
+                var overestimate = recordSize - result.ActualSizeAdded;
+                if (overestimate > 0)
+                    ReleaseMemory(overestimate);
+
                 // Update single-partition cache for consecutive hits
                 t_cachedAccumulator = this;
                 t_cachedTopic = topic;
@@ -1280,7 +1326,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                                 // to prevent ArrayPool leaks from pooled arrays in the batch
                                 readyBatch.Fail(new InvalidOperationException("Batch append failed"));
                                 ReleaseMemory(readyBatch.DataSize);
-                                memoryUsed -= readyBatch.DataSize;
+                                // NOTE: Don't decrement memoryUsed here - let finally handle all accounting
+                                // Decrementing here would cause over-release: catch releases + finally releases difference
                                 throw;
                             }
                         }
@@ -1887,7 +1934,7 @@ internal sealed class PartitionBatch
         // Use the passed-in completion source - no allocation here
         _completionSources[_completionSourceCount++] = completion;
 
-        return new RecordAppendResult(true);
+        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
     }
 
     /// <summary>
@@ -2050,7 +2097,7 @@ internal sealed class PartitionBatch
         _records[_recordCount++] = record;
         _estimatedSize += recordSize;
 
-        return new RecordAppendResult(true);
+        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
     }
 
     /// <summary>
@@ -2510,7 +2557,9 @@ internal sealed class PartitionBatch
 /// <summary>
 /// Result of appending a record.
 /// </summary>
-public readonly record struct RecordAppendResult(bool Success);
+/// <param name="Success">Whether the append succeeded</param>
+/// <param name="ActualSizeAdded">Actual size added to batch (for memory accounting). Only valid when Success=true.</param>
+public readonly record struct RecordAppendResult(bool Success, int ActualSizeAdded = 0);
 
 /// <summary>
 /// A batch ready to be sent.
