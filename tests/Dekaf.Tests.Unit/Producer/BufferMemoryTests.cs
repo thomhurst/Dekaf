@@ -554,4 +554,91 @@ public class BufferMemoryTests
         }
     }
 
+    [Test]
+    public async Task BufferMemory_DisposalDuringMemoryWait_ThrowsOperationCanceled()
+    {
+        // Arrange: Create accumulator with tiny buffer to force blocking
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            ClientId = "test-producer",
+            BufferMemory = 200, // Small buffer - 200 bytes
+            BatchSize = 16384,
+            LingerMs = 100,
+            DeliveryTimeoutMs = 30_000 // 30 second timeout (should not be reached)
+        };
+
+        var accumulator = new RecordAccumulator(options);
+        var rentedArrays = new List<byte[]>();
+
+        try
+        {
+            // Fill the buffer completely - use single large message to ensure it fills
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+
+            // Add one message that fills most of the buffer (200 byte limit)
+            // EstimateRecordSize adds ~20 bytes overhead, so 70 bytes value = ~90 bytes total
+            var firstValueBytes = ArrayPool<byte>.Shared.Rent(70);
+            rentedArrays.Add(firstValueBytes);
+            var firstPooledValue = new PooledMemory(firstValueBytes, 70);
+
+            accumulator.TryAppendFireAndForget(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, firstPooledValue, null, null);
+
+            // Buffer should now be ~90 bytes used out of 200
+
+            // Start a task that will block waiting for memory
+            var startTime = Environment.TickCount64;
+            var blockingTask = Task.Run(() =>
+            {
+                // Try to add two more large messages - this will exceed buffer and block
+                var valueBytes1 = ArrayPool<byte>.Shared.Rent(70);
+                lock (rentedArrays) { rentedArrays.Add(valueBytes1); }
+                var pooledValue1 = new PooledMemory(valueBytes1, 70);
+
+                accumulator.TryAppendFireAndForget(
+                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue1, null, null);
+
+                // Second message - this one should block because buffer is full
+                var valueBytes2 = ArrayPool<byte>.Shared.Rent(70);
+                lock (rentedArrays) { rentedArrays.Add(valueBytes2); }
+                var pooledValue2 = new PooledMemory(valueBytes2, 70);
+
+                accumulator.TryAppendFireAndForget(
+                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue2, null, null);
+            });
+
+            // Give the blocking task time to actually start blocking
+            await Task.Delay(200);
+
+            // Act: Dispose while the task is blocked waiting for memory
+            await accumulator.DisposeAsync();
+
+            // Assert: The blocking task should throw OperationCanceledException promptly
+            var exception = await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            {
+                await blockingTask;
+            });
+
+            var elapsedMs = Environment.TickCount64 - startTime;
+
+            // Verify disposal was prompt (< 2 seconds), not the full 30 second timeout
+            await Assert.That(elapsedMs).IsLessThan(2000);
+
+            // Verify the exception indicates cancellation
+            await Assert.That(exception).IsNotNull();
+        }
+        finally
+        {
+            // Return all rented arrays to pool
+            foreach (var array in rentedArrays)
+            {
+                ArrayPool<byte>.Shared.Return(array);
+            }
+        }
+    }
+
 }

@@ -319,6 +319,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private long _bufferedBytes;
     private readonly SemaphoreSlim _bufferSpaceAvailable = new(1, 1);
     private readonly CancellationTokenSource _disposalCts = new();
+    private readonly ManualResetEventSlim _disposalEvent = new(false);
 
     // Thread-local cache for fast path when consecutive messages go to the same partition.
     // This eliminates ConcurrentDictionary lookups for the common case of sending multiple
@@ -479,6 +480,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// Synchronous version of ReserveMemoryAsync for fire-and-forget paths.
     /// Blocks the calling thread until buffer space is available.
     /// Throws TimeoutException if buffer space doesn't become available within DeliveryTimeoutMs.
+    /// Throws OperationCanceledException if the producer is disposed while waiting.
     /// </summary>
     private void ReserveMemorySync(int recordSize)
     {
@@ -489,51 +491,56 @@ public sealed class RecordAccumulator : IAsyncDisposable
         }
 
         // Slow path: wait for space with timeout and cancellation support
-        var spinWait = new SpinWait();
         var currentTicks = Environment.TickCount64;
         var deadline = (long.MaxValue - currentTicks > _options.DeliveryTimeoutMs)
             ? currentTicks + _options.DeliveryTimeoutMs
             : long.MaxValue;
 
+        var spinWait = new SpinWait();
+
         while (!TryReserveMemory(recordSize))
         {
-            // Check cancellation on every iteration to ensure prompt disposal detection
-            _disposalCts.Token.ThrowIfCancellationRequested();
-
-            // Check timeout after we transition out of the busy spin phase
-            if (spinWait.NextSpinWillYield)
-            {
-                if (Environment.TickCount64 > deadline)
-                {
-                    throw new TimeoutException(
-                        $"Timeout waiting for buffer memory after {_options.DeliveryTimeoutMs}ms. " +
-                        $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes. " +
-                        $"Producer is generating messages faster than the network can send them. " +
-                        $"Consider: increasing BufferMemory, reducing production rate, or checking network connectivity.");
-                }
-            }
-
-            // Use SpinOnce for the first ~10 iterations (busy spin), then custom sleep
-            // This ensures responsive cancellation while maintaining good performance
+            // Spin briefly before waiting (hot path optimization)
             if (spinWait.Count < 10)
             {
                 spinWait.SpinOnce();
+                // Check for disposal even during spin phase for prompt detection
+                if (_disposed)
+                {
+                    throw new OperationCanceledException(_disposalCts.Token);
+                }
+                continue;
             }
-            else
+
+            // Check for disposal before sleeping
+            if (_disposed)
             {
-                // After initial spinning, use short sleeps that check cancellation frequently
-                // Use Thread.Sleep(0) to yield, then Thread.Sleep(1) for longer waits
-                // This allows cancellation checks every 1ms instead of waiting for SpinWait's sleep
-                if (spinWait.Count < 20)
-                {
-                    Thread.Sleep(0); // Yield to other threads
-                }
-                else
-                {
-                    // Sleep for 1ms max, allowing cancellation check every millisecond
-                    Thread.Sleep(1);
-                }
-                spinWait.SpinOnce(-1); // Increment count without the sleep logic
+                throw new OperationCanceledException(_disposalCts.Token);
+            }
+
+            // Check timeout
+            var remainingMs = deadline - Environment.TickCount64;
+            if (remainingMs <= 0)
+            {
+                throw new TimeoutException(
+                    $"Timeout waiting for buffer memory after {_options.DeliveryTimeoutMs}ms. " +
+                    $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes. " +
+                    $"Producer is generating messages faster than the network can send them. " +
+                    $"Consider: increasing BufferMemory, reducing production rate, or checking network connectivity.");
+            }
+
+            // Wait on disposal event with timeout - this allows immediate wake-up when disposed
+            // Use 10ms timeout to balance CPU usage with prompt memory availability detection
+            if (_disposalEvent.Wait(Math.Min(10, (int)remainingMs)))
+            {
+                // Disposal was signaled - throw cancellation exception
+                throw new OperationCanceledException(_disposalCts.Token);
+            }
+
+            // Check again after waking up in case disposal happened during sleep
+            if (_disposed)
+            {
+                throw new OperationCanceledException(_disposalCts.Token);
             }
         }
     }
@@ -1554,10 +1561,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         _disposed = true;
 
-        // Cancel the disposal token to interrupt any blocked operations
+        // Cancel the disposal token and signal the disposal event to interrupt any blocked operations
         try
         {
             _disposalCts.Cancel();
+            _disposalEvent.Set();
         }
         catch
         {
@@ -1625,6 +1633,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Dispose resources to prevent leaks
         _bufferSpaceAvailable?.Dispose();
         _disposalCts?.Dispose();
+        _disposalEvent?.Dispose();
     }
 }
 
