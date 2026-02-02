@@ -224,35 +224,41 @@ await _channel.Writer.WriteAsync(workItem, cancellationToken);
 
 ### Producer Cancellation Semantics
 
-**ProduceAsync:** Cancellation only works **before** the message is appended to a batch. Once appended, the message is committed to being sent. This matches Confluent.Kafka behavior and industry standards.
+**ProduceAsync:** Cancellation works at ALL phases, but with different effects:
 
-**Cancellable Phases:**
+**Before message is appended (prevents delivery):**
 - ✅ Entry point: Token checked immediately
 - ✅ Metadata lookup: Network operations respect cancellation
 - ✅ Channel write (slow path): Can be cancelled before worker processes
 - ✅ Memory reservation: Blocking on BufferMemory respects cancellation
 
-**Non-Cancellable Phases:**
-- ❌ After message is appended to batch (within 1-2ms typically)
-- ❌ Message will be delivered even if token is cancelled later
-
-**Why:** The producer uses a low-latency optimization that flushes batches with awaited produces within 1-2ms. By the time a cancellation occurs (e.g., 100ms later), the message has already been sent to Kafka and acknowledged.
+**After message is appended (stops wait, delivery continues):**
+- ✅ Caller's await throws `OperationCanceledException`
+- ✅ Message delivery continues in background (no data loss)
+- ✅ Allows callers to implement timeouts without blocking indefinitely
 
 **FlushAsync:** Can be cancelled throughout the wait. Cancelling stops the caller from waiting, but batches continue sending in background.
 
 **Send (Fire-and-Forget):** Never uses cancellation tokens. Use `FlushAsync(cancellationToken)` if you need cancellable waiting for delivery.
 
 ```csharp
-// CORRECT: Cancellation before append
+// CORRECT: Cancellation before append - message NOT sent
 using var cts = new CancellationTokenSource();
 cts.Cancel(); // Cancel immediately
 await producer.ProduceAsync(message, cts.Token).ConfigureAwait(false); // Throws OperationCanceledException
 
-// CORRECT: Understanding post-queue behavior
-var task = producer.ProduceAsync(message, cts.Token);
-await Task.Delay(100).ConfigureAwait(false);
-cts.Cancel(); // Message already sent (within 1-2ms), completes normally
-var metadata = await task.ConfigureAwait(false); // Succeeds with offset
+// CORRECT: Cancellation after append - stops wait but message IS delivered
+var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)); // 5-second timeout
+try
+{
+    var metadata = await producer.ProduceAsync(message, cts.Token).ConfigureAwait(false);
+    // Success - got delivery confirmation within 5s
+}
+catch (OperationCanceledException)
+{
+    // Timeout - but message will still be delivered to Kafka in background
+    // This is useful for scenarios where you want to "fire and forget with best-effort wait"
+}
 
 // CORRECT: FlushAsync cancellation
 await producer.FlushAsync(cts.Token).ConfigureAwait(false); // Can cancel wait, batches continue sending

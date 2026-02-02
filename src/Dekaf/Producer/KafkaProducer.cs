@@ -214,12 +214,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// </summary>
     /// <param name="message">The message to produce.</param>
     /// <param name="cancellationToken">
-    /// Cancellation token that can cancel the operation <b>before</b> the message is appended to a batch.
-    /// Once appended (typically within 1-2ms), the message is committed to being sent and cancellation
-    /// will not prevent delivery. This matches Confluent.Kafka semantics.
+    /// Cancellation token that can cancel the wait at any point.
     /// <para>
-    /// <b>Cancellable phases:</b> Metadata lookup, channel write, memory reservation.<br/>
-    /// <b>Non-cancellable phases:</b> After message is appended to batch (message will be delivered).
+    /// <b>Before message is appended:</b> Cancellation prevents the message from being sent.<br/>
+    /// <b>After message is appended:</b> Cancellation stops the caller's wait, but the message
+    /// WILL still be delivered to Kafka. This allows callers to implement timeouts without
+    /// blocking indefinitely, while ensuring no data loss.
     /// </para>
     /// </param>
     /// <returns>
@@ -227,7 +227,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// The result contains metadata about the produced message (topic, partition, offset).
     /// </returns>
     /// <exception cref="OperationCanceledException">
-    /// Thrown if the cancellation token is cancelled before the message is appended to a batch.
+    /// Thrown if the cancellation token is cancelled (either before append or while waiting for delivery).
+    /// If thrown after append, the message will still be delivered to Kafka.
     /// </exception>
     /// <exception cref="ObjectDisposedException">
     /// Thrown if the producer has been disposed.
@@ -247,13 +248,47 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (TryProduceSyncForAsync(message, out var completion))
         {
             // POST-QUEUE: Message appended to batch, committed to being sent
-            // Return task directly without cancellation support (message will be delivered)
+            // Message WILL be delivered, but caller can stop waiting via cancellation token.
+            if (cancellationToken.CanBeCanceled)
+            {
+                return AwaitWithCancellation(completion!, cancellationToken);
+            }
             return completion!.Task;
         }
 
         // Slow path: Fall back to channel-based async processing.
         // This handles first-time metadata initialization or cache misses.
         return ProduceAsyncSlow(message, cancellationToken);
+    }
+
+    /// <summary>
+    /// Awaits a completion source with cancellation support.
+    /// If cancellation fires, sets the completion source to cancelled state so that
+    /// GetResult() is called and the pool item is properly returned.
+    /// The message delivery continues in background regardless.
+    /// </summary>
+    private static async ValueTask<RecordMetadata> AwaitWithCancellation(
+        PooledValueTaskSource<RecordMetadata> completion,
+        CancellationToken cancellationToken)
+    {
+        // Capture both completion and token in a tuple for the callback
+        var state = (completion, cancellationToken);
+        var registration = cancellationToken.Register(
+            static s =>
+            {
+                var (comp, token) = ((PooledValueTaskSource<RecordMetadata>, CancellationToken))s!;
+                comp.TrySetCanceled(token);
+            },
+            state);
+
+        try
+        {
+            return await completion.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            await registration.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -327,7 +362,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         await _workChannel.Writer.WriteAsync(workItem, cancellationToken).ConfigureAwait(false);
 
         // POST-QUEUE: Message in worker pipeline, committed to being sent
-        // Await result without cancellation support - source auto-returns to pool when GetResult() is called
+        // Message WILL be delivered, but caller can stop waiting via cancellation token.
+        if (cancellationToken.CanBeCanceled)
+        {
+            return await AwaitWithCancellation(completion, cancellationToken).ConfigureAwait(false);
+        }
+
         return await completion.Task.ConfigureAwait(false);
     }
 
