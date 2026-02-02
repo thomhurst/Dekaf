@@ -32,7 +32,7 @@ public class BufferMemoryTests
         try
         {
             // Verify starting state
-            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0);
+            await Assert.That(accumulator.BufferedBytes).IsEqualTo(0).ConfigureAwait(false);
 
             // Act: Fire-and-forget append
             var pooledKey = new PooledMemory(null, 0, isNull: true);
@@ -42,20 +42,20 @@ public class BufferMemoryTests
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 pooledKey, pooledValue, null, null);
 
-            await Assert.That(result1).IsTrue();
+            await Assert.That(result1).IsTrue().ConfigureAwait(false);
 
             var result2 = accumulator.TryAppendFireAndForget(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 pooledKey, pooledValue, null, null);
 
-            await Assert.That(result2).IsTrue();
+            await Assert.That(result2).IsTrue().ConfigureAwait(false);
 
             // Assert: Verify memory was reserved
             var bufferedBytes = accumulator.BufferedBytes;
-            await Assert.That(bufferedBytes).IsGreaterThan(0);
+            await Assert.That(bufferedBytes).IsGreaterThan(0).ConfigureAwait(false);
 
             // Verify it's within the limit
-            await Assert.That((ulong)bufferedBytes).IsLessThanOrEqualTo(options.BufferMemory);
+            await Assert.That((ulong)bufferedBytes).IsLessThanOrEqualTo(options.BufferMemory).ConfigureAwait(false);
         }
         finally
         {
@@ -86,7 +86,7 @@ public class BufferMemoryTests
 
             // Verify memory is reserved
             var bufferedBytesBeforeRelease = accumulator.BufferedBytes;
-            await Assert.That(bufferedBytesBeforeRelease).IsGreaterThan(0);
+            await Assert.That(bufferedBytesBeforeRelease).IsGreaterThan(0).ConfigureAwait(false);
 
             // Get the batch
             if (accumulator.TryGetBatch("test-topic", 0, out var batch))
@@ -98,7 +98,7 @@ public class BufferMemoryTests
 
                 // Assert: Verify memory was released
                 var bufferedBytesAfterRelease = accumulator.BufferedBytes;
-                await Assert.That(bufferedBytesAfterRelease).IsEqualTo(0);
+                await Assert.That(bufferedBytesAfterRelease).IsEqualTo(0).ConfigureAwait(false);
             }
             else
             {
@@ -138,12 +138,12 @@ public class BufferMemoryTests
 
             // Assert: Verify memory was reserved for all partitions
             var bufferedBytes = accumulator.BufferedBytes;
-            await Assert.That(bufferedBytes).IsGreaterThan(0);
+            await Assert.That(bufferedBytes).IsGreaterThan(0).ConfigureAwait(false);
 
             // Each partition should have its own batch
-            await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsTrue();
-            await Assert.That(accumulator.TryGetBatch("test-topic", 1, out _)).IsTrue();
-            await Assert.That(accumulator.TryGetBatch("test-topic", 2, out _)).IsTrue();
+            await Assert.That(accumulator.TryGetBatch("test-topic", 0, out _)).IsTrue().ConfigureAwait(false);
+            await Assert.That(accumulator.TryGetBatch("test-topic", 1, out _)).IsTrue().ConfigureAwait(false);
+            await Assert.That(accumulator.TryGetBatch("test-topic", 2, out _)).IsTrue().ConfigureAwait(false);
         }
         finally
         {
@@ -171,18 +171,18 @@ public class BufferMemoryTests
                     "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     pooledKey, pooledValue, null, null);
 
-                await Assert.That(result).IsTrue();
+                await Assert.That(result).IsTrue().ConfigureAwait(false);
             }
 
             // Assert: Verify memory was reserved for all messages
             var bufferedBytes = accumulator.BufferedBytes;
-            await Assert.That(bufferedBytes).IsGreaterThan(0);
+            await Assert.That(bufferedBytes).IsGreaterThan(0).ConfigureAwait(false);
 
             // Verify batch exists
             if (accumulator.TryGetBatch("test-topic", 0, out var batch))
             {
                 // The batch should have data
-                await Assert.That(batch!.EstimatedSize).IsGreaterThan(0);
+                await Assert.That(batch!.EstimatedSize).IsGreaterThan(0).ConfigureAwait(false);
             }
             else
             {
@@ -214,7 +214,7 @@ public class BufferMemoryTests
                 pooledKey, pooledValue, null, null);
 
             var bufferedAfterFirst = accumulator.BufferedBytes;
-            await Assert.That(bufferedAfterFirst).IsGreaterThan(0);
+            await Assert.That(bufferedAfterFirst).IsGreaterThan(0).ConfigureAwait(false);
 
             // Second batch to different partition
             accumulator.TryAppendFireAndForget(
@@ -222,7 +222,7 @@ public class BufferMemoryTests
                 pooledKey, pooledValue, null, null);
 
             var bufferedAfterSecond = accumulator.BufferedBytes;
-            await Assert.That(bufferedAfterSecond).IsGreaterThan(bufferedAfterFirst);
+            await Assert.That(bufferedAfterSecond).IsGreaterThan(bufferedAfterFirst).ConfigureAwait(false);
 
             // Release first batch
             if (accumulator.TryGetBatch("test-topic", 0, out var batch1))
@@ -231,10 +231,10 @@ public class BufferMemoryTests
             }
 
             var bufferedAfterRelease = accumulator.BufferedBytes;
-            await Assert.That(bufferedAfterRelease).IsLessThan(bufferedAfterSecond);
+            await Assert.That(bufferedAfterRelease).IsLessThan(bufferedAfterSecond).ConfigureAwait(false);
 
             // Verify accounting stayed correct
-            await Assert.That(bufferedAfterRelease).IsGreaterThanOrEqualTo(0);
+            await Assert.That(bufferedAfterRelease).IsGreaterThanOrEqualTo(0).ConfigureAwait(false);
         }
         finally
         {
@@ -298,14 +298,14 @@ public class BufferMemoryTests
             var elapsedMs = Environment.TickCount64 - startTime;
 
             // Verify timeout was thrown
-            await Assert.That(timeoutThrown).IsTrue();
+            await Assert.That(timeoutThrown).IsTrue().ConfigureAwait(false);
 
             // Verify timeout occurred within reasonable time (should be ~500ms + some overhead)
-            await Assert.That(elapsedMs).IsGreaterThanOrEqualTo(400); // At least 400ms
-            await Assert.That(elapsedMs).IsLessThan(3000); // More generous for slow CI (< 3s)
+            await Assert.That(elapsedMs).IsGreaterThanOrEqualTo(400).ConfigureAwait(false); // At least 400ms
+            await Assert.That(elapsedMs).IsLessThan(3000).ConfigureAwait(false); // More generous for slow CI (< 3s)
 
             // Verify we filled the buffer before timing out
-            await Assert.That(messageCount).IsGreaterThan(0);
+            await Assert.That(messageCount).IsGreaterThan(0).ConfigureAwait(false);
         }
         finally
         {
@@ -346,12 +346,12 @@ public class BufferMemoryTests
                 {
                     accumulator.TryAppendFireAndForget(
                         "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                        pooledKey, pooledValue, null, null);
+                        pooledKey, pooledValue, null, null).ConfigureAwait(false);
                     await Task.CompletedTask.ConfigureAwait(false);
-                });
+                }).ConfigureAwait(false);
 
                 // Assert: Should throw immediately, not wait for timeout
-                await Assert.That(exception!.Message).Contains("buffer memory");
+                await Assert.That(exception!.Message).Contains("buffer memory").ConfigureAwait(false);
             }
             finally
             {
@@ -382,9 +382,9 @@ public class BufferMemoryTests
             {
                 accumulator.TryAppendFireAndForget(
                     "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, null);
+                    pooledKey, pooledValue, null, null).ConfigureAwait(false);
                 await Task.CompletedTask.ConfigureAwait(false);
-            });
+            }).ConfigureAwait(false);
         }
         finally
         {
@@ -424,9 +424,9 @@ public class BufferMemoryTests
             }
 
             // Assert: Should eventually hit backpressure
-            await Assert.That(threwTimeout).IsTrue();
-            await Assert.That(successCount).IsGreaterThan(0); // At least some succeeded
-            await Assert.That((ulong)accumulator.BufferedBytes).IsLessThanOrEqualTo(options.BufferMemory);
+            await Assert.That(threwTimeout).IsTrue().ConfigureAwait(false);
+            await Assert.That(successCount).IsGreaterThan(0).ConfigureAwait(false); // At least some succeeded
+            await Assert.That((ulong)accumulator.BufferedBytes).IsLessThanOrEqualTo(options.BufferMemory).ConfigureAwait(false);
         }
         finally
         {
@@ -453,7 +453,7 @@ public class BufferMemoryTests
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 pooledKey, pooledValue, null, null);
 
-            await Assert.That(resultAfterDisposal).IsFalse();
+            await Assert.That(resultAfterDisposal).IsFalse().ConfigureAwait(false);
         }
         finally
         {

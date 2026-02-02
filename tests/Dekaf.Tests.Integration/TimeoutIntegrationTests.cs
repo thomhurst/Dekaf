@@ -30,7 +30,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         }).ConfigureAwait(false);
 
         // Assert - Connection succeeded within timeout
-        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0).ConfigureAwait(false);
     }
 
     [Test]
@@ -54,7 +54,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         }).ConfigureAwait(false);
 
         // Assert - Request succeeded within timeout
-        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0).ConfigureAwait(false);
     }
 
     [Test]
@@ -108,7 +108,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             var completedInTime = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(35))).ConfigureAwait(false) == disposeTask;
 
             // Assert - Disposal completed within timeout (30s default + 5s buffer)
-            await Assert.That(completedInTime).IsTrue();
+            await Assert.That(completedInTime).IsTrue().ConfigureAwait(false);
         }
         finally
         {
@@ -148,8 +148,8 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         }
 
         // Assert - All messages produced successfully
-        await Assert.That(results).Count().IsEqualTo(10);
-        await Assert.That(results.All(r => r.Offset >= 0)).IsTrue();
+        await Assert.That(results).Count().IsEqualTo(10).ConfigureAwait(false);
+        await Assert.That(results.All(r => r.Offset >= 0)).IsTrue().ConfigureAwait(false);
     }
 
     [Test]
@@ -202,7 +202,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             }).ConfigureAwait(false);
 
             // Assert each receives a response (no timeout)
-            await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+            await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0).ConfigureAwait(false);
         }
     }
 
@@ -231,7 +231,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
                 Key = "key1",
                 Value = "value1"
             }, cts.Token).ConfigureAwait(false);
-        });
+        }).ConfigureAwait(false);
     }
 
     [Test]
@@ -265,7 +265,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         // Assert - Message completes successfully despite cancellation
         // (it was already committed to being sent when token was cancelled)
         var metadata = await produceTask.ConfigureAwait(false);
-        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0).ConfigureAwait(false);
     }
 
     [Test]
@@ -289,7 +289,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
         {
             await producer.FlushAsync(cts.Token).ConfigureAwait(false);
-        });
+        }).ConfigureAwait(false);
     }
 
     // NOTE: Timing-based cancellation tests removed - converted to unit tests in ProducerCancellationTests.cs
@@ -313,7 +313,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         var elapsed = Environment.TickCount64 - startTime;
 
         // Assert - Should complete quickly (< 1 second)
-        await Assert.That(elapsed).IsLessThan(1000);
+        await Assert.That(elapsed).IsLessThan(1000).ConfigureAwait(false);
     }
 
     [Test]
@@ -333,7 +333,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             var elapsed = Environment.TickCount64 - startTime;
 
             // Assert - Should complete quickly (< 2 seconds)
-            await Assert.That(elapsed).IsLessThan(2000);
+            await Assert.That(elapsed).IsLessThan(2000).ConfigureAwait(false);
         }
         finally
         {
@@ -373,7 +373,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             var completedInTime = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(10))).ConfigureAwait(false) == disposeTask;
 
             // Assert - Should complete within timeout
-            await Assert.That(completedInTime).IsTrue();
+            await Assert.That(completedInTime).IsTrue().ConfigureAwait(false);
         }
         finally
         {
@@ -413,7 +413,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
 
         // Assert - Both operations completed successfully
         var metadata = await produceTask.ConfigureAwait(false);
-        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0).ConfigureAwait(false);
     }
 
     [Test]
@@ -483,11 +483,11 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
                 Key = "key1",
                 Value = "value1"
             }, cts.Token).ConfigureAwait(false);
-        });
+        }).ConfigureAwait(false);
         sw.Stop();
 
         // Should be nearly instantaneous (< 10ms)
-        await Assert.That(sw.ElapsedMilliseconds).IsLessThan(10);
+        await Assert.That(sw.ElapsedMilliseconds).IsLessThan(10).ConfigureAwait(false);
     }
 
     // NOTE: Timing-based ProduceAsync cancellation tests removed
@@ -532,7 +532,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
 
         // Assert - Completes successfully despite cancellation
         var metadata = await produceTask.ConfigureAwait(false);
-        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0).ConfigureAwait(false);
     }
 
     [Test]
@@ -561,7 +561,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
 
         // Assert - Completes successfully
         var metadata = await produceTask.ConfigureAwait(false);
-        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0).ConfigureAwait(false);
     }
 
     #endregion
@@ -617,13 +617,13 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         {
             if (i % 2 == 0)
             {
-                await Assert.That(results[i].cancelled).IsFalse();
-                await Assert.That(results[i].metadata).IsNotNull();
+                await Assert.That(results[i].cancelled).IsFalse().ConfigureAwait(false);
+                await Assert.That(results[i].metadata).IsNotNull().ConfigureAwait(false);
             }
             else
             {
-                await Assert.That(results[i].cancelled).IsTrue();
-                await Assert.That(results[i].error).IsNotNull();
+                await Assert.That(results[i].cancelled).IsTrue().ConfigureAwait(false);
+                await Assert.That(results[i].error).IsNotNull().ConfigureAwait(false);
             }
         }
     }
@@ -660,10 +660,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
 
         // Assert - All should complete successfully (appended before cancellation)
         var results = await Task.WhenAll(tasks).ConfigureAwait(false);
-        await Assert.That(results.Length).IsEqualTo(20);
+        await Assert.That(results.Length).IsEqualTo(20).ConfigureAwait(false);
         foreach (var metadata in results)
         {
-            await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+            await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0).ConfigureAwait(false);
         }
     }
 
@@ -713,7 +713,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
 
         // Assert - Should complete successfully
         var metadata = await produceTask.ConfigureAwait(false);
-        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0).ConfigureAwait(false);
     }
 
     #endregion
@@ -738,7 +738,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
         {
             await producer.FlushAsync(cts.Token).ConfigureAwait(false);
-        });
+        }).ConfigureAwait(false);
     }
 
     // NOTE: FlushAsync timing-based cancellation test removed
@@ -777,7 +777,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
 
         // Assert - Message still delivers despite flush cancellation
         var metadata = await produceTask.ConfigureAwait(false);
-        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
+        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0).ConfigureAwait(false);
     }
 
     #endregion
@@ -853,7 +853,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
 
         // Assert - Should complete without hanging
         var completed = await Task.WhenAny(produceTask, Task.Delay(5000)).ConfigureAwait(false) == produceTask;
-        await Assert.That(completed).IsTrue();
+        await Assert.That(completed).IsTrue().ConfigureAwait(false);
     }
 
     #endregion
