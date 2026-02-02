@@ -320,6 +320,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     private volatile bool _disposed;
     private volatile bool _closed;
+    private volatile bool _disposing; // Set during DisposeAsync to prevent continuations from removing tasks
 
     // Buffer memory tracking for backpressure
     private readonly ulong _maxBufferMemory;
@@ -1495,9 +1496,13 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     if (t.IsFaulted)
                         _ = t.Exception;
 
-                    var dict = (ConcurrentDictionary<Task, byte>)state!;
-                    dict.TryRemove(t, out _);
-                }, _inFlightDeliveryTasks,
+                    var accumulator = (RecordAccumulator)state!;
+
+                    // Don't remove during disposal - disposal will observe all tasks and clear dictionary
+                    // This prevents race: task completes → removed → disposal misses observing it
+                    if (!accumulator._disposing)
+                        accumulator._inFlightDeliveryTasks.TryRemove(t, out _);
+                }, this,
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
@@ -1619,6 +1624,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
             return;
 
         _disposed = true;
+        _disposing = true; // Prevent continuations from removing tasks during disposal
 
         // Cancel the disposal token and signal the disposal event to interrupt any blocked operations
         try
