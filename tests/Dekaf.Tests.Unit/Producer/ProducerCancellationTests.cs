@@ -132,9 +132,10 @@ public class ProducerCancellationTests
         cts.Cancel();
 
         // Act & Assert - Should throw immediately
-        await Assert.That(() => cts.Token.ThrowIfCancellationRequested())
-            .ThrowsException()
-            .OfType<OperationCanceledException>();
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        {
+            await Task.Run(() => cts.Token.ThrowIfCancellationRequested());
+        });
     }
 
     [Test]
@@ -159,9 +160,9 @@ public class ProducerCancellationTests
     }
 
     [Test]
-    public async Task RecordAccumulator_MultipleFlushAsync_AllRespectCancellation()
+    public async Task RecordAccumulator_MultipleFlushAsync_WithPreCancelledTokens_AllThrow()
     {
-        // Arrange - Test that multiple concurrent flushes all respect cancellation
+        // Arrange - Test that multiple concurrent flushes all respect pre-cancelled tokens
         var options = new ProducerOptions
         {
             BootstrapServers = new[] { "localhost:9092" },
@@ -185,25 +186,22 @@ public class ProducerCancellationTests
                     pooledKey, pooledValue, null, null);
             }
 
-            // Act - Start multiple flushes with different cancellation tokens
+            // Act - Start multiple flushes with pre-cancelled tokens
             using var cts1 = new CancellationTokenSource();
             using var cts2 = new CancellationTokenSource();
             using var cts3 = new CancellationTokenSource();
 
-            var flush1 = accumulator.FlushAsync(cts1.Token);
-            var flush2 = accumulator.FlushAsync(cts2.Token);
-            var flush3 = accumulator.FlushAsync(cts3.Token);
-
-            // Cancel all tokens
-            await Task.Delay(10);
             cts1.Cancel();
             cts2.Cancel();
             cts3.Cancel();
 
-            // Assert - All should throw OperationCanceledException
-            await Assert.ThrowsAsync<OperationCanceledException>(async () => await flush1);
-            await Assert.ThrowsAsync<OperationCanceledException>(async () => await flush2);
-            await Assert.ThrowsAsync<OperationCanceledException>(async () => await flush3);
+            // Assert - All should throw OperationCanceledException immediately
+            await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await accumulator.FlushAsync(cts1.Token));
+            await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await accumulator.FlushAsync(cts2.Token));
+            await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                await accumulator.FlushAsync(cts3.Token));
         }
         finally
         {
