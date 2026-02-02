@@ -21,6 +21,88 @@ Dekaf is a high-performance, pure C# Apache Kafka client library for .NET 10+. T
 - **Protocol Code Uses Unsafe**: The `Dekaf.Protocol` namespace uses unsafe code for performance. Changes here require extra scrutiny.
 - **BufferMemory Enforces Strict Limits**: Producer `BufferMemory` setting enforces limits across all append paths (both slow path and arena fast path) to prevent unbounded growth. Exceeding this limit blocks `ProduceAsync` until space is available via backpressure.
 
+## Performance and Correctness Guidelines
+
+### Deadlock Prevention
+
+**Always consider deadlock potential when adding synchronization:**
+
+- **ConfigureAwait(false) is mandatory** - Missing it causes deadlocks in consumer applications with synchronization contexts
+- **Never block async code** - Don't use `.Result` or `.Wait()` on Tasks in library code
+- **Channel-based patterns** - Prefer channels over locks for coordination between threads
+- **Disposal coordination** - Use `CancellationTokenSource` and `ManualResetEventSlim` for prompt shutdown signaling
+
+**Hot path discipline:**
+- Methods marked `[MethodImpl(MethodImplOptions.AggressiveInlining)]` are performance-critical
+- **NEVER add O(n) operations to hot paths** - This includes dictionary enumeration, collection scans, or cleanup loops
+- Hot path = message serialization, batch append, channel writes
+- If a 10-minute test hang occurs, suspect O(n) operations on hot path
+
+### Memory Leak Prevention
+
+**Track resource lifecycles carefully:**
+
+- **Auto-cleanup for long-running resources** - Use `ContinueWith` or background threads to clean up completed tasks/references
+- **Per-batch vs per-message matters** - 1000x difference in allocation cost. Batches contain ~1000 messages.
+- **ConcurrentDictionary growth** - Dictionaries tracking async operations must remove completed entries to prevent unbounded growth
+- **Unobserved task exceptions** - Always observe task exceptions via `await`, `ContinueWith`, or `TaskScheduler.UnobservedTaskException`
+
+**Example - Proper task tracking with auto-cleanup:**
+```csharp
+// GOOD: Auto-removes when complete (one allocation per batch, not per message)
+private void TrackDeliveryTask(ReadyBatch readyBatch)
+{
+    var task = readyBatch.DeliveryTask;
+    _inFlightDeliveryTasks.TryAdd(task, 0);
+
+    if (!task.IsCompleted)
+    {
+        _ = task.ContinueWith(static (t, state) =>
+        {
+            var dict = (ConcurrentDictionary<Task, byte>)state!;
+            dict.TryRemove(t, out _);
+        }, _inFlightDeliveryTasks,
+        CancellationToken.None,
+        TaskContinuationOptions.ExecuteSynchronously,
+        TaskScheduler.Default);
+    }
+}
+
+// BAD: Memory leak - completed tasks never removed
+private void TrackDeliveryTask(ReadyBatch readyBatch)
+{
+    _inFlightDeliveryTasks.TryAdd(readyBatch.DeliveryTask, 0);
+    // No cleanup = unbounded growth in long-running apps
+}
+```
+
+### Allocation Cost Analysis
+
+**Understand per-message vs per-batch costs:**
+
+- **Per-message allocations** are expensive at high throughput (millions/sec)
+- **Per-batch allocations** are acceptable - amortized over ~1000 messages
+- Batch = 16KB default = ~1000 small messages
+- 100 bytes per batch = 0.1 bytes per message amortized
+
+**When reviewing allocation-related changes:**
+- Ask: "Is this per message or per batch?"
+- Per-batch allocations (even 100s of bytes) are usually acceptable
+- Per-message allocations in hot path must be zero
+
+### Testing Implications
+
+**CI test hangs indicate serious problems:**
+- 10-minute timeout = hot path performance issue or deadlock
+- Check for O(n) operations added to hot paths
+- Check for missing `ConfigureAwait(false)`
+- Check for blocking on async operations
+
+**Unobserved task exceptions in CI:**
+- Indicates background tasks not properly awaited during disposal
+- `DisposeAsync()` must wait for all in-flight work with `try-catch` to observe exceptions
+- Use `ConcurrentDictionary<Task, byte>` to track all async operations that need coordinated disposal
+
 ## Project Structure
 
 ```
