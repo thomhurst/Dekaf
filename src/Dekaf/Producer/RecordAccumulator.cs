@@ -315,15 +315,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     // Track all in-flight delivery tasks so FlushAsync can wait for them
     // This ensures FlushAsync waits for batches already in _readyBatches, not just batches in _batches
     // Initialize with large capacity (1024) to avoid resizing under load
-    //
-    // NOTE: Completed tasks are only removed during FlushAsync or disposal, not proactively.
-    // This means long-running producers using fire-and-forget (Send) without FlushAsync may accumulate
-    // completed task references. This is an intentional trade-off:
-    // - Memory overhead is minimal (~100 bytes per Task reference)
-    // - Proactive cleanup would require O(n) operations on the hot path (unacceptable)
-    // - Most real-world producers call FlushAsync periodically or at shutdown
-    // - Disposal cleans up all tasks
-    // - Pathological cases (millions of fire-and-forget without flush) are detectable via monitoring
+    // Completed tasks automatically remove themselves via ContinueWith to prevent unbounded growth
     private readonly ConcurrentDictionary<Task, byte> _inFlightDeliveryTasks = new(concurrencyLevel: Environment.ProcessorCount, capacity: 1024);
 
     private volatile bool _disposed;
@@ -1481,6 +1473,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Registers a ReadyBatch delivery task for tracking by FlushAsync.
+    /// Completed tasks automatically remove themselves from tracking to prevent memory leaks.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void TrackDeliveryTask(ReadyBatch readyBatch)
@@ -1490,10 +1483,22 @@ public sealed class RecordAccumulator : IAsyncDisposable
             var task = readyBatch.DeliveryTask;
             _inFlightDeliveryTasks.TryAdd(task, 0);
 
-            // Proactively clean up completed tasks to avoid dictionary growth
-            // Continue immediately if not completed (common case)
             if (!task.IsCompleted)
+            {
+                // Register continuation to auto-remove when complete
+                // Allocation cost: ~100 bytes per batch (not per message)
+                // Amortized: ~0.1 bytes per message (batch = ~1000 messages)
+                // This prevents unbounded memory growth in long-running fire-and-forget scenarios
+                _ = task.ContinueWith(static (t, state) =>
+                {
+                    var dict = (ConcurrentDictionary<Task, byte>)state!;
+                    dict.TryRemove(t, out _);
+                }, _inFlightDeliveryTasks,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
                 return;
+            }
 
             // Task completed synchronously (rare) - clean up immediately
             _inFlightDeliveryTasks.TryRemove(task, out _);
