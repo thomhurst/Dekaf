@@ -1445,6 +1445,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     private async ValueTask FlushAsyncCore(CancellationToken cancellationToken)
     {
+        Console.WriteLine($"[FlushAsync] START - batches count: {_batches.Count}");
+
         // Step 1: Collect all batch delivery tasks BEFORE writing to channel
         // This prevents race where batch completes before we collect its task
         var deliveryTasks = new List<Task>();
@@ -1493,6 +1495,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
             }
         }
 
+        Console.WriteLine($"[FlushAsync] Collected {deliveryTasks.Count} delivery tasks, now waiting...");
+
         // Step 2: Wait for all batches to be delivered
         // CRITICAL: No locks are held during this await, preventing deadlock
         // The sender loop will complete these tasks when batches are sent
@@ -1500,6 +1504,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
         if (deliveryTasks.Count > 0)
         {
             await Task.WhenAll(deliveryTasks).WaitAsync(cancellationToken).ConfigureAwait(false);
+            Console.WriteLine($"[FlushAsync] All {deliveryTasks.Count} batches delivered!");
+        }
+        else
+        {
+            Console.WriteLine($"[FlushAsync] No batches to flush");
         }
     }
 

@@ -1262,6 +1262,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     private async Task SendBatchAsync(ReadyBatch batch, CancellationToken cancellationToken)
     {
+        // DIAGNOSTIC: Track batch entry
+        _logger?.LogDebug("[SendBatch] START {Topic}-{Partition} with {Count} messages",
+            batch.TopicPartition.Topic, batch.TopicPartition.Partition, batch.CompletionSourcesCount);
+
         // CRITICAL: Use try-finally to ensure BufferMemory is ALWAYS released
         // This prevents memory leaks when exceptions occur during batch sending
         try
@@ -1348,6 +1352,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
                 // Complete with synthetic metadata since we don't get a response
                 // Offset is unknown (-1) for fire-and-forget
+                _logger?.LogDebug("[SendBatch] COMPLETE (fire-and-forget) {Topic}-{Partition}",
+                    batch.TopicPartition.Topic, batch.TopicPartition.Partition);
                 batch.Complete(-1, DateTimeOffset.UtcNow);
 
                 // Memory will be released in finally block
@@ -1452,6 +1458,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
                 : DateTimeOffset.UtcNow;
 
+            _logger?.LogDebug("[SendBatch] COMPLETE (normal) {Topic}-{Partition} at offset {Offset}",
+                batch.TopicPartition.Topic, batch.TopicPartition.Partition, partitionResponse.BaseOffset);
             batch.Complete(partitionResponse.BaseOffset, timestamp);
 
             // Memory will be released in finally block
@@ -1460,6 +1468,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             // CRITICAL: Fail the batch to complete its DeliveryTask
             // Otherwise FlushAsync will hang waiting for delivery completion
+            _logger?.LogError(ex, "[SendBatch] FAIL {Topic}-{Partition} - calling batch.Fail()",
+                batch.TopicPartition.Topic, batch.TopicPartition.Partition);
             batch.Fail(ex);
             throw;
         }
