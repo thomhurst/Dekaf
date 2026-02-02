@@ -14,7 +14,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
     public async Task Producer_ConnectionEstablishment_CompletesWithinDefaultTimeout()
     {
         // Arrange - Test that connection establishment completes within default ConnectionTimeout (30s)
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -27,7 +27,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        });
+        }).ConfigureAwait(false);
 
         // Assert - Connection succeeded within timeout
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -37,7 +37,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
     public async Task Producer_RequestWithAcksAll_CompletesWithinDefaultTimeout()
     {
         // Arrange - Test that requests with Acks.All complete within default RequestTimeout (30s)
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -51,7 +51,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        });
+        }).ConfigureAwait(false);
 
         // Assert - Request succeeded within timeout
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -61,7 +61,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
     public async Task Producer_FlushWithBatchedMessages_CompletesWithinDefaultTimeout()
     {
         // Arrange - Test that flush completes within default RequestTimeout (30s)
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -77,7 +77,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
 
         // Flush with explicit timeout to ensure it completes
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(cts.Token);
+        await producer.FlushAsync(cts.Token).ConfigureAwait(false);
 
         // Assert - Flush completed without throwing
     }
@@ -86,7 +86,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
     public async Task Producer_DisposalAfterProduction_CompletesWithinReasonableTime()
     {
         // Arrange - Test that disposal completes within reasonable time (ConnectionTimeout grace period)
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
 
         var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -99,11 +99,11 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        });
+        }).ConfigureAwait(false);
 
         // Dispose with timeout to ensure it doesn't hang
         var disposeTask = producer.DisposeAsync().AsTask();
-        var completedInTime = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(35))) == disposeTask;
+        var completedInTime = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(35))).ConfigureAwait(false) == disposeTask;
 
         // Assert - Disposal completed within timeout (30s default + 5s buffer)
         await Assert.That(completedInTime).IsTrue();
@@ -113,7 +113,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
     public async Task Producer_ConcurrentProduction_AllRequestsCompleteWithinTimeout()
     {
         // Arrange - Test that concurrent production completes within timeout
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -136,7 +136,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         var results = new List<RecordMetadata>();
         foreach (var task in tasks)
         {
-            results.Add(await task);
+            results.Add(await task.ConfigureAwait(false));
         }
 
         // Assert - All messages produced successfully
@@ -148,7 +148,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
     public async Task Producer_LargeVolumeProduction_FlushCompletesWithoutHanging()
     {
         // Arrange - Test that large batches with backpressure still flush within timeout
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -166,7 +166,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
 
         // Flush with timeout to ensure backpressure doesn't cause hang
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        await producer.FlushAsync(cts.Token);
+        await producer.FlushAsync(cts.Token).ConfigureAwait(false);
 
         // Assert - Flush completed without throwing
     }
@@ -175,7 +175,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
     public async Task Producer_ReceiveLoop_ProcessesResponsesWithinTimeout()
     {
         // Arrange - Test that receive loop processes responses within timeout
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -191,7 +191,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
                 Topic = topic,
                 Key = $"key{i}",
                 Value = $"value{i}"
-            });
+            }).ConfigureAwait(false);
 
             // Assert each receives a response (no timeout)
             await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -204,7 +204,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
     public async Task Producer_ProduceAsync_WithCancelledToken_ThrowsImmediately()
     {
         // Arrange - Test that pre-cancelled token throws immediately
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -222,7 +222,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
                 Topic = topic,
                 Key = "key1",
                 Value = "value1"
-            }, cts.Token);
+            }, cts.Token).ConfigureAwait(false);
         });
     }
 
@@ -230,7 +230,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
     public async Task Producer_ProduceAsync_CancelledDuringWait_ThrowsOperationCancelled()
     {
         // Arrange - Test cancellation during produce operation
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -249,13 +249,13 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         }, cts.Token);
 
         // Cancel after a short delay
-        await Task.Delay(100);
+        await Task.Delay(100).ConfigureAwait(false);
         cts.Cancel();
 
         // Assert - Should throw OperationCanceledException
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
         {
-            await produceTask;
+            await produceTask.ConfigureAwait(false);
         });
     }
 
@@ -263,7 +263,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
     public async Task Producer_FlushAsync_WithCancelledToken_ThrowsImmediately()
     {
         // Arrange - Test that pre-cancelled token throws immediately
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -279,7 +279,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
 
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
         {
-            await producer.FlushAsync(cts.Token);
+            await producer.FlushAsync(cts.Token).ConfigureAwait(false);
         });
     }
 
@@ -287,7 +287,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
     public async Task Producer_FlushAsync_CancelledDuringFlush_ThrowsOperationCancelled()
     {
         // Arrange - Test cancellation during flush
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -306,13 +306,13 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         var flushTask = producer.FlushAsync(cts.Token);
 
         // Cancel after short delay
-        await Task.Delay(50);
+        await Task.Delay(50).ConfigureAwait(false);
         cts.Cancel();
 
         // Assert - Should throw OperationCanceledException
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
         {
-            await flushTask;
+            await flushTask.ConfigureAwait(false);
         });
     }
 
@@ -320,7 +320,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
     public async Task Producer_FlushEmpty_CompletesImmediately()
     {
         // Arrange - Test flushing producer with no messages
-        await kafka.CreateTestTopicAsync(); // Create topic but don't use it
+        await kafka.CreateTestTopicAsync().ConfigureAwait(false); // Create topic but don't use it
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -329,7 +329,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
 
         // Act - Flush without sending any messages
         var startTime = Environment.TickCount64;
-        await producer.FlushAsync();
+        await producer.FlushAsync().ConfigureAwait(false);
         var elapsed = Environment.TickCount64 - startTime;
 
         // Assert - Should complete quickly (< 1 second)
@@ -347,7 +347,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
 
         // Act - Dispose without producing
         var startTime = Environment.TickCount64;
-        await producer.DisposeAsync();
+        await producer.DisposeAsync().ConfigureAwait(false);
         var elapsed = Environment.TickCount64 - startTime;
 
         // Assert - Should complete quickly (< 2 seconds)
@@ -371,7 +371,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
                 Topic = "test-topic",
                 Key = "key1",
                 Value = "value1"
-            });
+            }).ConfigureAwait(false);
         }
         catch
         {
@@ -380,7 +380,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
 
         // Act - Dispose after failed connection
         var disposeTask = producer.DisposeAsync().AsTask();
-        var completedInTime = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(10))) == disposeTask;
+        var completedInTime = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(10))).ConfigureAwait(false) == disposeTask;
 
         // Assert - Should complete within timeout
         await Assert.That(completedInTime).IsTrue();
@@ -390,7 +390,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
     public async Task Producer_ConcurrentFlushAndProduce_BothComplete()
     {
         // Arrange - Test concurrent flush and produce operations
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -413,10 +413,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             Value = "concurrent-value"
         }).AsTask();
 
-        await Task.WhenAll(flushTask, produceTask);
+        await Task.WhenAll(flushTask, produceTask).ConfigureAwait(false);
 
         // Assert - Both operations completed successfully
-        var metadata = await produceTask;
+        var metadata = await produceTask.ConfigureAwait(false);
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
     }
 
@@ -424,7 +424,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
     public async Task Producer_ConcurrentDispose_IsIdempotent()
     {
         // Arrange - Test multiple threads disposing simultaneously
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
 
         var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
@@ -437,16 +437,16 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        });
+        }).ConfigureAwait(false);
 
         // Act - Dispose from multiple threads simultaneously
         var disposeTasks = new List<Task>();
         for (int i = 0; i < 5; i++)
         {
-            disposeTasks.Add(Task.Run(async () => await producer.DisposeAsync().AsTask()));
+            disposeTasks.Add(Task.Run(async () => await producer.DisposeAsync().AsTask().ConfigureAwait(false)));
         }
 
         // Assert - All dispose calls complete without exception
-        await Task.WhenAll(disposeTasks);
+        await Task.WhenAll(disposeTasks).ConfigureAwait(false);
     }
 }
