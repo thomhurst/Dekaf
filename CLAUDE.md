@@ -164,16 +164,16 @@ await _channel.Writer.WriteAsync(workItem, cancellationToken);
 // CORRECT: Cancellation before append
 using var cts = new CancellationTokenSource();
 cts.Cancel(); // Cancel immediately
-await producer.ProduceAsync(message, cts.Token); // Throws OperationCanceledException
+await producer.ProduceAsync(message, cts.Token).ConfigureAwait(false); // Throws OperationCanceledException
 
 // CORRECT: Understanding post-queue behavior
 var task = producer.ProduceAsync(message, cts.Token);
-await Task.Delay(100);
+await Task.Delay(100).ConfigureAwait(false);
 cts.Cancel(); // Message already sent (within 1-2ms), completes normally
-var metadata = await task; // Succeeds with offset
+var metadata = await task.ConfigureAwait(false); // Succeeds with offset
 
 // CORRECT: FlushAsync cancellation
-await producer.FlushAsync(cts.Token); // Can cancel wait, batches continue sending
+await producer.FlushAsync(cts.Token).ConfigureAwait(false); // Can cancel wait, batches continue sending
 ```
 
 ### Thread-Safety with Channels
