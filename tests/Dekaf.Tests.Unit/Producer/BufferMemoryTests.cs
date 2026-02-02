@@ -59,7 +59,7 @@ public class BufferMemoryTests
         }
         finally
         {
-            await accumulator.DisposeAsync();
+            await accumulator.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -107,7 +107,7 @@ public class BufferMemoryTests
         }
         finally
         {
-            await accumulator.DisposeAsync();
+            await accumulator.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -147,7 +147,7 @@ public class BufferMemoryTests
         }
         finally
         {
-            await accumulator.DisposeAsync();
+            await accumulator.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -191,7 +191,7 @@ public class BufferMemoryTests
         }
         finally
         {
-            await accumulator.DisposeAsync();
+            await accumulator.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -238,7 +238,7 @@ public class BufferMemoryTests
         }
         finally
         {
-            await accumulator.DisposeAsync();
+            await accumulator.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -315,7 +315,7 @@ public class BufferMemoryTests
                 ArrayPool<byte>.Shared.Return(array);
             }
 
-            await accumulator.DisposeAsync();
+            await accumulator.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -358,7 +358,7 @@ public class BufferMemoryTests
                 }));
             }
 
-            await Task.WhenAll(tasks);
+            await Task.WhenAll(tasks).ConfigureAwait(false);
 
             // Assert: No exceptions, memory tracked correctly
             await Assert.That(exceptions).IsEmpty();
@@ -367,7 +367,7 @@ public class BufferMemoryTests
         }
         finally
         {
-            await accumulator.DisposeAsync();
+            await accumulator.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -407,7 +407,7 @@ public class BufferMemoryTests
                 }));
             }
 
-            await Task.WhenAll(tasks);
+            await Task.WhenAll(tasks).ConfigureAwait(false);
 
             // Assert: No exceptions, memory tracked correctly
             await Assert.That(exceptions).IsEmpty();
@@ -415,7 +415,7 @@ public class BufferMemoryTests
         }
         finally
         {
-            await accumulator.DisposeAsync();
+            await accumulator.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -440,7 +440,7 @@ public class BufferMemoryTests
                     accumulator.TryAppendFireAndForget(
                         "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                         pooledKey, pooledValue, null, null);
-                    await Task.CompletedTask;
+                    await Task.CompletedTask.ConfigureAwait(false);
                 });
 
                 // Assert: Should throw immediately, not wait for timeout
@@ -453,7 +453,7 @@ public class BufferMemoryTests
         }
         finally
         {
-            await accumulator.DisposeAsync();
+            await accumulator.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -476,12 +476,12 @@ public class BufferMemoryTests
                 accumulator.TryAppendFireAndForget(
                     "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     pooledKey, pooledValue, null, null);
-                await Task.CompletedTask;
+                await Task.CompletedTask.ConfigureAwait(false);
             });
         }
         finally
         {
-            await accumulator.DisposeAsync();
+            await accumulator.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -523,7 +523,7 @@ public class BufferMemoryTests
         }
         finally
         {
-            await accumulator.DisposeAsync();
+            await accumulator.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -537,7 +537,7 @@ public class BufferMemoryTests
         try
         {
             // Dispose immediately without filling buffer
-            await accumulator.DisposeAsync();
+            await accumulator.DisposeAsync().ConfigureAwait(false);
 
             // After disposal, TryAppendFireAndForget should return false immediately
             var pooledKey = new PooledMemory(null, 0, isNull: true);
@@ -612,17 +612,17 @@ public class BufferMemoryTests
             });
 
             // Give the blocking task time to actually start blocking
-            await Task.Delay(200);
+            await Task.Delay(200).ConfigureAwait(false);
 
             // Act: Dispose while the task is blocked waiting for memory
-            await accumulator.DisposeAsync();
+            await accumulator.DisposeAsync().ConfigureAwait(false);
 
             // Assert: The blocking task should throw either OperationCanceledException or ObjectDisposedException promptly
             // (Race condition: on fast systems, disposal might complete before the task enters ReserveMemorySync)
             Exception? exception = null;
             try
             {
-                await blockingTask;
+                await blockingTask.ConfigureAwait(false);
                 Assert.Fail("Expected OperationCanceledException or ObjectDisposedException to be thrown");
             }
             catch (OperationCanceledException ex)
