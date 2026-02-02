@@ -317,30 +317,23 @@ public class AvroSerializerTests
         await Assert.That(warmedSchema).IsNotNull();
         await Assert.That(warmedSchema.Fullname).IsEqualTo("test.SimpleRecord");
 
-        // Create wire format message to verify deserialization works with cached schema
+        // Create a properly serialized message using the serializer (avoiding manual wire format construction)
+        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
         var avroSchema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
         var originalRecord = new GenericRecord(avroSchema!);
-        originalRecord.Add("id", 99);
-        originalRecord.Add("name", "cached");
+        originalRecord.Add("id", 42);
+        originalRecord.Add("name", "warmup-test");
 
-        using var ms = new MemoryStream();
-        var encoder = new BinaryEncoder(ms);
-        var writer = new GenericDatumWriter<GenericRecord>(avroSchema!);
-        writer.Write(originalRecord, encoder);
-        encoder.Flush();
-        var avroPayload = ms.ToArray();
-
-        var wireFormat = new byte[1 + 4 + avroPayload.Length];
-        wireFormat[0] = 0x00;
-        BinaryPrimitives.WriteInt32BigEndian(wireFormat.AsSpan(1, 4), schemaId);
-        avroPayload.CopyTo(wireFormat.AsSpan(5));
-
-        var context = CreateContext();
+        var buffer = new ArrayBufferWriter<byte>();
+        var serContext = CreateContext("test-topic");
+        serializer.Serialize(originalRecord, ref buffer, serContext);
 
         // Deserialize using the warmed-up cache
-        var result = deserializer.Deserialize(new ReadOnlySequence<byte>(wireFormat), context);
+        var desContext = CreateContext();
+        var result = deserializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), desContext);
 
-        await Assert.That((int)result["id"]!).IsEqualTo(99);
-        await Assert.That((string)result["name"]!).IsEqualTo("cached");
+        // Verify deserialization worked correctly
+        await Assert.That((int)result["id"]!).IsEqualTo(42);
+        await Assert.That((string)result["name"]!).IsEqualTo("warmup-test");
     }
 }
