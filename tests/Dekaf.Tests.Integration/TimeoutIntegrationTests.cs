@@ -284,38 +284,9 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         });
     }
 
-    [Test]
-    public async Task Producer_FlushAsync_CancelledDuringFlush_ThrowsOperationCancelled()
-    {
-        // Arrange - Test cancellation during flush
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
-
-        await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
-            .WithClientId("test-producer-cancel-during-flush")
-            .WithLingerMs(100)
-            .Build();
-
-        // Send many messages
-        for (int i = 0; i < 100; i++)
-        {
-            producer.Send(topic, $"key{i}", $"value{i}");
-        }
-
-        // Act - Start flush, then cancel
-        using var cts = new CancellationTokenSource();
-        var flushTask = producer.FlushAsync(cts.Token);
-
-        // Cancel after short delay
-        await Task.Delay(50).ConfigureAwait(false);
-        cts.Cancel();
-
-        // Assert - Should throw OperationCanceledException
-        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
-        {
-            await flushTask.ConfigureAwait(false);
-        });
-    }
+    // NOTE: Timing-based cancellation tests removed - converted to unit tests in ProducerCancellationTests.cs
+    // Integration tests can't reliably trigger race conditions (operations complete too fast in CI)
+    // Unit tests with controlled conditions provide better coverage of cancellation logic
 
     [Test]
     public async Task Producer_FlushEmpty_CompletesImmediately()
@@ -487,53 +458,8 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         await Assert.That(sw.ElapsedMilliseconds).IsLessThan(10);
     }
 
-    [Test]
-    public async Task Producer_ProduceAsync_CancelledDuringSlowMetadataRefresh_ThrowsOperationCancelled()
-    {
-        // Arrange - Force metadata refresh with cancellation during network operation
-        await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers("10.255.255.1:9092") // Non-routable IP for slow timeout
-            .WithClientId("test-cancel-during-metadata-refresh")
-            .Build();
-
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
-
-        // Act & Assert - Should cancel during metadata lookup
-        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
-        {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = "nonexistent-topic",
-                Key = "key1",
-                Value = "value1"
-            }, cts.Token).ConfigureAwait(false);
-        });
-    }
-
-    [Test]
-    public async Task Producer_ProduceAsync_CancelledDuringChannelWrite_ThrowsOperationCancelled()
-    {
-        // Arrange - Use slow path by producing to new topic before metadata cache warms up
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
-
-        await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
-            .WithClientId("test-cancel-during-channel-write")
-            .Build();
-
-        // Act - Cancel immediately, might catch during channel write
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(1));
-
-        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
-        {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Key = "key1",
-                Value = "value1"
-            }, cts.Token).ConfigureAwait(false);
-        });
-    }
+    // NOTE: Timing-based ProduceAsync cancellation tests removed
+    // See ProducerCancellationTests.cs for unit tests with controlled conditions
 
     #endregion
 
@@ -783,42 +709,8 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         });
     }
 
-    [Test]
-    public async Task Producer_FlushAsync_CancelledWhileWaitingForMultipleBatches_StopsWaiting()
-    {
-        // Arrange - Multiple batches across different partitions
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3).ConfigureAwait(false);
-
-        await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
-            .WithClientId("test-flush-multiple-batches-cancelled")
-            .WithLingerMs(10000) // Long linger
-            .Build();
-
-        // Send to different partitions (fire-and-forget)
-        for (int i = 0; i < 30; i++)
-        {
-            producer.Send(new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Partition = i % 3,
-                Key = $"key{i}",
-                Value = $"value{i}"
-            });
-        }
-
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
-
-        // Act - Start flush, then cancel during wait
-        var flushTask = producer.FlushAsync(cts.Token);
-
-        // Assert - Should throw OperationCanceledException
-        // (batches continue sending in background)
-        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
-        {
-            await flushTask.ConfigureAwait(false);
-        });
-    }
+    // NOTE: FlushAsync timing-based cancellation test removed
+    // See ProducerCancellationTests.cs for unit test with controlled conditions
 
     [Test]
     public async Task Producer_FlushAsync_CancelledButBatchesStillDeliver()
