@@ -27,7 +27,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        }).ConfigureAwait(false);
+        });
 
         // Assert - Connection succeeded within timeout
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -51,7 +51,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             Topic = topic,
             Key = "key1",
             Value = "value1"
-        }).ConfigureAwait(false);
+        });
 
         // Assert - Request succeeded within timeout
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -101,7 +101,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
                 Topic = topic,
                 Key = "key1",
                 Value = "value1"
-            }).ConfigureAwait(false);
+            });
 
             // Dispose with timeout to ensure it doesn't hang
             var disposeTask = producer.DisposeAsync().AsTask();
@@ -199,7 +199,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
                 Topic = topic,
                 Key = $"key{i}",
                 Value = $"value{i}"
-            }).ConfigureAwait(false);
+            });
 
             // Assert each receives a response (no timeout)
             await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
@@ -231,7 +231,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
                 Key = "key1",
                 Value = "value1"
             }, cts.Token).ConfigureAwait(false);
-        }).ConfigureAwait(false);
+        });
     }
 
     [Test]
@@ -289,7 +289,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
         {
             await producer.FlushAsync(cts.Token).ConfigureAwait(false);
-        }).ConfigureAwait(false);
+        });
     }
 
     // NOTE: Timing-based cancellation tests removed - converted to unit tests in ProducerCancellationTests.cs
@@ -361,7 +361,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
                     Topic = "test-topic",
                     Key = "key1",
                     Value = "value1"
-                }).ConfigureAwait(false);
+                });
             }
             catch
             {
@@ -435,7 +435,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
                 Topic = topic,
                 Key = "key1",
                 Value = "value1"
-            }).ConfigureAwait(false);
+            });
 
             // Act - Dispose from multiple threads simultaneously
             var disposeTasks = new List<Task>();
@@ -483,7 +483,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
                 Key = "key1",
                 Value = "value1"
             }, cts.Token).ConfigureAwait(false);
-        }).ConfigureAwait(false);
+        });
         sw.Stop();
 
         // Should be nearly instantaneous (< 10ms)
@@ -514,7 +514,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             Topic = topic,
             Key = "warmup",
             Value = "warmup"
-        }).ConfigureAwait(false);
+        });
 
         // Act - Now fast path is active, cancel after append
         using var cts = new CancellationTokenSource();
@@ -738,7 +738,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
         {
             await producer.FlushAsync(cts.Token).ConfigureAwait(false);
-        }).ConfigureAwait(false);
+        });
     }
 
     // NOTE: FlushAsync timing-based cancellation test removed
@@ -808,7 +808,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
                     Topic = topic,
                     Key = "key1",
                     Value = "value1"
-                }).ConfigureAwait(false);
+                });
             });
         }
         finally

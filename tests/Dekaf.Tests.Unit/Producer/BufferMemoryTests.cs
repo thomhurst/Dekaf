@@ -346,9 +346,9 @@ public class BufferMemoryTests
                 {
                     accumulator.TryAppendFireAndForget(
                         "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                        pooledKey, pooledValue, null, null).ConfigureAwait(false);
+                        pooledKey, pooledValue, null, null);
                     await Task.CompletedTask.ConfigureAwait(false);
-                }).ConfigureAwait(false);
+                });
 
                 // Assert: Should throw immediately, not wait for timeout
                 await Assert.That(exception!.Message).Contains("buffer memory");
@@ -382,9 +382,9 @@ public class BufferMemoryTests
             {
                 accumulator.TryAppendFireAndForget(
                     "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, null).ConfigureAwait(false);
+                    pooledKey, pooledValue, null, null);
                 await Task.CompletedTask.ConfigureAwait(false);
-            }).ConfigureAwait(false);
+            });
         }
         finally
         {
