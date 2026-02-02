@@ -231,6 +231,11 @@ public class CertificateLoadingTests : IDisposable
     {
         using var rsa = RSA.Create(2048);
         var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+
+        // Add SubjectKeyIdentifier extension to help with consistent certificate generation
+        // This helps avoid ASN.1 encoding issues with auto-generated serial numbers
+        request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
+
         return request.CreateSelfSigned(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddYears(1));
     }
 
@@ -238,6 +243,11 @@ public class CertificateLoadingTests : IDisposable
     {
         using var rsa = RSA.Create(2048);
         var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+
+        // Add SubjectKeyIdentifier extension to help with consistent certificate generation
+        // This helps avoid ASN.1 encoding issues with auto-generated serial numbers
+        request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
+
         var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddYears(1));
 
         // Export and re-import to get a certificate that can be exported using modern API
