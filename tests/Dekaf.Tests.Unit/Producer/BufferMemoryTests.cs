@@ -521,20 +521,27 @@ public class BufferMemoryTests
                 new PooledMemory(null, 0, isNull: true),
                 null, null);
 
+            // Start reading from SendableBatches BEFORE flushing to avoid race condition.
+            // FlushAsync completes when DoneTask is set, but DoneTask is set BEFORE
+            // the batch is written to SendableBatches.
+            using var cts = new CancellationTokenSource(5000);
+            var readTask = Task.Run(async () =>
+            {
+                var enumerator = accumulator.SendableBatches.ReadAllAsync(cts.Token).GetAsyncEnumerator();
+                var hasNext = await enumerator.MoveNextAsync();
+                return (hasNext, hasNext ? enumerator.Current : null);
+            });
+
             // Flush to make batch ready immediately (bypasses linger)
             await accumulator.FlushAsync(CancellationToken.None);
 
-            // Read from SendableBatches (simulating KafkaProducer)
-            using var cts = new CancellationTokenSource(500);
-            var enumerator = accumulator.SendableBatches.ReadAllAsync(cts.Token).GetAsyncEnumerator();
-
-            var hasNext = await enumerator.MoveNextAsync();
+            // Wait for reader
+            var (hasNext, batch) = await readTask;
             await Assert.That(hasNext).IsTrue();
-
-            var batch = enumerator.Current;
+            await Assert.That(batch).IsNotNull();
 
             // DoneTask should already be completed (by completion loop calling CompleteDelivery)
-            await Assert.That(batch.DoneTask.IsCompleted).IsTrue();
+            await Assert.That(batch!.DoneTask.IsCompleted).IsTrue();
 
             // Complete send phase (handles per-message completions)
             batch.CompleteSend(0, DateTimeOffset.UtcNow);
@@ -572,24 +579,34 @@ public class BufferMemoryTests
                     null, null);
             }
 
+            // Start reading from SendableBatches BEFORE flushing to avoid race condition.
+            // FlushAsync completes when DoneTask is set, but DoneTask is set BEFORE
+            // the batch is written to SendableBatches.
+            using var cts = new CancellationTokenSource(5000);
+            var readTask = Task.Run(async () =>
+            {
+                var receivedCount = 0;
+                await foreach (var batch in accumulator.SendableBatches.ReadAllAsync(cts.Token))
+                {
+                    // DoneTask should be completed by completion loop
+                    if (!batch.DoneTask.IsCompleted)
+                        throw new InvalidOperationException("DoneTask should be completed");
+
+                    // Complete the send phase
+                    batch.CompleteSend(0, DateTimeOffset.UtcNow);
+
+                    receivedCount++;
+                    if (receivedCount >= batchCount)
+                        break;
+                }
+                return receivedCount;
+            });
+
             // Flush to make all batches ready (bypasses linger)
             await accumulator.FlushAsync(CancellationToken.None);
 
-            // Read all batches from SendableBatches to verify they were processed
-            var receivedCount = 0;
-            using var cts = new CancellationTokenSource(500);
-            await foreach (var batch in accumulator.SendableBatches.ReadAllAsync(cts.Token))
-            {
-                // DoneTask should be completed by completion loop
-                await Assert.That(batch.DoneTask.IsCompleted).IsTrue();
-
-                // Complete the send phase
-                batch.CompleteSend(0, DateTimeOffset.UtcNow);
-
-                receivedCount++;
-                if (receivedCount >= batchCount)
-                    break;
-            }
+            // Wait for reader
+            var receivedCount = await readTask;
 
             await Assert.That(receivedCount).IsEqualTo(batchCount);
         }
