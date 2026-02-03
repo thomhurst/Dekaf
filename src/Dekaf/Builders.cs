@@ -36,6 +36,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
     private TimeSpan? _statisticsInterval;
     private Action<Statistics.ProducerStatistics>? _statisticsHandler;
+    private ulong? _bufferMemory;
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -82,6 +83,21 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithBatchSize(int batchSize)
     {
         _batchSize = batchSize;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the total bytes of memory the producer can use to buffer records waiting to be sent.
+    /// </summary>
+    /// <param name="bufferMemory">The buffer memory limit in bytes.</param>
+    /// <remarks>
+    /// When the buffer is full, <see cref="KafkaProducer{TKey,TValue}.ProduceAsync"/> will block
+    /// until space becomes available or the delivery timeout expires.
+    /// Default is 256 MB.
+    /// </remarks>
+    public ProducerBuilder<TKey, TValue> WithBufferMemory(ulong bufferMemory)
+    {
+        _bufferMemory = bufferMemory;
         return this;
     }
 
@@ -373,6 +389,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             Acks = _acks,
             LingerMs = _lingerMs,
             BatchSize = _batchSize,
+            BufferMemory = _bufferMemory ?? 268435456, // 256 MB default
             EnableIdempotence = _enableIdempotence,
             TransactionalId = _transactionalId,
             CompressionType = _compressionType,
