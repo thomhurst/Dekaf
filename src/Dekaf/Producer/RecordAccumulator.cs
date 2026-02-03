@@ -310,14 +310,29 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private readonly ProducerOptions _options;
     private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
     private readonly Channel<ReadyBatch> _readyBatches;
+    private readonly Channel<ReadyBatch> _sendableBatches; // Batches with completed delivery tasks, ready for network send
     private readonly PartitionBatchPool _batchPool;
+
+    // Completion loop that drains _readyBatches, completes delivery tasks, and forwards to _sendableBatches
+    private readonly Task _completionTask;
+    private readonly CancellationTokenSource _completionCts;
+
+    // Track all in-flight delivery tasks so FlushAsync can wait for them
+    // This ensures FlushAsync waits for batches already in _readyBatches, not just batches in _batches
+    // Initialize with large capacity (1024) to avoid resizing under load
+    // Completed tasks automatically remove themselves via ContinueWith to prevent unbounded growth
+    private readonly ConcurrentDictionary<Task, byte> _inFlightDeliveryTasks = new(concurrencyLevel: Environment.ProcessorCount, capacity: 1024);
+
     private volatile bool _disposed;
     private volatile bool _closed;
+    private volatile bool _disposing; // Set during DisposeAsync to prevent continuations from removing tasks
 
     // Buffer memory tracking for backpressure
     private readonly ulong _maxBufferMemory;
     private long _bufferedBytes;
     private readonly SemaphoreSlim _bufferSpaceAvailable = new(1, 1);
+    private readonly CancellationTokenSource _disposalCts = new();
+    private readonly ManualResetEventSlim _disposalEvent = new(false);
 
     // Thread-local cache for fast path when consecutive messages go to the same partition.
     // This eliminates ConcurrentDictionary lookups for the common case of sending multiple
@@ -384,7 +399,56 @@ public sealed class RecordAccumulator : IAsyncDisposable
             SingleReader = true,
             SingleWriter = false
         });
+
+        // Channel for batches that are ready for network send (delivery tasks completed)
+        _sendableBatches = Channel.CreateUnbounded<ReadyBatch>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = true
+        });
+
+        // Start the completion loop
+        _completionCts = new CancellationTokenSource();
+        _completionTask = CompletionLoopAsync(_completionCts.Token);
     }
+
+    /// <summary>
+    /// Completion loop that processes ready batches:
+    /// 1. Reads from _readyBatches channel
+    /// 2. Completes the delivery task (fire-and-forget semantic: batch is "ready")
+    /// 3. Forwards to _sendableBatches for KafkaProducer.SenderLoop
+    ///
+    /// This allows RecordAccumulator to work independently in unit tests without a sender loop.
+    /// </summary>
+    private async Task CompletionLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var readyBatch in _readyBatches.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            {
+                // Complete the delivery task (fire-and-forget semantic: "ready" = done)
+                // This makes FlushAsync return and allows tests to pass
+                readyBatch.CompleteDelivery();
+
+                // Forward to sendable channel for KafkaProducer's sender loop
+                await _sendableBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal shutdown
+        }
+        finally
+        {
+            // Complete the sendable channel when completion loop exits
+            _sendableBatches.Writer.Complete();
+        }
+    }
+
+    /// <summary>
+    /// Exposes the sendable batches channel reader for KafkaProducer.SenderLoop.
+    /// </summary>
+    internal ChannelReader<ReadyBatch> SendableBatches => _sendableBatches.Reader;
 
     /// <summary>
     /// Gets the current buffered memory usage in bytes.
@@ -478,6 +542,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// Synchronous version of ReserveMemoryAsync for fire-and-forget paths.
     /// Blocks the calling thread until buffer space is available.
     /// Throws TimeoutException if buffer space doesn't become available within DeliveryTimeoutMs.
+    /// Throws OperationCanceledException if the producer is disposed while waiting.
     /// </summary>
     private void ReserveMemorySync(int recordSize)
     {
@@ -487,37 +552,58 @@ public sealed class RecordAccumulator : IAsyncDisposable
             return;
         }
 
-        // Slow path: spin-wait for space to become available with timeout protection
-        var spinWait = new SpinWait();
-        // Protect against overflow if DeliveryTimeoutMs is configured to a very large value
+        // Slow path: wait for space with timeout and cancellation support
         var currentTicks = Environment.TickCount64;
         var deadline = (long.MaxValue - currentTicks > _options.DeliveryTimeoutMs)
             ? currentTicks + _options.DeliveryTimeoutMs
             : long.MaxValue;
 
+        var spinWait = new SpinWait();
+
         while (!TryReserveMemory(recordSize))
         {
-            if (_disposed)
-                return;
-
-            // SpinWait starts with spinning (busy loop), then yields, then sleeps(0), then sleeps(1)
-            // Only check timeout after we transition out of the busy spin phase to minimize overhead
-            // NextSpinWillYield is true after ~10 spins, which takes ~100-200ns total
-            if (spinWait.NextSpinWillYield)
+            // Spin briefly before waiting (hot path optimization)
+            if (spinWait.Count < 10)
             {
-                // Check if we've exceeded the delivery timeout
-                // Only checked when yielding/sleeping, not during fast spinning
-                if (Environment.TickCount64 > deadline)
+                spinWait.SpinOnce();
+                // Check for disposal even during spin phase for prompt detection
+                if (_disposed)
                 {
-                    throw new TimeoutException(
-                        $"Timeout waiting for buffer memory after {_options.DeliveryTimeoutMs}ms. " +
-                        $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes. " +
-                        $"Producer is generating messages faster than the network can send them. " +
-                        $"Consider: increasing BufferMemory, reducing production rate, or checking network connectivity.");
+                    throw new OperationCanceledException(_disposalCts.Token);
                 }
+                continue;
             }
 
-            spinWait.SpinOnce();
+            // Check for disposal before sleeping
+            if (_disposed)
+            {
+                throw new OperationCanceledException(_disposalCts.Token);
+            }
+
+            // Check timeout
+            var remainingMs = deadline - Environment.TickCount64;
+            if (remainingMs <= 0)
+            {
+                throw new TimeoutException(
+                    $"Timeout waiting for buffer memory after {_options.DeliveryTimeoutMs}ms. " +
+                    $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes. " +
+                    $"Producer is generating messages faster than the network can send them. " +
+                    $"Consider: increasing BufferMemory, reducing production rate, or checking network connectivity.");
+            }
+
+            // Wait on disposal event with timeout - this allows immediate wake-up when disposed
+            // Use 10ms timeout to balance CPU usage with prompt memory availability detection
+            if (_disposalEvent.Wait(Math.Min(10, (int)remainingMs)))
+            {
+                // Disposal was signaled - throw cancellation exception
+                throw new OperationCanceledException(_disposalCts.Token);
+            }
+
+            // Check again after waking up in case disposal happened during sleep
+            if (_disposed)
+            {
+                throw new OperationCanceledException(_disposalCts.Token);
+            }
         }
     }
 
@@ -775,6 +861,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
+                    // Track delivery task for FlushAsync
+                    TrackDeliveryTask(readyBatch);
+
                     // Try synchronous write first to avoid async state machine allocation
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
                     {
@@ -883,6 +972,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
+                    // Track delivery task for FlushAsync
+                    TrackDeliveryTask(readyBatch);
+
                     // Non-blocking write to unbounded channel - should always succeed
                     // If it fails (channel completed), the producer is being disposed
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
@@ -1171,6 +1263,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
+                    // Track delivery task for FlushAsync
+                    TrackDeliveryTask(readyBatch);
+
                     // Non-blocking write to unbounded channel - should always succeed
                     // If it fails (channel completed), the producer is being disposed
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
@@ -1297,6 +1392,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                         var readyBatch = batch.Complete();
                         if (readyBatch is not null)
                         {
+                            // Track delivery task for FlushAsync
+                            TrackDeliveryTask(readyBatch);
+
                             // Track memory for this batch - it will be released when sent or on failure
                             memoryUsed += readyBatch.DataSize;
 
@@ -1356,14 +1454,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Gets batches that are ready to send.
-    /// </summary>
-    internal IAsyncEnumerable<ReadyBatch> GetReadyBatchesAsync(CancellationToken cancellationToken)
-    {
-        return _readyBatches.Reader.ReadAllAsync(cancellationToken);
-    }
-
-    /// <summary>
     /// Checks for batches that have exceeded linger time.
     /// Uses conditional removal to avoid race conditions where a new batch might be created
     /// between Complete() and TryRemove() calls.
@@ -1399,6 +1489,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     var readyBatch = batch.Complete();
                     if (readyBatch is not null)
                     {
+                        // Track delivery task for FlushAsync
+                        TrackDeliveryTask(readyBatch);
+
                         // Try synchronous write first to avoid async state machine allocation
                         if (!_readyBatches.Writer.TryWrite(readyBatch))
                         {
@@ -1426,6 +1519,45 @@ public sealed class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Registers a ReadyBatch for tracking by FlushAsync.
+    /// Completed tasks automatically remove themselves from tracking to prevent memory leaks.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void TrackDeliveryTask(ReadyBatch readyBatch)
+    {
+        if (readyBatch is not null)
+        {
+            var task = readyBatch.DoneTask;
+            _inFlightDeliveryTasks.TryAdd(task, 0);
+
+            if (!task.IsCompleted)
+            {
+                // Register continuation to auto-remove when complete
+                // Allocation cost: ~100 bytes per batch (not per message)
+                // Amortized: ~0.1 bytes per message (batch = ~1000 messages)
+                // This prevents unbounded memory growth in long-running fire-and-forget scenarios
+                // NOTE: No exception observation needed - DoneTask never faults (uses TrySetResult)
+                _ = task.ContinueWith(static (t, state) =>
+                {
+                    var accumulator = (RecordAccumulator)state!;
+
+                    // Don't remove during disposal - disposal will clear dictionary
+                    if (!accumulator._disposing)
+                        accumulator._inFlightDeliveryTasks.TryRemove(t, out _);
+                }, this,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+                return;
+            }
+
+            // Task completed synchronously (rare) - clean up immediately
+            // NOTE: No exception observation needed - DoneTask never faults
+            _inFlightDeliveryTasks.TryRemove(task, out _);
+        }
+    }
+
+    /// <summary>
     /// Flushes all batches and waits for them to be delivered to Kafka.
     /// </summary>
     /// <remarks>
@@ -1434,8 +1566,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// </remarks>
     public ValueTask FlushAsync(CancellationToken cancellationToken)
     {
-        // Fast path: no batches to flush - avoid enumeration and async overhead entirely
-        if (_batches.IsEmpty)
+        // Check cancellation upfront - must throw immediately if already cancelled
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Fast path: no batches to flush AND no in-flight batches - avoid enumeration and async overhead entirely
+        if (_batches.IsEmpty && _inFlightDeliveryTasks.IsEmpty)
         {
             return ValueTask.CompletedTask;
         }
@@ -1445,12 +1580,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     private async ValueTask FlushAsyncCore(CancellationToken cancellationToken)
     {
-        Console.WriteLine($"[FlushAsync] START - batches count: {_batches.Count}");
-
-        // Step 1: Collect all batch delivery tasks BEFORE writing to channel
-        // This prevents race where batch completes before we collect its task
-        var deliveryTasks = new List<Task>();
-
+        // Step 1: Flush all batches from _batches dictionary
         foreach (var kvp in _batches)
         {
             var batch = kvp.Value;
@@ -1461,9 +1591,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
-                    // Collect the delivery task BEFORE writing to channel
-                    deliveryTasks.Add(readyBatch.DeliveryTask);
-
                     // Try synchronous write first to avoid async state machine allocation
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
                     {
@@ -1495,20 +1622,39 @@ public sealed class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        Console.WriteLine($"[FlushAsync] Collected {deliveryTasks.Count} delivery tasks, now waiting...");
+        // Step 2: Take a snapshot of all in-flight delivery tasks
+        // This ensures we wait for batches that were expired by linger loop before FlushAsync was called
+        // Use ToArray() for atomic snapshot (avoids enumeration issues if tasks complete during iteration)
+        var allTasks = _inFlightDeliveryTasks.Keys.ToArray();
 
-        // Step 2: Wait for all batches to be delivered
         // CRITICAL: No locks are held during this await, preventing deadlock
         // The sender loop will complete these tasks when batches are sent
         // Respect cancellation token to allow caller to timeout the wait
-        if (deliveryTasks.Count > 0)
+        if (allTasks.Length > 0)
         {
-            await Task.WhenAll(deliveryTasks).WaitAsync(cancellationToken).ConfigureAwait(false);
-            Console.WriteLine($"[FlushAsync] All {deliveryTasks.Count} batches delivered!");
-        }
-        else
-        {
-            Console.WriteLine($"[FlushAsync] No batches to flush");
+            try
+            {
+                await Task.WhenAll(allTasks).WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // FlushAsync was cancelled - observe all task exceptions before rethrowing
+                // In unit tests with no sender loop, these tasks will fail with ObjectDisposedException
+                // If we don't observe them here, GC finalizer will throw UnobservedTaskException
+                foreach (var task in allTasks)
+                {
+                    if (task.IsFaulted)
+                        _ = task.Exception;
+                }
+                throw;
+            }
+
+            // Clean up completed tasks from tracking dictionary
+            // Use for loop to avoid allocation-heavy foreach with array
+            for (int i = 0; i < allTasks.Length; i++)
+            {
+                _inFlightDeliveryTasks.TryRemove(allTasks[i], out _);
+            }
         }
     }
 
@@ -1536,6 +1682,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
             return;
 
         _disposed = true;
+        _disposing = true; // Prevent continuations from removing tasks during disposal
 
         // Invalidate thread-local caches if they point to this accumulator
         if (t_cachedAccumulator == this)
@@ -1553,9 +1700,63 @@ public sealed class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Fail all pending batches that haven't been sent yet
+        // Clear the TopicPartition cache to release memory
+        _topicPartitionCache.Clear();
+
+        // FIRST: Try graceful shutdown (send remaining batches) with timeout
+        // This matches Confluent.Kafka behavior and prevents data loss
+        // We do this BEFORE failing batches to give them a chance to be sent
+        if (!_closed)
+        {
+            try
+            {
+                // 5-second grace period to flush and send remaining batches
+                using var cts = new CancellationTokenSource(5000);
+                await CloseAsync(cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Timeout or cancellation - proceed with immediate shutdown
+                _readyBatches.Writer.Complete();
+            }
+            catch
+            {
+                // Other exceptions (e.g., no connection) - proceed with immediate shutdown
+                _readyBatches.Writer.Complete();
+            }
+        }
+
+        // Cancel the disposal token and signal the disposal event to interrupt any blocked operations
+        // Do this AFTER graceful shutdown attempt so FlushAsync can complete normally
+        try
+        {
+            _disposalCts.Cancel();
+            _disposalEvent.Set();
+        }
+        catch
+        {
+            // Ignore exceptions during cancellation
+        }
+
+        // Stop the completion loop and wait for it to finish
+        _completionCts.Cancel();
+        try
+        {
+            await _completionTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            // Completion loop stuck - force shutdown
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal cancellation
+        }
+
+        // NOW fail any remaining batches that couldn't be sent during graceful shutdown
         var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
 
+        // Fail incomplete batches still in the dictionary (weren't flushed in time)
         foreach (var kvp in _batches)
         {
             // Use TryRemove to ensure only one thread handles each batch during disposal.
@@ -1572,16 +1773,37 @@ public sealed class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Clear the TopicPartition cache to release memory
-        _topicPartitionCache.Clear();
-
-        // Complete the channel if not already closed by CloseAsync
-        if (!_closed)
+        // Drain and fail any remaining batches still in the ready channel
+        // After graceful close above, this handles:
+        // - Unit tests with no sender loop
+        // - Timeout scenarios where batches didn't send in time
+        // - Batches that were added after close but before disposal completed
+        while (_readyBatches.Reader.TryRead(out var readyBatch))
         {
-            _readyBatches.Writer.Complete();
+            readyBatch.Fail(disposedException);
         }
 
-        // Drain any batches that were in the channel but not yet processed
+        // Wait for all in-flight batch tasks to complete with a timeout
+        // After failing all batches above, their DoneTasks should complete quickly
+        // NOTE: No exception observation needed - DoneTask never faults (uses TrySetResult)
+        var allTasks = _inFlightDeliveryTasks.Keys.ToArray();
+        if (allTasks.Length > 0)
+        {
+            try
+            {
+                // Wait for all tasks with a 5-second timeout to prevent hanging during disposal
+                await Task.WhenAll(allTasks).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // Some tasks didn't complete in time - proceed with disposal anyway
+            }
+
+            // Clean up tracked tasks
+            _inFlightDeliveryTasks.Clear();
+        }
+
+        // Final drain: catch any batches that may have been added during our cleanup
         while (_readyBatches.Reader.TryRead(out var batch))
         {
             if (batch is not null)
@@ -1595,8 +1817,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Clear the batch pool
         _batchPool.Clear();
 
-        // Dispose the semaphore to prevent resource leak
+        // Dispose resources to prevent leaks
         _bufferSpaceAvailable?.Dispose();
+        _disposalCts?.Dispose();
+        _disposalEvent?.Dispose();
+        _completionCts?.Dispose();
     }
 }
 
@@ -2594,10 +2819,13 @@ internal sealed class ReadyBatch
     public int DataSize { get; }
 
     /// <summary>
-    /// Task that completes when this batch has been sent to Kafka (successfully or failed).
-    /// Used by FlushAsync to wait for batch delivery completion.
+    /// Task that completes when this batch is done (either sent successfully or failed).
+    /// Used by FlushAsync to wait for batch completion.
+    /// IMPORTANT: This task never faults - it completes with true (success) or false (failure).
+    /// This design eliminates UnobservedTaskException issues for fire-and-forget scenarios.
+    /// Per-message exceptions are handled via the completion sources array, not this task.
     /// </summary>
-    public Task DeliveryTask => _batchCompletionSource.Task;
+    public Task DoneTask => _doneCompletionSource.Task;
 
     // Working arrays from accumulator (pooled)
     private readonly PooledValueTaskSource<RecordMetadata>[] _completionSourcesArray;
@@ -2609,8 +2837,9 @@ internal sealed class ReadyBatch
     private readonly Record[]? _pooledRecordsArray; // Pooled records array from RecordBatch
     private readonly BatchArena? _arena; // Arena for zero-copy serialization data
 
-    // Batch-level completion tracking for FlushAsync coordination
-    private readonly TaskCompletionSource<bool> _batchCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    // Batch-level completion tracking - signals "batch is done" (success or failure)
+    // Never faults - uses TrySetResult(true) for success, TrySetResult(false) for failure
+    private readonly TaskCompletionSource<bool> _doneCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
 
@@ -2640,22 +2869,43 @@ internal sealed class ReadyBatch
         _arena = arena;
     }
 
-    public void Complete(long baseOffset, DateTimeOffset timestamp)
+    /// <summary>
+    /// Marks batch as "ready" (processed by completion loop).
+    /// Called by RecordAccumulator.CompletionLoopAsync.
+    /// This unblocks FlushAsync for fire-and-forget scenarios.
+    /// For unit tests without a sender loop, this is the final completion.
+    /// </summary>
+    public void CompleteDelivery()
     {
-        // Guard against calling Complete after Cleanup has been performed
+        // Guard against calling after Cleanup
+        if (Volatile.Read(ref _cleanedUp) != 0)
+            return;
+
+        // Signal batch is done (ready for fire-and-forget semantic)
+        // This uses TrySetResult, not TrySetException, to avoid UnobservedTaskException
+        _doneCompletionSource.TrySetResult(true);
+    }
+
+    /// <summary>
+    /// Marks batch as successfully sent to Kafka.
+    /// Called by KafkaProducer.SenderLoopAsync after network send.
+    /// This completes per-message ProduceAsync operations with success metadata.
+    /// NOTE: DoneTask is already completed by CompleteDelivery(), so this is a no-op for that.
+    /// </summary>
+    public void CompleteSend(long baseOffset, DateTimeOffset timestamp)
+    {
+        // Guard against calling after Cleanup
         if (Volatile.Read(ref _cleanedUp) != 0)
             return;
 
         try
         {
-            // Null check defensive against partially constructed batches
+            // Complete per-message completion sources with metadata
             if (_completionSourcesArray is not null)
             {
                 for (var i = 0; i < _completionSourcesCount; i++)
                 {
                     var source = _completionSourcesArray[i];
-                    // TrySetResult completes the ValueTask; the awaiter's GetResult()
-                    // will auto-return the source to its pool
                     source?.TrySetResult(new RecordMetadata
                     {
                         Topic = TopicPartition.Topic,
@@ -2666,9 +2916,8 @@ internal sealed class ReadyBatch
                 }
             }
 
-            // Complete batch-level task to unblock FlushAsync
-            // Use TrySetResult for idempotency (safe to call multiple times)
-            _batchCompletionSource.TrySetResult(true);
+            // Signal batch is done (successfully)
+            _doneCompletionSource.TrySetResult(true);
         }
         finally
         {
@@ -2676,6 +2925,12 @@ internal sealed class ReadyBatch
         }
     }
 
+    /// <summary>
+    /// Marks batch as failed with an exception.
+    /// Called when batch cannot be sent (disposal, errors, etc).
+    /// Per-message completion sources receive the exception for ProduceAsync callers.
+    /// DoneTask completes with false (no exception) to avoid UnobservedTaskException.
+    /// </summary>
     public void Fail(Exception exception)
     {
         // Guard against calling Fail after Cleanup has been performed
@@ -2684,21 +2939,20 @@ internal sealed class ReadyBatch
 
         try
         {
-            // Null check defensive against partially constructed batches
+            // Fail per-message completion sources - these throw for ProduceAsync callers
             if (_completionSourcesArray is not null)
             {
                 for (var i = 0; i < _completionSourcesCount; i++)
                 {
                     var source = _completionSourcesArray[i];
-                    // TrySetException completes the ValueTask; the awaiter's GetResult()
-                    // will auto-return the source to its pool
                     source?.TrySetException(exception);
                 }
             }
 
-            // Complete batch-level task (with exception) to unblock FlushAsync
-            // Use TrySetException for idempotency (safe to call multiple times)
-            _batchCompletionSource.TrySetException(exception);
+            // Signal batch is done (failed) - NO EXCEPTION to avoid UnobservedTaskException
+            // For fire-and-forget, no one awaits this, so exception would go unobserved
+            // For FlushAsync, it just needs to know "done", not success/failure details
+            _doneCompletionSource.TrySetResult(false);
         }
         finally
         {

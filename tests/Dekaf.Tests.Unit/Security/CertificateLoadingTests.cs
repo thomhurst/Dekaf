@@ -231,17 +231,37 @@ public class CertificateLoadingTests : IDisposable
     {
         using var rsa = RSA.Create(2048);
         var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        return request.CreateSelfSigned(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddYears(1));
+
+        // Add SubjectKeyIdentifier extension to help with consistent certificate generation
+        // This helps avoid ASN.1 encoding issues with auto-generated serial numbers
+        request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
+
+        // Add BasicConstraints to ensure valid cert structure
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
+
+        // Use fixed timestamps for deterministic test behavior
+        var notBefore = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var notAfter = notBefore.AddYears(1);
+        return request.CreateSelfSigned(notBefore, notAfter);
     }
 
     private static X509Certificate2 CreateSelfSignedCertificateWithKey(string subjectName)
     {
         using var rsa = RSA.Create(2048);
         var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddYears(1));
 
-        // Export and re-import to get a certificate that can be exported using modern API
-        var pfx = cert.Export(X509ContentType.Pfx);
-        return X509CertificateLoader.LoadPkcs12(pfx, password: null, keyStorageFlags: X509KeyStorageFlags.Exportable);
+        // Add SubjectKeyIdentifier extension to help with consistent certificate generation
+        // This helps avoid ASN.1 encoding issues with auto-generated serial numbers
+        request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
+
+        // Add BasicConstraints to ensure valid cert structure
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
+
+        // CreateSelfSigned creates a certificate with an exportable ephemeral key by default
+        // No need for PFX round-trip that can corrupt RSA parameters
+        // Use fixed timestamps for deterministic test behavior
+        var notBefore = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var notAfter = notBefore.AddYears(1);
+        return request.CreateSelfSigned(notBefore, notAfter);
     }
 }

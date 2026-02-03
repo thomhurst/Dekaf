@@ -49,6 +49,10 @@ jobs:
         uses: gittools/actions/gitversion/execute@v3
         continue-on-error: true  # Don't fail if GitVersion has issues on PR branches
 
+      - name: Pre-pull Kafka Image (Ubuntu only)
+        if: runner.os == 'Linux'
+        run: docker pull confluentinc/cp-kafka:7.5.0
+
       - name: Run Pipeline
         env:
           NuGet__ShouldPublish: ${{ inputs.publish_nuget == true && 'true' || 'false' }}

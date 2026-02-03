@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.Sockets;
 using Testcontainers.Kafka;
@@ -15,7 +16,7 @@ public class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
     private KafkaContainer? _container;
     private bool _externalKafka;
     private string _bootstrapServers = string.Empty;
-    private readonly HashSet<string> _createdTopics = [];
+    private readonly ConcurrentDictionary<string, byte> _createdTopics = new();
 
     /// <summary>
     /// The Kafka bootstrap servers connection string.
@@ -109,7 +110,9 @@ public class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
     /// </summary>
     public async Task CreateTopicAsync(string topicName, int partitions = 1, int replicationFactor = 1)
     {
-        if (_createdTopics.Contains(topicName))
+        // Use TryAdd for thread-safe check-and-add operation
+        // If already exists, TryAdd returns false and we skip creation
+        if (!_createdTopics.TryAdd(topicName, 0))
         {
             Console.WriteLine($"[KafkaTestContainer] Topic '{topicName}' already created");
             return;
@@ -125,8 +128,6 @@ public class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
         {
             await CreateTopicViaTestcontainersAsync(topicName, partitions, replicationFactor);
         }
-
-        _createdTopics.Add(topicName);
 
         // Wait for topic metadata to propagate
         // In containerized environments, metadata propagation can be slow

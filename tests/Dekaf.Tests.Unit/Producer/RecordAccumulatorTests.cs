@@ -202,8 +202,9 @@ public class RecordAccumulatorTests
             var completeMethod = partitionBatch!.GetType().GetMethod("Complete");
             var readyBatch = (ReadyBatch)completeMethod!.Invoke(partitionBatch, null)!;
 
-            // Call Complete (triggers cleanup)
-            readyBatch.Complete(0, DateTimeOffset.UtcNow);
+            // Call CompleteDelivery first (phase 1), then CompleteSend (phase 2 - triggers cleanup)
+            readyBatch.CompleteDelivery();
+            readyBatch.CompleteSend(0, DateTimeOffset.UtcNow);
 
             // Verify cleanup happened
             var cleanedUpField = readyBatch.GetType().GetField("_cleanedUp",

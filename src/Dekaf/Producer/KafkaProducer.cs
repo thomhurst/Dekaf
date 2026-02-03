@@ -209,6 +209,30 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         };
     }
 
+    /// <summary>
+    /// Asynchronously produces a message to the specified topic.
+    /// </summary>
+    /// <param name="message">The message to produce.</param>
+    /// <param name="cancellationToken">
+    /// Cancellation token that can cancel the wait at any point.
+    /// <para>
+    /// <b>Before message is appended:</b> Cancellation prevents the message from being sent.<br/>
+    /// <b>After message is appended:</b> Cancellation stops the caller's wait, but the message
+    /// WILL still be delivered to Kafka. This allows callers to implement timeouts without
+    /// blocking indefinitely, while ensuring no data loss.
+    /// </para>
+    /// </param>
+    /// <returns>
+    /// A <see cref="ValueTask{RecordMetadata}"/> representing the produce operation.
+    /// The result contains metadata about the produced message (topic, partition, offset).
+    /// </returns>
+    /// <exception cref="OperationCanceledException">
+    /// Thrown if the cancellation token is cancelled (either before append or while waiting for delivery).
+    /// If thrown after append, the message will still be delivered to Kafka.
+    /// </exception>
+    /// <exception cref="ObjectDisposedException">
+    /// Thrown if the producer has been disposed.
+    /// </exception>
     public ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken = default)
@@ -216,17 +240,55 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
+        // Check cancellation upfront before any work
+        cancellationToken.ThrowIfCancellationRequested();
+
         // Fast path: Try synchronous produce if metadata is initialized and cached.
         // This bypasses channel overhead for 99%+ of calls after warmup.
         if (TryProduceSyncForAsync(message, out var completion))
         {
-            // Return the ValueTask directly - no async state machine needed
+            // POST-QUEUE: Message appended to batch, committed to being sent
+            // Message WILL be delivered, but caller can stop waiting via cancellation token.
+            if (cancellationToken.CanBeCanceled)
+            {
+                return AwaitWithCancellation(completion!, cancellationToken);
+            }
             return completion!.Task;
         }
 
         // Slow path: Fall back to channel-based async processing.
         // This handles first-time metadata initialization or cache misses.
         return ProduceAsyncSlow(message, cancellationToken);
+    }
+
+    /// <summary>
+    /// Awaits a completion source with cancellation support.
+    /// If cancellation fires, sets the completion source to cancelled state so that
+    /// GetResult() is called and the pool item is properly returned.
+    /// The message delivery continues in background regardless.
+    /// </summary>
+    private static async ValueTask<RecordMetadata> AwaitWithCancellation(
+        PooledValueTaskSource<RecordMetadata> completion,
+        CancellationToken cancellationToken)
+    {
+        // Capture both completion and token in a tuple for the callback
+        var state = (completion, cancellationToken);
+        var registration = cancellationToken.Register(
+            static s =>
+            {
+                var (comp, token) = ((PooledValueTaskSource<RecordMetadata>, CancellationToken))s!;
+                comp.TrySetCanceled(token);
+            },
+            state);
+
+        try
+        {
+            return await completion.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            await registration.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     /// <summary>
@@ -295,10 +357,17 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, cancellationToken);
 
-        // Write to channel (backpressure if full)
+        // PRE-QUEUE: Channel write can be cancelled (throws OperationCanceledException)
+        // If cancelled here, completion source never gets used and returns to pool
         await _workChannel.Writer.WriteAsync(workItem, cancellationToken).ConfigureAwait(false);
 
-        // Await the result - source auto-returns to pool when GetResult() is called
+        // POST-QUEUE: Message in worker pipeline, committed to being sent
+        // Message WILL be delivered, but caller can stop waiting via cancellation token.
+        if (cancellationToken.CanBeCanceled)
+        {
+            return await AwaitWithCancellation(completion, cancellationToken).ConfigureAwait(false);
+        }
+
         return await completion.Task.ConfigureAwait(false);
     }
 
@@ -1196,7 +1265,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     private async Task SenderLoopAsync(CancellationToken cancellationToken)
     {
-        await foreach (var batch in _accumulator.GetReadyBatchesAsync(cancellationToken).ConfigureAwait(false))
+        await foreach (var batch in _accumulator.SendableBatches.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
             try
             {
@@ -1354,7 +1423,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 // Offset is unknown (-1) for fire-and-forget
                 _logger?.LogDebug("[SendBatch] COMPLETE (fire-and-forget) {Topic}-{Partition}",
                     batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                batch.Complete(-1, DateTimeOffset.UtcNow);
+                batch.CompleteSend(-1, DateTimeOffset.UtcNow);
 
                 // Memory will be released in finally block
                 return;
@@ -1460,7 +1529,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             _logger?.LogDebug("[SendBatch] COMPLETE (normal) {Topic}-{Partition} at offset {Offset}",
                 batch.TopicPartition.Topic, batch.TopicPartition.Partition, partitionResponse.BaseOffset);
-            batch.Complete(partitionResponse.BaseOffset, timestamp);
+            batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
+
 
             // Memory will be released in finally block
         }
