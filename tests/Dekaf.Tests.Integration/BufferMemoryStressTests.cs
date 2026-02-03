@@ -13,7 +13,8 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
     /// Regression test for the BufferMemory arena bypass bug.
     /// Verifies that sustained message production to the same partition does not cause
     /// unbounded memory growth. The original bug caused 18GB+ growth in 90 seconds.
-    /// This test runs for 2 minutes and ensures memory growth stays under 100MB.
+    /// This test runs for 30 seconds (enough to detect multi-GB leaks) and ensures memory
+    /// growth stays under reasonable bounds.
     /// </summary>
     [Test]
     public async Task SustainedLoad_DoesNotCauseUnboundedMemoryGrowth()
@@ -36,16 +37,18 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
         GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
 
         var initialMemory = GC.GetTotalMemory(forceFullCollection: false);
-        var testDuration = TimeSpan.FromMinutes(2);
+        // 30 seconds is sufficient to detect the bug (original showed 18GB/90s = ~6GB in 30s)
+        // while being CI-friendly (avoids 10-minute timeout with other tests)
+        var testDuration = TimeSpan.FromSeconds(30);
         var startTime = DateTime.UtcNow;
         var messageCount = 0;
         var lastLogTime = startTime;
 
         Console.WriteLine($"[BufferMemoryStressTest] Starting sustained load test");
         Console.WriteLine($"[BufferMemoryStressTest] Initial memory: {initialMemory / 1_000_000.0:F1} MB");
-        Console.WriteLine($"[BufferMemoryStressTest] Test duration: {testDuration.TotalMinutes} minutes");
+        Console.WriteLine($"[BufferMemoryStressTest] Test duration: {testDuration.TotalSeconds} seconds");
 
-        // Act: Send messages continuously for 2 minutes using fire-and-forget
+        // Act: Send messages continuously for 30 seconds using fire-and-forget
         // Using the same key ensures messages go to the same partition, triggering the arena fast path
         // Use Send() (fire-and-forget) instead of ProduceAsync to avoid blocking on network I/O
         // This matches real high-throughput producer patterns and allows clean test termination
@@ -58,9 +61,9 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
 
             messageCount++;
 
-            // Log memory every 30 seconds
+            // Log memory every 10 seconds
             var elapsed = DateTime.UtcNow - lastLogTime;
-            if (elapsed.TotalSeconds >= 30)
+            if (elapsed.TotalSeconds >= 10)
             {
                 var currentMemory = GC.GetTotalMemory(forceFullCollection: false);
                 var growthMB = (currentMemory - initialMemory) / 1_000_000.0;
@@ -100,7 +103,7 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
         Console.WriteLine($"[BufferMemoryStressTest] Total memory growth: {totalGrowthMB:F1} MB");
 
         // Assert: Memory growth should be < 500MB
-        // The original bug caused 18GB growth in 90 seconds, so 500MB over 2 minutes
+        // The original bug caused 18GB growth in 90 seconds (~6GB in 30s), so 500MB over 30 seconds
         // catches catastrophic leaks while allowing for CI environment variability
         // (container overhead, GC timing differences, etc.)
         Console.WriteLine($"[BufferMemoryStressTest] Asserting memory growth < 500 MB (actual: {totalGrowthMB:F1} MB)");
