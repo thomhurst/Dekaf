@@ -372,7 +372,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             await _workChannel.Writer.WriteAsync(workItem, cancellationToken).ConfigureAwait(false);
 
             // POST-QUEUE: Memory ownership transferred to work item.
-            // The worker's finally block will release PreReservedBytes.
+            // The worker releases PreReservedBytes immediately when it picks up the item.
             memoryOwnershipTransferred = true;
 
             // Message WILL be delivered, but caller can stop waiting via cancellation token.
@@ -413,8 +413,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // BACKPRESSURE: Reserve memory before queueing to prevent unbounded channel growth.
         // Without this, when metadata becomes stale (after MetadataMaxAge), messages would
         // queue in the unbounded channel without limit, causing memory exhaustion.
-        // The worker will release this pre-reserved memory after AppendAsync completes
-        // (which reserves its own memory based on actual serialized size).
+        // The worker releases pre-reserved memory immediately when it picks up the item,
+        // then AppendAsync reserves memory based on actual serialized size.
         var estimatedSize = EstimateMessageSizeForBackpressure(message);
         _accumulator.ReserveMemorySyncForBackpressure(estimatedSize);
 
