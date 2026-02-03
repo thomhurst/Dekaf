@@ -18,7 +18,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private string? _clientId;
     private Acks _acks = Acks.All;
     private int _lingerMs;
-    private int _batchSize = 16384;
+    private int _batchSize = 1048576;
     private bool _enableIdempotence;
     private string? _transactionalId;
     private Protocol.Records.CompressionType _compressionType = Protocol.Records.CompressionType.None;
@@ -319,7 +319,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <list type="bullet">
     /// <item><description>Acks: Leader only (faster acknowledgment)</description></item>
     /// <item><description>LingerMs: 5ms (allows batching)</description></item>
-    /// <item><description>BatchSize: 64KB (larger batches)</description></item>
+    /// <item><description>BatchSize: 2MB (larger batches for maximum throughput)</description></item>
     /// <item><description>Compression: LZ4 (fast compression)</description></item>
     /// </list>
     /// <para>These settings can be overridden by calling other builder methods after this one.</para>
@@ -329,7 +329,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         _acks = Acks.Leader;
         _lingerMs = 5;
-        _batchSize = 65536;
+        _batchSize = 2097152;
         _compressionType = Protocol.Records.CompressionType.Lz4;
         return this;
     }
@@ -342,7 +342,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <list type="bullet">
     /// <item><description>Acks: Leader only (faster acknowledgment)</description></item>
     /// <item><description>LingerMs: 0ms (no batching delay)</description></item>
-    /// <item><description>BatchSize: 16KB (default, smaller batches)</description></item>
+    /// <item><description>BatchSize: 256KB (smaller batches for lower latency)</description></item>
     /// </list>
     /// <para>These settings can be overridden by calling other builder methods after this one.</para>
     /// </remarks>
@@ -351,7 +351,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         _acks = Acks.Leader;
         _lingerMs = 0;
-        _batchSize = 16384;
+        _batchSize = 262144;
         return this;
     }
 

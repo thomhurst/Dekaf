@@ -59,7 +59,7 @@ jobs:
             -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 \
             -e KAFKA_LOG_DIRS=/var/lib/kafka/data \
             -e CLUSTER_ID=stress-test-cluster-001 \
-            -e KAFKA_LOG_RETENTION_MS=300000 \
+            -e KAFKA_LOG_RETENTION_MS=7200000 \
             -e KAFKA_LOG_RETENTION_BYTES=2147483648 \
             -e KAFKA_LOG_SEGMENT_BYTES=134217728 \
             -e KAFKA_LOG_SEGMENT_DELETE_DELAY_MS=1000 \

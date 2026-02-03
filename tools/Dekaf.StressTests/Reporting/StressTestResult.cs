@@ -20,7 +20,8 @@ internal sealed class StressTestResult
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        PropertyNameCaseInsensitive = true
     };
 
     public string ToJson() => JsonSerializer.Serialize(this, JsonOptions);
@@ -41,7 +42,8 @@ internal sealed class StressTestResults
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        PropertyNameCaseInsensitive = true
     };
 
     public string ToJson() => JsonSerializer.Serialize(this, JsonOptions);
@@ -67,7 +69,15 @@ internal sealed class StressTestResults
             return null;
         }
 
-        var json = await File.ReadAllTextAsync(filePath).ConfigureAwait(false);
-        return FromJson(json);
+        try
+        {
+            var json = await File.ReadAllTextAsync(filePath).ConfigureAwait(false);
+            return FromJson(json);
+        }
+        catch (JsonException ex)
+        {
+            Console.WriteLine($"Failed to deserialize results from {filePath}: {ex.Message}");
+            return null;
+        }
     }
 }

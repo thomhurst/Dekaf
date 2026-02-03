@@ -826,7 +826,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Most appends hit an existing batch, so this avoids GetOrAdd overhead.
             if (!_batches.TryGetValue(topicPartition, out var batch))
             {
-                // Cold path: Rent from pool and try to add
+                // Cold path: Rent from pool
                 var newBatch = _batchPool.Rent(topicPartition);
                 if (!_batches.TryAdd(topicPartition, newBatch))
                 {
@@ -946,7 +946,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Hot path optimization: TryGetValue first to avoid factory invocation when batch exists.
             if (!_batches.TryGetValue(topicPartition, out var batch))
             {
-                // Rent from pool and try to add
+                // Rent from pool
                 var newBatch = _batchPool.Rent(topicPartition);
                 if (!_batches.TryAdd(topicPartition, newBatch))
                 {
@@ -973,6 +973,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var overestimate = recordSize - result.ActualSizeAdded;
                 if (overestimate > 0)
                     ReleaseMemory(overestimate);
+
                 return true;
             }
 
@@ -1043,6 +1044,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var overestimate = recordSize - result.ActualSizeAdded;
                 if (overestimate > 0)
                     ReleaseMemory(overestimate);
+
                 return true;
             }
 
@@ -1081,6 +1083,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     t_cachedTopic = topic;
                     t_cachedPartition = partition;
                     t_cachedBatch = mpCachedBatch;
+
                     return true;
                 }
                 // Batch is full, invalidate this cache entry and fall through
@@ -1130,7 +1133,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Rent from pool and add to dictionary
+        // Rent a new batch from the pool
         var newBatch = _batchPool.Rent(topicPartition);
 
         // Try to add the new batch - another thread might have added one already
@@ -1224,7 +1227,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Hot path optimization: TryGetValue first to avoid factory invocation when batch exists.
             if (!_batches.TryGetValue(topicPartition, out var batch))
             {
-                // Rent from pool and try to add
+                // Rent from pool
                 var newBatch = _batchPool.Rent(topicPartition);
                 if (!_batches.TryAdd(topicPartition, newBatch))
                 {
@@ -1360,7 +1363,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 // Get or create batch
                 if (!_batches.TryGetValue(topicPartition, out var batch))
                 {
-                    // Rent from pool and try to add
+                    // Rent from pool
                     var newBatch = _batchPool.Rent(topicPartition);
                     if (!_batches.TryAdd(topicPartition, newBatch))
                     {
@@ -2442,7 +2445,7 @@ internal sealed class PartitionBatch
         _records[_recordCount++] = record;
         _estimatedSize += recordSize;
 
-        return new RecordAppendResult(true);
+        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -2803,9 +2806,9 @@ internal sealed class PartitionBatch
 }
 
 /// <summary>
-/// Result of appending a record.
+/// Result of a record append operation.
 /// </summary>
-/// <param name="Success">Whether the append succeeded</param>
+/// <param name="Success">Whether the append succeeded.</param>
 /// <param name="ActualSizeAdded">Actual size added to batch (for memory accounting). Only valid when Success=true.</param>
 public readonly record struct RecordAppendResult(bool Success, int ActualSizeAdded = 0);
 
