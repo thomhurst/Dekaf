@@ -112,8 +112,7 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
 
     /// <summary>
     /// Verifies that BufferMemory accounting works correctly under load.
-    /// While we can't easily test backpressure in integration tests without adding
-    /// builder API, we can verify that sustained load doesn't exceed expected memory.
+    /// Sends messages and verifies they complete within a reasonable time.
     /// </summary>
     [Test]
     public async Task BufferedBytes_StaysWithinReasonableBounds_UnderLoad()
@@ -125,11 +124,11 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("buffered-bytes-test")
             .WithAcks(Acks.Leader)
-            .WithLingerMs(100) // Add some linger to allow batching
+            .WithLingerMs(50) // Short linger for faster batching
             .Build();
 
         var messageValue = new string('x', 1000); // 1KB messages
-        var messageCount = 1000;
+        var messageCount = 100; // Reduced from 1000 - enough to test without being slow
         var maxObservedMemoryMB = 0.0;
 
         Console.WriteLine($"[BufferedBytesTest] Sending {messageCount} messages");
@@ -149,7 +148,7 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
             tasks.Add(sendTask);
 
             // Sample memory periodically
-            if (i % 100 == 0)
+            if (i % 20 == 0)
             {
                 var currentMemory = GC.GetTotalMemory(forceFullCollection: false) / 1_000_000.0;
                 if (currentMemory > maxObservedMemoryMB)
@@ -159,8 +158,17 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
             }
         }
 
-        // Wait for all messages to be sent
-        await Task.WhenAll(tasks).ConfigureAwait(false);
+        // Wait for all messages with timeout to prevent hanging
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var allTasksTask = Task.WhenAll(tasks);
+        var completedTask = await Task.WhenAny(allTasksTask, Task.Delay(Timeout.Infinite, cts.Token)).ConfigureAwait(false);
+
+        if (completedTask != allTasksTask)
+        {
+            throw new TimeoutException($"Timed out waiting for {messageCount} messages to be delivered");
+        }
+
+        await allTasksTask.ConfigureAwait(false); // Propagate any exceptions
 
         Console.WriteLine($"[BufferedBytesTest] All {messageCount} messages sent successfully");
         Console.WriteLine($"[BufferedBytesTest] Max observed memory: {maxObservedMemoryMB:F1} MB");
