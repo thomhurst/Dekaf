@@ -412,11 +412,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
         _batchPool = new PartitionBatchPool(options);
         _maxBufferMemory = options.BufferMemory;
 
-        // Initialize batch semaphore to limit arena memory consumption.
-        // Each in-flight batch holds an arena, so we limit based on BufferMemory / effectiveArenaCapacity.
-        // Minimum of 2 batches allows pipelining (one batch sending while another fills).
-        var effectiveArenaCapacity = CalculateEffectiveArenaCapacity(options);
-        var maxBatches = Math.Max(2, (int)(options.BufferMemory / (ulong)effectiveArenaCapacity));
+        // Initialize batch semaphore to limit in-flight batches and prevent unbounded memory growth.
+        // Use BatchSize as the divisor since that represents actual batch data size.
+        // This allows BufferMemory/BatchSize batches (e.g., 256MB/1MB = 256 batches).
+        // Minimum of 16 batches ensures good throughput even with small BufferMemory.
+        var maxBatches = Math.Max(16, (int)(options.BufferMemory / (ulong)options.BatchSize));
         _batchSemaphore = new SemaphoreSlim(maxBatches, maxBatches);
 
         // Use unbounded channel for ready batches - backpressure is now handled by batch semaphore
