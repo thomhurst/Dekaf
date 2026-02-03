@@ -82,7 +82,7 @@ private void TrackDeliveryTask(ReadyBatch readyBatch)
 
 - **Per-message allocations** are expensive at high throughput (millions/sec)
 - **Per-batch allocations** are acceptable - amortized over ~1000 messages
-- Batch = 16KB default = ~1000 small messages
+- Batch = 1MB default = ~1000 messages at 1KB each
 - 100 bytes per batch = 0.1 bytes per message amortized
 
 **When reviewing allocation-related changes:**
