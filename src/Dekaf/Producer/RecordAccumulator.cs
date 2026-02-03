@@ -1994,6 +1994,9 @@ internal sealed class PartitionBatch
     /// another thread could successfully append to the pooled batch (since _isCompleted would be 0),
     /// and those messages would be lost when Reset() is later called. By only resetting these flags
     /// at rent time, we ensure that any stale references fail the _isCompleted check in TryAppend().
+    ///
+    /// Arena allocation is also done here (not in PrepareForPooling) to avoid holding 16MB+ of
+    /// memory per pooled batch. With 64 pooled batches at 16MB each, that would be 1GB of idle memory.
     /// </remarks>
     internal void Reset(TopicPartition topicPartition)
     {
@@ -2008,6 +2011,13 @@ internal sealed class PartitionBatch
         _isCompleted = 0;  // Only reset here - see remarks
         _completedBatch = null;
         _exclusiveAccess = 0;  // Only reset here - see remarks
+
+        // Allocate arena if needed (deferred from PrepareForPooling to avoid wasting memory in pool)
+        if (_arena == null)
+        {
+            var arenaCapacity = _options.ArenaCapacity > 0 ? _options.ArenaCapacity : _options.BatchSize;
+            _arena = new BatchArena(arenaCapacity);
+        }
     }
 
     /// <summary>
@@ -2015,6 +2025,10 @@ internal sealed class PartitionBatch
     /// Allocates new arrays (the old ones were transferred to ReadyBatch).
     /// IMPORTANT: This must only be called after Complete() which transfers arrays to ReadyBatch.
     /// </summary>
+    /// <remarks>
+    /// Arena allocation is deferred to Reset() to avoid holding 16MB+ of memory per pooled batch.
+    /// With 64 pooled batches at 16MB each, that would be 1GB of idle memory.
+    /// </remarks>
     internal void PrepareForPooling(ProducerOptions options)
     {
         _options = options;
@@ -2023,9 +2037,9 @@ internal sealed class PartitionBatch
         // This is a no-op but kept for safety.
         _arena?.Return();
 
-        // Allocate new arena for the pooled batch
-        var arenaCapacity = options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize;
-        _arena = new BatchArena(arenaCapacity);
+        // DON'T allocate arena here - defer to Reset() when batch is actually rented.
+        // This avoids holding 16MB+ of memory per pooled batch.
+        _arena = null;
 
         // Arrays were transferred to ReadyBatch by Complete() and are now null.
         // Allocate fresh arrays for the pooled batch.
