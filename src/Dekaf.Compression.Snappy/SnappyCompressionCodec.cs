@@ -96,35 +96,68 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
 
         // Process blocks
         Span<byte> blockHeader = stackalloc byte[8];
+        byte[]? compressedBuffer = null;
 
-        while (remaining >= 8)
+        try
         {
-            // Read block header
-            source.Slice(position, 8).CopyTo(blockHeader);
-            var compressedSize = BinaryPrimitives.ReadInt32BigEndian(blockHeader);
-            var uncompressedSize = BinaryPrimitives.ReadInt32BigEndian(blockHeader.Slice(4));
+            while (remaining >= 8)
+            {
+                // Read block header
+                source.Slice(position, 8).CopyTo(blockHeader);
+                var compressedSize = BinaryPrimitives.ReadInt32BigEndian(blockHeader);
+                var uncompressedSize = BinaryPrimitives.ReadInt32BigEndian(blockHeader.Slice(4));
 
-            position = source.GetPosition(8, position);
-            remaining -= 8;
+                position = source.GetPosition(8, position);
+                remaining -= 8;
 
-            if (compressedSize < 0 || uncompressedSize < 0)
-                throw new InvalidDataException("Invalid block size in xerial-snappy data.");
+                if (compressedSize < 0 || uncompressedSize < 0)
+                    throw new InvalidDataException("Invalid block size in xerial-snappy data.");
 
-            if (remaining < compressedSize)
-                throw new InvalidDataException("Truncated xerial-snappy block.");
+                if (remaining < compressedSize)
+                    throw new InvalidDataException("Truncated xerial-snappy block.");
 
-            var compressedSequence = source.Slice(position, compressedSize);
+                var compressedSequence = source.Slice(position, compressedSize);
 
-            // Decompress using ReadOnlySequence/IBufferWriter overload
-            // Snappier validates the compressed data internally and will throw if corrupted
-            Snappier.Snappy.Decompress(compressedSequence, destination);
+                // Get contiguous span for compressed data
+                ReadOnlySpan<byte> compressedSpan;
+                if (compressedSequence.IsSingleSegment)
+                {
+                    compressedSpan = compressedSequence.FirstSpan;
+                }
+                else
+                {
+                    if (compressedBuffer == null || compressedBuffer.Length < compressedSize)
+                    {
+                        if (compressedBuffer != null)
+                            ArrayPool<byte>.Shared.Return(compressedBuffer);
+                        compressedBuffer = ArrayPool<byte>.Shared.Rent(compressedSize);
+                    }
+                    compressedSequence.CopyTo(compressedBuffer);
+                    compressedSpan = compressedBuffer.AsSpan(0, compressedSize);
+                }
 
-            position = source.GetPosition(compressedSize, position);
-            remaining -= compressedSize;
+                // Decompress directly into destination and verify size
+                var decompressedSpan = destination.GetSpan(uncompressedSize);
+                var actualDecompressedLength = Snappier.Snappy.Decompress(compressedSpan, decompressedSpan);
+
+                if (actualDecompressedLength != uncompressedSize)
+                    throw new InvalidDataException(
+                        $"Decompressed size mismatch. Expected {uncompressedSize}, got {actualDecompressedLength}.");
+
+                destination.Advance(uncompressedSize);
+
+                position = source.GetPosition(compressedSize, position);
+                remaining -= compressedSize;
+            }
+
+            if (remaining != 0)
+                throw new InvalidDataException("Trailing data after last xerial-snappy block.");
         }
-
-        if (remaining != 0)
-            throw new InvalidDataException("Trailing data after last xerial-snappy block.");
+        finally
+        {
+            if (compressedBuffer != null)
+                ArrayPool<byte>.Shared.Return(compressedBuffer);
+        }
     }
 
 }
