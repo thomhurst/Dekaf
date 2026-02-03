@@ -21,10 +21,13 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
         // Arrange
         var topic = await kafka.CreateTestTopicAsync(partitions: 1).ConfigureAwait(false);
 
+        // Explicitly set BufferMemory to 32MB to test backpressure at a known limit
+        // This ensures the test is independent of the default BufferMemory configuration
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("memory-stress-test")
             .WithAcks(Acks.Leader)
+            .WithBufferMemory(33554432) // 32 MB - explicit to avoid test depending on default
             .Build();
 
         // Force full GC before measuring baseline
