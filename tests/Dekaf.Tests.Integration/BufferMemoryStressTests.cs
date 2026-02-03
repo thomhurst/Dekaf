@@ -22,13 +22,13 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
         // Arrange
         var topic = await kafka.CreateTestTopicAsync(partitions: 1).ConfigureAwait(false);
 
-        // Explicitly set BufferMemory to 32MB to test backpressure at a known limit
-        // This ensures the test is independent of the default BufferMemory configuration
+        // Use small 8MB buffer to make the test more sensitive to leaks
+        // Smaller buffer = leak more obvious relative to expected memory footprint
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("memory-stress-test")
             .WithAcks(Acks.Leader)
-            .WithBufferMemory(33554432) // 32 MB - explicit to avoid test depending on default
+            .WithBufferMemory(8388608) // 8 MB - small buffer makes leaks more obvious
             .Build();
 
         // Force full GC before measuring baseline
@@ -102,12 +102,12 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
         Console.WriteLine($"[BufferMemoryStressTest] Final memory: {finalMemory / 1_000_000.0:F1} MB");
         Console.WriteLine($"[BufferMemoryStressTest] Total memory growth: {totalGrowthMB:F1} MB");
 
-        // Assert: Memory growth should be < 500MB
-        // The original bug caused 18GB growth in 90 seconds (~6GB in 30s), so 500MB over 30 seconds
-        // catches catastrophic leaks while allowing for CI environment variability
-        // (container overhead, GC timing differences, etc.)
-        Console.WriteLine($"[BufferMemoryStressTest] Asserting memory growth < 500 MB (actual: {totalGrowthMB:F1} MB)");
-        await Assert.That(totalGrowthMB).IsLessThan(500);
+        // Assert: Memory growth should be < 200MB
+        // With 8MB buffer, expect memory to stay well under this. The original bug caused
+        // 18GB growth in 90 seconds (~6GB in 30s), so 200MB catches leaks while allowing
+        // for CI environment variability (container overhead, GC timing differences, etc.)
+        Console.WriteLine($"[BufferMemoryStressTest] Asserting memory growth < 200 MB (actual: {totalGrowthMB:F1} MB)");
+        await Assert.That(totalGrowthMB).IsLessThan(200);
     }
 
     /// <summary>
