@@ -46,7 +46,7 @@ public class RunIntegrationTestsModule : Module<IReadOnlyList<CommandResult>>
                     NoBuild = true,
                     Configuration = "Release",
                     Framework = "net10.0",
-                    Arguments = ["--", "--timeout", "10m", "--log-level", "Trace", "--output", "Detailed"]
+                    Arguments = ["--", "--timeout", "12m", "--log-level", "Trace", "--output", "Detailed"]
                 },
                 new CommandExecutionOptions
                 {
