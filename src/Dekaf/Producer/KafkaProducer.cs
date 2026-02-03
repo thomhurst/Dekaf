@@ -352,23 +352,46 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken)
     {
-        // Rent completion source from pool - it will auto-return when awaited
-        var completion = _valueTaskSourcePool.Rent();
+        // BACKPRESSURE: Reserve memory before queueing to prevent unbounded channel growth.
+        // This ensures backpressure even for ProduceAsync calls that aren't awaited.
+        var estimatedSize = EstimateMessageSizeForBackpressure(message);
 
-        var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, cancellationToken);
+        // Use async reservation for the async path to avoid blocking threads
+        await _accumulator.ReserveMemoryAsyncForBackpressure(estimatedSize, cancellationToken).ConfigureAwait(false);
 
-        // PRE-QUEUE: Channel write can be cancelled (throws OperationCanceledException)
-        // If cancelled here, completion source never gets used and returns to pool
-        await _workChannel.Writer.WriteAsync(workItem, cancellationToken).ConfigureAwait(false);
-
-        // POST-QUEUE: Message in worker pipeline, committed to being sent
-        // Message WILL be delivered, but caller can stop waiting via cancellation token.
-        if (cancellationToken.CanBeCanceled)
+        var memoryOwnershipTransferred = false;
+        try
         {
-            return await AwaitWithCancellation(completion, cancellationToken).ConfigureAwait(false);
-        }
+            // Rent completion source from pool - it will auto-return when awaited
+            var completion = _valueTaskSourcePool.Rent();
 
-        return await completion.Task.ConfigureAwait(false);
+            var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, cancellationToken, estimatedSize);
+
+            // PRE-QUEUE: Channel write can be cancelled (throws OperationCanceledException)
+            // If cancelled here, completion source never gets used and returns to pool
+            await _workChannel.Writer.WriteAsync(workItem, cancellationToken).ConfigureAwait(false);
+
+            // POST-QUEUE: Memory ownership transferred to work item.
+            // The worker releases PreReservedBytes immediately when it picks up the item.
+            memoryOwnershipTransferred = true;
+
+            // Message WILL be delivered, but caller can stop waiting via cancellation token.
+            if (cancellationToken.CanBeCanceled)
+            {
+                return await AwaitWithCancellation(completion, cancellationToken).ConfigureAwait(false);
+            }
+
+            return await completion.Task.ConfigureAwait(false);
+        }
+        catch
+        {
+            // Only release if we still own the memory (WriteAsync failed before queueing)
+            if (!memoryOwnershipTransferred)
+            {
+                _accumulator.ReleaseMemory(estimatedSize);
+            }
+            throw;
+        }
     }
 
     /// <inheritdoc />
@@ -386,16 +409,38 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         // Slow path: Fall back to channel-based async processing
         // This handles the case where metadata isn't initialized or cached
-        var completion = _valueTaskSourcePool.Rent();
-        // Fire-and-forget: ensure completion source returns to pool when batch completes
-        _ = AwaitDeliveryAsync(completion);
 
-        var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None);
+        // BACKPRESSURE: Reserve memory before queueing to prevent unbounded channel growth.
+        // Without this, when metadata becomes stale (after MetadataMaxAge), messages would
+        // queue in the unbounded channel without limit, causing memory exhaustion.
+        // The worker releases pre-reserved memory immediately when it picks up the item,
+        // then AppendAsync reserves memory based on actual serialized size.
+        var estimatedSize = EstimateMessageSizeForBackpressure(message);
+        _accumulator.ReserveMemorySyncForBackpressure(estimatedSize);
 
-        if (!_workChannel.Writer.TryWrite(workItem))
+        PooledValueTaskSource<RecordMetadata>? completion = null;
+        try
         {
-            completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
-            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+            completion = _valueTaskSourcePool.Rent();
+            // Fire-and-forget: ensure completion source returns to pool when batch completes
+            _ = AwaitDeliveryAsync(completion);
+
+            var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None, estimatedSize);
+
+            if (!_workChannel.Writer.TryWrite(workItem))
+            {
+                completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
+                // Don't release here - let the catch block handle it to avoid double release
+                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+            }
+
+            // Success - memory ownership transferred to work item, don't release
+            return;
+        }
+        catch
+        {
+            _accumulator.ReleaseMemory(estimatedSize);
+            throw;
         }
     }
 
@@ -978,6 +1023,45 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
     }
 
+    /// <summary>
+    /// Estimates message size conservatively for backpressure purposes.
+    /// Used when queueing to the work channel before serialization occurs.
+    /// The actual size will be determined after serialization in AppendAsync.
+    /// </summary>
+    private static int EstimateMessageSizeForBackpressure(ProducerMessage<TKey, TValue> message)
+    {
+        const int recordOverhead = 20;
+        const int defaultKeyEstimate = 100;
+        const int defaultValueEstimate = 1000;
+
+        // Estimate key size - be more precise for common types
+        var keySize = message.Key switch
+        {
+            null => 0,
+            string s => s.Length * 3, // Max UTF8 expansion
+            byte[] b => b.Length,
+            _ => defaultKeyEstimate
+        };
+
+        // Estimate value size - be more precise for common types
+        var valueSize = message.Value switch
+        {
+            null => 0,
+            string s => s.Length * 3, // Max UTF8 expansion
+            byte[] b => b.Length,
+            _ => defaultValueEstimate
+        };
+
+        // Conservative header estimate
+        var headerSize = 0;
+        if (message.Headers is { Count: > 0 })
+        {
+            headerSize = message.Headers.Count * 50;
+        }
+
+        return recordOverhead + keySize + valueSize + headerSize;
+    }
+
     /// <inheritdoc />
     public void Send(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
     {
@@ -993,16 +1077,34 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
 
         // Slow path: Fall back to channel-based async processing
-        var completion = _valueTaskSourcePool.Rent();
-        completion.SetDeliveryHandler(deliveryHandler);
-        _ = AwaitDeliveryAsync(completion);
 
-        var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None);
+        // BACKPRESSURE: Reserve memory before queueing to prevent unbounded channel growth.
+        var estimatedSize = EstimateMessageSizeForBackpressure(message);
+        _accumulator.ReserveMemorySyncForBackpressure(estimatedSize);
 
-        if (!_workChannel.Writer.TryWrite(workItem))
+        PooledValueTaskSource<RecordMetadata>? completion = null;
+        try
         {
-            completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
-            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+            completion = _valueTaskSourcePool.Rent();
+            completion.SetDeliveryHandler(deliveryHandler);
+            _ = AwaitDeliveryAsync(completion);
+
+            var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None, estimatedSize);
+
+            if (!_workChannel.Writer.TryWrite(workItem))
+            {
+                completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
+                // Don't release here - let the catch block handle it to avoid double release
+                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+            }
+
+            // Success - memory ownership transferred to work item, don't release
+            return;
+        }
+        catch
+        {
+            _accumulator.ReleaseMemory(estimatedSize);
+            throw;
         }
     }
 
@@ -1071,6 +1173,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             try
             {
+                // OPTIMIZATION: Release pre-reserved memory IMMEDIATELY when we pick up the work item.
+                // This minimizes peak memory usage and maximizes throughput by avoiding double-reservation.
+                // The pre-reservation's purpose is backpressure (limiting queue depth), not tracking actual usage.
+                // AppendAsync will reserve the actual memory it needs based on serialized size.
+                if (work.PreReservedBytes > 0)
+                {
+                    _accumulator.ReleaseMemory(work.PreReservedBytes);
+                }
+
                 // ProduceInternalAsync adds the completion to the batch
                 // The batch will complete it when sent - no need to set result here
                 await ProduceInternalAsync(work.Message, work.Completion, work.CancellationToken)
@@ -1780,14 +1891,23 @@ internal sealed class ProduceWorkItem<TKey, TValue>
     public PooledValueTaskSource<RecordMetadata> Completion { get; }
     public CancellationToken CancellationToken { get; }
 
+    /// <summary>
+    /// Memory pre-reserved before queueing to the work channel.
+    /// This provides backpressure for fire-and-forget Send() calls.
+    /// Must be released after AppendAsync completes (which reserves its own memory based on actual size).
+    /// </summary>
+    public int PreReservedBytes { get; }
+
     public ProduceWorkItem(
         ProducerMessage<TKey, TValue> message,
         PooledValueTaskSource<RecordMetadata> completion,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int preReservedBytes = 0)
     {
         Message = message;
         Completion = completion;
         CancellationToken = cancellationToken;
+        PreReservedBytes = preReservedBytes;
     }
 }
 

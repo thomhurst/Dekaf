@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Dekaf.SchemaRegistry;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
@@ -11,6 +12,29 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient
     private readonly Dictionary<string, List<(int Version, int Id, Schema Schema)>> _schemasBySubject = new();
     private int _nextId = 1;
     private bool _disposed;
+
+    /// <summary>
+    /// Normalizes a JSON schema string by parsing and re-serializing.
+    /// This ensures schemas with different whitespace/formatting compare equal.
+    /// </summary>
+    private static string NormalizeJsonSchema(string schemaString)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(schemaString);
+            return JsonSerializer.Serialize(doc.RootElement);
+        }
+        catch
+        {
+            // If not valid JSON, return original
+            return schemaString;
+        }
+    }
+
+    private static bool SchemasAreEquivalent(string schema1, string schema2)
+    {
+        return NormalizeJsonSchema(schema1) == NormalizeJsonSchema(schema2);
+    }
 
     public Task<int> RegisterSchemaAsync(string subject, Schema schema, CancellationToken cancellationToken = default)
     {
@@ -68,10 +92,10 @@ internal sealed class MockSchemaRegistryClient : ISchemaRegistryClient
     {
         ThrowIfDisposed();
 
-        // Check if schema already exists
+        // Check if schema already exists (using semantic comparison for JSON schemas)
         if (_schemasBySubject.TryGetValue(subject, out var list))
         {
-            var existing = list.FirstOrDefault(e => e.Schema.SchemaString == schema.SchemaString);
+            var existing = list.FirstOrDefault(e => SchemasAreEquivalent(e.Schema.SchemaString, schema.SchemaString));
             if (existing != default)
                 return Task.FromResult(existing.Id);
         }

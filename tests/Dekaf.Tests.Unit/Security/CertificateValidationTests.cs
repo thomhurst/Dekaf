@@ -69,9 +69,12 @@ public class CertificateValidationTests
 
         chain.Build(selfSignedCert);
 
-        // Chain status should indicate untrusted root
-        var hasUntrustedRoot = chain.ChainStatus.Any(s => s.Status == X509ChainStatusFlags.UntrustedRoot);
-        await Assert.That(hasUntrustedRoot).IsTrue();
+        // Chain status should indicate untrusted root or partial chain
+        // Note: macOS may return PartialChain instead of UntrustedRoot in this scenario
+        var hasChainIssue = chain.ChainStatus.Any(s =>
+            s.Status == X509ChainStatusFlags.UntrustedRoot ||
+            s.Status == X509ChainStatusFlags.PartialChain);
+        await Assert.That(hasChainIssue).IsTrue();
     }
 
     [Test]
@@ -114,11 +117,13 @@ public class CertificateValidationTests
 
         await Assert.That(result).IsTrue();
 
-        // Check that chain status only has UntrustedRoot or NoError (acceptable in custom trust mode)
+        // Check that chain status only has acceptable statuses in custom trust mode
+        // Note: macOS may return PartialChain in some scenarios
         foreach (var status in chain.ChainStatus)
         {
             var isAcceptable = status.Status == X509ChainStatusFlags.NoError ||
-                              status.Status == X509ChainStatusFlags.UntrustedRoot;
+                              status.Status == X509ChainStatusFlags.UntrustedRoot ||
+                              status.Status == X509ChainStatusFlags.PartialChain;
             await Assert.That(isAcceptable).IsTrue();
         }
     }
@@ -206,9 +211,11 @@ public class CertificateValidationTests
         // Build succeeds
         await Assert.That(buildResult).IsTrue();
 
-        // Verify there are no critical errors (only UntrustedRoot and NoError are acceptable)
+        // Verify there are no critical errors (only trust-related statuses and NoError are acceptable)
+        // Note: macOS may return PartialChain in some scenarios
         var hasSecurityIssue = chain.ChainStatus.Any(s =>
             s.Status != X509ChainStatusFlags.UntrustedRoot &&
+            s.Status != X509ChainStatusFlags.PartialChain &&
             s.Status != X509ChainStatusFlags.NoError);
 
         await Assert.That(hasSecurityIssue).IsFalse();
