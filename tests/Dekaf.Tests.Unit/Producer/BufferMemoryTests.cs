@@ -668,22 +668,30 @@ public class BufferMemoryTests
                     null, null);
             }
 
+            // Start reading from SendableBatches BEFORE flushing to avoid race condition.
+            // FlushAsync completes when DoneTask is set, but DoneTask is set BEFORE
+            // the batch is written to SendableBatches. By starting the read first,
+            // we're guaranteed to receive all batches as they flow through.
+            using var cts = new CancellationTokenSource(5000);
+            var readTask = Task.Run(async () =>
+            {
+                var received = 0;
+                await foreach (var batch in accumulator.SendableBatches.ReadAllAsync(cts.Token))
+                {
+                    received++;
+                    // Simulate sending
+                    batch.CompleteSend(0, DateTimeOffset.UtcNow);
+                    if (received >= batchCount)
+                        break;
+                }
+                return received;
+            });
+
             // Flush to make batches ready (bypasses linger)
             await accumulator.FlushAsync(CancellationToken.None);
 
-            // Read from SendableBatches (simulating KafkaProducer.SenderLoop)
-            var receivedBatches = 0;
-            await foreach (var batch in accumulator.SendableBatches.ReadAllAsync(
-                new CancellationTokenSource(500).Token))
-            {
-                receivedBatches++;
-
-                // Simulate sending
-                batch.CompleteSend(0, DateTimeOffset.UtcNow);
-
-                if (receivedBatches >= batchCount)
-                    break;
-            }
+            // Wait for reader to complete
+            var receivedBatches = await readTask;
 
             await Assert.That(receivedBatches).IsEqualTo(batchCount);
         }
