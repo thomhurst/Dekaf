@@ -1171,6 +1171,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     {
         await foreach (var work in _workChannel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
+            // OPTIMIZATION: Release pre-reserved memory IMMEDIATELY when we pick up the work item.
+            // This minimizes peak memory usage and maximizes throughput by avoiding double-reservation.
+            // The pre-reservation's purpose is backpressure (limiting queue depth), not tracking actual usage.
+            // AppendAsync will reserve the actual memory it needs based on serialized size.
+            if (work.PreReservedBytes > 0)
+            {
+                _accumulator.ReleaseMemory(work.PreReservedBytes);
+            }
+
             try
             {
                 // ProduceInternalAsync adds the completion to the batch
@@ -1185,16 +1194,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             catch (Exception ex)
             {
                 work.Completion.TrySetException(ex);
-            }
-            finally
-            {
-                // Release pre-reserved memory that was reserved before queueing to the channel.
-                // AppendAsync reserves its own memory based on actual serialized size, so this
-                // pre-reserved memory is now accounted for separately and must be released.
-                if (work.PreReservedBytes > 0)
-                {
-                    _accumulator.ReleaseMemory(work.PreReservedBytes);
-                }
             }
         }
     }
