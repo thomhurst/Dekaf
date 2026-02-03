@@ -38,8 +38,10 @@ public sealed class ProducerOptions
 
     /// <summary>
     /// Maximum batch size in bytes.
+    /// Larger batches improve throughput by reducing batch rotation overhead.
+    /// Default is 1MB which handles high-throughput scenarios efficiently.
     /// </summary>
-    public int BatchSize { get; init; } = 16384;
+    public int BatchSize { get; init; } = 1048576;
 
     /// <summary>
     /// Total memory buffer size in bytes for pending messages.
@@ -190,10 +192,11 @@ public sealed class ProducerOptions
     /// <summary>
     /// Capacity of the arena buffer for zero-copy serialization in bytes.
     /// Larger arenas reduce fallback allocations when messages are larger than expected.
-    /// Default is 64KB which handles most message sizes efficiently.
+    /// Should be at least as large as BatchSize for optimal performance.
+    /// Default is 16MB (16x default BatchSize) for maximum throughput.
     /// Set to 0 to use BatchSize as the arena capacity.
     /// </summary>
-    public int ArenaCapacity { get; init; } = 65536;
+    public int ArenaCapacity { get; init; } = 16777216;
 
     /// <summary>
     /// Initial capacity for record arrays in partition batches.

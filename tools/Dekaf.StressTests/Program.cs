@@ -307,7 +307,7 @@ public static class Program
               --output <path>         Output directory for results (default: ./results)
               --partitions <count>    Number of topic partitions (default: 6)
               --linger-ms <ms>        Producer linger time (default: 5)
-              --batch-size <bytes>    Producer batch size (default: 16384)
+              --batch-size <bytes>    Producer batch size (default: 1048576)
               report --input <path>   Generate report from existing results
 
             Environment Variables:
@@ -344,6 +344,6 @@ public static class Program
         public string InputPath { get; set; } = "./results";
         public int Partitions { get; set; } = 6;
         public int LingerMs { get; set; } = 5;
-        public int BatchSize { get; set; } = 16384;
+        public int BatchSize { get; set; } = 1048576;
     }
 }
