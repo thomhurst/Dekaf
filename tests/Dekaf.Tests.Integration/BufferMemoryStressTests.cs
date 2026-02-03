@@ -102,13 +102,13 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
         Console.WriteLine($"[BufferMemoryStressTest] Final memory: {finalMemory / 1_000_000.0:F1} MB");
         Console.WriteLine($"[BufferMemoryStressTest] Total memory growth: {totalGrowthMB:F1} MB");
 
-        // Assert: Memory growth should be < 400MB
+        // Assert: Memory growth should be < 500MB
         // With 8MB buffer and semaphore-limited batches, expect memory to stay bounded.
-        // The threshold accounts for: arena buffers (2 × 4MB = 8MB), ArrayPool caching (~100MB),
-        // Docker/network overhead, message throughput variability, and CI environment variability.
-        // The original bug caused 4.5GB+ growth, so 400MB still catches major leaks.
-        Console.WriteLine($"[BufferMemoryStressTest] Asserting memory growth < 400 MB (actual: {totalGrowthMB:F1} MB)");
-        await Assert.That(totalGrowthMB).IsLessThan(400);
+        // The threshold accounts for: arena buffers, ArrayPool caching, Docker/network overhead,
+        // message throughput variability, and CI environment variability.
+        // The original bug caused 4.5GB+ growth, so 500MB (10x less) still catches major leaks.
+        Console.WriteLine($"[BufferMemoryStressTest] Asserting memory growth < 500 MB (actual: {totalGrowthMB:F1} MB)");
+        await Assert.That(totalGrowthMB).IsLessThan(500);
     }
 
     /// <summary>

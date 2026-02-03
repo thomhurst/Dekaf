@@ -393,6 +393,19 @@ public sealed class RecordAccumulator : IAsyncDisposable
     // allocation elimination in the critical produce path.
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, TopicPartition>> _topicPartitionCache = new();
 
+    /// <summary>
+    /// Calculates the effective arena capacity, capped to BufferMemory/2 to ensure
+    /// at least 2 batches can fit within BufferMemory.
+    /// </summary>
+    internal static int CalculateEffectiveArenaCapacity(ProducerOptions options)
+    {
+        var arenaCapacity = options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize;
+        var maxArenaCapacity = (int)Math.Min(options.BufferMemory / 2, int.MaxValue);
+        return maxArenaCapacity > 0 && arenaCapacity > maxArenaCapacity
+            ? maxArenaCapacity
+            : arenaCapacity;
+    }
+
     public RecordAccumulator(ProducerOptions options)
     {
         _options = options;
@@ -401,13 +414,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         // Initialize batch semaphore to limit arena memory consumption.
         // Each in-flight batch holds an arena, so we limit based on BufferMemory / effectiveArenaCapacity.
-        // Arena capacity is capped to BufferMemory/2 to ensure at least 2 batches can fit in memory.
         // Minimum of 2 batches allows pipelining (one batch sending while another fills).
-        var arenaCapacity = options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize;
-        var maxArenaCapacity = (int)Math.Min(options.BufferMemory / 2, int.MaxValue);
-        var effectiveArenaCapacity = maxArenaCapacity > 0 && arenaCapacity > maxArenaCapacity
-            ? maxArenaCapacity
-            : arenaCapacity;
+        var effectiveArenaCapacity = CalculateEffectiveArenaCapacity(options);
         var maxBatches = Math.Max(2, (int)(options.BufferMemory / (ulong)effectiveArenaCapacity));
         _batchSemaphore = new SemaphoreSlim(maxBatches, maxBatches);
 
@@ -505,9 +513,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Enqueues a ready batch synchronously, blocking until a semaphore slot is available.
     /// This provides backpressure for fire-and-forget sends to prevent unbounded memory growth.
+    /// Times out after RequestTimeoutMs to prevent indefinite thread pool blocking.
     /// </summary>
     /// <param name="readyBatch">The batch to enqueue.</param>
-    /// <returns>True if enqueued; false if channel closed or disposed.</returns>
+    /// <returns>True if enqueued; false if timeout, channel closed, or disposed.</returns>
     private bool TryEnqueueReadyBatch(ReadyBatch readyBatch)
     {
         // Check disposal before blocking
@@ -516,11 +525,16 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         try
         {
-            // Block until semaphore available, checking disposal periodically
-            // Use 100ms timeout and loop to allow disposal detection
+            // Block until semaphore available, checking disposal periodically.
+            // Use 100ms intervals and total timeout of RequestTimeoutMs to prevent
+            // indefinite thread pool blocking while still allowing backpressure.
+            var maxWaitMs = _options.RequestTimeoutMs;
+            var elapsed = 0;
+
             while (!_batchSemaphore.Wait(100))
             {
-                if (_disposed || _closed)
+                elapsed += 100;
+                if (_disposed || _closed || elapsed >= maxWaitMs)
                     return false;
             }
         }
@@ -1915,6 +1929,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
         _disposalCts?.Dispose();
         _disposalEvent?.Dispose();
         _completionCts?.Dispose();
+        _batchSemaphore?.Dispose();
     }
 }
 
@@ -2094,14 +2109,7 @@ internal sealed class PartitionBatch
         // Allocate arena if needed (deferred from PrepareForPooling to avoid wasting memory in pool)
         if (_arena == null)
         {
-            var arenaCapacity = _options.ArenaCapacity > 0 ? _options.ArenaCapacity : _options.BatchSize;
-            // Cap arena to BufferMemory / 2 to ensure at least 2 batches can fit in memory.
-            // This prevents misconfiguration where arena > BufferMemory causing excessive memory use.
-            var maxArenaCapacity = (int)Math.Min(_options.BufferMemory / 2, int.MaxValue);
-            if (maxArenaCapacity > 0 && arenaCapacity > maxArenaCapacity)
-            {
-                arenaCapacity = maxArenaCapacity;
-            }
+            var arenaCapacity = RecordAccumulator.CalculateEffectiveArenaCapacity(_options);
             _arena = new BatchArena(arenaCapacity);
         }
     }
