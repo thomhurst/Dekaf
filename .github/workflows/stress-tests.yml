@@ -13,23 +13,34 @@ on:
         description: 'Message size in bytes'
         required: false
         default: '1000'
-      scenario:
-        description: 'Scenario to run (producer, consumer, all)'
-        required: false
-        default: 'all'
-      client:
-        description: 'Client to test (dekaf, confluent, all)'
-        required: false
-        default: 'all'
 
 concurrency:
   group: stress-tests
   cancel-in-progress: false
 
 jobs:
+  # Run each test scenario in parallel
   stress-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scenario: producer
+            client: dekaf
+            name: Dekaf Producer
+          - scenario: producer
+            client: confluent
+            name: Confluent Producer
+          - scenario: consumer
+            client: dekaf
+            name: Dekaf Consumer
+          - scenario: consumer
+            client: confluent
+            name: Confluent Consumer
+
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -59,7 +70,7 @@ jobs:
             -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 \
             -e KAFKA_LOG_DIRS=/var/lib/kafka/data \
             -e CLUSTER_ID=stress-test-cluster-001 \
-            -e KAFKA_LOG_RETENTION_MS=300000 \
+            -e KAFKA_LOG_RETENTION_MS=7200000 \
             -e KAFKA_LOG_RETENTION_BYTES=2147483648 \
             -e KAFKA_LOG_SEGMENT_BYTES=134217728 \
             -e KAFKA_LOG_SEGMENT_DELETE_DELAY_MS=1000 \
@@ -76,14 +87,7 @@ jobs:
             sleep 2
           done
 
-      - name: Check Initial Disk Space
-        run: |
-          echo "=== Initial Disk Space ==="
-          df -h
-          echo "=== Docker Disk Usage ==="
-          docker system df
-
-      - name: Run Stress Tests
+      - name: Run ${{ matrix.name }} Stress Test
         env:
           KAFKA_BOOTSTRAP_SERVERS: localhost:9092
         run: |
@@ -91,24 +95,14 @@ jobs:
           dotnet run --configuration Release --no-build -- \
             --duration ${{ github.event.inputs.duration_minutes || '15' }} \
             --message-size ${{ github.event.inputs.message_size || '1000' }} \
-            --scenario ${{ github.event.inputs.scenario || 'all' }} \
-            --client ${{ github.event.inputs.client || 'all' }} \
+            --scenario ${{ matrix.scenario }} \
+            --client ${{ matrix.client }} \
             --output ./results
-
-      - name: Check Final Disk Space
-        if: always()
-        run: |
-          echo "=== Final Disk Space ==="
-          df -h
-          echo "=== Docker Disk Usage ==="
-          docker system df
-          echo "=== Kafka Container Stats ==="
-          docker stats kafka --no-stream || true
 
       - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          name: stress-test-results
+          name: results-${{ matrix.client }}-${{ matrix.scenario }}
           path: tools/Dekaf.StressTests/results/
           retention-days: 90
 
@@ -116,10 +110,11 @@ jobs:
         if: always()
         run: docker rm -f kafka || true
 
+  # Collect all results and generate summary
   generate-summary:
     needs: stress-test
     runs-on: ubuntu-latest
-    if: always() && needs.stress-test.result == 'success'
+    if: always()
 
     steps:
       - name: Checkout
@@ -130,25 +125,200 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Download Results
+      - name: Download All Results
         uses: actions/download-artifact@v4
         with:
-          name: stress-test-results
-          path: ./results
+          pattern: results-*
+          path: ./all-results
+          merge-multiple: true
 
-      - name: Build Stress Tests
-        run: dotnet build tools/Dekaf.StressTests --configuration Release
-
-      - name: Generate Summary
+      - name: List Downloaded Results
         run: |
-          cd tools/Dekaf.StressTests
-          dotnet run --configuration Release --no-build -- report --input ../../results
+          echo "=== Downloaded Results ==="
+          find ./all-results -type f -name "*.json" | head -20
+          echo "=== Contents ==="
+          for f in $(find ./all-results -type f -name "*.json"); do
+            echo "--- $f ---"
+            cat "$f" | head -50
+          done
+
+      - name: Merge Results and Generate Summary
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          import glob
+          from datetime import datetime
+
+          # Find all JSON result files
+          json_files = glob.glob("all-results/**/*.json", recursive=True)
+          print(f"Found {len(json_files)} result files")
+
+          if not json_files:
+              print("No results found")
+              exit(0)
+
+          # Collect all individual results
+          all_results = []
+          run_started = None
+          run_completed = None
+          machine_name = None
+          processor_count = None
+
+          for json_file in json_files:
+              print(f"Processing: {json_file}")
+              try:
+                  with open(json_file) as f:
+                      data = json.load(f)
+
+                  # Handle both single result and wrapped results format
+                  if 'results' in data:
+                      # Wrapped format from StressTestResults
+                      all_results.extend(data['results'])
+                      if run_started is None or data.get('runStartedAtUtc', '') < run_started:
+                          run_started = data.get('runStartedAtUtc')
+                      if run_completed is None or data.get('runCompletedAtUtc', '') > run_completed:
+                          run_completed = data.get('runCompletedAtUtc')
+                      machine_name = data.get('machineName', machine_name)
+                      processor_count = data.get('processorCount', processor_count)
+                  else:
+                      # Single result format
+                      all_results.append(data)
+
+              except Exception as e:
+                  print(f"Error processing {json_file}: {e}")
+
+          print(f"Collected {len(all_results)} test results")
+
+          # Create merged results
+          merged = {
+              'runStartedAtUtc': run_started or datetime.utcnow().isoformat(),
+              'runCompletedAtUtc': run_completed or datetime.utcnow().isoformat(),
+              'machineName': machine_name or 'GitHub Actions',
+              'processorCount': processor_count or 4,
+              'results': all_results
+          }
+
+          # Save merged results
+          os.makedirs('merged-results', exist_ok=True)
+          merged_path = f"merged-results/stress-test-results-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.json"
+          with open(merged_path, 'w') as f:
+              json.dump(merged, f, indent=2)
+          print(f"Saved merged results to: {merged_path}")
+
+          # Generate markdown summary
+          output = []
+          output.append("# Dekaf Stress Test Results")
+          output.append("")
+          output.append(f"**Run Date:** {run_started or 'N/A'}")
+          output.append(f"**Machine:** {machine_name or 'GitHub Actions'} ({processor_count or 'N/A'} processors)")
+          output.append("")
+
+          # Group results by scenario
+          producer_results = [r for r in all_results if 'producer' in r.get('scenario', '').lower()]
+          consumer_results = [r for r in all_results if 'consumer' in r.get('scenario', '').lower()]
+
+          def format_throughput_table(results, title):
+              if not results:
+                  return []
+
+              lines = []
+              duration = results[0].get('durationMinutes', 'N/A')
+              message_size = results[0].get('messageSizeBytes', 'N/A')
+
+              lines.append(f"## {title} ({duration} minutes, {message_size}B messages)")
+              lines.append("")
+              lines.append("| Client | Messages/sec | MB/sec | Total Messages | Errors | Ratio |")
+              lines.append("|--------|--------------|--------|----------------|--------|-------|")
+
+              # Find baseline (Confluent)
+              confluent_rate = 0
+              for r in results:
+                  if r.get('client', '').lower() == 'confluent':
+                      confluent_rate = r.get('throughput', {}).get('averageMessagesPerSecond', 0)
+                      break
+
+              if confluent_rate == 0:
+                  confluent_rate = min(r.get('throughput', {}).get('averageMessagesPerSecond', 1) for r in results)
+
+              # Sort by throughput descending
+              sorted_results = sorted(results, key=lambda r: r.get('throughput', {}).get('averageMessagesPerSecond', 0), reverse=True)
+
+              for r in sorted_results:
+                  client = r.get('client', 'Unknown')
+                  throughput = r.get('throughput', {})
+                  msg_sec = throughput.get('averageMessagesPerSecond', 0)
+                  mb_sec = throughput.get('averageMegabytesPerSecond', 0)
+                  total = throughput.get('totalMessages', 0)
+                  errors = throughput.get('totalErrors', 0)
+                  ratio = msg_sec / confluent_rate if confluent_rate > 0 else 1.0
+
+                  lines.append(f"| {client} | {msg_sec:,.0f} | {mb_sec:.2f} | {total:,} | {errors} | {ratio:.2f}x |")
+
+              lines.append("")
+              return lines
+
+          def format_gc_table(results):
+              if not results:
+                  return []
+
+              lines = []
+              lines.append("## GC Statistics")
+              lines.append("")
+              lines.append("| Client | Scenario | Gen0 | Gen1 | Gen2 | Allocated |")
+              lines.append("|--------|----------|------|------|------|-----------|")
+
+              for r in sorted(results, key=lambda x: (x.get('client', ''), x.get('scenario', ''))):
+                  client = r.get('client', 'Unknown')
+                  scenario = r.get('scenario', 'Unknown')
+                  gc = r.get('gcStats', {})
+                  gen0 = gc.get('gen0Collections', 0)
+                  gen1 = gc.get('gen1Collections', 0)
+                  gen2 = gc.get('gen2Collections', 0)
+                  allocated = gc.get('allocatedBytes', 0)
+
+                  # Format allocated bytes
+                  if allocated < 1024:
+                      alloc_str = f"{allocated} B"
+                  elif allocated < 1024 * 1024:
+                      alloc_str = f"{allocated / 1024:.2f} KB"
+                  elif allocated < 1024 * 1024 * 1024:
+                      alloc_str = f"{allocated / (1024 * 1024):.2f} MB"
+                  else:
+                      alloc_str = f"{allocated / (1024 * 1024 * 1024):.2f} GB"
+
+                  lines.append(f"| {client} | {scenario} | {gen0} | {gen1} | {gen2} | {alloc_str} |")
+
+              lines.append("")
+              return lines
+
+          output.extend(format_throughput_table(producer_results, "Producer Throughput"))
+          output.extend(format_throughput_table(consumer_results, "Consumer Throughput"))
+          output.extend(format_gc_table(all_results))
+
+          # Write to GitHub summary
+          summary_path = os.environ.get('GITHUB_STEP_SUMMARY')
+          if summary_path:
+              with open(summary_path, 'a') as f:
+                  f.write('\n'.join(output))
+              print(f"Wrote summary to GITHUB_STEP_SUMMARY")
+
+          # Also print to console
+          print('\n'.join(output))
+          EOF
+
+      - name: Upload Merged Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-test-results-merged
+          path: merged-results/
+          retention-days: 90
 
   publish-to-docs:
     name: Publish Stress Test Results to Documentation
-    needs: stress-test
+    needs: generate-summary
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && needs.stress-test.result == 'success'
+    if: github.ref == 'refs/heads/main' && needs.generate-summary.result == 'success'
 
     permissions:
       contents: write
@@ -159,10 +329,10 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download Results
+      - name: Download Merged Results
         uses: actions/download-artifact@v4
         with:
-          name: stress-test-results
+          name: stress-test-results-merged
           path: ./results
 
       - name: Generate Stress Test Documentation
@@ -194,106 +364,97 @@ jobs:
           json_files = glob.glob("results/**/*.json", recursive=True)
 
           if json_files:
-              output.append("## Latest Results")
-              output.append("")
+              # Use the most recent file
+              latest_file = sorted(json_files)[-1]
+              print(f"Using: {latest_file}")
 
-              for json_file in json_files:
-                  try:
-                      with open(json_file) as f:
-                          data = json.load(f)
+              try:
+                  with open(latest_file) as f:
+                      data = json.load(f)
 
-                      # Extract test configuration
-                      config = data.get('configuration', {})
-                      duration = config.get('duration_minutes', 'N/A')
-                      message_size = config.get('message_size', 'N/A')
-                      scenario = config.get('scenario', 'N/A')
+                  results = data.get('results', [])
 
-                      output.append(f"### Test Configuration")
+                  # Group by scenario
+                  producer_results = [r for r in results if 'producer' in r.get('scenario', '').lower()]
+                  consumer_results = [r for r in results if 'consumer' in r.get('scenario', '').lower()]
+
+                  if producer_results:
+                      duration = producer_results[0].get('durationMinutes', 'N/A')
+                      message_size = producer_results[0].get('messageSizeBytes', 'N/A')
+
+                      output.append(f"## Producer Performance ({duration} min, {message_size}B)")
                       output.append("")
-                      output.append(f"- **Duration**: {duration} minutes")
-                      output.append(f"- **Message Size**: {message_size} bytes")
-                      output.append(f"- **Scenario**: {scenario}")
+                      output.append("| Client | Messages/sec | MB/sec | Total | Errors |")
+                      output.append("|--------|--------------|--------|-------|--------|")
+
+                      for r in sorted(producer_results, key=lambda x: x.get('throughput', {}).get('averageMessagesPerSecond', 0), reverse=True):
+                          t = r.get('throughput', {})
+                          output.append(f"| {r.get('client')} | {t.get('averageMessagesPerSecond', 0):,.0f} | {t.get('averageMegabytesPerSecond', 0):.2f} | {t.get('totalMessages', 0):,} | {t.get('totalErrors', 0)} |")
+
                       output.append("")
 
-                      # Producer results
-                      if 'producer' in data:
-                          output.append("#### Producer Performance")
-                          output.append("")
-                          output.append("| Client | Messages/sec | Total Messages | Errors | Avg Latency | P99 Latency |")
-                          output.append("|--------|--------------|----------------|--------|-------------|-------------|")
+                      # Show comparison
+                      dekaf = next((r for r in producer_results if r.get('client', '').lower() == 'dekaf'), None)
+                      confluent = next((r for r in producer_results if r.get('client', '').lower() == 'confluent'), None)
 
-                          for client_name, metrics in data['producer'].items():
-                              msg_per_sec = metrics.get('messages_per_second', 0)
-                              total = metrics.get('total_messages', 0)
-                              errors = metrics.get('errors', 0)
-                              avg_latency = metrics.get('avg_latency_ms', 0)
-                              p99_latency = metrics.get('p99_latency_ms', 0)
-
-                              output.append(f"| {client_name} | {msg_per_sec:,.0f} | {total:,} | {errors} | {avg_latency:.2f}ms | {p99_latency:.2f}ms |")
-
-                          output.append("")
-
-                          # Calculate and show comparison
-                          if 'Dekaf' in data['producer'] and 'Confluent' in data['producer']:
-                              dekaf_throughput = data['producer']['Dekaf'].get('messages_per_second', 0)
-                              confluent_throughput = data['producer']['Confluent'].get('messages_per_second', 0)
-
-                              if confluent_throughput > 0:
-                                  ratio = dekaf_throughput / confluent_throughput
-                                  if ratio > 1.0:
-                                      output.append(f":::tip")
-                                      output.append(f"**Dekaf is {ratio:.2f}x faster** than Confluent.Kafka for producer throughput!")
-                                      output.append(f":::")
-                                  elif ratio < 1.0:
-                                      output.append(f":::note")
-                                      output.append(f"Confluent.Kafka is {1/ratio:.2f}x faster for this producer scenario.")
-                                      output.append(f":::")
-                                  else:
-                                      output.append(f":::note")
-                                      output.append(f"Dekaf and Confluent.Kafka have similar producer performance.")
-                                      output.append(f":::")
-                              output.append("")
-
-                      # Consumer results
-                      if 'consumer' in data:
-                          output.append("#### Consumer Performance")
-                          output.append("")
-                          output.append("| Client | Messages/sec | Total Messages | Errors | Avg Processing Time |")
-                          output.append("|--------|--------------|----------------|--------|---------------------|")
-
-                          for client_name, metrics in data['consumer'].items():
-                              msg_per_sec = metrics.get('messages_per_second', 0)
-                              total = metrics.get('total_messages', 0)
-                              errors = metrics.get('errors', 0)
-                              avg_time = metrics.get('avg_processing_time_ms', 0)
-
-                              output.append(f"| {client_name} | {msg_per_sec:,.0f} | {total:,} | {errors} | {avg_time:.2f}ms |")
-
+                      if dekaf and confluent:
+                          dekaf_rate = dekaf.get('throughput', {}).get('averageMessagesPerSecond', 0)
+                          confluent_rate = confluent.get('throughput', {}).get('averageMessagesPerSecond', 0)
+                          if confluent_rate > 0:
+                              ratio = dekaf_rate / confluent_rate
+                              if ratio > 1.05:
+                                  output.append(f":::tip")
+                                  output.append(f"**Dekaf is {ratio:.2f}x faster** than Confluent.Kafka for producer throughput!")
+                                  output.append(f":::")
+                              elif ratio < 0.95:
+                                  output.append(f":::note")
+                                  output.append(f"Confluent.Kafka is {1/ratio:.2f}x faster for producer throughput.")
+                                  output.append(f":::")
+                              else:
+                                  output.append(f":::note")
+                                  output.append(f"Dekaf and Confluent.Kafka have similar producer performance.")
+                                  output.append(f":::")
                           output.append("")
 
-                          # Calculate and show comparison
-                          if 'Dekaf' in data['consumer'] and 'Confluent' in data['consumer']:
-                              dekaf_throughput = data['consumer']['Dekaf'].get('messages_per_second', 0)
-                              confluent_throughput = data['consumer']['Confluent'].get('messages_per_second', 0)
+                  if consumer_results:
+                      duration = consumer_results[0].get('durationMinutes', 'N/A')
+                      message_size = consumer_results[0].get('messageSizeBytes', 'N/A')
 
-                              if confluent_throughput > 0:
-                                  ratio = dekaf_throughput / confluent_throughput
-                                  if ratio > 1.0:
-                                      output.append(f":::tip")
-                                      output.append(f"**Dekaf is {ratio:.2f}x faster** than Confluent.Kafka for consumer throughput!")
-                                      output.append(f":::")
-                                  elif ratio < 1.0:
-                                      output.append(f":::note")
-                                      output.append(f"Confluent.Kafka is {1/ratio:.2f}x faster for this consumer scenario.")
-                                      output.append(f":::")
-                                  else:
-                                      output.append(f":::note")
-                                      output.append(f"Dekaf and Confluent.Kafka have similar consumer performance.")
-                                      output.append(f":::")
-                              output.append("")
+                      output.append(f"## Consumer Performance ({duration} min, {message_size}B)")
+                      output.append("")
+                      output.append("| Client | Messages/sec | MB/sec | Total | Errors |")
+                      output.append("|--------|--------------|--------|-------|--------|")
 
-                  except Exception as e:
-                      print(f"Error processing {json_file}: {e}")
+                      for r in sorted(consumer_results, key=lambda x: x.get('throughput', {}).get('averageMessagesPerSecond', 0), reverse=True):
+                          t = r.get('throughput', {})
+                          output.append(f"| {r.get('client')} | {t.get('averageMessagesPerSecond', 0):,.0f} | {t.get('averageMegabytesPerSecond', 0):.2f} | {t.get('totalMessages', 0):,} | {t.get('totalErrors', 0)} |")
+
+                      output.append("")
+
+                  # GC Stats
+                  output.append("## Memory & GC Statistics")
+                  output.append("")
+                  output.append("| Client | Scenario | Gen0 | Gen1 | Gen2 | Allocated |")
+                  output.append("|--------|----------|------|------|------|-----------|")
+
+                  for r in sorted(results, key=lambda x: (x.get('client', ''), x.get('scenario', ''))):
+                      gc = r.get('gcStats', {})
+                      allocated = gc.get('allocatedBytes', 0)
+                      if allocated < 1024 * 1024:
+                          alloc_str = f"{allocated / 1024:.1f} KB"
+                      elif allocated < 1024 * 1024 * 1024:
+                          alloc_str = f"{allocated / (1024 * 1024):.1f} MB"
+                      else:
+                          alloc_str = f"{allocated / (1024 * 1024 * 1024):.2f} GB"
+
+                      output.append(f"| {r.get('client')} | {r.get('scenario')} | {gc.get('gen0Collections', 0)} | {gc.get('gen1Collections', 0)} | {gc.get('gen2Collections', 0)} | {alloc_str} |")
+
+                  output.append("")
+
+              except Exception as e:
+                  print(f"Error processing results: {e}")
+                  import traceback
+                  traceback.print_exc()
           else:
               output.append("## No Results Available")
               output.append("")
@@ -307,13 +468,11 @@ jobs:
           output.append("Stress tests measure sustained performance over extended periods:")
           output.append("")
           output.append("- **Real Kafka**: Tests run against actual Apache Kafka instances")
+          output.append("- **Parallel Execution**: Each test runs in its own isolated environment")
           output.append("- **Both Clients**: Direct comparison between Dekaf and Confluent.Kafka")
-          output.append("- **Production Scenarios**: Fire-and-forget, acknowledgments, batching, consumption")
           output.append("- **Memory Monitoring**: Tracks GC behavior and memory usage over time")
           output.append("- **Error Rates**: Ensures stability under load")
           output.append("")
-          output.append("These results complement the micro-benchmarks by showing how both clients")
-          output.append("perform under realistic, sustained workloads.")
 
           # Write to docs
           os.makedirs('docs/docs', exist_ok=True)
