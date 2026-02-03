@@ -8,10 +8,27 @@ namespace Dekaf.SchemaRegistry;
 /// Base serializer that integrates with Schema Registry.
 /// Handles the wire format: [magic byte (0)] [schema ID (4 bytes)] [payload].
 /// </summary>
+/// <remarks>
+/// <para>
+/// This serializer uses lazy caching for schema IDs. The first time a schema is needed for a
+/// particular subject, a synchronous blocking call to the Schema Registry is made.
+/// After the first fetch, subsequent serialization calls for the same subject use the cached
+/// schema ID without any blocking.
+/// </para>
+/// <para>
+/// The blocking call includes a timeout to prevent indefinite hangs. If the timeout is exceeded,
+/// a <see cref="TimeoutException"/> is thrown.
+/// </para>
+/// </remarks>
 /// <typeparam name="T">The type to serialize.</typeparam>
 public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
+
+    /// <summary>
+    /// Default timeout for Schema Registry operations (30 seconds).
+    /// </summary>
+    private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly Func<T, byte[]> _serialize;
@@ -77,12 +94,13 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         if (_cachedSchemaId >= 0 && _cachedSubject == subject)
             return _cachedSchemaId;
 
-        // Synchronously get/register schema (blocking)
+        // Synchronously get/register schema (blocking with timeout to prevent indefinite hang)
         var task = _autoRegisterSchemas
             ? _schemaRegistry.GetOrRegisterSchemaAsync(subject, schema)
-            : _schemaRegistry.GetSchemaBySubjectAsync(subject).ContinueWith(t => t.Result.Id);
+            : _schemaRegistry.GetSchemaBySubjectAsync(subject).ContinueWith(t => t.Result.Id, TaskScheduler.Default);
 
-        var id = task.GetAwaiter().GetResult();
+        // Add timeout to prevent indefinite blocking in UI/sync context scenarios
+        var id = task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
 
         _cachedSchemaId = id;
         _cachedSubject = subject;
@@ -114,10 +132,25 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
 /// Base deserializer that integrates with Schema Registry.
 /// Handles the wire format: [magic byte (0)] [schema ID (4 bytes)] [payload].
 /// </summary>
+/// <remarks>
+/// <para>
+/// This deserializer fetches the schema from Schema Registry on first access for each schema ID.
+/// Schemas are cached internally by the Schema Registry client after first fetch.
+/// </para>
+/// <para>
+/// The blocking call includes a timeout to prevent indefinite hangs. If the timeout is exceeded,
+/// a <see cref="TimeoutException"/> is thrown.
+/// </para>
+/// </remarks>
 /// <typeparam name="T">The type to deserialize.</typeparam>
 public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
+
+    /// <summary>
+    /// Default timeout for Schema Registry operations (30 seconds).
+    /// </summary>
+    private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly Func<byte[], Schema, T> _deserialize;
@@ -153,8 +186,12 @@ public sealed class SchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisp
 
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(header.Slice(1, 4));
 
-        // Get schema from registry (cached)
-        var schema = _schemaRegistry.GetSchemaAsync(schemaId).GetAwaiter().GetResult();
+        // Get schema from registry (cached, with timeout to prevent indefinite hang)
+        var schema = _schemaRegistry.GetSchemaAsync(schemaId)
+            .WaitAsync(SchemaRegistryTimeout)
+            .ConfigureAwait(false)
+            .GetAwaiter()
+            .GetResult();
 
         // Extract payload
         var payload = data.Slice(5).ToArray();

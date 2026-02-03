@@ -638,39 +638,48 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     private async Task PrefetchLoopAsync(CancellationToken cancellationToken)
     {
-        while (!cancellationToken.IsCancellationRequested)
+        try
         {
-            try
+            while (!cancellationToken.IsCancellationRequested)
             {
-                await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
-
-                if (_assignment.Count == 0)
+                try
                 {
+                    await EnsureAssignmentAsync(cancellationToken).ConfigureAwait(false);
+
+                    if (_assignment.Count == 0)
+                    {
+                        await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    // Check memory limit
+                    var maxBytes = (long)_options.QueuedMaxMessagesKbytes * 1024;
+                    if (Interlocked.Read(ref _prefetchedBytes) >= maxBytes)
+                    {
+                        // Wait for consumer to catch up
+                        await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    // Fetch records into prefetch channel
+                    await PrefetchRecordsAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex, "Error in prefetch loop");
                     await Task.Delay(100, cancellationToken).ConfigureAwait(false);
-                    continue;
                 }
-
-                // Check memory limit
-                var maxBytes = (long)_options.QueuedMaxMessagesKbytes * 1024;
-                if (Interlocked.Read(ref _prefetchedBytes) >= maxBytes)
-                {
-                    // Wait for consumer to catch up
-                    await Task.Delay(50, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-
-                // Fetch records into prefetch channel
-                await PrefetchRecordsAsync(cancellationToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogWarning(ex, "Error in prefetch loop");
-                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
-            }
+        }
+        finally
+        {
+            // CRITICAL: Complete the prefetch channel when loop exits to prevent consumer hang
+            // Without this, ConsumeAsync would wait indefinitely on ReadAsync after prefetch stops
+            _prefetchChannel.Writer.TryComplete();
         }
     }
 
