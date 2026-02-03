@@ -92,7 +92,25 @@ public abstract class KafkaConsumerService<TKey, TValue> : BackgroundService
 
     public override void Dispose()
     {
-        _consumer.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        // Add timeout to prevent indefinite hang during disposal
+        // This is necessary because BackgroundService.Dispose is synchronous
+        // but consumer disposal may involve network operations
+        try
+        {
+            _consumer.DisposeAsync().AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(30))
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("Consumer disposal timed out after 30 seconds");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error during consumer disposal");
+        }
+
         base.Dispose();
         GC.SuppressFinalize(this);
     }

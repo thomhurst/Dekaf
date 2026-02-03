@@ -9,11 +9,21 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 /// Protobuf deserializer that integrates with Confluent Schema Registry.
 /// Wire format: [magic byte (0x00)] [schema ID (4 bytes)] [varint array indexes] [protobuf binary]
 /// </summary>
+/// <remarks>
+/// <para>
+/// This deserializer fetches the schema from Schema Registry for validation on first access.
+/// Schemas are cached internally by the Schema Registry client after first fetch.
+/// </para>
+/// <para>
+/// The blocking call includes a timeout to prevent indefinite hangs.
+/// </para>
+/// </remarks>
 /// <typeparam name="T">The Protobuf message type to deserialize.</typeparam>
 public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisposable
     where T : IMessage<T>, new()
 {
     private const byte MagicByte = 0x00;
+    private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly ProtobufDeserializerConfig _config;
@@ -56,10 +66,14 @@ public sealed class ProtobufSchemaRegistryDeserializer<T> : IDeserializer<T>, IA
         // Read schema ID (big-endian)
         var schemaId = BinaryPrimitives.ReadInt32BigEndian(header.Slice(1, 4));
 
-        // Optionally validate the schema exists
+        // Optionally validate the schema exists (with timeout to prevent indefinite hang)
         if (!_config.SkipSchemaValidation)
         {
-            var schema = _schemaRegistry.GetSchemaAsync(schemaId).GetAwaiter().GetResult();
+            var schema = _schemaRegistry.GetSchemaAsync(schemaId)
+                .WaitAsync(SchemaRegistryTimeout)
+                .ConfigureAwait(false)
+                .GetAwaiter()
+                .GetResult();
             if (schema.SchemaType != SchemaType.Protobuf)
                 throw new InvalidOperationException($"Schema {schemaId} is not a Protobuf schema (type: {schema.SchemaType})");
         }

@@ -137,11 +137,13 @@ public sealed class ConnectionPool : IConnectionPool
                 tasks[i] = lazyTask.Value.AsTask();
             }
 
-            await Task.WhenAll(tasks).ConfigureAwait(false);
+            // Add timeout to prevent indefinite hang if connection creation stalls
+            // Similar pattern to RecordAccumulator disposal fix (commit 8f26f05)
+            await Task.WhenAll(tasks).WaitAsync(_connectionOptions.ConnectionTimeout, cancellationToken).ConfigureAwait(false);
 
             for (var i = 0; i < _connectionsPerBroker; i++)
             {
-                connections[i] = tasks[i].Result;
+                connections[i] = await tasks[i].ConfigureAwait(false);
                 _connectionGroupCreationTasks.TryRemove((brokerId, i), out _);
             }
 

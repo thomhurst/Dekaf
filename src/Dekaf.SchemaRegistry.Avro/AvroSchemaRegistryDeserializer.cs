@@ -35,6 +35,7 @@ namespace Dekaf.SchemaRegistry.Avro;
 public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
+    private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly AvroDeserializerConfig _config;
@@ -165,7 +166,8 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
 
         // Slow path: first fetch or concurrent access during first fetch.
         // This blocks the calling thread, but only happens once per schema ID.
-        return task.ConfigureAwait(false).GetAwaiter().GetResult();
+        // Add timeout to prevent indefinite hanging.
+        return task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
     }
 
     private async Task<AvroSchema> GetOrFetchWriterSchemaAsync(int schemaId, CancellationToken cancellationToken = default)

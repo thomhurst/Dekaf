@@ -9,10 +9,21 @@ namespace Dekaf.SchemaRegistry;
 /// JSON serializer that integrates with Schema Registry.
 /// Uses the Schema Registry wire format: [magic byte (0)] [schema ID (4 bytes)] [JSON payload].
 /// </summary>
+/// <remarks>
+/// <para>
+/// This serializer uses lazy caching for schema IDs. The first time a schema is needed for a
+/// particular subject, a synchronous blocking call to the Schema Registry is made.
+/// After the first fetch, subsequent serialization calls use the cached schema ID without blocking.
+/// </para>
+/// <para>
+/// The blocking call includes a timeout to prevent indefinite hangs.
+/// </para>
+/// </remarks>
 /// <typeparam name="T">The type to serialize.</typeparam>
 public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
+    private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly JsonSerializerOptions _jsonOptions;
@@ -85,9 +96,10 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
 
         var task = _autoRegisterSchemas
             ? _schemaRegistry.GetOrRegisterSchemaAsync(subject, _schema)
-            : _schemaRegistry.GetSchemaBySubjectAsync(subject).ContinueWith(t => t.Result.Id);
+            : _schemaRegistry.GetSchemaBySubjectAsync(subject).ContinueWith(t => t.Result.Id, TaskScheduler.Default);
 
-        var id = task.GetAwaiter().GetResult();
+        // Add timeout to prevent indefinite blocking
+        var id = task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
 
         _cachedSchemaId = id;
         _cachedSubject = subject;
@@ -119,10 +131,20 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
 /// JSON deserializer that integrates with Schema Registry.
 /// Handles the wire format: [magic byte (0)] [schema ID (4 bytes)] [JSON payload].
 /// </summary>
+/// <remarks>
+/// <para>
+/// This deserializer fetches the schema from Schema Registry for validation on first access.
+/// Schemas are cached internally by the Schema Registry client after first fetch.
+/// </para>
+/// <para>
+/// The blocking call includes a timeout to prevent indefinite hangs.
+/// </para>
+/// </remarks>
 /// <typeparam name="T">The type to deserialize.</typeparam>
 public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsyncDisposable
 {
     private const byte MagicByte = 0x00;
+    private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly JsonSerializerOptions _jsonOptions;
@@ -164,7 +186,12 @@ public sealed class JsonSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         // Optionally fetch schema for validation (schema is cached)
         // For JSON, we typically just deserialize without validation
         // but we still verify the schema exists
-        _ = _schemaRegistry.GetSchemaAsync(schemaId).GetAwaiter().GetResult();
+        // Add timeout to prevent indefinite blocking
+        _ = _schemaRegistry.GetSchemaAsync(schemaId)
+            .WaitAsync(SchemaRegistryTimeout)
+            .ConfigureAwait(false)
+            .GetAwaiter()
+            .GetResult();
 
         // Extract JSON payload and deserialize
         var payload = data.Slice(5);

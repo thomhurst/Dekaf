@@ -75,6 +75,8 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
+        SyncGroupResult syncResult = default;
+
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -104,9 +106,9 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                     _state = CoordinatorState.Joining;
                     await JoinGroupAsync(topics, cancellationToken).ConfigureAwait(false);
 
-                    // Sync group
+                    // Sync group - returns partition changes for rebalance listener
                     _state = CoordinatorState.Syncing;
-                    await SyncGroupAsync(topics, cancellationToken).ConfigureAwait(false);
+                    syncResult = await SyncGroupAsync(topics, cancellationToken).ConfigureAwait(false);
 
                     _state = CoordinatorState.Stable;
 
@@ -134,6 +136,22 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         finally
         {
             _lock.Release();
+        }
+
+        // CRITICAL: Call rebalance listener OUTSIDE the lock to prevent deadlock
+        // If the listener calls back into the consumer (e.g., commit, seek), it would
+        // otherwise deadlock trying to acquire _lock or other coordinator locks
+        if (_rebalanceListener is not null)
+        {
+            if (syncResult.Revoked is { Count: > 0 })
+            {
+                await _rebalanceListener.OnPartitionsRevokedAsync(syncResult.Revoked, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (syncResult.Assigned is { Count: > 0 })
+            {
+                await _rebalanceListener.OnPartitionsAssignedAsync(syncResult.Assigned, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 
@@ -322,7 +340,14 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             _options.GroupId, _memberId, _generationId, IsLeader);
     }
 
-    private async ValueTask SyncGroupAsync(IReadOnlySet<string> topics, CancellationToken cancellationToken)
+    /// <summary>
+    /// Result of SyncGroup containing partition changes for rebalance listener notification.
+    /// </summary>
+    private readonly record struct SyncGroupResult(
+        List<TopicPartition>? Revoked,
+        List<TopicPartition>? Assigned);
+
+    private async ValueTask<SyncGroupResult> SyncGroupAsync(IReadOnlySet<string> topics, CancellationToken cancellationToken)
     {
         var connection = await _connectionPool.GetConnectionAsync(_coordinatorId, cancellationToken)
             .ConfigureAwait(false);
@@ -371,40 +396,38 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         var oldAssignment = _assignedPartitions;
         _assignedPartitions = ParseAssignment(response.Assignment);
 
-        // Notify listener
-        if (_rebalanceListener is not null)
+        _logger?.LogDebug("Received assignment: {Partitions}", string.Join(", ", _assignedPartitions));
+
+        // Compute revoked and assigned partitions for rebalance listener
+        // Return them to caller so listener can be called OUTSIDE the lock
+        // This prevents deadlock if listener calls back into the consumer
+        if (_rebalanceListener is null)
         {
-            // Compute revoked and assigned partitions without LINQ to avoid allocations
-            var revoked = new List<TopicPartition>();
-            foreach (var partition in oldAssignment)
-            {
-                if (!_assignedPartitions.Contains(partition))
-                {
-                    revoked.Add(partition);
-                }
-            }
+            return new SyncGroupResult(null, null);
+        }
 
-            var assigned = new List<TopicPartition>();
-            foreach (var partition in _assignedPartitions)
+        // Compute revoked and assigned partitions without LINQ to avoid allocations
+        List<TopicPartition>? revoked = null;
+        foreach (var partition in oldAssignment)
+        {
+            if (!_assignedPartitions.Contains(partition))
             {
-                if (!oldAssignment.Contains(partition))
-                {
-                    assigned.Add(partition);
-                }
-            }
-
-            if (revoked.Count > 0)
-            {
-                await _rebalanceListener.OnPartitionsRevokedAsync(revoked, cancellationToken).ConfigureAwait(false);
-            }
-
-            if (assigned.Count > 0)
-            {
-                await _rebalanceListener.OnPartitionsAssignedAsync(assigned, cancellationToken).ConfigureAwait(false);
+                revoked ??= [];
+                revoked.Add(partition);
             }
         }
 
-        _logger?.LogDebug("Received assignment: {Partitions}", string.Join(", ", _assignedPartitions));
+        List<TopicPartition>? assigned = null;
+        foreach (var partition in _assignedPartitions)
+        {
+            if (!oldAssignment.Contains(partition))
+            {
+                assigned ??= [];
+                assigned.Add(partition);
+            }
+        }
+
+        return new SyncGroupResult(revoked, assigned);
     }
 
     private void StartHeartbeat()

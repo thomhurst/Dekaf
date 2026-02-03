@@ -11,11 +11,22 @@ namespace Dekaf.SchemaRegistry.Protobuf;
 /// Protobuf serializer that integrates with Confluent Schema Registry.
 /// Wire format: [magic byte (0x00)] [schema ID (4 bytes)] [varint array indexes] [protobuf binary]
 /// </summary>
+/// <remarks>
+/// <para>
+/// This serializer uses lazy caching for schema IDs. The first time a schema is needed for a
+/// particular subject, a synchronous blocking call to the Schema Registry is made.
+/// After the first fetch, subsequent serialization calls use the cached schema ID without blocking.
+/// </para>
+/// <para>
+/// The blocking call includes a timeout to prevent indefinite hangs.
+/// </para>
+/// </remarks>
 /// <typeparam name="T">The Protobuf message type to serialize.</typeparam>
 public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposable
     where T : IMessage<T>
 {
     private const byte MagicByte = 0x00;
+    private static readonly TimeSpan SchemaRegistryTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly ProtobufSerializerConfig _config;
@@ -98,9 +109,10 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
 
         var task = _config.AutoRegisterSchemas
             ? _schemaRegistry.GetOrRegisterSchemaAsync(subject, _schema)
-            : _schemaRegistry.GetSchemaBySubjectAsync(subject).ContinueWith(t => t.Result.Id);
+            : _schemaRegistry.GetSchemaBySubjectAsync(subject).ContinueWith(t => t.Result.Id, TaskScheduler.Default);
 
-        var id = task.GetAwaiter().GetResult();
+        // Add timeout to prevent indefinite blocking
+        var id = task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
         _schemaIdCache.TryAdd(subject, id);
         return id;
     }
