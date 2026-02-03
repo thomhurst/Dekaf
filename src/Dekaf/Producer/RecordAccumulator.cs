@@ -1783,14 +1783,21 @@ public sealed class RecordAccumulator : IAsyncDisposable
             readyBatch.Fail(disposedException);
         }
 
-        // Wait for all in-flight batch tasks to complete
+        // Wait for all in-flight batch tasks to complete with a timeout
         // After failing all batches above, their DoneTasks should complete quickly
         // NOTE: No exception observation needed - DoneTask never faults (uses TrySetResult)
         var allTasks = _inFlightDeliveryTasks.Keys.ToArray();
         if (allTasks.Length > 0)
         {
-            // Wait for all tasks to complete
-            await Task.WhenAll(allTasks).ConfigureAwait(false);
+            try
+            {
+                // Wait for all tasks with a 5-second timeout to prevent hanging during disposal
+                await Task.WhenAll(allTasks).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // Some tasks didn't complete in time - proceed with disposal anyway
+            }
 
             // Clean up tracked tasks
             _inFlightDeliveryTasks.Clear();
