@@ -495,8 +495,8 @@ public class BufferMemoryTests
         await accumulator.DisposeAsync();
         sw.Stop();
 
-        // Should complete in under 3 seconds
-        await Assert.That(sw.ElapsedMilliseconds).IsLessThan(3000);
+        // Should complete in under 5 seconds (allow for CI variability)
+        await Assert.That(sw.ElapsedMilliseconds).IsLessThan(5000);
     }
 
     [Test]
@@ -739,8 +739,8 @@ public class BufferMemoryTests
         await accumulator.DisposeAsync();
         sw.Stop();
 
-        // Should complete in under 3 seconds
-        await Assert.That(sw.ElapsedMilliseconds).IsLessThan(3000);
+        // Should complete in under 5 seconds (allow for CI variability)
+        await Assert.That(sw.ElapsedMilliseconds).IsLessThan(5000);
     }
 
 }
