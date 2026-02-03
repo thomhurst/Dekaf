@@ -46,7 +46,14 @@ public class RunIntegrationTestsModule : Module<IReadOnlyList<CommandResult>>
                     NoBuild = true,
                     Configuration = "Release",
                     Framework = "net10.0",
-                    Arguments = ["--", "--timeout", "12m", "--log-level", "Trace", "--output", "Detailed"]
+                    Arguments = [
+                        "--",
+                        "--timeout", "12m",
+                        "--hangdump",
+                        "--hangdump-timeout", "10m", // Dump before the 12m timeout kills the run
+                        "--log-level", "Trace",
+                        "--output", "Detailed"
+                    ]
                 },
                 new CommandExecutionOptions
                 {

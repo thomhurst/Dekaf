@@ -47,7 +47,14 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
                         NoBuild = true,
                         Configuration = "Release",
                         Framework = framework,
-                        Arguments = ["--", "--timeout", "10m", "--log-level", "Trace", "--output", "Detailed"]
+                        Arguments = [
+                            "--",
+                            "--timeout", "10m",
+                            "--hangdump",
+                            "--hangdump-timeout", "8m", // Dump before the 10m timeout kills the run
+                            "--log-level", "Trace",
+                            "--output", "Detailed"
+                        ]
                     },
                     new CommandExecutionOptions
                     {
