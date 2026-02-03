@@ -6,7 +6,7 @@ using ZstdSharp;
 namespace Dekaf.Compression.Zstd;
 
 /// <summary>
-/// Zstd compression codec.
+/// Zstd compression codec using zero-allocation streaming APIs.
 /// </summary>
 public sealed class ZstdCompressionCodec : ICompressionCodec
 {
@@ -23,27 +23,81 @@ public sealed class ZstdCompressionCodec : ICompressionCodec
     {
         using var compressor = new Compressor(_compressionLevel);
 
-        var sourceArray = source.ToArray();
-        var maxCompressedSize = Compressor.GetCompressBound(sourceArray.Length);
-        var compressed = new byte[maxCompressedSize];
+        var position = source.Start;
+        var remaining = source.Length;
 
-        var compressedSize = compressor.Wrap(sourceArray, compressed);
+        while (source.TryGet(ref position, out var segment))
+        {
+            remaining -= segment.Length;
+            var isFinalBlock = remaining == 0;
+            var sourceSpan = segment.Span;
 
-        var span = destination.GetSpan(compressedSize);
-        compressed.AsSpan(0, compressedSize).CopyTo(span);
-        destination.Advance(compressedSize);
+            // Process this segment
+            while (sourceSpan.Length > 0)
+            {
+                var maxOutputSize = Compressor.GetCompressBound(sourceSpan.Length);
+                var destSpan = destination.GetSpan(maxOutputSize);
+
+                var status = compressor.WrapStream(sourceSpan, destSpan, out var bytesConsumed, out var bytesWritten, isFinalBlock: false);
+                destination.Advance(bytesWritten);
+                sourceSpan = sourceSpan[bytesConsumed..];
+
+                if (status == OperationStatus.InvalidData)
+                    throw new InvalidOperationException("Zstd compression failed: invalid data");
+
+                if (status == OperationStatus.DestinationTooSmall && bytesConsumed == 0)
+                {
+                    // Need larger buffer
+                    continue;
+                }
+            }
+
+            // On final segment, finalize the frame
+            if (isFinalBlock)
+            {
+                while (true)
+                {
+                    var destSpan = destination.GetSpan(64);
+                    var status = compressor.WrapStream(ReadOnlySpan<byte>.Empty, destSpan, out _, out var bytesWritten, isFinalBlock: true);
+                    destination.Advance(bytesWritten);
+
+                    if (status == OperationStatus.Done)
+                        return;
+
+                    if (status == OperationStatus.InvalidData)
+                        throw new InvalidOperationException("Zstd compression failed: invalid data");
+                }
+            }
+        }
     }
 
     public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
     {
         using var decompressor = new Decompressor();
 
-        var sourceArray = source.ToArray();
-        var decompressedArray = decompressor.Unwrap(sourceArray).ToArray();
+        var position = source.Start;
 
-        var span = destination.GetSpan(decompressedArray.Length);
-        decompressedArray.CopyTo(span);
-        destination.Advance(decompressedArray.Length);
+        while (source.TryGet(ref position, out var segment))
+        {
+            var sourceSpan = segment.Span;
+
+            while (sourceSpan.Length > 0)
+            {
+                var destSpan = destination.GetSpan(4096);
+
+                var status = decompressor.UnwrapStream(sourceSpan, destSpan, out var bytesConsumed, out var bytesWritten);
+                destination.Advance(bytesWritten);
+                sourceSpan = sourceSpan[bytesConsumed..];
+
+                if (status == OperationStatus.Done)
+                    return;
+
+                if (status == OperationStatus.InvalidData)
+                    throw new InvalidOperationException("Zstd decompression failed: invalid data");
+
+                // NeedMoreData or DestinationTooSmall: continue with next iteration
+            }
+        }
     }
 }
 
