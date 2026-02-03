@@ -50,8 +50,6 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
                         Arguments = [
                             "--",
                             "--timeout", "10m",
-                            "--hangdump",
-                            "--hangdump-timeout", "8m", // Dump before the 10m timeout kills the run
                             "--log-level", "Trace",
                             "--output", "Detailed"
                         ]
