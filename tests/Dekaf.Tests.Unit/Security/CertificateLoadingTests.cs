@@ -233,7 +233,6 @@ public class CertificateLoadingTests : IDisposable
         var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
 
         // Add SubjectKeyIdentifier extension to help with consistent certificate generation
-        // This helps avoid ASN.1 encoding issues with auto-generated serial numbers
         request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
 
         // Add BasicConstraints to ensure valid cert structure
@@ -242,26 +241,36 @@ public class CertificateLoadingTests : IDisposable
         // Use fixed timestamps for deterministic test behavior
         var notBefore = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
         var notAfter = notBefore.AddYears(1);
-        return request.CreateSelfSigned(notBefore, notAfter);
+
+        // Use explicit serial number to avoid macOS ASN.1 encoding issues with auto-generated serials
+        // The serial must not have leading zero bytes that would cause "first 9 bits same value" error
+        var serialNumber = new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
+        var generator = X509SignatureGenerator.CreateForRSA(rsa, RSASignaturePadding.Pkcs1);
+        return request.Create(new X500DistinguishedName(subjectName), generator, notBefore, notAfter, serialNumber);
     }
 
     private static X509Certificate2 CreateSelfSignedCertificateWithKey(string subjectName)
     {
-        using var rsa = RSA.Create(2048);
+        var rsa = RSA.Create(2048);
         var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
 
         // Add SubjectKeyIdentifier extension to help with consistent certificate generation
-        // This helps avoid ASN.1 encoding issues with auto-generated serial numbers
         request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
 
         // Add BasicConstraints to ensure valid cert structure
         request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
 
-        // CreateSelfSigned creates a certificate with an exportable ephemeral key by default
-        // No need for PFX round-trip that can corrupt RSA parameters
         // Use fixed timestamps for deterministic test behavior
         var notBefore = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
         var notAfter = notBefore.AddYears(1);
-        return request.CreateSelfSigned(notBefore, notAfter);
+
+        // Use explicit serial number to avoid macOS ASN.1 encoding issues with auto-generated serials
+        var serialNumber = new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x09 };
+        var generator = X509SignatureGenerator.CreateForRSA(rsa, RSASignaturePadding.Pkcs1);
+        using var certWithoutKey = request.Create(new X500DistinguishedName(subjectName), generator, notBefore, notAfter, serialNumber);
+
+        // CopyWithPrivateKey returns a new certificate with the private key attached
+        // Note: We don't dispose the RSA key here because the returned certificate owns it
+        return certWithoutKey.CopyWithPrivateKey(rsa);
     }
 }

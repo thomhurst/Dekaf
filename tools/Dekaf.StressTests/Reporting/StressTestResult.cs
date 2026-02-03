@@ -13,7 +13,7 @@ internal sealed class StressTestResult
     public required DateTime StartedAtUtc { get; init; }
     public required DateTime CompletedAtUtc { get; init; }
     public required ThroughputSnapshot Throughput { get; init; }
-    public required LatencySnapshot? Latency { get; init; }
+    public LatencySnapshot? Latency { get; init; }
     public required GcSnapshot GcStats { get; init; }
 
     private static readonly JsonSerializerOptions JsonOptions = new()

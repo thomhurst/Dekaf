@@ -51,7 +51,7 @@ jobs:
   client-benchmarks:
     name: Client Benchmarks (Dekaf vs Confluent)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -444,5 +444,5 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "docs: Update benchmark results [skip ci]"
-            git push
+            git push || echo "Push failed (likely due to branch protection). Results saved as artifact."
           fi

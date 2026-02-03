@@ -332,5 +332,5 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "docs: Update stress test results [skip ci]"
-            git push
+            git push || echo "Push failed (likely due to branch protection). Results saved as artifact."
           fi
