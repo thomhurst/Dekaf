@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <PackageReference Include="Google.Protobuf" Version="3.*" />
+    <PackageReference Include="Microsoft.Testing.Extensions.HangDump" Version="*" />
     <PackageReference Include="NSubstitute" Version="5.*" />
     <PackageReference Include="TUnit" Version="1.12.111" />
     <PackageReference Include="Verify.TUnit" Version="*" />
