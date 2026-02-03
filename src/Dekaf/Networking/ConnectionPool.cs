@@ -15,8 +15,8 @@ public sealed class ConnectionPool : IConnectionPool
     private readonly ILogger<ConnectionPool>? _logger;
     private readonly int _connectionsPerBroker;
 
-    // Default BufferMemory if not configured (33 MB)
-    private const ulong DefaultBufferMemory = 33554432;
+    // Default BufferMemory if not configured (256 MB)
+    private const ulong DefaultBufferMemory = 268435456;
 
     private readonly ConcurrentDictionary<int, BrokerInfo> _brokers = new();
     private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection> _connectionsByEndpoint = new();

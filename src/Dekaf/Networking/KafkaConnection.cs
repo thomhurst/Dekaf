@@ -34,11 +34,11 @@ internal static class ConnectionHelper
     // - Leaves 75% for producer batches, maintaining primary allocation semantics
     // - Prevents pipeline from consuming producer's batch memory pool
     //
-    // Example with 32 MB BufferMemory, 2 connections per broker, 3 brokers:
-    // - Per-connection budget: 32 MB / (2 * 3) = 5.3 MB
-    // - Pipeline allocation: 5.3 MB / 4 = 1.3 MB per connection
-    // - Total pipeline memory: 1.3 MB * 6 connections = 8 MB (25% of total)
-    // - Producer batch memory: 24 MB (75% of total)
+    // Example with 256 MB BufferMemory, 2 connections per broker, 3 brokers:
+    // - Per-connection budget: 256 MB / (2 * 3) = 42.7 MB
+    // - Pipeline allocation: 42.7 MB / 4 = 10.7 MB per connection
+    // - Total pipeline memory: 10.7 MB * 6 connections = 64 MB (25% of total)
+    // - Producer batch memory: 192 MB (75% of total)
     private const int BufferMemoryDivisor = 4;
 
     /// <summary>

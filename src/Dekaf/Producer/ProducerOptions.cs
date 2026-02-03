@@ -42,9 +42,11 @@ public sealed class ProducerOptions
     public int BatchSize { get; init; } = 16384;
 
     /// <summary>
-    /// Total memory buffer size in bytes.
+    /// Total memory buffer size in bytes for pending messages.
+    /// When the buffer is full, Send() and ProduceAsync() will block until space is available.
+    /// Default is 256MB, which handles bursty workloads without excessive memory usage.
     /// </summary>
-    public ulong BufferMemory { get; init; } = 33554432;
+    public ulong BufferMemory { get; init; } = 268435456;
 
     /// <summary>
     /// Compression type.
