@@ -544,6 +544,21 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// Throws TimeoutException if buffer space doesn't become available within DeliveryTimeoutMs.
     /// Throws OperationCanceledException if the producer is disposed while waiting.
     /// </summary>
+    /// <summary>
+    /// Reserves buffer memory synchronously for backpressure purposes.
+    /// Used by Send() to enforce backpressure before queueing to the work channel.
+    /// Blocks if buffer is full until space is available or timeout is reached.
+    /// </summary>
+    internal void ReserveMemorySyncForBackpressure(int recordSize) => ReserveMemorySync(recordSize);
+
+    /// <summary>
+    /// Reserves buffer memory asynchronously for backpressure purposes.
+    /// Used by ProduceAsync() to enforce backpressure before queueing to the work channel.
+    /// Awaits if buffer is full until space is available or timeout is reached.
+    /// </summary>
+    internal ValueTask ReserveMemoryAsyncForBackpressure(int recordSize, CancellationToken cancellationToken)
+        => ReserveMemoryAsync(recordSize, cancellationToken);
+
     private void ReserveMemorySync(int recordSize)
     {
         // Fast path: try to reserve immediately
