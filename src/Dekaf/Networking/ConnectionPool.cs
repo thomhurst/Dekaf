@@ -156,9 +156,20 @@ public sealed class ConnectionPool : IConnectionPool
             // Return the first connection
             return connections[0];
         }
+        catch (TimeoutException)
+        {
+            // WaitAsync timeout - clean up failed connection attempts
+            for (var i = 0; i < _connectionsPerBroker; i++)
+            {
+                _connectionGroupCreationTasks.TryRemove((brokerId, i), out _);
+            }
+
+            throw new KafkaException(
+                $"Connection group creation timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
+        }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
-            // Timeout occurred - clean up failed connection attempts
+            // CTS timeout - clean up failed connection attempts
             for (var i = 0; i < _connectionsPerBroker; i++)
             {
                 _connectionGroupCreationTasks.TryRemove((brokerId, i), out _);

@@ -99,6 +99,7 @@ public abstract class KafkaConsumerService<TKey, TValue> : BackgroundService
         {
             _consumer.DisposeAsync().AsTask()
                 .WaitAsync(TimeSpan.FromSeconds(30))
+                .ConfigureAwait(false)
                 .GetAwaiter()
                 .GetResult();
         }
