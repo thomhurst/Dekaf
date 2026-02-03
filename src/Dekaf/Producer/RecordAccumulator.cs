@@ -334,6 +334,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private readonly CancellationTokenSource _disposalCts = new();
     private readonly ManualResetEventSlim _disposalEvent = new(false);
 
+    // Semaphore to limit the number of in-flight batches (each holding a 16MB+ arena).
+    // Without this limit, unbounded channels allow batches to accumulate faster than
+    // they can be sent, causing memory growth far exceeding BufferMemory.
+    // Max batches = BufferMemory / ArenaCapacity (minimum 2 for pipelining).
+    private readonly SemaphoreSlim _batchSemaphore;
+
     // Thread-local cache for fast path when consecutive messages go to the same partition.
     // This eliminates ConcurrentDictionary lookups for the common case of sending multiple
     // messages to the same topic-partition in sequence (e.g., keyed messages, batch processing).
@@ -393,7 +399,19 @@ public sealed class RecordAccumulator : IAsyncDisposable
         _batchPool = new PartitionBatchPool(options);
         _maxBufferMemory = options.BufferMemory;
 
-        // Use unbounded channel for ready batches - backpressure is now handled by buffer memory tracking
+        // Initialize batch semaphore to limit arena memory consumption.
+        // Each in-flight batch holds an arena, so we limit based on BufferMemory / effectiveArenaCapacity.
+        // Arena capacity is capped to BufferMemory/2 to ensure at least 2 batches can fit in memory.
+        // Minimum of 2 batches allows pipelining (one batch sending while another fills).
+        var arenaCapacity = options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize;
+        var maxArenaCapacity = (int)Math.Min(options.BufferMemory / 2, int.MaxValue);
+        var effectiveArenaCapacity = maxArenaCapacity > 0 && arenaCapacity > maxArenaCapacity
+            ? maxArenaCapacity
+            : arenaCapacity;
+        var maxBatches = Math.Max(2, (int)(options.BufferMemory / (ulong)effectiveArenaCapacity));
+        _batchSemaphore = new SemaphoreSlim(maxBatches, maxBatches);
+
+        // Use unbounded channel for ready batches - backpressure is now handled by batch semaphore
         _readyBatches = Channel.CreateUnbounded<ReadyBatch>(new UnboundedChannelOptions
         {
             SingleReader = true,
@@ -449,6 +467,80 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// Exposes the sendable batches channel reader for KafkaProducer.SenderLoop.
     /// </summary>
     internal ChannelReader<ReadyBatch> SendableBatches => _sendableBatches.Reader;
+
+    /// <summary>
+    /// Enqueues a ready batch to the channel, acquiring the batch semaphore first.
+    /// This limits the number of in-flight batches to prevent unbounded memory growth.
+    /// </summary>
+    /// <param name="readyBatch">The batch to enqueue.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>True if enqueued; false if channel is closed.</returns>
+    private async ValueTask<bool> EnqueueReadyBatchAsync(ReadyBatch readyBatch, CancellationToken cancellationToken)
+    {
+        // Acquire semaphore to limit in-flight batches (each holds 16MB+ arena)
+        await _batchSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        // Set cleanup callback to release semaphore when batch completes
+        readyBatch.SetCleanupCallback(() => _batchSemaphore.Release());
+
+        // Try synchronous write first to avoid async state machine allocation
+        if (_readyBatches.Writer.TryWrite(readyBatch))
+            return true;
+
+        // Fall back to async write
+        try
+        {
+            await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch
+        {
+            // If write fails, release semaphore before propagating exception
+            _batchSemaphore.Release();
+            readyBatch.SetCleanupCallback(null!);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Enqueues a ready batch synchronously, blocking until a semaphore slot is available.
+    /// This provides backpressure for fire-and-forget sends to prevent unbounded memory growth.
+    /// </summary>
+    /// <param name="readyBatch">The batch to enqueue.</param>
+    /// <returns>True if enqueued; false if channel closed or disposed.</returns>
+    private bool TryEnqueueReadyBatch(ReadyBatch readyBatch)
+    {
+        // Check disposal before blocking
+        if (_disposed || _closed)
+            return false;
+
+        try
+        {
+            // Block until semaphore available, checking disposal periodically
+            // Use 100ms timeout and loop to allow disposal detection
+            while (!_batchSemaphore.Wait(100))
+            {
+                if (_disposed || _closed)
+                    return false;
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+
+        // Set cleanup callback to release semaphore when batch completes
+        readyBatch.SetCleanupCallback(() => _batchSemaphore.Release());
+
+        // Try non-blocking write
+        if (_readyBatches.Writer.TryWrite(readyBatch))
+            return true;
+
+        // Write failed (channel closed), release semaphore
+        _batchSemaphore.Release();
+        readyBatch.SetCleanupCallback(null!);
+        return false;
+    }
 
     /// <summary>
     /// Gets the current buffered memory usage in bytes.
@@ -875,22 +967,18 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     // Track delivery task for FlushAsync
                     TrackDeliveryTask(readyBatch);
 
-                    // Try synchronous write first to avoid async state machine allocation
-                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    try
                     {
-                        try
-                        {
-                            // Backpressure happens here: WriteAsync blocks when channel is full
-                            await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-                        }
-                        catch
-                        {
-                            // CRITICAL: If WriteAsync fails (cancellation or disposal), fail the batch
-                            // and release memory to prevent permanent leak
-                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            ReleaseMemory(readyBatch.DataSize);
-                            throw;
-                        }
+                        // Enqueue with semaphore-based backpressure to limit arena memory
+                        await EnqueueReadyBatchAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // CRITICAL: If enqueue fails (cancellation or disposal), fail the batch
+                        // and release memory to prevent permanent leak
+                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                        ReleaseMemory(readyBatch.DataSize);
+                        throw;
                     }
 
                     // Return the completed batch shell to the pool for reuse
@@ -987,11 +1075,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     // Track delivery task for FlushAsync
                     TrackDeliveryTask(readyBatch);
 
-                    // Non-blocking write to unbounded channel - should always succeed
-                    // If it fails (channel completed), the producer is being disposed
-                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    // Enqueue with semaphore-based backpressure to limit arena memory
+                    // If semaphore unavailable or channel closed, fail the batch
+                    if (!TryEnqueueReadyBatch(readyBatch))
                     {
-                        // Channel is closed, fail the batch and return false
+                        // Semaphore unavailable or channel closed, fail the batch and return false
                         readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
                         // Release the batch's buffer memory since it won't go through producer
                         ReleaseMemory(readyBatch.DataSize);
@@ -1119,7 +1207,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
             var readyBatch = oldBatch.Complete();
             if (readyBatch is not null)
             {
-                if (!_readyBatches.Writer.TryWrite(readyBatch))
+                // Enqueue with semaphore-based backpressure to limit arena memory
+                if (!TryEnqueueReadyBatch(readyBatch))
                 {
                     readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
                     // Release the batch's buffer memory since it won't go through producer
@@ -1280,11 +1369,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     // Track delivery task for FlushAsync
                     TrackDeliveryTask(readyBatch);
 
-                    // Non-blocking write to unbounded channel - should always succeed
-                    // If it fails (channel completed), the producer is being disposed
-                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    // Enqueue with semaphore-based backpressure to limit arena memory
+                    if (!TryEnqueueReadyBatch(readyBatch))
                     {
-                        // Channel is closed, fail the batch and return false
+                        // Semaphore unavailable or channel closed, fail the batch and return false
                         readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
                         // Release the batch's buffer memory since it won't go through producer
                         ReleaseMemory(readyBatch.DataSize);
@@ -1412,11 +1500,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
                             // Track memory for this batch - it will be released when sent or on failure
                             memoryUsed += readyBatch.DataSize;
 
-                            // BUG FIX: Wrap in try-catch to ensure ReadyBatch cleanup if exception occurs
-                            // between Complete() and successful channel write
+                            // Enqueue with semaphore-based backpressure to limit arena memory
                             try
                             {
-                                if (!_readyBatches.Writer.TryWrite(readyBatch))
+                                if (!TryEnqueueReadyBatch(readyBatch))
                                 {
                                     readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
                                     // Release the batch's buffer memory since it won't go through producer
@@ -1506,22 +1593,18 @@ public sealed class RecordAccumulator : IAsyncDisposable
                         // Track delivery task for FlushAsync
                         TrackDeliveryTask(readyBatch);
 
-                        // Try synchronous write first to avoid async state machine allocation
-                        if (!_readyBatches.Writer.TryWrite(readyBatch))
+                        try
                         {
-                            try
-                            {
-                                // Channel is bounded or busy, fall back to async
-                                await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-                            }
-                            catch
-                            {
-                                // CRITICAL: If WriteAsync fails (cancellation or disposal), fail the batch
-                                // and release memory to prevent permanent leak
-                                readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                                ReleaseMemory(readyBatch.DataSize);
-                                throw;
-                            }
+                            // Enqueue with semaphore-based backpressure to limit arena memory
+                            await EnqueueReadyBatchAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                        }
+                        catch
+                        {
+                            // CRITICAL: If enqueue fails (cancellation or disposal), fail the batch
+                            // and release memory to prevent permanent leak
+                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                            ReleaseMemory(readyBatch.DataSize);
+                            throw;
                         }
 
                         // Return the completed batch shell to the pool for reuse
@@ -1605,29 +1688,25 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
-                    // Try synchronous write first to avoid async state machine allocation
-                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    try
                     {
+                        // Enqueue with semaphore-based backpressure to limit arena memory
+                        await EnqueueReadyBatchAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // CRITICAL: Use nested try-finally to ensure memory is ALWAYS released
+                        // even if readyBatch.Fail() itself throws an exception
                         try
                         {
-                            // Channel is bounded or busy, fall back to async
-                            await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
                         }
-                        catch
+                        finally
                         {
-                            // CRITICAL: Use nested try-finally to ensure memory is ALWAYS released
-                            // even if readyBatch.Fail() itself throws an exception
-                            try
-                            {
-                                readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            }
-                            finally
-                            {
-                                // ALWAYS release memory to prevent permanent leak
-                                ReleaseMemory(readyBatch.DataSize);
-                            }
-                            throw;
+                            // ALWAYS release memory to prevent permanent leak
+                            ReleaseMemory(readyBatch.DataSize);
                         }
+                        throw;
                     }
 
                     // Return the completed batch shell to the pool for reuse
@@ -2016,6 +2095,13 @@ internal sealed class PartitionBatch
         if (_arena == null)
         {
             var arenaCapacity = _options.ArenaCapacity > 0 ? _options.ArenaCapacity : _options.BatchSize;
+            // Cap arena to BufferMemory / 2 to ensure at least 2 batches can fit in memory.
+            // This prevents misconfiguration where arena > BufferMemory causing excessive memory use.
+            var maxArenaCapacity = (int)Math.Min(_options.BufferMemory / 2, int.MaxValue);
+            if (maxArenaCapacity > 0 && arenaCapacity > maxArenaCapacity)
+            {
+                arenaCapacity = maxArenaCapacity;
+            }
             _arena = new BatchArena(arenaCapacity);
         }
     }
@@ -2871,6 +2957,9 @@ internal sealed class ReadyBatch
 
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
 
+    // Callback invoked during Cleanup() to release external resources (e.g., batch semaphore)
+    private Action? _onCleanup;
+
     public ReadyBatch(
         TopicPartition topicPartition,
         RecordBatch recordBatch,
@@ -2896,6 +2985,12 @@ internal sealed class ReadyBatch
         _pooledRecordsArray = pooledRecordsArray;
         _arena = arena;
     }
+
+    /// <summary>
+    /// Sets a callback to be invoked during Cleanup().
+    /// Used to release the batch semaphore when the batch is done.
+    /// </summary>
+    public void SetCleanupCallback(Action callback) => _onCleanup = callback;
 
     /// <summary>
     /// Marks batch as "ready" (processed by completion loop).
@@ -3035,6 +3130,9 @@ internal sealed class ReadyBatch
         // Return arena buffer if present (arena-based path)
         // This is a single pool return instead of N individual array returns
         _arena?.Return();
+
+        // Invoke cleanup callback (e.g., to release batch semaphore)
+        _onCleanup?.Invoke();
     }
 }
 
