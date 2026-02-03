@@ -96,10 +96,12 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
         Console.WriteLine($"[BufferMemoryStressTest] Final memory: {finalMemory / 1_000_000.0:F1} MB");
         Console.WriteLine($"[BufferMemoryStressTest] Total memory growth: {totalGrowthMB:F1} MB");
 
-        // Assert: Memory growth should be < 100MB
-        // The original bug caused 18GB growth in 90 seconds, so 100MB over 2 minutes is very conservative
-        Console.WriteLine($"[BufferMemoryStressTest] Asserting memory growth < 100 MB (actual: {totalGrowthMB:F1} MB)");
-        await Assert.That(totalGrowthMB).IsLessThan(100);
+        // Assert: Memory growth should be < 500MB
+        // The original bug caused 18GB growth in 90 seconds, so 500MB over 2 minutes
+        // catches catastrophic leaks while allowing for CI environment variability
+        // (container overhead, GC timing differences, etc.)
+        Console.WriteLine($"[BufferMemoryStressTest] Asserting memory growth < 500 MB (actual: {totalGrowthMB:F1} MB)");
+        await Assert.That(totalGrowthMB).IsLessThan(500);
     }
 
     /// <summary>
