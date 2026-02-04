@@ -29,6 +29,14 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         Console.WriteLine("Starting Kafka container via Testcontainers...");
         var container = new KafkaBuilder("confluentinc/cp-kafka:7.5.0")
             .WithPortBinding(9092, true)
+            // Aggressive retention limits to prevent disk filling during stress tests
+            // Limits: 64MB per partition, 5-second retention, 1-second cleanup checks
+            .WithEnvironment("KAFKA_LOG_RETENTION_MS", "5000")                    // 5 seconds
+            .WithEnvironment("KAFKA_LOG_RETENTION_BYTES", "67108864")             // 64MB
+            .WithEnvironment("KAFKA_LOG_SEGMENT_BYTES", "16777216")               // 16MB segments
+            .WithEnvironment("KAFKA_LOG_SEGMENT_DELETE_DELAY_MS", "100")          // 100ms delete delay
+            .WithEnvironment("KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS", "1000")     // 1 second check interval
+            .WithEnvironment("KAFKA_LOG_CLEANUP_POLICY", "delete")
             .Build();
 
         await container.StartAsync().ConfigureAwait(false);

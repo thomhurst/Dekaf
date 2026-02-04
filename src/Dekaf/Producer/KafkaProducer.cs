@@ -694,35 +694,37 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 return false; // Batch completed, use slow path
             }
 
-            // Calculate total size needed and check if it fits
+            // Calculate total size needed for key + value combined
             var totalSize = keyLength + valueLength;
-            if (arena.RemainingCapacity < totalSize)
+
+            // Single CAS allocation for both key and value together
+            // This reduces atomic operations from 2 per message to 1
+            if (!arena.TryAllocate(totalSize, out var combinedSpan, out var combinedOffset))
             {
                 _accumulator.ReleaseMemory(recordSize);
-                return false; // Not enough space, use slow path (which will rotate)
+                return false; // Allocation failed, use slow path
             }
 
-            // Allocate key in arena
+            // Split the combined allocation into key and value slices
             ArenaSlice keySlice = default;
+            ArenaSlice valueSlice;
+
             if (!keyIsNull && keyLength > 0)
             {
-                if (!arena.TryAllocate(keyLength, out var keySpan, out var keyOffset))
-                {
-                    _accumulator.ReleaseMemory(recordSize);
-                    return false; // Allocation failed, use slow path
-                }
-                t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(keySpan);
-                keySlice = new ArenaSlice(keyOffset, keyLength);
-            }
+                // Copy key to first part of combined allocation
+                t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(combinedSpan.Slice(0, keyLength));
+                keySlice = new ArenaSlice(combinedOffset, keyLength);
 
-            // Allocate value in arena
-            if (!arena.TryAllocate(valueLength, out var valueSpan, out var valueOffset))
-            {
-                _accumulator.ReleaseMemory(recordSize);
-                return false; // Allocation failed (shouldn't happen after size check, but be safe)
+                // Copy value to second part
+                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan.Slice(keyLength, valueLength));
+                valueSlice = new ArenaSlice(combinedOffset + keyLength, valueLength);
             }
-            t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(valueSpan);
-            var valueSlice = new ArenaSlice(valueOffset, valueLength);
+            else
+            {
+                // No key - value uses entire allocation
+                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan);
+                valueSlice = new ArenaSlice(combinedOffset, valueLength);
+            }
 
             // Append using arena-based method
             var result = cachedBatch.TryAppendFromArena(timestampMs, keySlice, keyIsNull, valueSlice, recordHeaders, pooledHeaderArray);
@@ -1263,35 +1265,37 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 return false; // Batch completed, use slow path
             }
 
-            // Calculate total size needed and check if it fits
+            // Calculate total size needed for key + value combined
             var totalSize = keyLength + valueLength;
-            if (arena.RemainingCapacity < totalSize)
+
+            // Single CAS allocation for both key and value together
+            // This reduces atomic operations from 2 per message to 1
+            if (!arena.TryAllocate(totalSize, out var combinedSpan, out var combinedOffset))
             {
                 _accumulator.ReleaseMemory(recordSize);
-                return false; // Not enough space, use slow path (which will rotate)
+                return false; // Allocation failed, use slow path
             }
 
-            // Allocate key in arena
+            // Split the combined allocation into key and value slices
             ArenaSlice keySlice = default;
+            ArenaSlice valueSlice;
+
             if (!keyIsNull && keyLength > 0)
             {
-                if (!arena.TryAllocate(keyLength, out var keySpan, out var keyOffset))
-                {
-                    _accumulator.ReleaseMemory(recordSize);
-                    return false; // Allocation failed, use slow path
-                }
-                t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(keySpan);
-                keySlice = new ArenaSlice(keyOffset, keyLength);
-            }
+                // Copy key to first part of combined allocation
+                t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(combinedSpan.Slice(0, keyLength));
+                keySlice = new ArenaSlice(combinedOffset, keyLength);
 
-            // Allocate value in arena
-            if (!arena.TryAllocate(valueLength, out var valueSpan, out var valueOffset))
-            {
-                _accumulator.ReleaseMemory(recordSize);
-                return false; // Allocation failed (shouldn't happen after size check, but be safe)
+                // Copy value to second part
+                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan.Slice(keyLength, valueLength));
+                valueSlice = new ArenaSlice(combinedOffset + keyLength, valueLength);
             }
-            t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(valueSpan);
-            var valueSlice = new ArenaSlice(valueOffset, valueLength);
+            else
+            {
+                // No key - value uses entire allocation
+                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan);
+                valueSlice = new ArenaSlice(combinedOffset, valueLength);
+            }
 
             // Append using arena-based method with callback
             var result = cachedBatch.TryAppendFromArenaWithCallback(timestampMs, keySlice, keyIsNull, valueSlice, recordHeaders, pooledHeaderArray, callback);
