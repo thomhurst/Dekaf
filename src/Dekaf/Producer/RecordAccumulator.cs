@@ -482,6 +482,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private readonly ManualResetEventSlim _bufferSpaceAvailable = new(true); // Initially signaled (space available)
     private readonly CancellationTokenSource _disposalCts = new();
     private readonly ManualResetEventSlim _disposalEvent = new(false);
+    // Pre-allocated WaitHandle array for ReserveMemorySync to avoid per-wait allocation.
+    // Index 0 = buffer space available, Index 1 = disposal signal.
+    private readonly WaitHandle[] _syncWaitHandles;
 
     // Thread-local cache for fast path when consecutive messages go to the same partition.
     // This eliminates ConcurrentDictionary lookups for the common case of sending multiple
@@ -543,6 +546,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         _batchPool = new PartitionBatchPool(options);
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = options.BufferMemory;
+
+        // Pre-allocate WaitHandle array for sync wait path to avoid per-iteration allocation
+        _syncWaitHandles = [_bufferSpaceAvailable.WaitHandle, _disposalEvent.WaitHandle];
 
         // Use unbounded channel for ready batches - backpressure is now handled by buffer memory tracking
         // Single channel design: batches go directly to sender loop (no intermediate CompletionLoop)
@@ -649,17 +655,25 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     $"Consider: increasing BufferMemory, reducing production rate, or checking network connectivity.");
             }
 
-            // Reset event before waiting - ReleaseMemory will Set() it when space becomes available
+            // Reset event before waiting - ReleaseMemory will Set() it when space becomes available.
+            // RACE CONDITION MITIGATION: There's an inherent race between Reset() and the signal from
+            // ReleaseMemory(). If Set() happens after Reset() but before our wait, we need to detect it.
             _bufferSpaceAvailable.Reset();
 
             // Check disposal after reset
             if (_disposed)
                 throw new ObjectDisposedException(nameof(RecordAccumulator));
 
-            // ManualResetEventSlim doesn't have native async wait, so use short polling intervals.
-            // The event is Set() when memory is released, so we check IsSet to wake early.
-            // Use 20ms poll interval - shorter than before since we now have proper signaling.
-            var waitMs = (int)Math.Min(20, remainingMs);
+            // Check if event was signaled between Reset() and here (race condition mitigation).
+            // If already set, skip the delay and immediately retry TryReserveMemory().
+            if (_bufferSpaceAvailable.IsSet)
+                continue;
+
+            // ManualResetEventSlim doesn't have native async wait, so use short polling.
+            // Use 5ms poll interval to minimize latency when memory becomes available.
+            // The trade-off is slightly more CPU usage, but memory pressure scenarios are
+            // transient and this path is only hit under backpressure.
+            var waitMs = (int)Math.Min(5, remainingMs);
             await Task.Delay(waitMs, cancellationToken).ConfigureAwait(false);
         }
     }
@@ -740,10 +754,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
             }
 
             // Wait for either: buffer space available, disposal, or timeout
-            // Use WaitHandle.WaitAny to respond to both disposal and buffer space signals
+            // Use WaitHandle.WaitAny with pre-allocated array to avoid per-iteration allocation
             var waitMs = Math.Min(50, (int)remainingMs);
-            var handles = new[] { _bufferSpaceAvailable.WaitHandle, _disposalEvent.WaitHandle };
-            var signaled = WaitHandle.WaitAny(handles, waitMs);
+            var signaled = WaitHandle.WaitAny(_syncWaitHandles, waitMs);
 
             // Check if disposal was signaled (index 1)
             if (signaled == 1 || _disposed)
