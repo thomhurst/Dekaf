@@ -1965,8 +1965,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Wait with short timeout to allow periodic cancellation check
-            if (_allBatchesComplete.Wait(10, cancellationToken))
+            // Wait with short timeout (1ms) to minimize latency while allowing periodic cancellation check.
+            // ManualResetEventSlim.Wait() returns immediately if already signaled, so this is efficient.
+            if (_allBatchesComplete.Wait(1, cancellationToken))
             {
                 // Event signaled - all batches complete
                 return;

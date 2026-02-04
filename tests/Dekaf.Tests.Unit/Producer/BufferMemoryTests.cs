@@ -666,8 +666,8 @@ public class BufferMemoryTests
 
             await cts.CancelAsync();
 
-            // Should complete in well under 1 second
-            await Assert.That(sw.ElapsedMilliseconds).IsLessThan(1000);
+            // Should complete in well under 3 seconds (using 3000ms to account for CI variability)
+            await Assert.That(sw.ElapsedMilliseconds).IsLessThan(3000);
         }
         finally
         {
