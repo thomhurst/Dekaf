@@ -251,7 +251,7 @@ public class CertificateLoadingTests : IDisposable
 
     private static X509Certificate2 CreateSelfSignedCertificateWithKey(string subjectName)
     {
-        var rsa = RSA.Create(2048);
+        using var rsa = RSA.Create(2048);
         var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
 
         // Add SubjectKeyIdentifier extension to help with consistent certificate generation
@@ -270,7 +270,11 @@ public class CertificateLoadingTests : IDisposable
         using var certWithoutKey = request.Create(new X500DistinguishedName(subjectName), generator, notBefore, notAfter, serialNumber);
 
         // CopyWithPrivateKey returns a new certificate with the private key attached
-        // Note: We don't dispose the RSA key here because the returned certificate owns it
-        return certWithoutKey.CopyWithPrivateKey(rsa);
+        using var certWithKey = certWithoutKey.CopyWithPrivateKey(rsa);
+
+        // Export and re-import to ensure the private key is exportable on all platforms
+        // On Windows, CopyWithPrivateKey may create a key that's not exportable by default
+        var pfxBytes = certWithKey.Export(X509ContentType.Pfx, "");
+        return X509CertificateLoader.LoadPkcs12(pfxBytes, "", X509KeyStorageFlags.Exportable);
     }
 }
