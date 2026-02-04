@@ -1778,6 +1778,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             while (true)
             {
+                // Check cancellation at top of loop to avoid unnecessary work
+                cancellationToken.ThrowIfCancellationRequested();
+
                 // Check delivery timeout before attempting send
                 if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
                 {
@@ -1814,8 +1817,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     "[SendBatch] Retriable error {ErrorCode} for {Topic}-{Partition}, refreshing metadata and retrying after {BackoffMs}ms",
                     errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition, backoffMs);
 
-                // Refresh metadata to get new leader (fire-and-forget, don't wait for completion)
-                // The next send attempt will get the updated leader
+                // Refresh metadata to get new leader (fire-and-forget, don't block retry loop)
+                // With exponential backoff (100ms -> 200ms -> 400ms...), later retries give
+                // sufficient time for metadata refresh to complete before the next send attempt
                 _ = _metadataManager.RefreshMetadataAsync([batch.TopicPartition.Topic], cancellationToken);
 
                 // Backoff before retry (respects cancellation)
