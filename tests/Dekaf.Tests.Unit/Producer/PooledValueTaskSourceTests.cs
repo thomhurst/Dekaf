@@ -553,4 +553,117 @@ public class PooledValueTaskSourceTests
         var result = await sameSource.Task.ConfigureAwait(false);
         await Assert.That(result).IsEqualTo(2);
     }
+
+    [Test]
+    public async Task ObserveForFireAndForget_ReturnsToPool_WhenCompletedImmediately()
+    {
+        var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
+
+        var source = pool.Rent();
+        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
+
+        // Complete before observing
+        source.SetResult(42);
+        source.ObserveForFireAndForget();
+
+        // Give a tiny bit of time for the callback to execute
+        await Task.Yield();
+
+        // Source should have been returned to pool
+        await Assert.That(pool.ApproximateCount).IsEqualTo(1);
+
+        // Should be able to rent the same instance again
+        var sameSource = pool.Rent();
+        await Assert.That(source).IsSameReferenceAs(sameSource);
+    }
+
+    [Test]
+    public async Task ObserveForFireAndForget_ReturnsToPool_WhenCompletedAsynchronously()
+    {
+        var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
+
+        var source = pool.Rent();
+        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
+
+        // Observe before completing (registers continuation)
+        source.ObserveForFireAndForget();
+
+        // Not yet in pool because not completed
+        await Assert.That(pool.ApproximateCount).IsEqualTo(0);
+
+        // Complete after observing - should trigger continuation
+        source.SetResult(42);
+
+        // Give a tiny bit of time for the callback to execute
+        await Task.Yield();
+        await Task.Delay(1); // Small delay to ensure continuation runs
+
+        // Source should have been returned to pool
+        await Assert.That(pool.ApproximateCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ObserveForFireAndForget_HandlesException_WithoutThrowing()
+    {
+        var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
+
+        var source = pool.Rent();
+
+        source.SetException(new InvalidOperationException("Test"));
+        source.ObserveForFireAndForget();
+
+        // Should not throw, should just return to pool
+        await Task.Yield();
+
+        await Assert.That(pool.ApproximateCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ObserveForFireAndForget_InvokesDeliveryHandler()
+    {
+        var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
+
+        var source = pool.Rent();
+        int? receivedValue = null;
+        Exception? receivedException = null;
+
+        source.SetDeliveryHandler((value, ex) =>
+        {
+            receivedValue = value;
+            receivedException = ex;
+        });
+
+        source.SetResult(42);
+        source.ObserveForFireAndForget();
+
+        await Task.Yield();
+
+        await Assert.That(receivedValue).IsEqualTo(42);
+        await Assert.That(receivedException).IsNull();
+    }
+
+    [Test]
+    public async Task ObserveForFireAndForget_InvokesDeliveryHandler_OnException()
+    {
+        var pool = new ValueTaskSourcePool<int>(maxPoolSize: 1);
+
+        var source = pool.Rent();
+        int? receivedValue = null;
+        Exception? receivedException = null;
+
+        source.SetDeliveryHandler((value, ex) =>
+        {
+            receivedValue = value;
+            receivedException = ex;
+        });
+
+        var expectedException = new InvalidOperationException("Test");
+        source.SetException(expectedException);
+        source.ObserveForFireAndForget();
+
+        await Task.Yield();
+
+        await Assert.That(receivedValue).IsEqualTo(default(int));
+        await Assert.That(receivedException).IsSameReferenceAs(expectedException);
+    }
 }

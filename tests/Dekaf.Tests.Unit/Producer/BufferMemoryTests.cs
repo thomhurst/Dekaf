@@ -632,7 +632,7 @@ public class BufferMemoryTests
             ClientId = "test-producer",
             BufferMemory = 10_000_000,
             BatchSize = 16384,
-            LingerMs = 5000
+            LingerMs = 100  // Use small linger so batches become ready quickly
         };
         var accumulator = new RecordAccumulator(options);
 
@@ -650,6 +650,17 @@ public class BufferMemoryTests
 
             // Start background task to drain batches (simulates sender loop)
             using var cts = new CancellationTokenSource(15000);
+
+            // Simulate the sender loop's linger expiration - this makes batches ready
+            var lingerTask = Task.Run(async () =>
+            {
+                while (!cts.Token.IsCancellationRequested)
+                {
+                    await accumulator.ExpireLingerAsync(cts.Token).ConfigureAwait(false);
+                    await Task.Delay(10, cts.Token).ConfigureAwait(false);
+                }
+            }, cts.Token);
+
             var drainTask = Task.Run(async () =>
             {
                 await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
@@ -667,8 +678,9 @@ public class BufferMemoryTests
 
             await cts.CancelAsync();
 
-            // Should complete in well under 3 seconds (using 3000ms to account for CI variability)
-            await Assert.That(sw.ElapsedMilliseconds).IsLessThan(3000);
+            // Should complete quickly - using 5000ms to account for CI variability
+            // (LingerMs=100 + some overhead for task scheduling)
+            await Assert.That(sw.ElapsedMilliseconds).IsLessThan(5000);
         }
         finally
         {

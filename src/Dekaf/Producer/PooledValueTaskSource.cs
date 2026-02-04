@@ -176,6 +176,59 @@ public sealed class PooledValueTaskSource<T> : IValueTaskSource<T>
     }
 
     /// <summary>
+    /// Observes this completion source for fire-and-forget scenarios.
+    /// Ensures GetResult is called to invoke handlers and return to pool,
+    /// without allocating an async state machine.
+    /// </summary>
+    /// <remarks>
+    /// Call this instead of awaiting when you don't need the result.
+    /// This is more efficient than creating an async Task just to swallow exceptions.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void ObserveForFireAndForget()
+    {
+        var status = _core.GetStatus(_core.Version);
+        if (status == ValueTaskSourceStatus.Pending)
+        {
+            // Not yet complete - register callback to trigger GetResult when done
+            _core.OnCompleted(
+                s_fireAndForgetCallback,
+                this,
+                _core.Version,
+                ValueTaskSourceOnCompletedFlags.None);
+        }
+        else
+        {
+            // Already completed - trigger GetResult directly
+            TriggerGetResultForFireAndForget();
+        }
+    }
+
+    /// <summary>
+    /// Static callback for fire-and-forget - avoids closure allocation.
+    /// </summary>
+    private static readonly Action<object?> s_fireAndForgetCallback = static state =>
+    {
+        var source = (PooledValueTaskSource<T>)state!;
+        source.TriggerGetResultForFireAndForget();
+    };
+
+    /// <summary>
+    /// Triggers GetResult to invoke handlers and return to pool, swallowing any exception.
+    /// </summary>
+    private void TriggerGetResultForFireAndForget()
+    {
+        try
+        {
+            _ = ((IValueTaskSource<T>)this).GetResult(_core.Version);
+        }
+        catch
+        {
+            // Exception already handled in GetResult via delivery handler - swallow here
+        }
+    }
+
+    /// <summary>
     /// Schedules continuation. Called by the awaiter.
     /// </summary>
     void IValueTaskSource<T>.OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)

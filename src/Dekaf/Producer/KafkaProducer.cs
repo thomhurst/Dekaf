@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Dekaf.Compression;
@@ -88,9 +89,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private static long t_cachedTimestampTicks;
 
     // Thread-local cached topic metadata for fire-and-forget produces.
-    // Avoids MetadataManager dictionary lookups and IsStale() checks for consecutive
-    // messages to the same topic. Staleness is checked periodically (~1 second) rather
-    // than on every message, since metadata is typically valid for minutes.
+    // Avoids MetadataManager dictionary lookups for consecutive messages to the same topic.
+    // Cache validity is time-bounded (~1 second) to pick up background metadata refreshes.
     [ThreadStatic]
     private static string? t_cachedTopicName;
     [ThreadStatic]
@@ -428,8 +428,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // This handles the case where metadata isn't initialized or cached
 
         // BACKPRESSURE: Reserve memory before queueing to prevent unbounded channel growth.
-        // Without this, when metadata becomes stale (after MetadataMaxAge), messages would
-        // queue in the unbounded channel without limit, causing memory exhaustion.
         // The worker releases pre-reserved memory immediately when it picks up the item,
         // then AppendAsync reserves memory based on actual serialized size.
         var estimatedSize = EstimateMessageSizeForBackpressure(message);
@@ -440,7 +438,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             completion = _valueTaskSourcePool.Rent();
             // Fire-and-forget: ensure completion source returns to pool when batch completes
-            _ = AwaitDeliveryAsync(completion);
+            // Uses zero-allocation callback instead of async Task to avoid GC pressure
+            completion.ObserveForFireAndForget();
 
             var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None, estimatedSize);
 
@@ -493,8 +492,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         Headers? headers)
     {
         // FAST PATH: Check thread-local cached topic metadata.
-        // Avoids MetadataManager dictionary lookup and IsStale() check for consecutive
-        // messages to the same topic. Revalidate staleness periodically (~1 second).
+        // Avoids MetadataManager dictionary lookup for consecutive messages to the same topic.
+        // Cache refreshes periodically (~1 second) to pick up background metadata updates.
         if (TryGetCachedTopicInfo(topic, out var topicInfo))
         {
             try
@@ -1106,7 +1105,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             completion = _valueTaskSourcePool.Rent();
             completion.SetDeliveryHandler(deliveryHandler);
-            _ = AwaitDeliveryAsync(completion);
+            // Fire-and-forget: ensure completion source returns to pool when batch completes
+            // Uses zero-allocation callback instead of async Task to avoid GC pressure
+            completion.ObserveForFireAndForget();
 
             var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None, estimatedSize);
 
@@ -1394,23 +1395,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             CleanupPooledResources(key, valueMemory, pooledHeaderArray);
             throw;
-        }
-    }
-
-    /// <summary>
-    /// Awaits the completion source to trigger the delivery handler and auto-return to pool.
-    /// Used by the slow path (channel-based) when metadata is not cached.
-    /// </summary>
-    private static async Task AwaitDeliveryAsync(PooledValueTaskSource<RecordMetadata> completion)
-    {
-        try
-        {
-            // Awaiting triggers GetResult() which invokes the handler and returns to pool
-            await completion.Task.ConfigureAwait(false);
-        }
-        catch
-        {
-            // Exception is passed to handler via GetResult() - swallow here
         }
     }
 
@@ -1785,200 +1769,65 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // This prevents memory leaks when exceptions occur during batch sending
         try
         {
-            var leader = await _metadataManager.GetPartitionLeaderAsync(
-                batch.TopicPartition.Topic,
-                batch.TopicPartition.Partition,
-                cancellationToken).ConfigureAwait(false);
+            // Retry loop for transient errors (leader changes, network issues, etc.)
+            // Uses Stopwatch ticks for allocation-free timing
+            var deliveryDeadlineTicks = Stopwatch.GetTimestamp() +
+                (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+            var backoffMs = _options.RetryBackoffMs;
+            ErrorCode lastErrorCode = ErrorCode.None;
 
-            if (leader is null)
+            while (true)
             {
-                throw new InvalidOperationException(
-                    $"No leader for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}");
-            }
+                // Check cancellation at top of loop to avoid unnecessary work
+                cancellationToken.ThrowIfCancellationRequested();
 
-            var connection = await _connectionPool.GetConnectionAsync(leader.NodeId, cancellationToken)
-                .ConfigureAwait(false);
-
-            // Ensure API version is negotiated (thread-safe initialization)
-            var apiVersion = _produceApiVersion;
-            if (apiVersion < 0)
-            {
-                apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                    ApiKey.Produce,
-                    ProduceRequest.LowestSupportedVersion,
-                    ProduceRequest.HighestSupportedVersion);
-                // Use Interlocked to avoid racing with other threads
-                Interlocked.CompareExchange(ref _produceApiVersion, apiVersion, -1);
-                // Re-read in case another thread won the race
-                apiVersion = _produceApiVersion;
-            }
-
-            // Capture topic name locally to ensure it doesn't change
-            var expectedTopic = batch.TopicPartition.Topic;
-            var expectedPartition = batch.TopicPartition.Partition;
-
-            var request = new ProduceRequest
-            {
-                Acks = (short)_options.Acks,
-                TimeoutMs = _options.RequestTimeoutMs,
-                TransactionalId = _options.TransactionalId,
-                TopicData =
-                [
-                    new ProduceRequestTopicData
+                // Check delivery timeout before attempting send
+                if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
                 {
-                    Name = expectedTopic,
-                    PartitionData =
-                    [
-                        new ProduceRequestPartitionData
-                        {
-                            Index = expectedPartition,
-                            Records = [batch.RecordBatch],
-                            Compression = _options.CompressionType
-                        }
-                    ]
+                    throw new TimeoutException(
+                        $"Delivery timeout exceeded for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}" +
+                        (lastErrorCode != ErrorCode.None ? $" (last error: {lastErrorCode})" : ""));
                 }
-                ]
-            };
 
-            // Sanity check: verify the request was built correctly
-            System.Diagnostics.Debug.Assert(
-                request.TopicData[0].Name == expectedTopic,
-                $"Request topic mismatch: expected '{expectedTopic}', got '{request.TopicData[0].Name}'");
+                // Try to send the batch - returns error code on retriable error, None on success
+                var errorCode = await TrySendBatchCoreAsync(batch, cancellationToken).ConfigureAwait(false);
 
-            var messageCount = batch.CompletionSourcesCount;
-            var requestStartTime = DateTimeOffset.UtcNow;
-
-            // Track request sent
-            _statisticsCollector.RecordRequestSent();
-
-            // Handle Acks.None (fire-and-forget) - broker doesn't send response
-            if (_options.Acks == Acks.None)
-            {
-                await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
-                    request,
-                    (short)apiVersion,
-                    cancellationToken).ConfigureAwait(false);
-
-                // Track batch delivered (fire-and-forget assumes success)
-                _statisticsCollector.RecordBatchDelivered(
-                    batch.TopicPartition.Topic,
-                    batch.TopicPartition.Partition,
-                    messageCount);
-
-                // Complete with synthetic metadata since we don't get a response
-                // Offset is unknown (-1) for fire-and-forget
-                _logger?.LogDebug("[SendBatch] COMPLETE (fire-and-forget) {Topic}-{Partition}",
-                    batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                batch.CompleteSend(-1, DateTimeOffset.UtcNow);
-
-                // Memory will be released in finally block
-                return;
-            }
-
-            var response = await connection.SendAsync<ProduceRequest, ProduceResponse>(
-                request,
-                (short)apiVersion,
-                cancellationToken).ConfigureAwait(false);
-
-            // Track response received with latency
-            var latencyMs = (long)(DateTimeOffset.UtcNow - requestStartTime).TotalMilliseconds;
-            _statisticsCollector.RecordResponseReceived(latencyMs);
-
-            // Process response - use imperative loops to avoid LINQ allocations
-            ProduceResponseTopicData? topicResponse = null;
-            foreach (var topic in response.Responses)
-            {
-                if (topic.Name == expectedTopic)
+                if (errorCode == ErrorCode.None)
                 {
-                    topicResponse = topic;
-                    break;
+                    // Success - batch completed in TrySendBatchCoreAsync
+                    return;
                 }
-            }
 
-            ProduceResponsePartitionData? partitionResponse = null;
-            if (topicResponse is not null)
-            {
-                foreach (var partition in topicResponse.PartitionResponses)
+                // Check if error is retriable
+                if (!errorCode.IsRetriable())
                 {
-                    if (partition.Index == expectedPartition)
-                    {
-                        partitionResponse = partition;
-                        break;
-                    }
+                    // Non-retriable error - fail immediately
+                    _statisticsCollector.RecordBatchFailed(
+                        batch.TopicPartition.Topic,
+                        batch.TopicPartition.Partition,
+                        batch.CompletionSourcesCount);
+                    throw new KafkaException(errorCode, $"Produce failed: {errorCode}");
                 }
+
+                // Retriable error - refresh metadata and retry
+                lastErrorCode = errorCode;
+                _statisticsCollector.RecordRetry();
+
+                _logger?.LogDebug(
+                    "[SendBatch] Retriable error {ErrorCode} for {Topic}-{Partition}, refreshing metadata and retrying after {BackoffMs}ms",
+                    errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition, backoffMs);
+
+                // Refresh metadata to get new leader (fire-and-forget, don't block retry loop)
+                // With exponential backoff (100ms -> 200ms -> 400ms...), later retries give
+                // sufficient time for metadata refresh to complete before the next send attempt
+                _ = _metadataManager.RefreshMetadataAsync([batch.TopicPartition.Topic], cancellationToken);
+
+                // Backoff before retry (respects cancellation)
+                await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false);
+
+                // Exponential backoff with cap
+                backoffMs = Math.Min(backoffMs * 2, _options.RetryBackoffMaxMs);
             }
-
-            if (partitionResponse is null)
-            {
-                // Track batch failed
-                _statisticsCollector.RecordBatchFailed(
-                    batch.TopicPartition.Topic,
-                    batch.TopicPartition.Partition,
-                    messageCount);
-
-                // Build diagnostic message (avoid LINQ for zero-allocation principle)
-                var sb = new System.Text.StringBuilder();
-                sb.Append("No response for partition. Expected: ");
-                sb.Append(expectedTopic);
-                sb.Append('[');
-                sb.Append(expectedPartition);
-                sb.Append("], Request topic: ");
-                sb.Append(request.TopicData[0].Name);
-                sb.Append('[');
-                sb.Append(request.TopicData[0].PartitionData[0].Index);
-                sb.Append("], Response: ");
-                for (var i = 0; i < response.Responses.Count; i++)
-                {
-                    if (i > 0) sb.Append(", ");
-                    var t = response.Responses[i];
-                    sb.Append(t.Name);
-                    sb.Append('[');
-                    for (var j = 0; j < t.PartitionResponses.Count; j++)
-                    {
-                        if (j > 0) sb.Append(',');
-                        sb.Append(t.PartitionResponses[j].Index);
-                    }
-                    sb.Append(']');
-                }
-                sb.Append(". API version: ");
-                sb.Append(apiVersion);
-                sb.Append(", Broker: ");
-                sb.Append(connection.Host);
-                sb.Append(':');
-                sb.Append(connection.Port);
-                sb.Append(", Connection #");
-                sb.Append(connection.ConnectionInstanceId);
-
-                throw new InvalidOperationException(sb.ToString());
-            }
-
-            if (partitionResponse.ErrorCode != ErrorCode.None)
-            {
-                // Track batch failed
-                _statisticsCollector.RecordBatchFailed(
-                    batch.TopicPartition.Topic,
-                    batch.TopicPartition.Partition,
-                    messageCount);
-                throw new KafkaException(partitionResponse.ErrorCode,
-                    $"Produce failed: {partitionResponse.ErrorCode}");
-            }
-
-            // Track batch delivered
-            _statisticsCollector.RecordBatchDelivered(
-                batch.TopicPartition.Topic,
-                batch.TopicPartition.Partition,
-                messageCount);
-
-            var timestamp = partitionResponse.LogAppendTimeMs > 0
-                ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
-                : DateTimeOffset.UtcNow;
-
-            _logger?.LogDebug("[SendBatch] COMPLETE (normal) {Topic}-{Partition} at offset {Offset}",
-                batch.TopicPartition.Topic, batch.TopicPartition.Partition, partitionResponse.BaseOffset);
-            batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
-
-
-            // Memory will be released in finally block
         }
         catch (Exception ex)
         {
@@ -1996,6 +1845,169 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // This replaces the inline ReleaseMemory calls and the catch block in SenderLoopAsync
             _accumulator.ReleaseMemory(batch.DataSize);
         }
+    }
+
+    /// <summary>
+    /// Core send logic - attempts to send batch once and returns error code.
+    /// Returns ErrorCode.None on success, or the error code on failure.
+    /// This separation allows the retry loop to avoid exception allocation overhead
+    /// for retriable errors (exceptions are only thrown for non-retriable failures).
+    /// </summary>
+    private async Task<ErrorCode> TrySendBatchCoreAsync(ReadyBatch batch, CancellationToken cancellationToken)
+    {
+        var leader = await _metadataManager.GetPartitionLeaderAsync(
+            batch.TopicPartition.Topic,
+            batch.TopicPartition.Partition,
+            cancellationToken).ConfigureAwait(false);
+
+        if (leader is null)
+        {
+            // No leader found - this is retriable (leader election in progress)
+            return ErrorCode.LeaderNotAvailable;
+        }
+
+        var connection = await _connectionPool.GetConnectionAsync(leader.NodeId, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Ensure API version is negotiated (thread-safe initialization)
+        var apiVersion = _produceApiVersion;
+        if (apiVersion < 0)
+        {
+            apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.Produce,
+                ProduceRequest.LowestSupportedVersion,
+                ProduceRequest.HighestSupportedVersion);
+            // Use Interlocked to avoid racing with other threads
+            Interlocked.CompareExchange(ref _produceApiVersion, apiVersion, -1);
+            // Re-read in case another thread won the race
+            apiVersion = _produceApiVersion;
+        }
+
+        // Capture topic name locally to ensure it doesn't change
+        var expectedTopic = batch.TopicPartition.Topic;
+        var expectedPartition = batch.TopicPartition.Partition;
+
+        var request = new ProduceRequest
+        {
+            Acks = (short)_options.Acks,
+            TimeoutMs = _options.RequestTimeoutMs,
+            TransactionalId = _options.TransactionalId,
+            TopicData =
+            [
+                new ProduceRequestTopicData
+                {
+                    Name = expectedTopic,
+                    PartitionData =
+                    [
+                        new ProduceRequestPartitionData
+                        {
+                            Index = expectedPartition,
+                            Records = [batch.RecordBatch],
+                            Compression = _options.CompressionType
+                        }
+                    ]
+                }
+            ]
+        };
+
+        // Sanity check: verify the request was built correctly
+        System.Diagnostics.Debug.Assert(
+            request.TopicData[0].Name == expectedTopic,
+            $"Request topic mismatch: expected '{expectedTopic}', got '{request.TopicData[0].Name}'");
+
+        var messageCount = batch.CompletionSourcesCount;
+        var requestStartTime = Stopwatch.GetTimestamp();
+
+        // Track request sent
+        _statisticsCollector.RecordRequestSent();
+
+        // Handle Acks.None (fire-and-forget) - broker doesn't send response
+        if (_options.Acks == Acks.None)
+        {
+            await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
+                request,
+                (short)apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            // Track batch delivered (fire-and-forget assumes success)
+            _statisticsCollector.RecordBatchDelivered(
+                batch.TopicPartition.Topic,
+                batch.TopicPartition.Partition,
+                messageCount);
+
+            // Complete with synthetic metadata since we don't get a response
+            // Offset is unknown (-1) for fire-and-forget
+            _logger?.LogDebug("[SendBatch] COMPLETE (fire-and-forget) {Topic}-{Partition}",
+                batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+            batch.CompleteSend(-1, DateTimeOffset.UtcNow);
+
+            return ErrorCode.None;
+        }
+
+        var response = await connection.SendAsync<ProduceRequest, ProduceResponse>(
+            request,
+            (short)apiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        // Track response received with latency (allocation-free timing)
+        var elapsedTicks = Stopwatch.GetTimestamp() - requestStartTime;
+        var latencyMs = (long)(elapsedTicks * 1000.0 / Stopwatch.Frequency);
+        _statisticsCollector.RecordResponseReceived(latencyMs);
+
+        // Process response - use imperative loops to avoid LINQ allocations
+        ProduceResponseTopicData? topicResponse = null;
+        foreach (var topic in response.Responses)
+        {
+            if (topic.Name == expectedTopic)
+            {
+                topicResponse = topic;
+                break;
+            }
+        }
+
+        ProduceResponsePartitionData? partitionResponse = null;
+        if (topicResponse is not null)
+        {
+            foreach (var partition in topicResponse.PartitionResponses)
+            {
+                if (partition.Index == expectedPartition)
+                {
+                    partitionResponse = partition;
+                    break;
+                }
+            }
+        }
+
+        if (partitionResponse is null)
+        {
+            // No response for our partition - treat as retriable network error
+            _logger?.LogWarning(
+                "[SendBatch] No response for partition {Topic}-{Partition} from broker {Host}:{Port}",
+                expectedTopic, expectedPartition, connection.Host, connection.Port);
+            return ErrorCode.NetworkException;
+        }
+
+        if (partitionResponse.ErrorCode != ErrorCode.None)
+        {
+            // Return error code - caller decides if retriable
+            return partitionResponse.ErrorCode;
+        }
+
+        // Success - track and complete the batch
+        _statisticsCollector.RecordBatchDelivered(
+            batch.TopicPartition.Topic,
+            batch.TopicPartition.Partition,
+            messageCount);
+
+        var timestamp = partitionResponse.LogAppendTimeMs > 0
+            ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
+            : DateTimeOffset.UtcNow;
+
+        _logger?.LogDebug("[SendBatch] COMPLETE (normal) {Topic}-{Partition} at offset {Offset}",
+            batch.TopicPartition.Topic, batch.TopicPartition.Partition, partitionResponse.BaseOffset);
+        batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
+
+        return ErrorCode.None;
     }
 
     /// <summary>
