@@ -53,6 +53,7 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
         throughput.Start();
         var messageIndex = 0L;
         var lastStatusTime = DateTime.UtcNow;
+        var lastStatusMessageCount = 0L;
 
         var samplerTask = RunSamplerAsync(throughput, cts.Token);
         var resourceMonitorTask = RunResourceMonitorAsync(cts.Token);
@@ -78,8 +79,12 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
                     var now = DateTime.UtcNow;
                     if ((now - lastStatusTime).TotalSeconds >= 10)
                     {
-                        Console.WriteLine($"  [{now:HH:mm:ss}] Progress: {messageIndex:N0} messages, {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
+                        var elapsedSinceLastStatus = (now - lastStatusTime).TotalSeconds;
+                        var messagesSinceLastStatus = messageIndex - lastStatusMessageCount;
+                        var instantaneousMsgSec = messagesSinceLastStatus / elapsedSinceLastStatus;
+                        Console.WriteLine($"  [{now:HH:mm:ss}] Progress: {messageIndex:N0} messages | instant: {instantaneousMsgSec:N0} msg/sec | avg: {throughput.GetAverageMessagesPerSecond():N0} msg/sec");
                         lastStatusTime = now;
+                        lastStatusMessageCount = messageIndex;
                     }
                 }
             }
