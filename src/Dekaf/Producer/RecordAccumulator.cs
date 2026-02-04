@@ -1718,7 +1718,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     {
 #if DEBUG
                         ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
-                        Console.WriteLine($"[DEBUG] ExpireLinger: Batch completed with {readyBatch.CompletionSourcesCount} completion sources for {kvp.Key}");
 #endif
                         // Track delivery task for FlushAsync
                         TrackDeliveryTask(readyBatch);
@@ -1815,15 +1814,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Fast path: no batches to flush AND no in-flight batches - avoid enumeration and async overhead entirely
         if (_batches.IsEmpty && _inFlightDeliveryTasks.IsEmpty)
         {
-#if DEBUG
-            Console.WriteLine($"[DEBUG] FlushAsync: Fast path - batches empty, in-flight empty");
-#endif
             return ValueTask.CompletedTask;
         }
 
-#if DEBUG
-        Console.WriteLine($"[DEBUG] FlushAsync: Calling FlushAsyncCore - batches: {_batches.Count}, in-flight: {_inFlightDeliveryTasks.Count}");
-#endif
         return FlushAsyncCore(cancellationToken);
     }
 
@@ -1833,16 +1826,17 @@ public sealed class RecordAccumulator : IAsyncDisposable
         ProducerDebugCounters.RecordFlushCall();
 #endif
         // Step 1: Flush all batches from _batches dictionary
-        // Loop until _batches is empty because ConcurrentDictionary.foreach doesn't see
-        // entries added during iteration (e.g., new batches created when full batches complete)
-        while (!_batches.IsEmpty)
+        // Take a snapshot of keys to avoid infinite loop if messages are continuously added
+        // This ensures FlushAsync only flushes batches that existed when it was called
+        var keysToFlush = _batches.Keys.ToArray();
+
+        foreach (var key in keysToFlush)
         {
-            foreach (var kvp in _batches)
+            if (_batches.TryGetValue(key, out var batch))
             {
-                var batch = kvp.Value;
                 // Atomically remove the batch from dictionary BEFORE completing.
                 // Only the thread that wins the TryRemove race will complete the batch.
-                if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch)))
+                if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(key, batch)))
                 {
 #if DEBUG
                     ProducerDebugCounters.RecordBatchFlushedFromDictionary();
@@ -1885,13 +1879,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
                         _batchPool.Return(batch);
                     }
                 }
-            }
-
-            // Yield to allow any concurrent append operations to complete
-            // This helps ensure we don't miss batches created during the previous iteration
-            if (!_batches.IsEmpty)
-            {
-                await Task.Yield();
             }
         }
 
