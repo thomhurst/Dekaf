@@ -695,26 +695,36 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
 
-            foreach (var (brokerId, partitions) in partitionsByBroker)
-            {
-                try
-                {
-                    await PrefetchFromBrokerAsync(brokerId, partitions, linkedCts.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (wakeupCts.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    _logger?.LogError(ex, "Failed to prefetch from broker {BrokerId}", brokerId);
-                }
-            }
+            // Fetch from all brokers in parallel for maximum throughput
+            var fetchTasks = partitionsByBroker.Select(kvp => PrefetchFromBrokerWithErrorHandlingAsync(
+                kvp.Key, kvp.Value, linkedCts.Token, wakeupCts.Token)).ToArray();
+
+            await Task.WhenAll(fetchTasks).ConfigureAwait(false);
         }
         finally
         {
             _wakeupCts = null;
             _ctsPool.Return(wakeupCts);
+        }
+    }
+
+    private async Task PrefetchFromBrokerWithErrorHandlingAsync(
+        int brokerId,
+        List<TopicPartition> partitions,
+        CancellationToken linkedToken,
+        CancellationToken wakeupToken)
+    {
+        try
+        {
+            await PrefetchFromBrokerAsync(brokerId, partitions, linkedToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (wakeupToken.IsCancellationRequested)
+        {
+            // Wakeup requested, exit silently
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Failed to prefetch from broker {BrokerId}", brokerId);
         }
     }
 
@@ -1593,26 +1603,36 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
 
-            foreach (var (brokerId, partitions) in partitionsByBroker)
-            {
-                try
-                {
-                    await FetchFromBrokerAsync(brokerId, partitions, linkedCts.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (wakeupCts.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    _logger?.LogError(ex, "Failed to fetch from broker {BrokerId}", brokerId);
-                }
-            }
+            // Fetch from all brokers in parallel for maximum throughput
+            var fetchTasks = partitionsByBroker.Select(kvp => FetchFromBrokerWithErrorHandlingAsync(
+                kvp.Key, kvp.Value, linkedCts.Token, wakeupCts.Token)).ToArray();
+
+            await Task.WhenAll(fetchTasks).ConfigureAwait(false);
         }
         finally
         {
             _wakeupCts = null;
             _ctsPool.Return(wakeupCts);
+        }
+    }
+
+    private async Task FetchFromBrokerWithErrorHandlingAsync(
+        int brokerId,
+        List<TopicPartition> partitions,
+        CancellationToken linkedToken,
+        CancellationToken wakeupToken)
+    {
+        try
+        {
+            await FetchFromBrokerAsync(brokerId, partitions, linkedToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (wakeupToken.IsCancellationRequested)
+        {
+            // Wakeup requested, exit silently
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Failed to fetch from broker {BrokerId}", brokerId);
         }
     }
 
@@ -1648,16 +1668,26 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
 
         // Build the cache outside the lock - allocate once per assignment change
+        // Resolve all partition leaders in parallel for maximum throughput
+        var partitionsToResolve = assignmentSnapshot
+            .Where(p => !pausedSnapshot.Contains(p))
+            .ToArray();
+
+        var leaderTasks = partitionsToResolve
+            .Select(async partition =>
+            {
+                var leader = await _metadataManager.GetPartitionLeaderAsync(
+                    partition.Topic, partition.Partition, cancellationToken).ConfigureAwait(false);
+                return (Partition: partition, Leader: leader);
+            })
+            .ToArray();
+
+        var resolvedPartitions = await Task.WhenAll(leaderTasks).ConfigureAwait(false);
+
+        // Build result dictionary from resolved partitions
         var result = new Dictionary<int, List<TopicPartition>>();
-
-        foreach (var partition in assignmentSnapshot)
+        foreach (var (partition, leader) in resolvedPartitions)
         {
-            if (pausedSnapshot.Contains(partition))
-                continue;
-
-            var leader = await _metadataManager.GetPartitionLeaderAsync(partition.Topic, partition.Partition, cancellationToken)
-                .ConfigureAwait(false);
-
             if (leader is null)
                 continue;
 

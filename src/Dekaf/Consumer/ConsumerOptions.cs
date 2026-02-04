@@ -191,9 +191,9 @@ public sealed class ConsumerOptions
     /// <summary>
     /// Minimum number of messages to prefetch per partition.
     /// The consumer will attempt to keep at least this many messages buffered.
-    /// Set to 0 to disable prefetching. Default is 1 (fetch on demand).
+    /// Set to 1 to disable prefetching (fetch on demand). Default is 100000.
     /// </summary>
-    public int QueuedMinMessages { get; init; } = 1;
+    public int QueuedMinMessages { get; init; } = 100000;
 
     /// <summary>
     /// Maximum total size of prefetched messages in kilobytes.
