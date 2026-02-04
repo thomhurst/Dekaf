@@ -639,6 +639,15 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             .WithClientId("test-concurrent-late-cancellation")
             .Build();
 
+        // Warmup: Ensure producer is fully connected before concurrent test
+        // This prevents metadata refresh failures in CI environments
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "warmup",
+            Value = "warmup"
+        });
+
         using var cts = new CancellationTokenSource();
         var tasks = new List<Task<RecordMetadata>>();
 
