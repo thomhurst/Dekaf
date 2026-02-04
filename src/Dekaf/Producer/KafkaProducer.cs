@@ -694,35 +694,37 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 return false; // Batch completed, use slow path
             }
 
-            // Calculate total size needed and check if it fits
+            // Calculate total size needed for key + value combined
             var totalSize = keyLength + valueLength;
-            if (arena.RemainingCapacity < totalSize)
+
+            // Single CAS allocation for both key and value together
+            // This reduces atomic operations from 2 per message to 1
+            if (!arena.TryAllocate(totalSize, out var combinedSpan, out var combinedOffset))
             {
                 _accumulator.ReleaseMemory(recordSize);
-                return false; // Not enough space, use slow path (which will rotate)
+                return false; // Allocation failed, use slow path
             }
 
-            // Allocate key in arena
+            // Split the combined allocation into key and value slices
             ArenaSlice keySlice = default;
+            ArenaSlice valueSlice;
+
             if (!keyIsNull && keyLength > 0)
             {
-                if (!arena.TryAllocate(keyLength, out var keySpan, out var keyOffset))
-                {
-                    _accumulator.ReleaseMemory(recordSize);
-                    return false; // Allocation failed, use slow path
-                }
-                t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(keySpan);
-                keySlice = new ArenaSlice(keyOffset, keyLength);
-            }
+                // Copy key to first part of combined allocation
+                t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(combinedSpan.Slice(0, keyLength));
+                keySlice = new ArenaSlice(combinedOffset, keyLength);
 
-            // Allocate value in arena
-            if (!arena.TryAllocate(valueLength, out var valueSpan, out var valueOffset))
-            {
-                _accumulator.ReleaseMemory(recordSize);
-                return false; // Allocation failed (shouldn't happen after size check, but be safe)
+                // Copy value to second part
+                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan.Slice(keyLength, valueLength));
+                valueSlice = new ArenaSlice(combinedOffset + keyLength, valueLength);
             }
-            t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(valueSpan);
-            var valueSlice = new ArenaSlice(valueOffset, valueLength);
+            else
+            {
+                // No key - value uses entire allocation
+                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan);
+                valueSlice = new ArenaSlice(combinedOffset, valueLength);
+            }
 
             // Append using arena-based method
             var result = cachedBatch.TryAppendFromArena(timestampMs, keySlice, keyIsNull, valueSlice, recordHeaders, pooledHeaderArray);
@@ -1111,7 +1113,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// <summary>
     /// Attempts synchronous produce with delivery handler when metadata is initialized and cached.
     /// Returns true if successful, false if async path is needed.
-    /// For fire-and-forget, exceptions are delivered via the callback, not thrown.
+    /// Uses batch-embedded callbacks for zero-allocation - callbacks are invoked inline on sender thread.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryProduceSyncWithHandler(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
@@ -1133,26 +1135,254 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             return false;
         }
 
-        // All checks passed - proceed synchronously
-        var completion = _valueTaskSourcePool.Rent();
-        completion.SetDeliveryHandler(deliveryHandler);
-        _ = AwaitDeliveryAsync(completion);
-
+        // All checks passed - proceed synchronously using direct callback path (no PooledValueTaskSource needed)
         try
         {
-            ProduceSyncCore(message, topicInfo, completion);
+            ProduceSyncCoreWithCallbackDirect(
+                message.Topic,
+                message.Key,
+                message.Value,
+                message.Partition,
+                message.Timestamp,
+                message.Headers,
+                topicInfo,
+                deliveryHandler);
         }
         catch (Exception ex)
         {
-            // Fire-and-forget: capture exception in completion source
-            // The delivery handler will be invoked with the exception
-            completion.TrySetException(ex);
+            // Deliver exception to callback - don't throw for fire-and-forget style
+            try { deliveryHandler(default, ex); } catch { /* Swallow callback exceptions */ }
         }
         return true;
     }
 
     /// <summary>
+    /// Core produce logic with delivery callback stored directly in the batch.
+    /// Similar to ProduceSyncCoreFireAndForgetDirect but tracks callbacks for delivery notification.
+    /// Callbacks are invoked inline on the sender thread when the batch completes.
+    /// </summary>
+    private void ProduceSyncCoreWithCallbackDirect(
+        string topic,
+        TKey? keyObj,
+        TValue value,
+        int? partitionOverride,
+        DateTimeOffset? timestampOverride,
+        Headers? headers,
+        TopicInfo topicInfo,
+        Action<RecordMetadata, Exception?> callback)
+    {
+        // Step 1: Serialize to thread-local buffers (no allocation, reused across messages)
+        var keyIsNull = keyObj is null;
+        int keyLength = 0;
+
+        if (!keyIsNull)
+        {
+            var keyWriter = new ReusableBufferWriter(ref t_keySerializationBuffer, DefaultKeyBufferSize);
+            t_serializationContext.Topic = topic;
+            t_serializationContext.Component = SerializationComponent.Key;
+            t_serializationContext.Headers = headers;
+            _keySerializer.Serialize(keyObj!, ref keyWriter, t_serializationContext);
+            keyWriter.UpdateBufferRef(ref t_keySerializationBuffer);
+            keyLength = keyWriter.WrittenCount;
+        }
+
+        var valueWriter = new ReusableBufferWriter(ref t_valueSerializationBuffer, DefaultValueBufferSize);
+        t_serializationContext.Topic = topic;
+        t_serializationContext.Component = SerializationComponent.Value;
+        t_serializationContext.Headers = headers;
+        _valueSerializer.Serialize(value, ref valueWriter, t_serializationContext);
+        valueWriter.UpdateBufferRef(ref t_valueSerializationBuffer);
+        var valueLength = valueWriter.WrittenCount;
+
+        // Step 2: Compute partition using serialized key bytes
+        var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : t_keySerializationBuffer.AsSpan(0, keyLength);
+        var partition = partitionOverride
+            ?? _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
+
+        // Step 3: Get timestamp
+        var timestampMs = timestampOverride?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
+
+        // Step 4: Convert headers
+        IReadOnlyList<RecordHeader>? recordHeaders = null;
+        RecordHeader[]? pooledHeaderArray = null;
+        if (headers is not null && headers.Count > 0)
+        {
+            recordHeaders = ConvertHeaders(headers, out pooledHeaderArray);
+        }
+
+        // Step 5: FAST PATH - Try to append to cached batch with arena and callback
+        if (TryAppendToArenaFastWithCallback(topic, partition, timestampMs, keyIsNull, keyLength, valueLength, recordHeaders, ref pooledHeaderArray, callback))
+        {
+            _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
+            return;
+        }
+
+        // Step 6: SLOW PATH - Handle all complexity
+        AppendWithSlowPathWithCallback(topic, partition, timestampMs, keyIsNull, keyLength, valueLength, recordHeaders, pooledHeaderArray, callback);
+        _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
+    }
+
+    /// <summary>
+    /// FAST PATH with callback: Try to append to an existing batch's arena with a delivery callback.
+    /// No side effects - if anything is wrong, just return false.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool TryAppendToArenaFastWithCallback(
+        string topic,
+        int partition,
+        long timestampMs,
+        bool keyIsNull,
+        int keyLength,
+        int valueLength,
+        IReadOnlyList<RecordHeader>? recordHeaders,
+        ref RecordHeader[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?> callback)
+    {
+        // STEP 1: Calculate record size BEFORE any work
+        var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, recordHeaders);
+
+        // STEP 2: Try to reserve BufferMemory (non-blocking check)
+        if (!_accumulator.TryReserveMemory(recordSize))
+        {
+            return false; // Buffer full - fall back to slow path with backpressure
+        }
+
+        // STEP 3: Memory reserved - must ensure cleanup on ANY failure from this point
+        try
+        {
+            // Check thread-local batch cache first (avoids dictionary lookup)
+            var cachedBatch = GetCachedBatch(topic, partition);
+            if (cachedBatch is null)
+            {
+                _accumulator.ReleaseMemory(recordSize);
+                return false; // No cached batch, use slow path
+            }
+
+            var arena = cachedBatch.Arena;
+            if (arena is null)
+            {
+                _accumulator.ReleaseMemory(recordSize);
+                return false; // Batch completed, use slow path
+            }
+
+            // Calculate total size needed for key + value combined
+            var totalSize = keyLength + valueLength;
+
+            // Single CAS allocation for both key and value together
+            // This reduces atomic operations from 2 per message to 1
+            if (!arena.TryAllocate(totalSize, out var combinedSpan, out var combinedOffset))
+            {
+                _accumulator.ReleaseMemory(recordSize);
+                return false; // Allocation failed, use slow path
+            }
+
+            // Split the combined allocation into key and value slices
+            ArenaSlice keySlice = default;
+            ArenaSlice valueSlice;
+
+            if (!keyIsNull && keyLength > 0)
+            {
+                // Copy key to first part of combined allocation
+                t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(combinedSpan.Slice(0, keyLength));
+                keySlice = new ArenaSlice(combinedOffset, keyLength);
+
+                // Copy value to second part
+                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan.Slice(keyLength, valueLength));
+                valueSlice = new ArenaSlice(combinedOffset + keyLength, valueLength);
+            }
+            else
+            {
+                // No key - value uses entire allocation
+                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan);
+                valueSlice = new ArenaSlice(combinedOffset, valueLength);
+            }
+
+            // Append using arena-based method with callback
+            var result = cachedBatch.TryAppendFromArenaWithCallback(timestampMs, keySlice, keyIsNull, valueSlice, recordHeaders, pooledHeaderArray, callback);
+
+            if (!result.Success)
+            {
+                _accumulator.ReleaseMemory(recordSize);
+                return false; // Batch full or completed, use slow path
+            }
+
+            // Success - batch now owns the pooled header array
+            // Memory stays reserved until batch completes (no ReleaseMemory call)
+            pooledHeaderArray = null;
+            return true;
+        }
+        catch
+        {
+            // CRITICAL: If any exception occurs after memory reservation, release it
+            _accumulator.ReleaseMemory(recordSize);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// SLOW PATH with callback: Copy to pooled arrays and append via accumulator.
+    /// </summary>
+    private void AppendWithSlowPathWithCallback(
+        string topic,
+        int partition,
+        long timestampMs,
+        bool keyIsNull,
+        int keyLength,
+        int valueLength,
+        IReadOnlyList<RecordHeader>? recordHeaders,
+        RecordHeader[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?> callback)
+    {
+        var key = PooledMemory.Null;
+        var valueMemory = PooledMemory.Null;
+
+        try
+        {
+            // Copy key from thread-local to pooled array
+            if (!keyIsNull && keyLength > 0)
+            {
+                var keyArray = ArrayPool<byte>.Shared.Rent(keyLength);
+                t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(keyArray);
+                key = new PooledMemory(keyArray, keyLength);
+            }
+
+            // Copy value from thread-local to pooled array
+            if (valueLength > 0)
+            {
+                var valueArray = ArrayPool<byte>.Shared.Rent(valueLength);
+                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(valueArray);
+                valueMemory = new PooledMemory(valueArray, valueLength);
+            }
+
+            // Append to accumulator with callback
+            if (!_accumulator.TryAppendWithCallback(
+                topic,
+                partition,
+                timestampMs,
+                key,
+                valueMemory,
+                recordHeaders,
+                pooledHeaderArray,
+                callback))
+            {
+                CleanupPooledResources(key, valueMemory, pooledHeaderArray);
+                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+            }
+
+            // Success - ownership transferred, clear local refs
+            key = PooledMemory.Null;
+            valueMemory = PooledMemory.Null;
+        }
+        catch
+        {
+            CleanupPooledResources(key, valueMemory, pooledHeaderArray);
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Awaits the completion source to trigger the delivery handler and auto-return to pool.
+    /// Used by the slow path (channel-based) when metadata is not cached.
     /// </summary>
     private static async Task AwaitDeliveryAsync(PooledValueTaskSource<RecordMetadata> completion)
     {
@@ -1376,10 +1606,18 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     private async Task SenderLoopAsync(CancellationToken cancellationToken)
     {
-        await foreach (var batch in _accumulator.SendableBatches.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        // Simplified architecture: read directly from ready batches channel (no intermediate CompletionLoop)
+        await foreach (var batch in _accumulator.ReadyBatches.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
             try
             {
+                // Complete delivery task (fire-and-forget semantic: batch is "ready")
+                // This is done inline before sending to unblock FlushAsync immediately
+                batch.CompleteDelivery();
+
+                // Decrement in-flight counter to unblock FlushAsync
+                _accumulator.OnBatchExitsPipeline();
+
                 await SendBatchAsync(batch, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex)
@@ -1408,6 +1646,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
                 // NOTE: BufferMemory is released in SendBatchAsync's finally block
                 // No need to release here to avoid double-release
+            }
+            finally
+            {
+                // Return the ReadyBatch to the pool for reuse
+                _accumulator.ReturnReadyBatch(batch);
             }
         }
     }

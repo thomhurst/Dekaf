@@ -1,5 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics.X86;
 using Dekaf.Compression;
 
 namespace Dekaf.Protocol.Records;
@@ -504,10 +506,13 @@ public enum CompressionType
 
 /// <summary>
 /// CRC32C implementation for Kafka record batch checksums.
-/// Uses the Castagnoli polynomial (0x1EDC6F41).
+/// Uses the Castagnoli polynomial (0x1EDC6F41) with hardware acceleration (SSE4.2).
 /// </summary>
 internal static class Crc32C
 {
+    private static readonly bool IsHardwareAccelerated = Sse42.IsSupported;
+
+    // Software fallback table
     private static readonly uint[] Table = GenerateTable();
 
     private static uint[] GenerateTable()
@@ -528,15 +533,58 @@ internal static class Crc32C
         return table;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static uint Compute(ReadOnlySpan<byte> data)
     {
-        var crc = 0xFFFFFFFF;
+        return IsHardwareAccelerated ? ComputeHardware(data) : ComputeSoftware(data);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint ComputeHardware(ReadOnlySpan<byte> data)
+    {
+        var crc = 0xFFFFFFFFu;
+        var i = 0;
+
+        // Process 8 bytes at a time using 64-bit CRC instruction
+        // Use BinaryPrimitives for consistent endianness (CRC32C operates on little-endian data)
+        if (Sse42.X64.IsSupported)
+        {
+            while (i + 8 <= data.Length)
+            {
+                var value = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(i, 8));
+                crc = (uint)Sse42.X64.Crc32(crc, value);
+                i += 8;
+            }
+        }
+
+        // Process 4 bytes at a time
+        while (i + 4 <= data.Length)
+        {
+            var value = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(i, 4));
+            crc = Sse42.Crc32(crc, value);
+            i += 4;
+        }
+
+        // Process remaining bytes
+        while (i < data.Length)
+        {
+            crc = Sse42.Crc32(crc, data[i]);
+            i++;
+        }
+
+        return crc ^ 0xFFFFFFFFu;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static uint ComputeSoftware(ReadOnlySpan<byte> data)
+    {
+        var crc = 0xFFFFFFFFu;
 
         foreach (var b in data)
         {
             crc = Table[(crc ^ b) & 0xFF] ^ (crc >> 8);
         }
 
-        return crc ^ 0xFFFFFFFF;
+        return crc ^ 0xFFFFFFFFu;
     }
 }
