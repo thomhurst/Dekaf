@@ -1,10 +1,160 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Dekaf.Protocol.Records;
 
 namespace Dekaf.Producer;
+
+/// <summary>
+/// Debug-only tracking for message flow through the producer pipeline.
+/// Tracks messages at each stage to identify where messages are lost.
+/// All recording methods use [Conditional("DEBUG")] so calls are stripped in Release builds.
+/// </summary>
+internal static class ProducerDebugCounters
+{
+    // Stage 1: Messages appended to batches
+    private static int _messagesAppended;
+    private static int _messagesAppendedWithCompletion;
+    private static int _messagesAppendedFireAndForget;
+    private static int _completionSourcesStoredInBatch;
+
+    // Stage 2: Batches completed and queued
+    private static int _batchesCompleted;
+    private static int _completionSourcesInCompletedBatches;
+    private static int _batchesQueuedToReadyChannel;
+    private static int _batchesFailedToQueue;
+
+    // Stage 3: Batches processed by completion loop
+    private static int _batchesProcessedByCompletionLoop;
+    private static int _batchesForwardedToSendable;
+
+    // Stage 4: Batches sent by sender loop
+    private static int _batchesSentSuccessfully;
+    private static int _batchesFailed;
+    private static int _completionSourcesCompleted;
+    private static int _completionSourcesFailed;
+
+    // Stage 5: Flush and disposal
+    private static int _flushCalls;
+    private static int _batchesFlushedFromDictionary;
+
+    [Conditional("DEBUG")]
+    public static void RecordMessageAppended(bool hasCompletionSource)
+    {
+        Interlocked.Increment(ref _messagesAppended);
+        if (hasCompletionSource)
+            Interlocked.Increment(ref _messagesAppendedWithCompletion);
+        else
+            Interlocked.Increment(ref _messagesAppendedFireAndForget);
+    }
+
+    [Conditional("DEBUG")]
+    public static void RecordCompletionSourceStoredInBatch() =>
+        Interlocked.Increment(ref _completionSourcesStoredInBatch);
+
+    [Conditional("DEBUG")]
+    public static void RecordBatchCompleted(int completionSourceCount)
+    {
+        Interlocked.Increment(ref _batchesCompleted);
+        Interlocked.Add(ref _completionSourcesInCompletedBatches, completionSourceCount);
+    }
+
+    [Conditional("DEBUG")]
+    public static void RecordBatchQueuedToReady() => Interlocked.Increment(ref _batchesQueuedToReadyChannel);
+
+    [Conditional("DEBUG")]
+    public static void RecordBatchFailedToQueue() => Interlocked.Increment(ref _batchesFailedToQueue);
+
+    [Conditional("DEBUG")]
+    public static void RecordBatchProcessedByCompletionLoop() => Interlocked.Increment(ref _batchesProcessedByCompletionLoop);
+
+    [Conditional("DEBUG")]
+    public static void RecordBatchForwardedToSendable() => Interlocked.Increment(ref _batchesForwardedToSendable);
+
+    [Conditional("DEBUG")]
+    public static void RecordBatchSentSuccessfully() => Interlocked.Increment(ref _batchesSentSuccessfully);
+
+    [Conditional("DEBUG")]
+    public static void RecordBatchFailed() => Interlocked.Increment(ref _batchesFailed);
+
+    [Conditional("DEBUG")]
+    public static void RecordCompletionSourceCompleted(int count = 1) =>
+        Interlocked.Add(ref _completionSourcesCompleted, count);
+
+    [Conditional("DEBUG")]
+    public static void RecordCompletionSourceFailed(int count = 1) =>
+        Interlocked.Add(ref _completionSourcesFailed, count);
+
+    [Conditional("DEBUG")]
+    public static void RecordFlushCall() => Interlocked.Increment(ref _flushCalls);
+
+    [Conditional("DEBUG")]
+    public static void RecordBatchFlushedFromDictionary() => Interlocked.Increment(ref _batchesFlushedFromDictionary);
+
+    [Conditional("DEBUG")]
+    public static void Reset()
+    {
+        _messagesAppended = 0;
+        _messagesAppendedWithCompletion = 0;
+        _messagesAppendedFireAndForget = 0;
+        _completionSourcesStoredInBatch = 0;
+        _batchesCompleted = 0;
+        _completionSourcesInCompletedBatches = 0;
+        _batchesQueuedToReadyChannel = 0;
+        _batchesFailedToQueue = 0;
+        _batchesProcessedByCompletionLoop = 0;
+        _batchesForwardedToSendable = 0;
+        _batchesSentSuccessfully = 0;
+        _batchesFailed = 0;
+        _completionSourcesCompleted = 0;
+        _completionSourcesFailed = 0;
+        _flushCalls = 0;
+        _batchesFlushedFromDictionary = 0;
+    }
+
+    public static string GetSummary()
+    {
+#if DEBUG
+        return $"""
+            [ProducerDebugCounters Summary]
+            Stage 1 - Append:
+              Messages appended: {_messagesAppended}
+              - With completion source: {_messagesAppendedWithCompletion}
+              - Fire-and-forget: {_messagesAppendedFireAndForget}
+              Completion sources stored (inside lock): {_completionSourcesStoredInBatch}
+              LOSS AT APPEND: {_messagesAppendedWithCompletion - _completionSourcesStoredInBatch}
+            Stage 2 - Batch Complete:
+              Batches completed: {_batchesCompleted}
+              Completion sources in completed batches: {_completionSourcesInCompletedBatches}
+              LOSS AT COMPLETE: {_completionSourcesStoredInBatch - _completionSourcesInCompletedBatches}
+              Batches queued to ready channel: {_batchesQueuedToReadyChannel}
+              Batches failed to queue: {_batchesFailedToQueue}
+            Stage 3 - Completion Loop:
+              Batches processed: {_batchesProcessedByCompletionLoop}
+              Batches forwarded to sendable: {_batchesForwardedToSendable}
+            Stage 4 - Sender Loop:
+              Batches sent successfully: {_batchesSentSuccessfully}
+              Batches failed: {_batchesFailed}
+              Completion sources completed: {_completionSourcesCompleted}
+              Completion sources failed: {_completionSourcesFailed}
+            Stage 5 - Flush/Dispose:
+              Flush calls: {_flushCalls}
+              Batches flushed from dictionary: {_batchesFlushedFromDictionary}
+            DISCREPANCY CHECK:
+              Expected callbacks: {_messagesAppendedWithCompletion}
+              Actual callbacks: {_completionSourcesCompleted + _completionSourcesFailed}
+              Missing: {_messagesAppendedWithCompletion - _completionSourcesCompleted - _completionSourcesFailed}
+            """;
+#else
+        return "[ProducerDebugCounters disabled in Release build]";
+#endif
+    }
+
+    [Conditional("DEBUG")]
+    public static void DumpToConsole() => Console.WriteLine(GetSummary());
+}
 
 /// <summary>
 /// Represents memory rented from ArrayPool that must be returned when no longer needed.
@@ -323,6 +473,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
     // Completed tasks automatically remove themselves via ContinueWith to prevent unbounded growth
     private readonly ConcurrentDictionary<Task, byte> _inFlightDeliveryTasks = new(concurrencyLevel: Environment.ProcessorCount, capacity: 1024);
 
+    // Track batches that have been written to _sendableBatches but not yet completed by SenderLoop
+    // CompletionLoop increments when writing to _sendableBatches
+    // KafkaProducer.SenderLoop decrements via SignalBatchSendComplete() after CompleteSend()/Fail()
+    // KafkaProducer.FlushAsync waits for this to reach 0 to ensure all callbacks have fired
+    private int _batchesAwaitingSend;
+
     private volatile bool _disposed;
     private volatile bool _closed;
     private volatile bool _disposing; // Set during DisposeAsync to prevent continuations from removing tasks
@@ -333,12 +489,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private readonly SemaphoreSlim _bufferSpaceAvailable = new(1, 1);
     private readonly CancellationTokenSource _disposalCts = new();
     private readonly ManualResetEventSlim _disposalEvent = new(false);
-
-    // Semaphore to limit the number of in-flight batches (each holding a 16MB+ arena).
-    // Without this limit, unbounded channels allow batches to accumulate faster than
-    // they can be sent, causing memory growth far exceeding BufferMemory.
-    // Max batches = BufferMemory / ArenaCapacity (minimum 2 for pipelining).
-    private readonly SemaphoreSlim _batchSemaphore;
 
     // Thread-local cache for fast path when consecutive messages go to the same partition.
     // This eliminates ConcurrentDictionary lookups for the common case of sending multiple
@@ -393,33 +543,13 @@ public sealed class RecordAccumulator : IAsyncDisposable
     // allocation elimination in the critical produce path.
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, TopicPartition>> _topicPartitionCache = new();
 
-    /// <summary>
-    /// Calculates the effective arena capacity, capped to BufferMemory/2 to ensure
-    /// at least 2 batches can fit within BufferMemory.
-    /// </summary>
-    internal static int CalculateEffectiveArenaCapacity(ProducerOptions options)
-    {
-        var arenaCapacity = options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize;
-        var maxArenaCapacity = (int)Math.Min(options.BufferMemory / 2, int.MaxValue);
-        return maxArenaCapacity > 0 && arenaCapacity > maxArenaCapacity
-            ? maxArenaCapacity
-            : arenaCapacity;
-    }
-
     public RecordAccumulator(ProducerOptions options)
     {
         _options = options;
         _batchPool = new PartitionBatchPool(options);
         _maxBufferMemory = options.BufferMemory;
 
-        // Initialize batch semaphore to limit in-flight batches and prevent unbounded memory growth.
-        // Use BatchSize as the divisor since that represents actual batch data size.
-        // This allows BufferMemory/BatchSize batches (e.g., 256MB/1MB = 256 batches).
-        // Minimum of 16 batches ensures good throughput even with small BufferMemory.
-        var maxBatches = Math.Max(16, (int)(options.BufferMemory / (ulong)options.BatchSize));
-        _batchSemaphore = new SemaphoreSlim(maxBatches, maxBatches);
-
-        // Use unbounded channel for ready batches - backpressure is now handled by batch semaphore
+        // Use unbounded channel for ready batches - backpressure is now handled by buffer memory tracking
         _readyBatches = Channel.CreateUnbounded<ReadyBatch>(new UnboundedChannelOptions
         {
             SingleReader = true,
@@ -442,9 +572,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// Completion loop that processes ready batches:
     /// 1. Reads from _readyBatches channel
     /// 2. Completes the delivery task (fire-and-forget semantic: batch is "ready")
-    /// 3. Forwards to _sendableBatches for KafkaProducer.SenderLoop
+    /// 3. Increments batch counter for KafkaProducer.FlushAsync to track
+    /// 4. Forwards to _sendableBatches for KafkaProducer.SenderLoop
     ///
-    /// This allows RecordAccumulator to work independently in unit tests without a sender loop.
+    /// DoneTask is completed here for RecordAccumulator-only tests without a SenderLoop.
+    /// KafkaProducer.FlushAsync uses BatchesAwaitingSend counter to wait for actual network send.
     /// </summary>
     private async Task CompletionLoopAsync(CancellationToken cancellationToken)
     {
@@ -452,12 +584,21 @@ public sealed class RecordAccumulator : IAsyncDisposable
         {
             await foreach (var readyBatch in _readyBatches.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
+#if DEBUG
+                ProducerDebugCounters.RecordBatchProcessedByCompletionLoop();
+#endif
                 // Complete the delivery task (fire-and-forget semantic: "ready" = done)
-                // This makes FlushAsync return and allows tests to pass
+                // This makes FlushAsync return for RecordAccumulator-only tests
                 readyBatch.CompleteDelivery();
+
+                // Track batch as awaiting send - KafkaProducer.FlushAsync waits for this to reach 0
+                Interlocked.Increment(ref _batchesAwaitingSend);
 
                 // Forward to sendable channel for KafkaProducer's sender loop
                 await _sendableBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+#if DEBUG
+                ProducerDebugCounters.RecordBatchForwardedToSendable();
+#endif
             }
         }
         catch (OperationCanceledException)
@@ -477,83 +618,19 @@ public sealed class RecordAccumulator : IAsyncDisposable
     internal ChannelReader<ReadyBatch> SendableBatches => _sendableBatches.Reader;
 
     /// <summary>
-    /// Enqueues a ready batch to the channel, acquiring the batch semaphore first.
-    /// This limits the number of in-flight batches to prevent unbounded memory growth.
+    /// Gets the number of batches that have been written to the sendable channel
+    /// but not yet completed by SenderLoop.
+    /// Used by KafkaProducer.FlushAsync to wait for all callbacks to fire.
     /// </summary>
-    /// <param name="readyBatch">The batch to enqueue.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>True if enqueued; false if channel is closed.</returns>
-    private async ValueTask<bool> EnqueueReadyBatchAsync(ReadyBatch readyBatch, CancellationToken cancellationToken)
-    {
-        // Acquire semaphore to limit in-flight batches (each holds 16MB+ arena)
-        await _batchSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-        // Set cleanup callback to release semaphore when batch completes
-        readyBatch.SetCleanupCallback(() => _batchSemaphore.Release());
-
-        // Try synchronous write first to avoid async state machine allocation
-        if (_readyBatches.Writer.TryWrite(readyBatch))
-            return true;
-
-        // Fall back to async write
-        try
-        {
-            await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-        catch
-        {
-            // If write fails, release semaphore before propagating exception
-            _batchSemaphore.Release();
-            readyBatch.SetCleanupCallback(null!);
-            throw;
-        }
-    }
+    internal int BatchesAwaitingSend => Volatile.Read(ref _batchesAwaitingSend);
 
     /// <summary>
-    /// Enqueues a ready batch synchronously, blocking until a semaphore slot is available.
-    /// This provides backpressure for fire-and-forget sends to prevent unbounded memory growth.
-    /// Times out after RequestTimeoutMs to prevent indefinite thread pool blocking.
+    /// Signals that a batch has completed the send phase (CompleteSend or Fail called).
+    /// Called by KafkaProducer.SenderLoop after processing each batch.
     /// </summary>
-    /// <param name="readyBatch">The batch to enqueue.</param>
-    /// <returns>True if enqueued; false if timeout, channel closed, or disposed.</returns>
-    private bool TryEnqueueReadyBatch(ReadyBatch readyBatch)
+    internal void SignalBatchSendComplete()
     {
-        // Check disposal before blocking
-        if (_disposed || _closed)
-            return false;
-
-        try
-        {
-            // Block until semaphore available, checking disposal periodically.
-            // Use 100ms intervals and total timeout of RequestTimeoutMs to prevent
-            // indefinite thread pool blocking while still allowing backpressure.
-            var maxWaitMs = _options.RequestTimeoutMs;
-            var elapsed = 0;
-
-            while (!_batchSemaphore.Wait(100))
-            {
-                elapsed += 100;
-                if (_disposed || _closed || elapsed >= maxWaitMs)
-                    return false;
-            }
-        }
-        catch (ObjectDisposedException)
-        {
-            return false;
-        }
-
-        // Set cleanup callback to release semaphore when batch completes
-        readyBatch.SetCleanupCallback(() => _batchSemaphore.Release());
-
-        // Try non-blocking write
-        if (_readyBatches.Writer.TryWrite(readyBatch))
-            return true;
-
-        // Write failed (channel closed), release semaphore
-        _batchSemaphore.Release();
-        readyBatch.SetCleanupCallback(null!);
-        return false;
+        Interlocked.Decrement(ref _batchesAwaitingSend);
     }
 
     /// <summary>
@@ -960,6 +1037,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
             if (result.Success)
             {
+#if DEBUG
+                ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: true);
+#endif
                 // Release the difference between estimated and actual size to prevent memory leak
                 // The actual batch memory will be released when the batch is sent via SendBatchAsync
                 var overestimate = recordSize - result.ActualSizeAdded;
@@ -978,22 +1058,41 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
+#if DEBUG
+                    ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+#endif
                     // Track delivery task for FlushAsync
                     TrackDeliveryTask(readyBatch);
 
-                    try
+                    // Try synchronous write first to avoid async state machine allocation
+                    if (!_readyBatches.Writer.TryWrite(readyBatch))
                     {
-                        // Enqueue with semaphore-based backpressure to limit arena memory
-                        await EnqueueReadyBatchAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                        try
+                        {
+                            // Backpressure happens here: WriteAsync blocks when channel is full
+                            await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+#if DEBUG
+                            ProducerDebugCounters.RecordBatchQueuedToReady();
+#endif
+                        }
+                        catch
+                        {
+#if DEBUG
+                            ProducerDebugCounters.RecordBatchFailedToQueue();
+#endif
+                            // CRITICAL: If WriteAsync fails (cancellation or disposal), fail the batch
+                            // and release memory to prevent permanent leak
+                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                            ReleaseMemory(readyBatch.DataSize);
+                            throw;
+                        }
                     }
-                    catch
+#if DEBUG
+                    else
                     {
-                        // CRITICAL: If enqueue fails (cancellation or disposal), fail the batch
-                        // and release memory to prevent permanent leak
-                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                        ReleaseMemory(readyBatch.DataSize);
-                        throw;
+                        ProducerDebugCounters.RecordBatchQueuedToReady();
                     }
+#endif
 
                     // Return the completed batch shell to the pool for reuse
                     _batchPool.Return(batch);
@@ -1070,6 +1169,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
             if (result.Success)
             {
+#if DEBUG
+                ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: true);
+#endif
                 // Release the difference between estimated and actual size to prevent memory leak
                 // The actual batch memory will be released when the batch is sent via SendBatchAsync
                 var overestimate = recordSize - result.ActualSizeAdded;
@@ -1086,20 +1188,29 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
+#if DEBUG
+                    ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+#endif
                     // Track delivery task for FlushAsync
                     TrackDeliveryTask(readyBatch);
 
-                    // Enqueue with semaphore-based backpressure to limit arena memory
-                    // If semaphore unavailable or channel closed, fail the batch
-                    if (!TryEnqueueReadyBatch(readyBatch))
+                    // Non-blocking write to unbounded channel - should always succeed
+                    // If it fails (channel completed), the producer is being disposed
+                    if (!_readyBatches.Writer.TryWrite(readyBatch))
                     {
-                        // Semaphore unavailable or channel closed, fail the batch and return false
+#if DEBUG
+                        ProducerDebugCounters.RecordBatchFailedToQueue();
+#endif
+                        // Channel is closed, fail the batch and return false
                         readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
                         // Release the batch's buffer memory since it won't go through producer
                         ReleaseMemory(readyBatch.DataSize);
                         return false;
                     }
 
+#if DEBUG
+                    ProducerDebugCounters.RecordBatchQueuedToReady();
+#endif
                     // Return the completed batch shell to the pool for reuse
                     _batchPool.Return(batch);
                 }
@@ -1221,8 +1332,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
             var readyBatch = oldBatch.Complete();
             if (readyBatch is not null)
             {
-                // Enqueue with semaphore-based backpressure to limit arena memory
-                if (!TryEnqueueReadyBatch(readyBatch))
+                if (!_readyBatches.Writer.TryWrite(readyBatch))
                 {
                     readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
                     // Release the batch's buffer memory since it won't go through producer
@@ -1383,10 +1493,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     // Track delivery task for FlushAsync
                     TrackDeliveryTask(readyBatch);
 
-                    // Enqueue with semaphore-based backpressure to limit arena memory
-                    if (!TryEnqueueReadyBatch(readyBatch))
+                    // Non-blocking write to unbounded channel - should always succeed
+                    // If it fails (channel completed), the producer is being disposed
+                    if (!_readyBatches.Writer.TryWrite(readyBatch))
                     {
-                        // Semaphore unavailable or channel closed, fail the batch and return false
+                        // Channel is closed, fail the batch and return false
                         readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
                         // Release the batch's buffer memory since it won't go through producer
                         ReleaseMemory(readyBatch.DataSize);
@@ -1514,10 +1625,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
                             // Track memory for this batch - it will be released when sent or on failure
                             memoryUsed += readyBatch.DataSize;
 
-                            // Enqueue with semaphore-based backpressure to limit arena memory
+                            // BUG FIX: Wrap in try-catch to ensure ReadyBatch cleanup if exception occurs
+                            // between Complete() and successful channel write
                             try
                             {
-                                if (!TryEnqueueReadyBatch(readyBatch))
+                                if (!_readyBatches.Writer.TryWrite(readyBatch))
                                 {
                                     readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
                                     // Release the batch's buffer memory since it won't go through producer
@@ -1604,22 +1716,42 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     var readyBatch = batch.Complete();
                     if (readyBatch is not null)
                     {
+#if DEBUG
+                        ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+                        Console.WriteLine($"[DEBUG] ExpireLinger: Batch completed with {readyBatch.CompletionSourcesCount} completion sources for {kvp.Key}");
+#endif
                         // Track delivery task for FlushAsync
                         TrackDeliveryTask(readyBatch);
 
-                        try
+                        // Try synchronous write first to avoid async state machine allocation
+                        if (!_readyBatches.Writer.TryWrite(readyBatch))
                         {
-                            // Enqueue with semaphore-based backpressure to limit arena memory
-                            await EnqueueReadyBatchAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                            try
+                            {
+                                // Channel is bounded or busy, fall back to async
+                                await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+#if DEBUG
+                                ProducerDebugCounters.RecordBatchQueuedToReady();
+#endif
+                            }
+                            catch
+                            {
+#if DEBUG
+                                ProducerDebugCounters.RecordBatchFailedToQueue();
+#endif
+                                // CRITICAL: If WriteAsync fails (cancellation or disposal), fail the batch
+                                // and release memory to prevent permanent leak
+                                readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                                ReleaseMemory(readyBatch.DataSize);
+                                throw;
+                            }
                         }
-                        catch
+#if DEBUG
+                        else
                         {
-                            // CRITICAL: If enqueue fails (cancellation or disposal), fail the batch
-                            // and release memory to prevent permanent leak
-                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            ReleaseMemory(readyBatch.DataSize);
-                            throw;
+                            ProducerDebugCounters.RecordBatchQueuedToReady();
                         }
+#endif
 
                         // Return the completed batch shell to the pool for reuse
                         _batchPool.Return(batch);
@@ -1683,49 +1815,83 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Fast path: no batches to flush AND no in-flight batches - avoid enumeration and async overhead entirely
         if (_batches.IsEmpty && _inFlightDeliveryTasks.IsEmpty)
         {
+#if DEBUG
+            Console.WriteLine($"[DEBUG] FlushAsync: Fast path - batches empty, in-flight empty");
+#endif
             return ValueTask.CompletedTask;
         }
 
+#if DEBUG
+        Console.WriteLine($"[DEBUG] FlushAsync: Calling FlushAsyncCore - batches: {_batches.Count}, in-flight: {_inFlightDeliveryTasks.Count}");
+#endif
         return FlushAsyncCore(cancellationToken);
     }
 
     private async ValueTask FlushAsyncCore(CancellationToken cancellationToken)
     {
+#if DEBUG
+        ProducerDebugCounters.RecordFlushCall();
+#endif
         // Step 1: Flush all batches from _batches dictionary
-        foreach (var kvp in _batches)
+        // Loop until _batches is empty because ConcurrentDictionary.foreach doesn't see
+        // entries added during iteration (e.g., new batches created when full batches complete)
+        while (!_batches.IsEmpty)
         {
-            var batch = kvp.Value;
-            // Atomically remove the batch from dictionary BEFORE completing.
-            // Only the thread that wins the TryRemove race will complete the batch.
-            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch)))
+            foreach (var kvp in _batches)
             {
-                var readyBatch = batch.Complete();
-                if (readyBatch is not null)
+                var batch = kvp.Value;
+                // Atomically remove the batch from dictionary BEFORE completing.
+                // Only the thread that wins the TryRemove race will complete the batch.
+                if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch)))
                 {
-                    try
+#if DEBUG
+                    ProducerDebugCounters.RecordBatchFlushedFromDictionary();
+#endif
+                    var readyBatch = batch.Complete();
+                    if (readyBatch is not null)
                     {
-                        // Enqueue with semaphore-based backpressure to limit arena memory
-                        await EnqueueReadyBatchAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        // CRITICAL: Use nested try-finally to ensure memory is ALWAYS released
-                        // even if readyBatch.Fail() itself throws an exception
-                        try
-                        {
-                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                        }
-                        finally
-                        {
-                            // ALWAYS release memory to prevent permanent leak
-                            ReleaseMemory(readyBatch.DataSize);
-                        }
-                        throw;
-                    }
+#if DEBUG
+                        ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+#endif
+                        // Track delivery task for FlushAsync to wait on
+                        TrackDeliveryTask(readyBatch);
 
-                    // Return the completed batch shell to the pool for reuse
-                    _batchPool.Return(batch);
+                        // Try synchronous write first to avoid async state machine allocation
+                        if (!_readyBatches.Writer.TryWrite(readyBatch))
+                        {
+                            try
+                            {
+                                // Channel is bounded or busy, fall back to async
+                                await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+                            }
+                            catch
+                            {
+                                // CRITICAL: Use nested try-finally to ensure memory is ALWAYS released
+                                // even if readyBatch.Fail() itself throws an exception
+                                try
+                                {
+                                    readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                                }
+                                finally
+                                {
+                                    // ALWAYS release memory to prevent permanent leak
+                                    ReleaseMemory(readyBatch.DataSize);
+                                }
+                                throw;
+                            }
+                        }
+
+                        // Return the completed batch shell to the pool for reuse
+                        _batchPool.Return(batch);
+                    }
                 }
+            }
+
+            // Yield to allow any concurrent append operations to complete
+            // This helps ensure we don't miss batches created during the previous iteration
+            if (!_batches.IsEmpty)
+            {
+                await Task.Yield();
             }
         }
 
@@ -1929,7 +2095,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
         _disposalCts?.Dispose();
         _disposalEvent?.Dispose();
         _completionCts?.Dispose();
-        _batchSemaphore?.Dispose();
     }
 }
 
@@ -2088,9 +2253,6 @@ internal sealed class PartitionBatch
     /// another thread could successfully append to the pooled batch (since _isCompleted would be 0),
     /// and those messages would be lost when Reset() is later called. By only resetting these flags
     /// at rent time, we ensure that any stale references fail the _isCompleted check in TryAppend().
-    ///
-    /// Arena allocation is also done here (not in PrepareForPooling) to avoid holding 16MB+ of
-    /// memory per pooled batch. With 64 pooled batches at 16MB each, that would be 1GB of idle memory.
     /// </remarks>
     internal void Reset(TopicPartition topicPartition)
     {
@@ -2105,13 +2267,6 @@ internal sealed class PartitionBatch
         _isCompleted = 0;  // Only reset here - see remarks
         _completedBatch = null;
         _exclusiveAccess = 0;  // Only reset here - see remarks
-
-        // Allocate arena if needed (deferred from PrepareForPooling to avoid wasting memory in pool)
-        if (_arena == null)
-        {
-            var arenaCapacity = RecordAccumulator.CalculateEffectiveArenaCapacity(_options);
-            _arena = new BatchArena(arenaCapacity);
-        }
     }
 
     /// <summary>
@@ -2119,10 +2274,6 @@ internal sealed class PartitionBatch
     /// Allocates new arrays (the old ones were transferred to ReadyBatch).
     /// IMPORTANT: This must only be called after Complete() which transfers arrays to ReadyBatch.
     /// </summary>
-    /// <remarks>
-    /// Arena allocation is deferred to Reset() to avoid holding 16MB+ of memory per pooled batch.
-    /// With 64 pooled batches at 16MB each, that would be 1GB of idle memory.
-    /// </remarks>
     internal void PrepareForPooling(ProducerOptions options)
     {
         _options = options;
@@ -2131,9 +2282,9 @@ internal sealed class PartitionBatch
         // This is a no-op but kept for safety.
         _arena?.Return();
 
-        // DON'T allocate arena here - defer to Reset() when batch is actually rented.
-        // This avoids holding 16MB+ of memory per pooled batch.
-        _arena = null;
+        // Allocate new arena for the pooled batch
+        var arenaCapacity = options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize;
+        _arena = new BatchArena(arenaCapacity);
 
         // Arrays were transferred to ReadyBatch by Complete() and are now null.
         // Allocate fresh arrays for the pooled batch.
@@ -2292,6 +2443,10 @@ internal sealed class PartitionBatch
 
         // Use the passed-in completion source - no allocation here
         _completionSources[_completionSourceCount++] = completion;
+#if DEBUG
+        // Track inside exclusive lock - this MUST match batch completion count
+        ProducerDebugCounters.RecordCompletionSourceStoredInBatch();
+#endif
 
         return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
     }
@@ -2785,13 +2940,13 @@ internal sealed class PartitionBatch
 
         // Wait for any in-progress appends to complete before modifying arrays.
         // This coordinates with the CAS-based exclusive access used by TryAppend/TryAppendFireAndForget.
+        // NOTE: We MUST spin until we get exclusive access. The Interlocked.Exchange above ensures
+        // only one thread proceeds past this point, so there's no need for an early exit check.
+        // A previous buggy early exit check (`if (_isCompleted != 0)`) would always trigger since
+        // WE just set _isCompleted = 1, causing premature return with null and orphaning completion sources.
         var spinner = new SpinWait();
         while (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) != 0)
         {
-            // Early exit if already completed by another thread
-            if (_isCompleted != 0)
-                return _completedBatch;
-
             spinner.SpinOnce();
         }
 
@@ -2965,9 +3120,6 @@ internal sealed class ReadyBatch
 
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
 
-    // Callback invoked during Cleanup() to release external resources (e.g., batch semaphore)
-    private Action? _onCleanup;
-
     public ReadyBatch(
         TopicPartition topicPartition,
         RecordBatch recordBatch,
@@ -2993,12 +3145,6 @@ internal sealed class ReadyBatch
         _pooledRecordsArray = pooledRecordsArray;
         _arena = arena;
     }
-
-    /// <summary>
-    /// Sets a callback to be invoked during Cleanup().
-    /// Used to release the batch semaphore when the batch is done.
-    /// </summary>
-    public void SetCleanupCallback(Action callback) => _onCleanup = callback;
 
     /// <summary>
     /// Marks batch as "ready" (processed by completion loop).
@@ -3031,20 +3177,34 @@ internal sealed class ReadyBatch
 
         try
         {
+#if DEBUG
+            ProducerDebugCounters.RecordBatchSentSuccessfully();
+#endif
             // Complete per-message completion sources with metadata
             if (_completionSourcesArray is not null)
             {
+#if DEBUG
+                var completedCount = 0;
+#endif
                 for (var i = 0; i < _completionSourcesCount; i++)
                 {
                     var source = _completionSourcesArray[i];
-                    source?.TrySetResult(new RecordMetadata
+                    if (source?.TrySetResult(new RecordMetadata
                     {
                         Topic = TopicPartition.Topic,
                         Partition = TopicPartition.Partition,
                         Offset = baseOffset + i,
                         Timestamp = timestamp
-                    });
+                    }) == true)
+                    {
+#if DEBUG
+                        completedCount++;
+#endif
+                    }
                 }
+#if DEBUG
+                ProducerDebugCounters.RecordCompletionSourceCompleted(completedCount);
+#endif
             }
 
             // Signal batch is done (successfully)
@@ -3070,14 +3230,28 @@ internal sealed class ReadyBatch
 
         try
         {
+#if DEBUG
+            ProducerDebugCounters.RecordBatchFailed();
+#endif
             // Fail per-message completion sources - these throw for ProduceAsync callers
             if (_completionSourcesArray is not null)
             {
+#if DEBUG
+                var failedCount = 0;
+#endif
                 for (var i = 0; i < _completionSourcesCount; i++)
                 {
                     var source = _completionSourcesArray[i];
-                    source?.TrySetException(exception);
+                    if (source?.TrySetException(exception) == true)
+                    {
+#if DEBUG
+                        failedCount++;
+#endif
+                    }
                 }
+#if DEBUG
+                ProducerDebugCounters.RecordCompletionSourceFailed(failedCount);
+#endif
             }
 
             // Signal batch is done (failed) - NO EXCEPTION to avoid UnobservedTaskException
@@ -3138,9 +3312,6 @@ internal sealed class ReadyBatch
         // Return arena buffer if present (arena-based path)
         // This is a single pool return instead of N individual array returns
         _arena?.Return();
-
-        // Invoke cleanup callback (e.g., to release batch semaphore)
-        _onCleanup?.Invoke();
     }
 }
 
