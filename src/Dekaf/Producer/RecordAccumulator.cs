@@ -473,12 +473,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
     // Completed tasks automatically remove themselves via ContinueWith to prevent unbounded growth
     private readonly ConcurrentDictionary<Task, byte> _inFlightDeliveryTasks = new(concurrencyLevel: Environment.ProcessorCount, capacity: 1024);
 
-    // Track batches that have been written to _sendableBatches but not yet completed by SenderLoop
-    // CompletionLoop increments when writing to _sendableBatches
-    // KafkaProducer.SenderLoop decrements via SignalBatchSendComplete() after CompleteSend()/Fail()
-    // KafkaProducer.FlushAsync waits for this to reach 0 to ensure all callbacks have fired
-    private int _batchesAwaitingSend;
-
     private volatile bool _disposed;
     private volatile bool _closed;
     private volatile bool _disposing; // Set during DisposeAsync to prevent continuations from removing tasks
@@ -572,11 +566,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// Completion loop that processes ready batches:
     /// 1. Reads from _readyBatches channel
     /// 2. Completes the delivery task (fire-and-forget semantic: batch is "ready")
-    /// 3. Increments batch counter for KafkaProducer.FlushAsync to track
-    /// 4. Forwards to _sendableBatches for KafkaProducer.SenderLoop
+    /// 3. Forwards to _sendableBatches for KafkaProducer.SenderLoop
     ///
     /// DoneTask is completed here for RecordAccumulator-only tests without a SenderLoop.
-    /// KafkaProducer.FlushAsync uses BatchesAwaitingSend counter to wait for actual network send.
+    /// KafkaProducer.FlushAsync uses _inFlightDeliveryTasks to wait for batch completion.
     /// </summary>
     private async Task CompletionLoopAsync(CancellationToken cancellationToken)
     {
@@ -590,9 +583,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 // Complete the delivery task (fire-and-forget semantic: "ready" = done)
                 // This makes FlushAsync return for RecordAccumulator-only tests
                 readyBatch.CompleteDelivery();
-
-                // Track batch as awaiting send - KafkaProducer.FlushAsync waits for this to reach 0
-                Interlocked.Increment(ref _batchesAwaitingSend);
 
                 // Forward to sendable channel for KafkaProducer's sender loop
                 await _sendableBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
@@ -616,22 +606,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// Exposes the sendable batches channel reader for KafkaProducer.SenderLoop.
     /// </summary>
     internal ChannelReader<ReadyBatch> SendableBatches => _sendableBatches.Reader;
-
-    /// <summary>
-    /// Gets the number of batches that have been written to the sendable channel
-    /// but not yet completed by SenderLoop.
-    /// Used by KafkaProducer.FlushAsync to wait for all callbacks to fire.
-    /// </summary>
-    internal int BatchesAwaitingSend => Volatile.Read(ref _batchesAwaitingSend);
-
-    /// <summary>
-    /// Signals that a batch has completed the send phase (CompleteSend or Fail called).
-    /// Called by KafkaProducer.SenderLoop after processing each batch.
-    /// </summary>
-    internal void SignalBatchSendComplete()
-    {
-        Interlocked.Decrement(ref _batchesAwaitingSend);
-    }
 
     /// <summary>
     /// Gets the current buffered memory usage in bytes.
