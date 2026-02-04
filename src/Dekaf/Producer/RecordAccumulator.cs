@@ -475,7 +475,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     private volatile bool _disposed;
     private volatile bool _closed;
-    private volatile bool _disposing; // Set during DisposeAsync to prevent continuations from removing tasks
 
     // Buffer memory tracking for backpressure
     private readonly ulong _maxBufferMemory;
@@ -1745,40 +1744,28 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Registers a ReadyBatch for tracking by FlushAsync.
-    /// Completed tasks automatically remove themselves from tracking to prevent memory leaks.
+    /// Tasks are removed from tracking by the completion loop after CompleteDelivery() is called.
     /// </summary>
+    /// <remarks>
+    /// IMPORTANT: No ContinueWith callback is registered here. Previously, we used ContinueWith
+    /// to auto-remove completed tasks, but this caused performance issues:
+    /// 1. Each ContinueWith allocates ~200 bytes for a Task continuation object
+    /// 2. The TaskCompletionSource uses RunContinuationsAsynchronously, which queues
+    ///    the callback to the thread pool instead of running it inline
+    /// 3. At high throughput (~200 batches/sec), 65K+ continuation Tasks accumulated,
+    ///    causing massive GC pressure (Gen0 collections spiking from 30 to 700+)
+    ///
+    /// Instead, the completion loop now handles removal synchronously:
+    /// - CompletionLoopAsync calls TryRemove immediately after CompleteDelivery()
+    /// - This ensures zero-allocation cleanup without thread pool scheduling overhead
+    /// - Disposal clears the entire dictionary, handling the edge case
+    /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void TrackDeliveryTask(ReadyBatch readyBatch)
     {
         if (readyBatch is not null)
         {
-            var task = readyBatch.DoneTask;
-            _inFlightDeliveryTasks.TryAdd(task, 0);
-
-            if (!task.IsCompleted)
-            {
-                // Register continuation to auto-remove when complete
-                // Allocation cost: ~100 bytes per batch (not per message)
-                // Amortized: ~0.1 bytes per message (batch = ~1000 messages)
-                // This prevents unbounded memory growth in long-running fire-and-forget scenarios
-                // NOTE: No exception observation needed - DoneTask never faults (uses TrySetResult)
-                _ = task.ContinueWith(static (t, state) =>
-                {
-                    var accumulator = (RecordAccumulator)state!;
-
-                    // Don't remove during disposal - disposal will clear dictionary
-                    if (!accumulator._disposing)
-                        accumulator._inFlightDeliveryTasks.TryRemove(t, out _);
-                }, this,
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
-                return;
-            }
-
-            // Task completed synchronously (rare) - clean up immediately
-            // NOTE: No exception observation needed - DoneTask never faults
-            _inFlightDeliveryTasks.TryRemove(task, out _);
+            _inFlightDeliveryTasks.TryAdd(readyBatch.DoneTask, 0);
         }
     }
 
@@ -1925,7 +1912,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
             return;
 
         _disposed = true;
-        _disposing = true; // Prevent continuations from removing tasks during disposal
 
         // Invalidate thread-local caches if they point to this accumulator
         if (t_cachedAccumulator == this)
