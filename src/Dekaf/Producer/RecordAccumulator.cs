@@ -584,6 +584,15 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 // This makes FlushAsync return for RecordAccumulator-only tests
                 readyBatch.CompleteDelivery();
 
+                // Immediately remove from tracking dictionary to prevent unbounded growth
+                // NOTE: The TaskCompletionSource uses RunContinuationsAsynchronously, which means
+                // the ContinueWith callback in TrackDeliveryTask is queued to the thread pool
+                // rather than running inline. Under high throughput, the thread pool can't keep up,
+                // causing the dictionary to grow unbounded. This explicit removal ensures cleanup
+                // happens synchronously in the completion loop. The continuation serves as a
+                // backup for edge cases (e.g., if disposal occurs before this line runs).
+                _inFlightDeliveryTasks.TryRemove(readyBatch.DoneTask, out _);
+
                 // Forward to sendable channel for KafkaProducer's sender loop
                 await _sendableBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
 #if DEBUG
