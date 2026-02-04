@@ -35,6 +35,19 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly Task _lingerTask;
     private readonly PeriodicTimer _lingerTimer;
 
+    // Pipelining: allow multiple batches to be sent concurrently (up to MaxInFlightRequestsPerConnection)
+    // This dramatically improves throughput by overlapping network round-trips
+    //
+    // Thread-safety model:
+    // - _sendConcurrencySemaphore: SemaphoreSlim is internally thread-safe; limits concurrent sends
+    // - _inFlightSendCount: Modified only via Interlocked operations, read via Volatile.Read
+    // - _allSendsCompleted: Signaling coordinated with _inFlightSendCount via _sendCompletionLock
+    // - _sendCompletionLock: Protects the atomicity of count transition + event signal pairs
+    private readonly SemaphoreSlim _sendConcurrencySemaphore;
+    private long _inFlightSendCount;
+    private readonly ManualResetEventSlim _allSendsCompleted = new(true); // Initially signaled (no sends in flight)
+    private readonly object _sendCompletionLock = new(); // Prevents race between Reset() and Set()
+
 
     // Channel-based worker pool for thread-safe produce operations
     private readonly Channel<ProduceWorkItem<TKey, TValue>> _workChannel;
@@ -147,6 +160,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         _accumulator = new RecordAccumulator(options);
         _compressionCodecs = new CompressionCodecRegistry();
+
+        // Initialize pipelining semaphore - allows up to MaxInFlightRequestsPerConnection concurrent batch sends
+        // This enables overlapping network round-trips, dramatically improving throughput
+        _sendConcurrencySemaphore = new SemaphoreSlim(options.MaxInFlightRequestsPerConnection, options.MaxInFlightRequestsPerConnection);
 
         _senderCts = new CancellationTokenSource();
         // Use 1ms check interval for low-latency awaited produces.
@@ -1606,52 +1623,127 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     private async Task SenderLoopAsync(CancellationToken cancellationToken)
     {
-        // Simplified architecture: read directly from ready batches channel (no intermediate CompletionLoop)
+        // PIPELINED ARCHITECTURE: Send multiple batches concurrently (up to MaxInFlightRequestsPerConnection)
+        // This overlaps network round-trips, dramatically improving throughput.
+        // Without pipelining: throughput = 1 / network_latency (e.g., 30 batches/sec at 33ms latency)
+        // With pipelining (5 in-flight): throughput = 5 / network_latency (e.g., 150 batches/sec)
+
         await foreach (var batch in _accumulator.ReadyBatches.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
+            // Complete delivery task (fire-and-forget semantic: batch is "ready")
+            // This is done inline before sending to unblock FlushAsync immediately
+            batch.CompleteDelivery();
+
+            // Decrement in-flight counter to unblock FlushAsync
+            _accumulator.OnBatchExitsPipeline();
+
+            // Acquire semaphore slot - limits concurrent sends to MaxInFlightRequestsPerConnection
+            // This is the only await that blocks the loop - once acquired, we fire-and-forget the send
+            await _sendConcurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            // Track in-flight send count for disposal coordination
+            // Lock ensures atomicity of (increment + Reset) to prevent race with (decrement + Set)
+            lock (_sendCompletionLock)
+            {
+                if (Interlocked.Increment(ref _inFlightSendCount) == 1)
+                {
+                    _allSendsCompleted.Reset(); // First send in flight - clear the signal
+                }
+            }
+
+            // Fire-and-forget: don't await the send, allowing next batch to be processed immediately
+            // Error handling, cleanup, and semaphore release happen in the continuation
+            _ = SendBatchWithCleanupAsync(batch, cancellationToken);
+        }
+
+        // Channel completed - wait for all in-flight sends to finish before exiting
+        await WaitForInFlightSendsAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Sends a batch and handles all cleanup (error handling, semaphore release, pool return).
+    /// This method is fire-and-forget from SenderLoopAsync to enable pipelining.
+    /// </summary>
+    private async Task SendBatchWithCleanupAsync(ReadyBatch batch, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SendBatchAsync(batch, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Failed to send batch to {Topic}-{Partition}",
+                batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+
+            // Track batch failure (if not already tracked in SendBatchAsync)
+            _statisticsCollector.RecordBatchFailed(
+                batch.TopicPartition.Topic,
+                batch.TopicPartition.Partition,
+                batch.CompletionSourcesCount);
+
+            // CRITICAL: Protect against exceptions from batch.Fail() to prevent unobserved task exceptions
             try
             {
-                // Complete delivery task (fire-and-forget semantic: batch is "ready")
-                // This is done inline before sending to unblock FlushAsync immediately
-                batch.CompleteDelivery();
-
-                // Decrement in-flight counter to unblock FlushAsync
-                _accumulator.OnBatchExitsPipeline();
-
-                await SendBatchAsync(batch, cancellationToken).ConfigureAwait(false);
+                batch.Fail(ex);
             }
-            catch (Exception ex)
+            catch (Exception failEx)
             {
-                _logger?.LogError(ex, "Failed to send batch to {Topic}-{Partition}",
+                _logger?.LogError(failEx, "batch.Fail() threw unexpectedly for {Topic}-{Partition}",
                     batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-
-                // Track batch failure (if not already tracked in SendBatchAsync)
-                // This handles cases where the exception occurred before SendBatchAsync could track it
-                _statisticsCollector.RecordBatchFailed(
-                    batch.TopicPartition.Topic,
-                    batch.TopicPartition.Partition,
-                    batch.CompletionSourcesCount);
-
-                // CRITICAL: Protect against exceptions from batch.Fail() to prevent sender loop crash
-                try
-                {
-                    batch.Fail(ex);
-                }
-                catch (Exception failEx)
-                {
-                    // batch.Fail() should never throw, but be defensive to prevent sender loop crash
-                    _logger?.LogError(failEx, "batch.Fail() threw unexpectedly for {Topic}-{Partition}",
-                        batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                }
-
-                // NOTE: BufferMemory is released in SendBatchAsync's finally block
-                // No need to release here to avoid double-release
             }
-            finally
+
+            // NOTE: BufferMemory is released in SendBatchAsync's finally block
+        }
+        finally
+        {
+            // Return the ReadyBatch to the pool for reuse
+            _accumulator.ReturnReadyBatch(batch);
+
+            // Release semaphore slot - allows next batch to be sent
+            _sendConcurrencySemaphore.Release();
+
+            // Decrement in-flight count and signal if all sends complete
+            // Lock ensures atomicity of (decrement + Set) to prevent race with (increment + Reset)
+            lock (_sendCompletionLock)
             {
-                // Return the ReadyBatch to the pool for reuse
-                _accumulator.ReturnReadyBatch(batch);
+                if (Interlocked.Decrement(ref _inFlightSendCount) == 0)
+                {
+                    _allSendsCompleted.Set(); // All sends complete - signal waiters
+                }
             }
+        }
+    }
+
+    /// <summary>
+    /// Waits for all in-flight batch sends to complete.
+    /// Used during disposal to ensure graceful shutdown.
+    /// </summary>
+    private ValueTask WaitForInFlightSendsAsync(CancellationToken cancellationToken)
+    {
+        // Fast path: no sends in flight
+        if (Volatile.Read(ref _inFlightSendCount) == 0)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        return WaitForInFlightSendsSlowAsync(cancellationToken);
+    }
+
+    private async ValueTask WaitForInFlightSendsSlowAsync(CancellationToken cancellationToken)
+    {
+        // Poll with short interval - ManualResetEventSlim doesn't have native async wait
+        while (Volatile.Read(ref _inFlightSendCount) > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Check if signaled (no sends in flight)
+            if (_allSendsCompleted.IsSet)
+            {
+                return;
+            }
+
+            // Short poll interval for responsive shutdown
+            await Task.Delay(5, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -2104,6 +2196,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         _senderCts.Dispose();
         _lingerTimer.Dispose();
+        _sendConcurrencySemaphore.Dispose();
+        _allSendsCompleted.Dispose();
 
         // Dispose statistics emitter
         if (_statisticsEmitter is not null)
