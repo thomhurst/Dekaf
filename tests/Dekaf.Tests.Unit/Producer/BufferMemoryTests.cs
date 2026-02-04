@@ -650,6 +650,17 @@ public class BufferMemoryTests
 
             // Start background task to drain batches (simulates sender loop)
             using var cts = new CancellationTokenSource(15000);
+
+            // Simulate the sender loop's linger expiration - this makes batches ready
+            var lingerTask = Task.Run(async () =>
+            {
+                while (!cts.Token.IsCancellationRequested)
+                {
+                    await accumulator.ExpireLingerAsync(cts.Token).ConfigureAwait(false);
+                    await Task.Delay(10, cts.Token).ConfigureAwait(false);
+                }
+            }, cts.Token);
+
             var drainTask = Task.Run(async () =>
             {
                 await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
@@ -667,9 +678,9 @@ public class BufferMemoryTests
 
             await cts.CancelAsync();
 
-            // Should complete quickly - using 14000ms to account for CI variability
-            // (macOS CI can be particularly slow)
-            await Assert.That(sw.ElapsedMilliseconds).IsLessThan(14000);
+            // Should complete quickly - using 5000ms to account for CI variability
+            // (LingerMs=100 + some overhead for task scheduling)
+            await Assert.That(sw.ElapsedMilliseconds).IsLessThan(5000);
         }
         finally
         {
