@@ -251,7 +251,7 @@ public class CertificateLoadingTests : IDisposable
 
     private static X509Certificate2 CreateSelfSignedCertificateWithKey(string subjectName)
     {
-        var rsa = RSA.Create(2048);
+        using var rsa = RSA.Create(2048);
         var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
 
         // Add SubjectKeyIdentifier extension to help with consistent certificate generation
@@ -264,13 +264,8 @@ public class CertificateLoadingTests : IDisposable
         var notBefore = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
         var notAfter = notBefore.AddYears(1);
 
-        // Use explicit serial number to avoid macOS ASN.1 encoding issues with auto-generated serials
-        var serialNumber = new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x09 };
-        var generator = X509SignatureGenerator.CreateForRSA(rsa, RSASignaturePadding.Pkcs1);
-        using var certWithoutKey = request.Create(new X500DistinguishedName(subjectName), generator, notBefore, notAfter, serialNumber);
-
-        // CopyWithPrivateKey returns a new certificate with the private key attached
-        // Note: We don't dispose the RSA key here because the returned certificate owns it
-        return certWithoutKey.CopyWithPrivateKey(rsa);
+        // CreateSelfSigned is the simplest approach - it handles key attachment properly
+        // and creates an ephemeral key that's exportable on all platforms
+        return request.CreateSelfSigned(notBefore, notAfter);
     }
 }

@@ -118,12 +118,16 @@ public class CertificateValidationTests
         await Assert.That(result).IsTrue();
 
         // Check that chain status only has acceptable statuses in custom trust mode
-        // Note: macOS may return PartialChain in some scenarios
+        // Different platforms may return different status flags:
+        // - macOS may return PartialChain
+        // - Windows may return RevocationStatusUnknown or OfflineRevocation even with NoCheck
         foreach (var status in chain.ChainStatus)
         {
             var isAcceptable = status.Status == X509ChainStatusFlags.NoError ||
                               status.Status == X509ChainStatusFlags.UntrustedRoot ||
-                              status.Status == X509ChainStatusFlags.PartialChain;
+                              status.Status == X509ChainStatusFlags.PartialChain ||
+                              status.Status == X509ChainStatusFlags.RevocationStatusUnknown ||
+                              status.Status == X509ChainStatusFlags.OfflineRevocation;
             await Assert.That(isAcceptable).IsTrue();
         }
     }
@@ -212,11 +216,15 @@ public class CertificateValidationTests
         await Assert.That(buildResult).IsTrue();
 
         // Verify there are no critical errors (only trust-related statuses and NoError are acceptable)
-        // Note: macOS may return PartialChain in some scenarios
+        // Different platforms may return different status flags:
+        // - macOS may return PartialChain
+        // - Windows may return RevocationStatusUnknown or OfflineRevocation even with NoCheck
         var hasSecurityIssue = chain.ChainStatus.Any(s =>
             s.Status != X509ChainStatusFlags.UntrustedRoot &&
             s.Status != X509ChainStatusFlags.PartialChain &&
-            s.Status != X509ChainStatusFlags.NoError);
+            s.Status != X509ChainStatusFlags.NoError &&
+            s.Status != X509ChainStatusFlags.RevocationStatusUnknown &&
+            s.Status != X509ChainStatusFlags.OfflineRevocation);
 
         await Assert.That(hasSecurityIssue).IsFalse();
     }

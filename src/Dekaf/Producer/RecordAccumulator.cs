@@ -467,7 +467,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
     // Track in-flight batches for FlushAsync using O(1) counter instead of dictionary
     // This eliminates dictionary resizing issues under high throughput
     private long _inFlightBatchCount;
-    private readonly ManualResetEventSlim _allBatchesComplete = new(true); // Initially signaled (no batches in flight)
+    // TCS for async waiting - created on-demand, completed when counter reaches 0
+    // Using TCS instead of ManualResetEventSlim avoids polling and ThreadPool starvation
+    // Not volatile - use Volatile.Read/Interlocked for thread-safe access
+    private TaskCompletionSource<bool>? _flushTcs;
 
     private volatile bool _disposed;
     private volatile bool _closed;
@@ -1819,11 +1822,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void OnBatchEntersPipeline()
     {
-        if (Interlocked.Increment(ref _inFlightBatchCount) == 1)
-        {
-            // First batch in pipeline - reset the event to unsignaled
-            _allBatchesComplete.Reset();
-        }
+        Interlocked.Increment(ref _inFlightBatchCount);
     }
 
     /// <summary>
@@ -1836,8 +1835,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
     {
         if (Interlocked.Decrement(ref _inFlightBatchCount) == 0)
         {
-            // All batches processed - signal the event
-            _allBatchesComplete.Set();
+            // All batches processed - complete any waiting flush and clear the TCS
+            Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
         }
     }
 
@@ -1951,27 +1950,31 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Waits for all in-flight batches to complete.
-    /// Uses ManualResetEventSlim for efficient waiting.
+    /// Uses TaskCompletionSource for true async waiting without polling or ThreadPool starvation.
     /// </summary>
     private async ValueTask WaitForAllBatchesCompleteAsync(CancellationToken cancellationToken)
     {
-        // Fast path: already complete
-        if (Volatile.Read(ref _inFlightBatchCount) == 0)
-            return;
-
-        // Poll the event with cancellation support
-        // We can't use async wait on ManualResetEventSlim directly, so poll periodically
-        while (Volatile.Read(ref _inFlightBatchCount) > 0)
+        while (true)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            // Wait with short timeout (1ms) to minimize latency while allowing periodic cancellation check.
-            // ManualResetEventSlim.Wait() returns immediately if already signaled, so this is efficient.
-            if (_allBatchesComplete.Wait(1, cancellationToken))
-            {
-                // Event signaled - all batches complete
+            // Fast path: already complete
+            if (Volatile.Read(ref _inFlightBatchCount) == 0)
                 return;
+
+            // Get or create TCS for waiting
+            var tcs = Volatile.Read(ref _flushTcs);
+            if (tcs == null)
+            {
+                // Create new TCS - RunContinuationsAsynchronously prevents stack dives
+                var newTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                tcs = Interlocked.CompareExchange(ref _flushTcs, newTcs, null) ?? newTcs;
             }
+
+            // Double-check after TCS setup (counter may have hit 0 while we were setting up)
+            if (Volatile.Read(ref _inFlightBatchCount) == 0)
+                return;
+
+            // Wait on the TCS with cancellation support
+            await tcs.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -2123,7 +2126,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
         _bufferSpaceAvailable?.Dispose();
         _disposalCts?.Dispose();
         _disposalEvent?.Dispose();
-        _allBatchesComplete?.Dispose();
+        // _flushTcs doesn't need disposal - it's a TaskCompletionSource
     }
 }
 
