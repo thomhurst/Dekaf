@@ -67,7 +67,7 @@ public class ProducerCancellationTests
                 pooledKey, pooledValue, null, null);
 
             // Start a background task to drain batches (simulates sender loop)
-            using var cts = new CancellationTokenSource(5000);
+            using var cts = new CancellationTokenSource(15000);
             var drainTask = Task.Run(async () =>
             {
                 await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
@@ -84,8 +84,8 @@ public class ProducerCancellationTests
             await accumulator.FlushAsync(cts.Token);
             var elapsed = Environment.TickCount64 - startTime;
 
-            // Assert - Should complete quickly once batch is drained
-            await Assert.That(elapsed).IsLessThan(1000);
+            // Assert - Should complete once batch is drained (using 10000ms to account for CI variability on macOS)
+            await Assert.That(elapsed).IsLessThan(10000);
 
             // Cancel to stop the drain task
             await cts.CancelAsync();

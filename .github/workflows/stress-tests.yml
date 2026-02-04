@@ -69,7 +69,7 @@ jobs:
             -e KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1 \
             -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 \
             -e KAFKA_LOG_DIRS=/var/lib/kafka/data \
-            -e CLUSTER_ID=stress-test-cluster-001 \
+            -e CLUSTER_ID=MkU3OEVBNTcwNTJENDM2Qg \
             -e KAFKA_LOG_RETENTION_MS=10000 \
             -e KAFKA_LOG_RETENTION_BYTES=134217728 \
             -e KAFKA_LOG_SEGMENT_BYTES=33554432 \

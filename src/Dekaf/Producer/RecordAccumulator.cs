@@ -475,9 +475,16 @@ public sealed class RecordAccumulator : IAsyncDisposable
     // Buffer memory tracking for backpressure
     private readonly ulong _maxBufferMemory;
     private long _bufferedBytes;
-    private readonly SemaphoreSlim _bufferSpaceAvailable = new(1, 1);
+    // Use ManualResetEventSlim instead of SemaphoreSlim for buffer space signaling.
+    // When memory is released, Set() wakes ALL waiting threads so they can race to reserve
+    // via lock-free TryReserveMemory(). This eliminates the serialized wakeup bottleneck
+    // that occurred with SemaphoreSlim(1,1) which only woke one thread per Release().
+    private readonly ManualResetEventSlim _bufferSpaceAvailable = new(true); // Initially signaled (space available)
     private readonly CancellationTokenSource _disposalCts = new();
     private readonly ManualResetEventSlim _disposalEvent = new(false);
+    // Pre-allocated WaitHandle array for ReserveMemorySync to avoid per-wait allocation.
+    // Index 0 = buffer space available, Index 1 = disposal signal.
+    private readonly WaitHandle[] _syncWaitHandles;
 
     // Thread-local cache for fast path when consecutive messages go to the same partition.
     // This eliminates ConcurrentDictionary lookups for the common case of sending multiple
@@ -539,6 +546,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         _batchPool = new PartitionBatchPool(options);
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = options.BufferMemory;
+
+        // Pre-allocate WaitHandle array for sync wait path to avoid per-iteration allocation
+        _syncWaitHandles = [_bufferSpaceAvailable.WaitHandle, _disposalEvent.WaitHandle];
 
         // Use unbounded channel for ready batches - backpressure is now handled by buffer memory tracking
         // Single channel design: batches go directly to sender loop (no intermediate CompletionLoop)
@@ -620,7 +630,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
         }
 
         // Slow path: wait for space to become available with timeout protection
-        // Use semaphore to avoid busy spinning - released when batches are completed
         // Protect against overflow if DeliveryTimeoutMs is configured to a very large value
         var currentTicks = Environment.TickCount64;
         var deadline = (long.MaxValue - currentTicks > _options.DeliveryTimeoutMs)
@@ -646,10 +655,26 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     $"Consider: increasing BufferMemory, reducing production rate, or checking network connectivity.");
             }
 
-            // Wait with timeout to periodically retry in case we missed a signal
-            // Use the smaller of 100ms or remaining time
-            var waitMs = (int)Math.Min(100, remainingMs);
-            await _bufferSpaceAvailable.WaitAsync(waitMs, cancellationToken).ConfigureAwait(false);
+            // Reset event before waiting - ReleaseMemory will Set() it when space becomes available.
+            // RACE CONDITION MITIGATION: There's an inherent race between Reset() and the signal from
+            // ReleaseMemory(). If Set() happens after Reset() but before our wait, we need to detect it.
+            _bufferSpaceAvailable.Reset();
+
+            // Check disposal after reset
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(RecordAccumulator));
+
+            // Check if event was signaled between Reset() and here (race condition mitigation).
+            // If already set, skip the delay and immediately retry TryReserveMemory().
+            if (_bufferSpaceAvailable.IsSet)
+                continue;
+
+            // ManualResetEventSlim doesn't have native async wait, so use short polling.
+            // Use up to 5ms poll interval to minimize latency when memory becomes available.
+            // The trade-off is slightly more CPU usage, but memory pressure scenarios are
+            // transient and this path is only hit under backpressure.
+            var waitMs = (int)Math.Min(5, remainingMs);
+            await Task.Delay(waitMs, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -717,16 +742,27 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     $"Consider: increasing BufferMemory, reducing production rate, or checking network connectivity.");
             }
 
-            // Wait on disposal event with timeout - this allows immediate wake-up when disposed
-            // Use 10ms timeout to balance CPU usage with prompt memory availability detection
-            if (_disposalEvent.Wait(Math.Min(10, (int)remainingMs)))
+            // Reset event before waiting - ReleaseMemory will Set() it when space becomes available.
+            // This ensures we don't miss signals: if Set() happens between our TryReserveMemory fail
+            // and Wait(), the Wait() returns immediately. If Set() happens during Wait(), we wake up.
+            _bufferSpaceAvailable.Reset();
+
+            // Double-check disposal after reset but before wait
+            if (_disposed)
             {
-                // Disposal was signaled - throw cancellation exception
                 throw new OperationCanceledException(_disposalCts.Token);
             }
 
-            // Check again after waking up in case disposal happened during sleep
-            if (_disposed)
+            // Wait for either: buffer space available, disposal, or timeout.
+            // Use WaitHandle.WaitAny with pre-allocated array to avoid per-iteration allocation.
+            // Sync path uses 50ms (vs 5ms async) because: (1) WaitAny provides true signal-based
+            // wake-up so this is max sleep not actual latency, (2) Send() is fire-and-forget so
+            // caller doesn't need low-latency response, (3) longer interval reduces CPU usage.
+            var waitMs = Math.Min(50, (int)remainingMs);
+            var signaled = WaitHandle.WaitAny(_syncWaitHandles, waitMs);
+
+            // Check if disposal was signaled (index 1)
+            if (signaled == 1 || _disposed)
             {
                 throw new OperationCanceledException(_disposalCts.Token);
             }
@@ -757,19 +793,16 @@ public sealed class RecordAccumulator : IAsyncDisposable
 #endif
         }
 
-        // Signal that space may be available
-        // Use TryRelease to handle case where semaphore is already at max count
+        // Signal that space is available - wakes ALL waiting threads so they can race
+        // to reserve via lock-free TryReserveMemory(). This is more efficient than
+        // SemaphoreSlim which only wakes one thread per Release().
         try
         {
-            _bufferSpaceAvailable.Release();
-        }
-        catch (SemaphoreFullException)
-        {
-            // Already at max count, ignore
+            _bufferSpaceAvailable.Set();
         }
         catch (ObjectDisposedException)
         {
-            // Accumulator is disposed, semaphore no longer valid - ignore
+            // Accumulator is disposed, event no longer valid - ignore
         }
     }
 
@@ -1932,8 +1965,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Wait with short timeout to allow periodic cancellation check
-            if (_allBatchesComplete.Wait(10, cancellationToken))
+            // Wait with short timeout (1ms) to minimize latency while allowing periodic cancellation check.
+            // ManualResetEventSlim.Wait() returns immediately if already signaled, so this is efficient.
+            if (_allBatchesComplete.Wait(1, cancellationToken))
             {
                 // Event signaled - all batches complete
                 return;

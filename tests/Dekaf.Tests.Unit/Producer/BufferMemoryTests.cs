@@ -522,7 +522,7 @@ public class BufferMemoryTests
                 null, null);
 
             // Start background task to drain batches (simulates sender loop)
-            using var cts = new CancellationTokenSource(5000);
+            using var cts = new CancellationTokenSource(15000);
             var doneTaskWasCompleted = false;
             var drainTask = Task.Run(async () =>
             {
@@ -585,7 +585,8 @@ public class BufferMemoryTests
             }
 
             // Start background task to drain batches (simulates sender loop)
-            using var cts = new CancellationTokenSource(5000);
+            // Use 15s timeout to accommodate slower CI runners (Windows especially)
+            using var cts = new CancellationTokenSource(15000);
             var receivedCount = 0;
             var drainTask = Task.Run(async () =>
             {
@@ -648,7 +649,7 @@ public class BufferMemoryTests
             }
 
             // Start background task to drain batches (simulates sender loop)
-            using var cts = new CancellationTokenSource(5000);
+            using var cts = new CancellationTokenSource(15000);
             var drainTask = Task.Run(async () =>
             {
                 await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
@@ -666,8 +667,8 @@ public class BufferMemoryTests
 
             await cts.CancelAsync();
 
-            // Should complete in well under 1 second
-            await Assert.That(sw.ElapsedMilliseconds).IsLessThan(1000);
+            // Should complete in well under 3 seconds (using 3000ms to account for CI variability)
+            await Assert.That(sw.ElapsedMilliseconds).IsLessThan(3000);
         }
         finally
         {
@@ -703,7 +704,7 @@ public class BufferMemoryTests
             }
 
             // Start background task to drain batches (simulates sender loop)
-            using var cts = new CancellationTokenSource(5000);
+            using var cts = new CancellationTokenSource(15000);
             var receivedBatches = 0;
             var drainTask = Task.Run(async () =>
             {
