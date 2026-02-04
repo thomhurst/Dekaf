@@ -3571,6 +3571,14 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// </summary>
     public void Reset()
     {
+        // Defensive cleanup: ensure pooled arrays are returned even if Cleanup() wasn't called.
+        // This handles edge cases like exceptions between CompleteSend and ReturnReadyBatch.
+        // Cleanup() is idempotent (uses Interlocked.Exchange), so double-call is safe.
+        if (Volatile.Read(ref _cleanedUp) == 0)
+        {
+            Cleanup();
+        }
+
         // Clear all references to allow GC
         _topicPartition = default;
         _recordBatch = null!;
@@ -3608,12 +3616,14 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// </summary>
     public void CompleteDelivery()
     {
-        // Guard against calling after Cleanup or double-completion
-        if (Volatile.Read(ref _cleanedUp) != 0)
+        // Atomically claim completion - only one thread wins
+        if (Interlocked.CompareExchange(ref _completed, 1, 0) != 0)
             return;
 
-        // Only complete once
-        if (Interlocked.CompareExchange(ref _completed, 1, 0) != 0)
+        // Check _cleanedUp AFTER winning the CAS to avoid TOCTOU race.
+        // If Cleanup() ran between our CAS and this check, _doneCore may be reset.
+        // In that case, skip SetResult to avoid calling it on a reset core.
+        if (Volatile.Read(ref _cleanedUp) != 0)
             return;
 
         // Signal batch is done (ready for fire-and-forget semantic)

@@ -546,11 +546,12 @@ internal static class Crc32C
         var i = 0;
 
         // Process 8 bytes at a time using 64-bit CRC instruction
+        // Use BinaryPrimitives for consistent endianness (CRC32C operates on little-endian data)
         if (Sse42.X64.IsSupported)
         {
             while (i + 8 <= data.Length)
             {
-                var value = BitConverter.ToUInt64(data.Slice(i, 8));
+                var value = BinaryPrimitives.ReadUInt64LittleEndian(data.Slice(i, 8));
                 crc = (uint)Sse42.X64.Crc32(crc, value);
                 i += 8;
             }
@@ -559,7 +560,7 @@ internal static class Crc32C
         // Process 4 bytes at a time
         while (i + 4 <= data.Length)
         {
-            var value = BitConverter.ToUInt32(data.Slice(i, 4));
+            var value = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(i, 4));
             crc = Sse42.Crc32(crc, value);
             i += 4;
         }
