@@ -112,17 +112,23 @@ public sealed class MetadataManager : IAsyncDisposable
 
     /// <summary>
     /// Attempts to get topic metadata from cache synchronously.
-    /// Returns true if valid cached metadata exists, false if a refresh is needed.
+    /// Returns true if valid cached metadata exists, false if topic is unknown.
     /// This is the fast path - no async overhead, no allocations.
     /// </summary>
+    /// <remarks>
+    /// Does NOT check metadata staleness. Background refresh keeps metadata fresh,
+    /// and the producer should use cached metadata optimistically. This avoids
+    /// falling back to the slow path (with allocations) just because an arbitrary
+    /// time threshold was exceeded. If metadata is truly stale (e.g., leader changed),
+    /// the actual send will fail and trigger an on-demand refresh.
+    /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryGetCachedTopicMetadata(string topicName, out TopicInfo? topic)
     {
         topic = _metadata.GetTopic(topicName);
         return topic is not null
             && topic.PartitionCount > 0
-            && topic.ErrorCode == ErrorCode.None
-            && !_metadata.IsStale(_options.MetadataMaxAge);
+            && topic.ErrorCode == ErrorCode.None;
     }
 
     /// <summary>
@@ -187,7 +193,7 @@ public sealed class MetadataManager : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         var leader = _metadata.GetPartitionLeader(topicName, partition);
-        if (leader is not null && !_metadata.IsStale(_options.MetadataMaxAge))
+        if (leader is not null)
         {
             return leader;
         }
@@ -392,12 +398,15 @@ public sealed class MetadataManager : IAsyncDisposable
 
     private async Task BackgroundRefreshLoopAsync(CancellationToken cancellationToken)
     {
+        var consecutiveFailures = 0;
+
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
                 await Task.Delay(_options.MetadataRefreshInterval, cancellationToken).ConfigureAwait(false);
                 await RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+                consecutiveFailures = 0; // Reset on success
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -405,7 +414,20 @@ public sealed class MetadataManager : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Background metadata refresh failed");
+                consecutiveFailures++;
+                _logger?.LogWarning(ex, "Background metadata refresh failed (attempt {Attempt}), continuing with existing metadata", consecutiveFailures);
+
+                // Brief backoff on failures to avoid hammering a failing cluster
+                // Cap at 60 seconds, existing metadata continues to be used
+                var backoffSeconds = Math.Min(consecutiveFailures * 5, 60);
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(backoffSeconds), cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
             }
         }
     }
@@ -442,14 +464,11 @@ public sealed class MetadataManager : IAsyncDisposable
 public sealed class MetadataOptions
 {
     /// <summary>
-    /// Maximum age of metadata before it's considered stale.
-    /// </summary>
-    public TimeSpan MetadataMaxAge { get; init; } = TimeSpan.FromMinutes(5);
-
-    /// <summary>
     /// Interval for background metadata refresh.
+    /// Metadata is never considered stale - it refreshes periodically and swaps in silently.
+    /// Default matches Confluent's metadata.max.age.ms (15 minutes).
     /// </summary>
-    public TimeSpan MetadataRefreshInterval { get; init; } = TimeSpan.FromMinutes(5);
+    public TimeSpan MetadataRefreshInterval { get; init; } = TimeSpan.FromMinutes(15);
 
     /// <summary>
     /// Whether to enable background metadata refresh.

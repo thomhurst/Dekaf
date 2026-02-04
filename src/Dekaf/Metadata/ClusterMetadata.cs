@@ -242,14 +242,6 @@ public sealed class ClusterMetadata
         }
     }
 
-    /// <summary>
-    /// Returns true if the metadata is stale.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool IsStale(TimeSpan maxAge)
-    {
-        return DateTimeOffset.UtcNow - _snapshot.LastRefreshed > maxAge;
-    }
 }
 
 /// <summary>
