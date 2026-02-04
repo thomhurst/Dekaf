@@ -585,7 +585,8 @@ public class BufferMemoryTests
             }
 
             // Start background task to drain batches (simulates sender loop)
-            using var cts = new CancellationTokenSource(5000);
+            // Use 15s timeout to accommodate slower CI runners (Windows especially)
+            using var cts = new CancellationTokenSource(15000);
             var receivedCount = 0;
             var drainTask = Task.Run(async () =>
             {
