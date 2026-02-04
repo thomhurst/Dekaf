@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
 using ConfluentKafka = Confluent.Kafka;
@@ -6,6 +7,8 @@ namespace Dekaf.StressTests.Scenarios;
 
 internal sealed class ConfluentConsumerStressTest : IStressTestScenario
 {
+    private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
+
     public string Name => "consumer";
     public string Client => "Confluent";
 
@@ -13,8 +16,35 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
     {
         var throughput = new ThroughputTracker();
         var startedAt = DateTime.UtcNow;
+        var messageValue = new string('x', options.MessageSizeBytes);
 
-        var config = new ConfluentKafka.ConsumerConfig
+        // Create producer to feed messages to the consumer
+        var producerConfig = new ConfluentKafka.ProducerConfig
+        {
+            BootstrapServers = options.BootstrapServers,
+            ClientId = "stress-consumer-feeder-confluent",
+            Acks = ConfluentKafka.Acks.Leader,
+            LingerMs = options.LingerMs,
+            BatchSize = options.BatchSize
+        };
+
+        using var producer = new ConfluentKafka.ProducerBuilder<string, string>(producerConfig).Build();
+
+        // Pre-seed messages before starting consumer measurement
+        Console.WriteLine($"  Pre-seeding messages for consumer test...");
+        const int preseedCount = 500_000;
+        for (var i = 0; i < preseedCount; i++)
+        {
+            producer.Produce(options.Topic, new ConfluentKafka.Message<string, string>
+            {
+                Key = GetKey(i),
+                Value = messageValue
+            });
+        }
+        producer.Flush(TimeSpan.FromSeconds(60));
+        Console.WriteLine($"  Pre-seeded {preseedCount:N0} messages");
+
+        var consumerConfig = new ConfluentKafka.ConsumerConfig
         {
             BootstrapServers = options.BootstrapServers,
             ClientId = "stress-consumer-confluent",
@@ -23,9 +53,14 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
             EnableAutoCommit = true
         };
 
-        using var consumer = new ConfluentKafka.ConsumerBuilder<string, string>(config).Build();
+        using var consumer = new ConfluentKafka.ConsumerBuilder<string, string>(consumerConfig).Build();
         consumer.Subscribe(options.Topic);
 
+        // Start background producer to continuously feed the consumer
+        var producerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var producerTask = RunBackgroundProducerAsync(producer, options.Topic, messageValue, producerCts.Token);
+
+        // GC baseline after producer warmup but before consumer measurement
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
@@ -65,6 +100,10 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
         throughput.Stop();
         gcStats.Capture();
 
+        // Stop background producer
+        await producerCts.CancelAsync().ConfigureAwait(false);
+        try { await producerTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
+
         try { await samplerTask.ConfigureAwait(false); } catch { }
 
         var completedAt = DateTime.UtcNow;
@@ -84,6 +123,44 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
         };
     }
 
+    private static async Task RunBackgroundProducerAsync(
+        ConfluentKafka.IProducer<string, string> producer,
+        string topic,
+        string messageValue,
+        CancellationToken cancellationToken)
+    {
+        var messageIndex = 0L;
+
+        await Task.Yield(); // Ensure we're on a background thread
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                producer.Produce(topic, new ConfluentKafka.Message<string, string>
+                {
+                    Key = GetKey(messageIndex),
+                    Value = messageValue
+                });
+                messageIndex++;
+
+                // Yield periodically to avoid starving other tasks
+                if (messageIndex % 10_000 == 0)
+                {
+                    await Task.Yield();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch
+            {
+                // Ignore producer errors in the feeder
+            }
+        }
+    }
+
     private static async Task RunSamplerAsync(ThroughputTracker throughput, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
@@ -99,4 +176,17 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
             }
         }
     }
+
+    private static string[] CreatePreAllocatedKeys(int count)
+    {
+        var keys = new string[count];
+        for (var i = 0; i < count; i++)
+        {
+            keys[i] = $"key-{i}";
+        }
+        return keys;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static string GetKey(long index) => PreAllocatedKeys[index % PreAllocatedKeys.Length];
 }

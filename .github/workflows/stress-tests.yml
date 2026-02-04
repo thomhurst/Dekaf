@@ -70,10 +70,11 @@ jobs:
             -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 \
             -e KAFKA_LOG_DIRS=/var/lib/kafka/data \
             -e CLUSTER_ID=stress-test-cluster-001 \
-            -e KAFKA_LOG_RETENTION_MS=7200000 \
-            -e KAFKA_LOG_RETENTION_BYTES=2147483648 \
-            -e KAFKA_LOG_SEGMENT_BYTES=134217728 \
+            -e KAFKA_LOG_RETENTION_MS=60000 \
+            -e KAFKA_LOG_RETENTION_BYTES=1073741824 \
+            -e KAFKA_LOG_SEGMENT_BYTES=67108864 \
             -e KAFKA_LOG_SEGMENT_DELETE_DELAY_MS=1000 \
+            -e KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS=10000 \
             -e KAFKA_LOG_CLEANUP_POLICY=delete \
             apache/kafka:latest
 
