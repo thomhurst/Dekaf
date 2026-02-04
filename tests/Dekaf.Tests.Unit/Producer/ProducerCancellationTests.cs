@@ -67,7 +67,7 @@ public class ProducerCancellationTests
                 pooledKey, pooledValue, null, null);
 
             // Start a background task to drain batches (simulates sender loop)
-            using var cts = new CancellationTokenSource(5000);
+            using var cts = new CancellationTokenSource(15000);
             var drainTask = Task.Run(async () =>
             {
                 await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))

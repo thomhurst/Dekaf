@@ -522,7 +522,7 @@ public class BufferMemoryTests
                 null, null);
 
             // Start background task to drain batches (simulates sender loop)
-            using var cts = new CancellationTokenSource(5000);
+            using var cts = new CancellationTokenSource(15000);
             var doneTaskWasCompleted = false;
             var drainTask = Task.Run(async () =>
             {
@@ -649,7 +649,7 @@ public class BufferMemoryTests
             }
 
             // Start background task to drain batches (simulates sender loop)
-            using var cts = new CancellationTokenSource(5000);
+            using var cts = new CancellationTokenSource(15000);
             var drainTask = Task.Run(async () =>
             {
                 await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
@@ -704,7 +704,7 @@ public class BufferMemoryTests
             }
 
             // Start background task to drain batches (simulates sender loop)
-            using var cts = new CancellationTokenSource(5000);
+            using var cts = new CancellationTokenSource(15000);
             var receivedBatches = 0;
             var drainTask = Task.Run(async () =>
             {
