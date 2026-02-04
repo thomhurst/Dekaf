@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
+using System.Threading.Tasks.Sources;
 using Dekaf.Protocol.Records;
 
 namespace Dekaf.Producer;
@@ -460,18 +461,13 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private readonly ProducerOptions _options;
     private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
     private readonly Channel<ReadyBatch> _readyBatches;
-    private readonly Channel<ReadyBatch> _sendableBatches; // Batches with completed delivery tasks, ready for network send
     private readonly PartitionBatchPool _batchPool;
+    private readonly ReadyBatchPool _readyBatchPool; // Pool for ReadyBatch objects to eliminate per-batch allocations
 
-    // Completion loop that drains _readyBatches, completes delivery tasks, and forwards to _sendableBatches
-    private readonly Task _completionTask;
-    private readonly CancellationTokenSource _completionCts;
-
-    // Track all in-flight delivery tasks so FlushAsync can wait for them
-    // This ensures FlushAsync waits for batches already in _readyBatches, not just batches in _batches
-    // Initialize with large capacity (1024) to avoid resizing under load
-    // Completed tasks automatically remove themselves via ContinueWith to prevent unbounded growth
-    private readonly ConcurrentDictionary<Task, byte> _inFlightDeliveryTasks = new(concurrencyLevel: Environment.ProcessorCount, capacity: 1024);
+    // Track in-flight batches for FlushAsync using O(1) counter instead of dictionary
+    // This eliminates dictionary resizing issues under high throughput
+    private long _inFlightBatchCount;
+    private readonly ManualResetEventSlim _allBatchesComplete = new(true); // Initially signaled (no batches in flight)
 
     private volatile bool _disposed;
     private volatile bool _closed;
@@ -539,81 +535,35 @@ public sealed class RecordAccumulator : IAsyncDisposable
     public RecordAccumulator(ProducerOptions options)
     {
         _options = options;
+        _readyBatchPool = new ReadyBatchPool();
         _batchPool = new PartitionBatchPool(options);
+        _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = options.BufferMemory;
 
         // Use unbounded channel for ready batches - backpressure is now handled by buffer memory tracking
+        // Single channel design: batches go directly to sender loop (no intermediate CompletionLoop)
         _readyBatches = Channel.CreateUnbounded<ReadyBatch>(new UnboundedChannelOptions
         {
             SingleReader = true,
             SingleWriter = false
         });
-
-        // Channel for batches that are ready for network send (delivery tasks completed)
-        _sendableBatches = Channel.CreateUnbounded<ReadyBatch>(new UnboundedChannelOptions
-        {
-            SingleReader = true,
-            SingleWriter = true
-        });
-
-        // Start the completion loop
-        _completionCts = new CancellationTokenSource();
-        _completionTask = CompletionLoopAsync(_completionCts.Token);
     }
 
     /// <summary>
-    /// Completion loop that processes ready batches:
-    /// 1. Reads from _readyBatches channel
-    /// 2. Completes the delivery task (fire-and-forget semantic: batch is "ready")
-    /// 3. Forwards to _sendableBatches for KafkaProducer.SenderLoop
-    ///
-    /// DoneTask is completed here for RecordAccumulator-only tests without a SenderLoop.
-    /// KafkaProducer.FlushAsync uses _inFlightDeliveryTasks to wait for batch completion.
+    /// Exposes the ready batches channel reader for KafkaProducer.SenderLoop.
+    /// Simplified architecture: batches go directly from append → ready channel → sender loop.
     /// </summary>
-    private async Task CompletionLoopAsync(CancellationToken cancellationToken)
+    internal ChannelReader<ReadyBatch> ReadyBatches => _readyBatches.Reader;
+
+    /// <summary>
+    /// Returns a ReadyBatch to the pool for reuse.
+    /// Called by KafkaProducer after batch is processed.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void ReturnReadyBatch(ReadyBatch batch)
     {
-        try
-        {
-            await foreach (var readyBatch in _readyBatches.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-            {
-#if DEBUG
-                ProducerDebugCounters.RecordBatchProcessedByCompletionLoop();
-#endif
-                // Complete the delivery task (fire-and-forget semantic: "ready" = done)
-                // This makes FlushAsync return for RecordAccumulator-only tests
-                readyBatch.CompleteDelivery();
-
-                // Immediately remove from tracking dictionary to prevent unbounded growth
-                // NOTE: The TaskCompletionSource uses RunContinuationsAsynchronously, which means
-                // the ContinueWith callback in TrackDeliveryTask is queued to the thread pool
-                // rather than running inline. Under high throughput, the thread pool can't keep up,
-                // causing the dictionary to grow unbounded. This explicit removal ensures cleanup
-                // happens synchronously in the completion loop. The continuation serves as a
-                // backup for edge cases (e.g., if disposal occurs before this line runs).
-                _inFlightDeliveryTasks.TryRemove(readyBatch.DoneTask, out _);
-
-                // Forward to sendable channel for KafkaProducer's sender loop
-                await _sendableBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-#if DEBUG
-                ProducerDebugCounters.RecordBatchForwardedToSendable();
-#endif
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // Normal shutdown
-        }
-        finally
-        {
-            // Complete the sendable channel when completion loop exits
-            _sendableBatches.Writer.Complete();
-        }
+        _readyBatchPool.Return(batch);
     }
-
-    /// <summary>
-    /// Exposes the sendable batches channel reader for KafkaProducer.SenderLoop.
-    /// </summary>
-    internal ChannelReader<ReadyBatch> SendableBatches => _sendableBatches.Reader;
 
     /// <summary>
     /// Gets the current buffered memory usage in bytes.
@@ -1507,6 +1457,93 @@ public sealed class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Appends a record with a delivery callback stored directly in the batch.
+    /// This is the slow-path equivalent of TryAppendFireAndForget but with callbacks.
+    /// Returns true if appended successfully, false if the accumulator is disposed.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryAppendWithCallback(
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?> callback)
+    {
+        if (_disposed)
+            return false;
+
+        // Calculate record size for buffer memory tracking
+        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
+
+        // Reserve memory before appending - blocks synchronously if buffer is full
+        ReserveMemorySync(recordSize);
+
+        // Get or create TopicPartition (cached for performance)
+        var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
+        var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
+
+        // Loop until we successfully append the record
+        while (true)
+        {
+            if (_disposed)
+            {
+                ReleaseMemory(recordSize);
+                return false;
+            }
+
+            if (!_batches.TryGetValue(topicPartition, out var batch))
+            {
+                var newBatch = _batchPool.Rent(topicPartition);
+                if (!_batches.TryAdd(topicPartition, newBatch))
+                {
+                    _batchPool.Return(newBatch);
+                    if (!_batches.TryGetValue(topicPartition, out batch))
+                    {
+                        continue; // Retry
+                    }
+                }
+                else
+                {
+                    batch = newBatch;
+                }
+            }
+
+            var result = batch.TryAppendWithCallback(timestamp, key, value, headers, pooledHeaderArray, callback);
+
+            if (result.Success)
+            {
+                var overestimate = recordSize - result.ActualSizeAdded;
+                if (overestimate > 0)
+                    ReleaseMemory(overestimate);
+
+                return true;
+            }
+
+            // Batch is full - atomically remove and complete it
+            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
+            {
+                var readyBatch = batch.Complete();
+                if (readyBatch is not null)
+                {
+                    TrackDeliveryTask(readyBatch);
+
+                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    {
+                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                        ReleaseMemory(readyBatch.DataSize);
+                        return false;
+                    }
+
+                    _batchPool.Return(batch);
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// Batch fire-and-forget append for records going to the same topic/partition.
     /// Amortizes lock acquisition and dictionary lookups over N records.
     /// Returns true if all records were appended, false if accumulator is disposed.
@@ -1743,29 +1780,44 @@ public sealed class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Registers a ReadyBatch for tracking by FlushAsync.
-    /// Tasks are removed from tracking by the completion loop after CompleteDelivery() is called.
+    /// Increments the in-flight batch counter when a batch enters the pipeline.
+    /// Called when a batch is completed and queued to _readyBatches.
     /// </summary>
-    /// <remarks>
-    /// IMPORTANT: No ContinueWith callback is registered here. Previously, we used ContinueWith
-    /// to auto-remove completed tasks, but this caused performance issues:
-    /// 1. Each ContinueWith allocates ~200 bytes for a Task continuation object
-    /// 2. The TaskCompletionSource uses RunContinuationsAsynchronously, which queues
-    ///    the callback to the thread pool instead of running it inline
-    /// 3. At high throughput (~200 batches/sec), 65K+ continuation Tasks accumulated,
-    ///    causing massive GC pressure (Gen0 collections spiking from 30 to 700+)
-    ///
-    /// Instead, the completion loop now handles removal synchronously:
-    /// - CompletionLoopAsync calls TryRemove immediately after CompleteDelivery()
-    /// - This ensures zero-allocation cleanup without thread pool scheduling overhead
-    /// - Disposal clears the entire dictionary, handling the edge case
-    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void OnBatchEntersPipeline()
+    {
+        if (Interlocked.Increment(ref _inFlightBatchCount) == 1)
+        {
+            // First batch in pipeline - reset the event to unsignaled
+            _allBatchesComplete.Reset();
+        }
+    }
+
+    /// <summary>
+    /// Decrements the in-flight batch counter when a batch exits the pipeline.
+    /// Called after a batch is sent (CompleteSend) or failed (Fail).
+    /// Must be called by KafkaProducer's SenderLoopAsync after processing each batch.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void OnBatchExitsPipeline()
+    {
+        if (Interlocked.Decrement(ref _inFlightBatchCount) == 0)
+        {
+            // All batches processed - signal the event
+            _allBatchesComplete.Set();
+        }
+    }
+
+    /// <summary>
+    /// Legacy method for tracking batches - now uses counter-based approach.
+    /// Kept for compatibility with places that call it, but now just increments counter.
+    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void TrackDeliveryTask(ReadyBatch readyBatch)
     {
         if (readyBatch is not null)
         {
-            _inFlightDeliveryTasks.TryAdd(readyBatch.DoneTask, 0);
+            OnBatchEntersPipeline();
         }
     }
 
@@ -1775,14 +1827,15 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// <remarks>
     /// Optimized to avoid async state machine allocation when there are no batches to flush.
     /// Respects caller's cancellation token - if no timeout is provided, will wait indefinitely.
+    /// Uses O(1) counter-based tracking instead of dictionary for zero-allocation.
     /// </remarks>
     public ValueTask FlushAsync(CancellationToken cancellationToken)
     {
         // Check cancellation upfront - must throw immediately if already cancelled
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Fast path: no batches to flush AND no in-flight batches - avoid enumeration and async overhead entirely
-        if (_batches.IsEmpty && _inFlightDeliveryTasks.IsEmpty)
+        // Fast path: no batches to flush AND no in-flight batches - avoid async overhead entirely
+        if (_batches.IsEmpty && Volatile.Read(ref _inFlightBatchCount) == 0)
         {
             return ValueTask.CompletedTask;
         }
@@ -1835,6 +1888,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                                 try
                                 {
                                     readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                                    OnBatchExitsPipeline(); // Decrement counter on failure
                                 }
                                 finally
                                 {
@@ -1852,38 +1906,37 @@ public sealed class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Step 2: Take a snapshot of all in-flight delivery tasks
-        // This ensures we wait for batches that were expired by linger loop before FlushAsync was called
-        // Use ToArray() for atomic snapshot (avoids enumeration issues if tasks complete during iteration)
-        var allTasks = _inFlightDeliveryTasks.Keys.ToArray();
-
-        // CRITICAL: No locks are held during this await, preventing deadlock
-        // The sender loop will complete these tasks when batches are sent
-        // Respect cancellation token to allow caller to timeout the wait
-        if (allTasks.Length > 0)
+        // Step 2: Wait for all in-flight batches to complete using counter-based tracking
+        // O(1) operation instead of dictionary enumeration and Task.WhenAll
+        if (Volatile.Read(ref _inFlightBatchCount) > 0)
         {
-            try
-            {
-                await Task.WhenAll(allTasks).WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                // FlushAsync was cancelled - observe all task exceptions before rethrowing
-                // In unit tests with no sender loop, these tasks will fail with ObjectDisposedException
-                // If we don't observe them here, GC finalizer will throw UnobservedTaskException
-                foreach (var task in allTasks)
-                {
-                    if (task.IsFaulted)
-                        _ = task.Exception;
-                }
-                throw;
-            }
+            // Wait for all batches to complete
+            // Use polling with cancellation check instead of blocking
+            await WaitForAllBatchesCompleteAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
 
-            // Clean up completed tasks from tracking dictionary
-            // Use for loop to avoid allocation-heavy foreach with array
-            for (int i = 0; i < allTasks.Length; i++)
+    /// <summary>
+    /// Waits for all in-flight batches to complete.
+    /// Uses ManualResetEventSlim for efficient waiting.
+    /// </summary>
+    private async ValueTask WaitForAllBatchesCompleteAsync(CancellationToken cancellationToken)
+    {
+        // Fast path: already complete
+        if (Volatile.Read(ref _inFlightBatchCount) == 0)
+            return;
+
+        // Poll the event with cancellation support
+        // We can't use async wait on ManualResetEventSlim directly, so poll periodically
+        while (Volatile.Read(ref _inFlightBatchCount) > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Wait with short timeout to allow periodic cancellation check
+            if (_allBatchesComplete.Wait(10, cancellationToken))
             {
-                _inFlightDeliveryTasks.TryRemove(allTasks[i], out _);
+                // Event signaled - all batches complete
+                return;
             }
         }
     }
@@ -1967,21 +2020,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Ignore exceptions during cancellation
         }
 
-        // Stop the completion loop and wait for it to finish
-        _completionCts.Cancel();
-        try
-        {
-            await _completionTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-        }
-        catch (TimeoutException)
-        {
-            // Completion loop stuck - force shutdown
-        }
-        catch (OperationCanceledException)
-        {
-            // Normal cancellation
-        }
-
         // NOW fail any remaining batches that couldn't be sent during graceful shutdown
         var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
 
@@ -2012,24 +2050,24 @@ public sealed class RecordAccumulator : IAsyncDisposable
             readyBatch.Fail(disposedException);
         }
 
-        // Wait for all in-flight batch tasks to complete with a timeout
+        // Wait for all in-flight batches to complete with a timeout using counter-based tracking
         // After failing all batches above, their DoneTasks should complete quickly
-        // NOTE: No exception observation needed - DoneTask never faults (uses TrySetResult)
-        var allTasks = _inFlightDeliveryTasks.Keys.ToArray();
-        if (allTasks.Length > 0)
+        if (Volatile.Read(ref _inFlightBatchCount) > 0)
         {
             try
             {
-                // Wait for all tasks with a 5-second timeout to prevent hanging during disposal
-                await Task.WhenAll(allTasks).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                // Wait for all batches with a 5-second timeout to prevent hanging during disposal
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await WaitForAllBatchesCompleteAsync(cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Some batches didn't complete in time - proceed with disposal anyway
             }
             catch (TimeoutException)
             {
-                // Some tasks didn't complete in time - proceed with disposal anyway
+                // Some batches didn't complete in time - proceed with disposal anyway
             }
-
-            // Clean up tracked tasks
-            _inFlightDeliveryTasks.Clear();
         }
 
         // Final drain: catch any batches that may have been added during our cleanup
@@ -2040,6 +2078,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 batch.Fail(disposedException);
                 // Release the batch's buffer memory
                 ReleaseMemory(batch.DataSize);
+                OnBatchExitsPipeline(); // Decrement counter
             }
         }
 
@@ -2050,7 +2089,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
         _bufferSpaceAvailable?.Dispose();
         _disposalCts?.Dispose();
         _disposalEvent?.Dispose();
-        _completionCts?.Dispose();
+        _allBatchesComplete?.Dispose();
     }
 }
 
@@ -2063,6 +2102,7 @@ internal sealed class PartitionBatchPool
     private readonly ConcurrentStack<PartitionBatch> _pool = new();
     private readonly ProducerOptions _options;
     private readonly int _maxPoolSize;
+    private ReadyBatchPool? _readyBatchPool;
 
     /// <summary>
     /// Creates a new PartitionBatchPool.
@@ -2076,6 +2116,15 @@ internal sealed class PartitionBatchPool
     }
 
     /// <summary>
+    /// Sets the ReadyBatchPool to use for PartitionBatch.Complete() calls.
+    /// Must be called after construction.
+    /// </summary>
+    public void SetReadyBatchPool(ReadyBatchPool pool)
+    {
+        _readyBatchPool = pool;
+    }
+
+    /// <summary>
     /// Gets a batch from the pool or creates a new one.
     /// </summary>
     public PartitionBatch Rent(TopicPartition topicPartition)
@@ -2083,10 +2132,13 @@ internal sealed class PartitionBatchPool
         if (_pool.TryPop(out var batch))
         {
             batch.Reset(topicPartition);
+            batch.SetReadyBatchPool(_readyBatchPool);
             return batch;
         }
 
-        return new PartitionBatch(topicPartition, _options);
+        var newBatch = new PartitionBatch(topicPartition, _options);
+        newBatch.SetReadyBatchPool(_readyBatchPool);
+        return newBatch;
     }
 
     /// <summary>
@@ -2130,6 +2182,7 @@ internal sealed class PartitionBatch
     private TopicPartition _topicPartition;
     private ProducerOptions _options;
     private readonly int _initialRecordCapacity;
+    private ReadyBatchPool? _readyBatchPool; // Pool for renting ReadyBatch objects
 
     // Arena for zero-copy serialization - all message data in one contiguous buffer
     private BatchArena? _arena;
@@ -2140,6 +2193,10 @@ internal sealed class PartitionBatch
 
     private PooledValueTaskSource<RecordMetadata>[] _completionSources;
     private int _completionSourceCount;
+
+    // Callbacks for Send(message, callback) - stored directly in batch for inline invocation
+    private Action<RecordMetadata, Exception?>?[]? _callbacks;
+    private int _callbackCount;
 
     // Legacy: pooled arrays for non-arena path (completion-tracked messages)
     private byte[][] _pooledArrays;
@@ -2200,6 +2257,15 @@ internal sealed class PartitionBatch
     }
 
     /// <summary>
+    /// Sets the ReadyBatchPool to use for renting ReadyBatch objects in Complete().
+    /// Must be called after construction or when renting from pool.
+    /// </summary>
+    internal void SetReadyBatchPool(ReadyBatchPool? pool)
+    {
+        _readyBatchPool = pool;
+    }
+
+    /// <summary>
     /// Resets the batch for reuse with a new topic-partition.
     /// Called when renting from the pool.
     /// </summary>
@@ -2216,6 +2282,7 @@ internal sealed class PartitionBatch
         _createdAt = DateTimeOffset.UtcNow;
         _recordCount = 0;
         _completionSourceCount = 0;
+        _callbackCount = 0;
         _pooledArrayCount = 0;
         _pooledHeaderArrayCount = 0;
         _baseTimestamp = 0;
@@ -2487,6 +2554,169 @@ internal sealed class PartitionBatch
     }
 
     /// <summary>
+    /// Appends a record with a delivery callback stored directly in the batch.
+    /// This is the zero-allocation path for Send(message, callback) - no PooledValueTaskSource needed.
+    /// Callbacks are invoked inline on the sender thread when the batch completes.
+    ///
+    /// Uses lock-free CAS-based synchronization for exclusive access.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public RecordAppendResult TryAppendWithCallback(
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?> callback)
+    {
+        // Pre-compute record size outside the lock
+        var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
+
+        // FAST PATH: Try to atomically claim exclusive access via CAS.
+        if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
+        {
+            try
+            {
+                return TryAppendWithCallbackCore(timestamp, key, value, headers, pooledHeaderArray, callback, recordSize);
+            }
+            finally
+            {
+                Volatile.Write(ref _exclusiveAccess, 0);
+            }
+        }
+
+        // SLOW PATH: Spin until we can claim access.
+        return TryAppendWithCallbackSpinWait(timestamp, key, value, headers, pooledHeaderArray, callback, recordSize);
+    }
+
+    /// <summary>
+    /// Core append logic with callback storage. Called when we hold exclusive access.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private RecordAppendResult TryAppendWithCallbackCore(
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?> callback,
+        int recordSize)
+    {
+        // Check if batch was completed
+        if (Volatile.Read(ref _isCompleted) != 0)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        // Defensive check: if arrays are null, batch is in inconsistent state
+        if (_records is null || _pooledArrays is null)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        if (_recordCount == 0)
+        {
+            _baseTimestamp = timestamp;
+        }
+
+        // Check size limit
+        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        // Grow arrays if needed
+        if (_recordCount >= _records.Length)
+        {
+            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
+        }
+        if (_pooledArrayCount + 2 >= _pooledArrays.Length)
+        {
+            GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
+        }
+        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
+        {
+            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
+        }
+
+        // Ensure callback array exists and has space
+        _callbacks ??= ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Rent(_initialRecordCapacity);
+        if (_callbackCount >= _callbacks.Length)
+        {
+            GrowArray(ref _callbacks!, ref _callbackCount, ArrayPool<Action<RecordMetadata, Exception?>?>.Shared);
+        }
+
+        // Track pooled arrays
+        if (key.Array is not null)
+        {
+            _pooledArrays[_pooledArrayCount++] = key.Array;
+        }
+        if (value.Array is not null)
+        {
+            _pooledArrays[_pooledArrayCount++] = value.Array;
+        }
+        if (pooledHeaderArray is not null)
+        {
+            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
+        }
+
+        var timestampDelta = (int)(timestamp - _baseTimestamp);
+        var record = new Record
+        {
+            TimestampDelta = timestampDelta,
+            OffsetDelta = _recordCount,
+            Key = key.Memory,
+            IsKeyNull = key.IsNull,
+            Value = value.Memory,
+            IsValueNull = false,
+            Headers = headers
+        };
+
+        _records[_recordCount] = record;
+        _callbacks[_callbackCount++] = callback;
+        _recordCount++;
+        _estimatedSize += recordSize;
+
+        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
+    }
+
+    /// <summary>
+    /// Slow path for TryAppendWithCallback - spins until exclusive access is available.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private RecordAppendResult TryAppendWithCallbackSpinWait(
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?> callback,
+        int recordSize)
+    {
+        var spin = new SpinWait();
+
+        while (true)
+        {
+            if (_isCompleted != 0)
+                return new RecordAppendResult(false);
+
+            if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
+            {
+                try
+                {
+                    return TryAppendWithCallbackCore(timestamp, key, value, headers, pooledHeaderArray, callback, recordSize);
+                }
+                finally
+                {
+                    Volatile.Write(ref _exclusiveAccess, 0);
+                }
+            }
+
+            spin.SpinOnce();
+        }
+    }
+
+    /// <summary>
     /// Core append logic without locking. Called when we've verified single-producer pattern
     /// or when we already hold the lock.
     /// </summary>
@@ -2689,6 +2919,146 @@ internal sealed class PartitionBatch
                 try
                 {
                     return TryAppendFromArenaCore(timestamp, keySlice, isKeyNull, valueSlice, headers, pooledHeaderArray, recordSize);
+                }
+                finally
+                {
+                    Volatile.Write(ref _exclusiveAccess, 0);
+                }
+            }
+            spin.SpinOnce();
+        }
+    }
+
+    /// <summary>
+    /// Arena-based append with delivery callback stored directly in the batch.
+    /// This is the zero-allocation path for Send(message, callback) with arena serialization.
+    /// Callbacks are invoked inline on the sender thread when the batch completes.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public RecordAppendResult TryAppendFromArenaWithCallback(
+        long timestamp,
+        ArenaSlice keySlice,
+        bool isKeyNull,
+        ArenaSlice valueSlice,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?> callback)
+    {
+        var recordSize = EstimateRecordSize(keySlice.Length, valueSlice.Length, headers);
+
+        // FAST PATH: Try to atomically claim exclusive access via CAS.
+        if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
+        {
+            try
+            {
+                return TryAppendFromArenaWithCallbackCore(timestamp, keySlice, isKeyNull, valueSlice, headers, pooledHeaderArray, callback, recordSize);
+            }
+            finally
+            {
+                Volatile.Write(ref _exclusiveAccess, 0);
+            }
+        }
+
+        // SLOW PATH: Spin until we can claim access.
+        return TryAppendFromArenaWithCallbackSpinWait(timestamp, keySlice, isKeyNull, valueSlice, headers, pooledHeaderArray, callback, recordSize);
+    }
+
+    /// <summary>
+    /// Core append logic for arena-based data with callback.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private RecordAppendResult TryAppendFromArenaWithCallbackCore(
+        long timestamp,
+        ArenaSlice keySlice,
+        bool isKeyNull,
+        ArenaSlice valueSlice,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?> callback,
+        int recordSize)
+    {
+        if (Volatile.Read(ref _isCompleted) != 0)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        if (_recordCount == 0)
+        {
+            _baseTimestamp = timestamp;
+        }
+
+        // Check size limit
+        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        // Grow records array if needed
+        if (_recordCount >= _records.Length)
+        {
+            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
+        }
+        // Track pooled header arrays (rare)
+        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
+        {
+            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
+        }
+        if (pooledHeaderArray is not null)
+        {
+            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
+        }
+
+        // Ensure callback array exists and has space
+        _callbacks ??= ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Rent(_initialRecordCapacity);
+        if (_callbackCount >= _callbacks.Length)
+        {
+            GrowArray(ref _callbacks!, ref _callbackCount, ArrayPool<Action<RecordMetadata, Exception?>?>.Shared);
+        }
+
+        // Create record with Memory referencing the arena buffer
+        var arena = _arena!;
+        var timestampDelta = (int)(timestamp - _baseTimestamp);
+        var record = new Record
+        {
+            TimestampDelta = timestampDelta,
+            OffsetDelta = _recordCount,
+            Key = isKeyNull ? ReadOnlyMemory<byte>.Empty : arena.Buffer.AsMemory(keySlice.Offset, keySlice.Length),
+            IsKeyNull = isKeyNull,
+            Value = arena.Buffer.AsMemory(valueSlice.Offset, valueSlice.Length),
+            IsValueNull = false,
+            Headers = headers
+        };
+
+        _records[_recordCount] = record;
+        _callbacks[_callbackCount++] = callback;
+        _recordCount++;
+        _estimatedSize += recordSize;
+
+        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private RecordAppendResult TryAppendFromArenaWithCallbackSpinWait(
+        long timestamp,
+        ArenaSlice keySlice,
+        bool isKeyNull,
+        ArenaSlice valueSlice,
+        IReadOnlyList<RecordHeader>? headers,
+        RecordHeader[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?> callback,
+        int recordSize)
+    {
+        var spin = new SpinWait();
+        while (true)
+        {
+            if (_isCompleted != 0)
+                return new RecordAppendResult(false);
+
+            if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
+            {
+                try
+                {
+                    return TryAppendFromArenaWithCallbackCore(timestamp, keySlice, isKeyNull, valueSlice, headers, pooledHeaderArray, callback, recordSize);
                 }
                 finally
                 {
@@ -2931,10 +3301,13 @@ internal sealed class PartitionBatch
             };
             _records = null!;
 
-            // Pass pooled arrays directly to ReadyBatch - no copying needed
-            // ReadyBatch will return them to pool when done
+            // Rent ReadyBatch from pool or create new if no pool available
+            // This eliminates per-batch class allocations at high throughput
+            var readyBatch = _readyBatchPool?.Rent() ?? new ReadyBatch();
+
+            // Initialize with batch data - ownership of arrays transfers to ReadyBatch
             // PooledValueTaskSource auto-returns to its pool when GetResult() is called
-            _completedBatch = new ReadyBatch(
+            readyBatch.Initialize(
                 _topicPartition,
                 batch,
                 _completionSources,
@@ -2945,13 +3318,18 @@ internal sealed class PartitionBatch
                 _pooledHeaderArrayCount,
                 _estimatedSize,
                 pooledRecordsArray,
-                _arena);
+                _arena,
+                _callbacks,
+                _callbackCount);
+
+            _completedBatch = readyBatch;
 
             // Null out references - ownership transferred to ReadyBatch
             _completionSources = null!;
             _pooledArrays = null!;
             _pooledHeaderArrays = null!;
             _arena = null;
+            _callbacks = null;
 
             return _completedBatch;
         }
@@ -3014,13 +3392,28 @@ internal sealed class PartitionBatch
             for (var i = 0; i < headers.Count; i++)
             {
                 var header = headers[i];
-                // Use UTF-8 byte count for accurate sizing (header keys may contain multi-byte characters)
-                var headerKeyByteCount = System.Text.Encoding.UTF8.GetByteCount(header.Key);
+                // OPTIMIZATION: For ASCII-only keys (99%+ of cases), string.Length == byte count.
+                // Only fall back to expensive UTF8.GetByteCount for non-ASCII keys.
+                var headerKeyByteCount = GetHeaderKeyByteCount(header.Key);
                 size += headerKeyByteCount + (header.IsValueNull ? 0 : header.Value.Length) + 10;
             }
         }
 
         return size;
+    }
+
+    /// <summary>
+    /// Fast path for header key byte count. ASCII keys (the common case) use string length directly.
+    /// Uses SIMD-optimized Ascii.IsValid for efficient detection.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int GetHeaderKeyByteCount(string key)
+    {
+        // SIMD-optimized ASCII check: if all chars are ASCII, byte count == char count
+        // This is much faster than UTF8.GetByteCount for the common ASCII case
+        return System.Text.Ascii.IsValid(key)
+            ? key.Length
+            : System.Text.Encoding.UTF8.GetByteCount(key);
     }
 }
 
@@ -3032,14 +3425,65 @@ internal sealed class PartitionBatch
 public readonly record struct RecordAppendResult(bool Success, int ActualSizeAdded = 0);
 
 /// <summary>
-/// A batch ready to be sent.
+/// Pool for ReadyBatch objects to eliminate per-batch class allocations.
+/// Uses ConcurrentStack for thread-safe lock-free operations.
+/// </summary>
+internal sealed class ReadyBatchPool
+{
+    private readonly ConcurrentStack<ReadyBatch> _pool = new();
+    private readonly int _maxPoolSize;
+
+    public ReadyBatchPool(int maxPoolSize = 128)
+    {
+        _maxPoolSize = maxPoolSize;
+    }
+
+    /// <summary>
+    /// Rents a ReadyBatch from the pool or creates a new one.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ReadyBatch Rent()
+    {
+        if (_pool.TryPop(out var batch))
+        {
+            return batch;
+        }
+        return new ReadyBatch();
+    }
+
+    /// <summary>
+    /// Returns a ReadyBatch to the pool after resetting it.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Return(ReadyBatch batch)
+    {
+        batch.Reset();
+        if (_pool.Count < _maxPoolSize)
+        {
+            _pool.Push(batch);
+        }
+    }
+}
+
+/// <summary>
+/// A batch ready to be sent. Poolable to eliminate per-batch allocations.
 /// Returns pooled arrays to ArrayPool when complete.
 /// PooledValueTaskSource instances auto-return to their pool when GetResult() is called.
 /// </summary>
-internal sealed class ReadyBatch
+internal sealed class ReadyBatch : IValueTaskSource<bool>
 {
-    public TopicPartition TopicPartition { get; }
-    public RecordBatch RecordBatch { get; }
+    private TopicPartition _topicPartition;
+    private RecordBatch _recordBatch = null!;
+
+    /// <summary>
+    /// The topic-partition this batch is for.
+    /// </summary>
+    public TopicPartition TopicPartition => _topicPartition;
+
+    /// <summary>
+    /// The record batch to send.
+    /// </summary>
+    public RecordBatch RecordBatch => _recordBatch;
 
     /// <summary>
     /// Number of completion sources (messages) in this batch.
@@ -3049,48 +3493,66 @@ internal sealed class ReadyBatch
     /// <summary>
     /// Estimated size of all data in this batch (for buffer memory tracking).
     /// </summary>
-    public int DataSize { get; }
+    public int DataSize { get; private set; }
 
     /// <summary>
-    /// Task that completes when this batch is done (either sent successfully or failed).
+    /// Gets a ValueTask that completes when this batch is done (either sent successfully or failed).
     /// Used by FlushAsync to wait for batch completion.
     /// IMPORTANT: This task never faults - it completes with true (success) or false (failure).
     /// This design eliminates UnobservedTaskException issues for fire-and-forget scenarios.
     /// Per-message exceptions are handled via the completion sources array, not this task.
     /// </summary>
-    public Task DoneTask => _doneCompletionSource.Task;
+    public ValueTask<bool> DoneTask => new(this, _doneCore.Version);
 
-    // Working arrays from accumulator (pooled)
-    private readonly PooledValueTaskSource<RecordMetadata>[] _completionSourcesArray;
-    private readonly int _completionSourcesCount;
-    private readonly byte[][] _pooledDataArrays;
-    private readonly int _pooledDataArraysCount;
-    private readonly RecordHeader[][] _pooledHeaderArrays;
-    private readonly int _pooledHeaderArraysCount;
-    private readonly Record[]? _pooledRecordsArray; // Pooled records array from RecordBatch
-    private readonly BatchArena? _arena; // Arena for zero-copy serialization data
+    // Working arrays from accumulator (pooled) - mutable for pooling
+    private PooledValueTaskSource<RecordMetadata>[]? _completionSourcesArray;
+    private int _completionSourcesCount;
+    private byte[][]? _pooledDataArrays;
+    private int _pooledDataArraysCount;
+    private RecordHeader[][]? _pooledHeaderArrays;
+    private int _pooledHeaderArraysCount;
+    private Record[]? _pooledRecordsArray; // Pooled records array from RecordBatch
+    private BatchArena? _arena; // Arena for zero-copy serialization data
 
-    // Batch-level completion tracking - signals "batch is done" (success or failure)
-    // Never faults - uses TrySetResult(true) for success, TrySetResult(false) for failure
-    private readonly TaskCompletionSource<bool> _doneCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    // Callbacks for Send(message, callback) - inline invocation without ThreadPool
+    private Action<RecordMetadata, Exception?>?[]? _callbacks;
+    private int _callbackCount;
+
+    // Batch-level completion tracking using resettable ManualResetValueTaskSourceCore
+    // Never faults - uses SetResult(true) for success, SetResult(false) for failure
+    private ManualResetValueTaskSourceCore<bool> _doneCore;
 
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
+    private int _completed; // 0 = not completed, 1 = completed (prevents double-completion)
 
-    public ReadyBatch(
+    /// <summary>
+    /// Creates an uninitialized ReadyBatch. Call Initialize() before use.
+    /// </summary>
+    public ReadyBatch()
+    {
+        // Default constructor for pooling - Initialize() must be called before use
+    }
+
+    /// <summary>
+    /// Initializes the batch with data. Must be called after Rent() from pool.
+    /// </summary>
+    public void Initialize(
         TopicPartition topicPartition,
         RecordBatch recordBatch,
-        PooledValueTaskSource<RecordMetadata>[] completionSourcesArray,
+        PooledValueTaskSource<RecordMetadata>[]? completionSourcesArray,
         int completionSourcesCount,
-        byte[][] pooledDataArrays,
+        byte[][]? pooledDataArrays,
         int pooledDataArraysCount,
-        RecordHeader[][] pooledHeaderArrays,
+        RecordHeader[][]? pooledHeaderArrays,
         int pooledHeaderArraysCount,
         int dataSize,
         Record[]? pooledRecordsArray = null,
-        BatchArena? arena = null)
+        BatchArena? arena = null,
+        Action<RecordMetadata, Exception?>?[]? callbacks = null,
+        int callbackCount = 0)
     {
-        TopicPartition = topicPartition;
-        RecordBatch = recordBatch;
+        _topicPartition = topicPartition;
+        _recordBatch = recordBatch;
         _completionSourcesArray = completionSourcesArray;
         _completionSourcesCount = completionSourcesCount;
         _pooledDataArrays = pooledDataArrays;
@@ -3100,30 +3562,69 @@ internal sealed class ReadyBatch
         DataSize = dataSize;
         _pooledRecordsArray = pooledRecordsArray;
         _arena = arena;
+        _callbacks = callbacks;
+        _callbackCount = callbackCount;
     }
 
     /// <summary>
+    /// Resets the batch for reuse. Called by ReadyBatchPool.Return().
+    /// </summary>
+    public void Reset()
+    {
+        // Clear all references to allow GC
+        _topicPartition = default;
+        _recordBatch = null!;
+        _completionSourcesArray = null;
+        _completionSourcesCount = 0;
+        _pooledDataArrays = null;
+        _pooledDataArraysCount = 0;
+        _pooledHeaderArrays = null;
+        _pooledHeaderArraysCount = 0;
+        DataSize = 0;
+        _pooledRecordsArray = null;
+        _arena = null;
+        _callbacks = null;
+        _callbackCount = 0;
+
+        // Reset state flags
+        Volatile.Write(ref _cleanedUp, 0);
+        Volatile.Write(ref _completed, 0);
+
+        // Reset the ValueTaskSourceCore for reuse
+        _doneCore.Reset();
+    }
+
+    // IValueTaskSource<bool> implementation for DoneTask
+    bool IValueTaskSource<bool>.GetResult(short token) => _doneCore.GetResult(token);
+    ValueTaskSourceStatus IValueTaskSource<bool>.GetStatus(short token) => _doneCore.GetStatus(token);
+    void IValueTaskSource<bool>.OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+        => _doneCore.OnCompleted(continuation, state, token, flags);
+
+    /// <summary>
     /// Marks batch as "ready" (processed by completion loop).
-    /// Called by RecordAccumulator.CompletionLoopAsync.
+    /// Called by RecordAccumulator.CompletionLoopAsync or unified SenderLoopAsync.
     /// This unblocks FlushAsync for fire-and-forget scenarios.
     /// For unit tests without a sender loop, this is the final completion.
     /// </summary>
     public void CompleteDelivery()
     {
-        // Guard against calling after Cleanup
+        // Guard against calling after Cleanup or double-completion
         if (Volatile.Read(ref _cleanedUp) != 0)
             return;
 
+        // Only complete once
+        if (Interlocked.CompareExchange(ref _completed, 1, 0) != 0)
+            return;
+
         // Signal batch is done (ready for fire-and-forget semantic)
-        // This uses TrySetResult, not TrySetException, to avoid UnobservedTaskException
-        _doneCompletionSource.TrySetResult(true);
+        _doneCore.SetResult(true);
     }
 
     /// <summary>
     /// Marks batch as successfully sent to Kafka.
     /// Called by KafkaProducer.SenderLoopAsync after network send.
     /// This completes per-message ProduceAsync operations with success metadata.
-    /// NOTE: DoneTask is already completed by CompleteDelivery(), so this is a no-op for that.
+    /// Also invokes any registered callbacks inline (no ThreadPool scheduling).
     /// </summary>
     public void CompleteSend(long baseOffset, DateTimeOffset timestamp)
     {
@@ -3147,8 +3648,8 @@ internal sealed class ReadyBatch
                     var source = _completionSourcesArray[i];
                     if (source?.TrySetResult(new RecordMetadata
                     {
-                        Topic = TopicPartition.Topic,
-                        Partition = TopicPartition.Partition,
+                        Topic = _topicPartition.Topic,
+                        Partition = _topicPartition.Partition,
                         Offset = baseOffset + i,
                         Timestamp = timestamp
                     }) == true)
@@ -3163,8 +3664,40 @@ internal sealed class ReadyBatch
 #endif
             }
 
-            // Signal batch is done (successfully)
-            _doneCompletionSource.TrySetResult(true);
+            // Invoke callbacks inline - NO ThreadPool scheduling for zero-allocation
+            // Callbacks are invoked on the sender thread, so they must be non-blocking
+            if (_callbacks is not null)
+            {
+                for (var i = 0; i < _callbackCount; i++)
+                {
+                    var callback = _callbacks[i];
+                    if (callback is not null)
+                    {
+                        try
+                        {
+                            callback.Invoke(new RecordMetadata
+                            {
+                                Topic = _topicPartition.Topic,
+                                Partition = _topicPartition.Partition,
+                                Offset = baseOffset + i,
+                                Timestamp = timestamp
+                            }, null);
+                        }
+                        catch
+                        {
+                            // Swallow callback exceptions - don't crash sender loop
+                            // User callbacks are responsible for their own error handling
+                        }
+                        _callbacks[i] = null; // Clear for pool reuse
+                    }
+                }
+            }
+
+            // Signal batch is done (successfully) if not already completed
+            if (Interlocked.CompareExchange(ref _completed, 1, 0) == 0)
+            {
+                _doneCore.SetResult(true);
+            }
         }
         finally
         {
@@ -3176,6 +3709,7 @@ internal sealed class ReadyBatch
     /// Marks batch as failed with an exception.
     /// Called when batch cannot be sent (disposal, errors, etc).
     /// Per-message completion sources receive the exception for ProduceAsync callers.
+    /// Callbacks receive the exception as the second parameter.
     /// DoneTask completes with false (no exception) to avoid UnobservedTaskException.
     /// </summary>
     public void Fail(Exception exception)
@@ -3210,10 +3744,34 @@ internal sealed class ReadyBatch
 #endif
             }
 
+            // Invoke callbacks with exception - NO ThreadPool scheduling
+            if (_callbacks is not null)
+            {
+                for (var i = 0; i < _callbackCount; i++)
+                {
+                    var callback = _callbacks[i];
+                    if (callback is not null)
+                    {
+                        try
+                        {
+                            callback.Invoke(default, exception);
+                        }
+                        catch
+                        {
+                            // Swallow callback exceptions - don't crash during failure handling
+                        }
+                        _callbacks[i] = null; // Clear for pool reuse
+                    }
+                }
+            }
+
             // Signal batch is done (failed) - NO EXCEPTION to avoid UnobservedTaskException
             // For fire-and-forget, no one awaits this, so exception would go unobserved
             // For FlushAsync, it just needs to know "done", not success/failure details
-            _doneCompletionSource.TrySetResult(false);
+            if (Interlocked.CompareExchange(ref _completed, 1, 0) == 0)
+            {
+                _doneCore.SetResult(false);
+            }
         }
         finally
         {
@@ -3268,6 +3826,12 @@ internal sealed class ReadyBatch
         // Return arena buffer if present (arena-based path)
         // This is a single pool return instead of N individual array returns
         _arena?.Return();
+
+        // Return callback array to pool if present
+        if (_callbacks is not null)
+        {
+            ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Return(_callbacks, clearArray: true);
+        }
     }
 }
 

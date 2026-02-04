@@ -521,30 +521,35 @@ public class BufferMemoryTests
                 new PooledMemory(null, 0, isNull: true),
                 null, null);
 
-            // Start reading from SendableBatches BEFORE flushing to avoid race condition.
-            // FlushAsync completes when DoneTask is set, but DoneTask is set BEFORE
-            // the batch is written to SendableBatches.
+            // Start background task to drain batches (simulates sender loop)
             using var cts = new CancellationTokenSource(5000);
-            var readTask = Task.Run(async () =>
+            var doneTaskWasCompleted = false;
+            var drainTask = Task.Run(async () =>
             {
-                var enumerator = accumulator.SendableBatches.ReadAllAsync(cts.Token).GetAsyncEnumerator();
-                var hasNext = await enumerator.MoveNextAsync();
-                return (hasNext, hasNext ? enumerator.Current : null);
-            });
+                await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
+                {
+                    // Simulate sender loop: complete delivery
+                    batch.CompleteDelivery();
+
+                    // Capture DoneTask state BEFORE returning to pool (which resets it)
+                    doneTaskWasCompleted = batch.DoneTask.IsCompleted;
+
+                    // Exit pipeline and return to pool
+                    accumulator.OnBatchExitsPipeline();
+                    accumulator.ReturnReadyBatch(batch);
+                    break; // Only expect one batch
+                }
+            }, cts.Token);
 
             // Flush to make batch ready immediately (bypasses linger)
-            await accumulator.FlushAsync(CancellationToken.None);
+            // FlushAsync completes when all batches exit pipeline
+            await accumulator.FlushAsync(cts.Token);
 
-            // Wait for reader
-            var (hasNext, batch) = await readTask;
-            await Assert.That(hasNext).IsTrue();
-            await Assert.That(batch).IsNotNull();
+            // Cancel drain task since flush completed
+            await cts.CancelAsync();
 
-            // DoneTask should already be completed (by completion loop calling CompleteDelivery)
-            await Assert.That(batch!.DoneTask.IsCompleted).IsTrue();
-
-            // Complete send phase (handles per-message completions)
-            batch.CompleteSend(0, DateTimeOffset.UtcNow);
+            // DoneTask should have been completed by CompleteDelivery
+            await Assert.That(doneTaskWasCompleted).IsTrue();
         }
         finally
         {
@@ -579,36 +584,34 @@ public class BufferMemoryTests
                     null, null);
             }
 
-            // Start reading from SendableBatches BEFORE flushing to avoid race condition.
-            // FlushAsync completes when DoneTask is set, but DoneTask is set BEFORE
-            // the batch is written to SendableBatches.
+            // Start background task to drain batches (simulates sender loop)
             using var cts = new CancellationTokenSource(5000);
-            var readTask = Task.Run(async () =>
+            var receivedCount = 0;
+            var drainTask = Task.Run(async () =>
             {
-                var receivedCount = 0;
-                await foreach (var batch in accumulator.SendableBatches.ReadAllAsync(cts.Token))
+                await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
                 {
-                    // DoneTask should be completed by completion loop
-                    if (!batch.DoneTask.IsCompleted)
-                        throw new InvalidOperationException("DoneTask should be completed");
+                    // Increment count BEFORE exiting pipeline to avoid race with FlushAsync
+                    Interlocked.Increment(ref receivedCount);
 
-                    // Complete the send phase
+                    batch.CompleteDelivery();
+                    accumulator.OnBatchExitsPipeline();
                     batch.CompleteSend(0, DateTimeOffset.UtcNow);
+                    accumulator.ReturnReadyBatch(batch);
 
-                    receivedCount++;
-                    if (receivedCount >= batchCount)
+                    if (Volatile.Read(ref receivedCount) >= batchCount)
                         break;
                 }
-                return receivedCount;
-            });
+            }, cts.Token);
 
             // Flush to make all batches ready (bypasses linger)
-            await accumulator.FlushAsync(CancellationToken.None);
+            // FlushAsync completes when all batches exit pipeline
+            await accumulator.FlushAsync(cts.Token);
 
-            // Wait for reader
-            var receivedCount = await readTask;
+            // Cancel drain task since flush completed
+            await cts.CancelAsync();
 
-            await Assert.That(receivedCount).IsEqualTo(batchCount);
+            await Assert.That(Volatile.Read(ref receivedCount)).IsEqualTo(batchCount);
         }
         finally
         {
@@ -617,10 +620,10 @@ public class BufferMemoryTests
     }
 
     [Test]
-    public async Task FlushAsync_WithoutSenderLoop_CompletesSuccessfully()
+    public async Task FlushAsync_WithSimulatedSenderLoop_CompletesSuccessfully()
     {
-        // This verifies the core architectural fix - FlushAsync should work
-        // even when there's no KafkaProducer sender loop consuming batches
+        // FlushAsync completes when all batches exit the pipeline
+        // This requires a sender loop (or simulated one) to drain batches
 
         var options = new ProducerOptions
         {
@@ -634,7 +637,7 @@ public class BufferMemoryTests
 
         try
         {
-            // Add multiple fire-and-forget messages
+            // Add multiple fire-and-forget messages across 5 partitions
             for (int i = 0; i < 50; i++)
             {
                 accumulator.TryAppendFireAndForget(
@@ -644,12 +647,26 @@ public class BufferMemoryTests
                     null, null);
             }
 
-            // FlushAsync should complete quickly via completion loop
+            // Start background task to drain batches (simulates sender loop)
+            using var cts = new CancellationTokenSource(5000);
+            var drainTask = Task.Run(async () =>
+            {
+                await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
+                {
+                    batch.CompleteDelivery();
+                    accumulator.OnBatchExitsPipeline();
+                    accumulator.ReturnReadyBatch(batch);
+                }
+            }, cts.Token);
+
+            // FlushAsync should complete quickly once batches are drained
             var sw = Stopwatch.StartNew();
-            await accumulator.FlushAsync(CancellationToken.None);
+            await accumulator.FlushAsync(cts.Token);
             sw.Stop();
 
-            // Should complete in well under 1 second (completion loop is fast)
+            await cts.CancelAsync();
+
+            // Should complete in well under 1 second
             await Assert.That(sw.ElapsedMilliseconds).IsLessThan(1000);
         }
         finally
@@ -659,7 +676,7 @@ public class BufferMemoryTests
     }
 
     [Test]
-    public async Task SendableBatches_ReceivesAllBatchesFromCompletionLoop()
+    public async Task ReadyBatches_ReceivesAllBatchesFromCompletionLoop()
     {
         var options = new ProducerOptions
         {
@@ -685,30 +702,28 @@ public class BufferMemoryTests
                     null, null);
             }
 
-            // Start reading from SendableBatches BEFORE flushing to avoid race condition.
-            // FlushAsync completes when DoneTask is set, but DoneTask is set BEFORE
-            // the batch is written to SendableBatches. By starting the read first,
-            // we're guaranteed to receive all batches as they flow through.
+            // Start background task to drain batches (simulates sender loop)
             using var cts = new CancellationTokenSource(5000);
-            var readTask = Task.Run(async () =>
+            var receivedBatches = 0;
+            var drainTask = Task.Run(async () =>
             {
-                var received = 0;
-                await foreach (var batch in accumulator.SendableBatches.ReadAllAsync(cts.Token))
+                await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
                 {
-                    received++;
-                    // Simulate sending
+                    receivedBatches++;
+                    batch.CompleteDelivery();
+                    accumulator.OnBatchExitsPipeline();
                     batch.CompleteSend(0, DateTimeOffset.UtcNow);
-                    if (received >= batchCount)
+                    accumulator.ReturnReadyBatch(batch);
+                    if (receivedBatches >= batchCount)
                         break;
                 }
-                return received;
-            });
+            }, cts.Token);
 
             // Flush to make batches ready (bypasses linger)
-            await accumulator.FlushAsync(CancellationToken.None);
+            await accumulator.FlushAsync(cts.Token);
 
-            // Wait for reader to complete
-            var receivedBatches = await readTask;
+            // Cancel and cleanup
+            await cts.CancelAsync();
 
             await Assert.That(receivedBatches).IsEqualTo(batchCount);
         }

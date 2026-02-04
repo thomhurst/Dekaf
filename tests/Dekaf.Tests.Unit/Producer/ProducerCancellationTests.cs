@@ -42,10 +42,10 @@ public class ProducerCancellationTests
     }
 
     [Test]
-    public async Task RecordAccumulator_FlushAsync_CompletesQuicklyDueToCompletionLoop()
+    public async Task RecordAccumulator_FlushAsync_CompletesWithBatchDraining()
     {
-        // Arrange - With the new completion loop architecture, delivery tasks complete
-        // immediately when batches become ready, making fire-and-forget truly fast
+        // Arrange - With simplified architecture, FlushAsync completes when batches are processed.
+        // For RecordAccumulator-only tests, we simulate the sender by draining the channel.
         var options = new ProducerOptions
         {
             BootstrapServers = new[] { "localhost:9092" },
@@ -66,14 +66,29 @@ public class ProducerCancellationTests
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 pooledKey, pooledValue, null, null);
 
-            // Act - FlushAsync completes quickly because completion loop completes delivery immediately
-            using var cts = new CancellationTokenSource(100); // Generous timeout
+            // Start a background task to drain batches (simulates sender loop)
+            using var cts = new CancellationTokenSource(5000);
+            var drainTask = Task.Run(async () =>
+            {
+                await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
+                {
+                    // Complete delivery and decrement counter (simulates sender loop)
+                    batch.CompleteDelivery();
+                    accumulator.OnBatchExitsPipeline();
+                    accumulator.ReturnReadyBatch(batch);
+                }
+            }, cts.Token);
+
+            // Act - FlushAsync completes when the drain task processes the batch
             var startTime = Environment.TickCount64;
             await accumulator.FlushAsync(cts.Token);
             var elapsed = Environment.TickCount64 - startTime;
 
-            // Assert - Should complete in well under 100ms (completion loop is synchronous)
-            await Assert.That(elapsed).IsLessThan(100);
+            // Assert - Should complete quickly once batch is drained
+            await Assert.That(elapsed).IsLessThan(1000);
+
+            // Cancel to stop the drain task
+            await cts.CancelAsync();
         }
         finally
         {
