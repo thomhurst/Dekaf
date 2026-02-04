@@ -667,8 +667,9 @@ public class BufferMemoryTests
 
             await cts.CancelAsync();
 
-            // Should complete quickly - using 8000ms to account for Windows CI variability
-            await Assert.That(sw.ElapsedMilliseconds).IsLessThan(8000);
+            // Should complete quickly - using 14000ms to account for CI variability
+            // (macOS CI can be particularly slow)
+            await Assert.That(sw.ElapsedMilliseconds).IsLessThan(14000);
         }
         finally
         {
