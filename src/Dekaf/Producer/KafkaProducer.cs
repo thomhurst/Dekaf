@@ -37,9 +37,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     // Pipelining: allow multiple batches to be sent concurrently (up to MaxInFlightRequestsPerConnection)
     // This dramatically improves throughput by overlapping network round-trips
+    //
+    // Thread-safety model:
+    // - _sendConcurrencySemaphore: SemaphoreSlim is internally thread-safe; limits concurrent sends
+    // - _inFlightSendCount: Modified only via Interlocked operations, read via Volatile.Read
+    // - _allSendsCompleted: Signaling coordinated with _inFlightSendCount via _sendCompletionLock
+    // - _sendCompletionLock: Protects the atomicity of count transition + event signal pairs
     private readonly SemaphoreSlim _sendConcurrencySemaphore;
     private long _inFlightSendCount;
     private readonly ManualResetEventSlim _allSendsCompleted = new(true); // Initially signaled (no sends in flight)
+    private readonly object _sendCompletionLock = new(); // Prevents race between Reset() and Set()
 
 
     // Channel-based worker pool for thread-safe produce operations
@@ -1635,9 +1642,13 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             await _sendConcurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
 
             // Track in-flight send count for disposal coordination
-            if (Interlocked.Increment(ref _inFlightSendCount) == 1)
+            // Lock ensures atomicity of (increment + Reset) to prevent race with (decrement + Set)
+            lock (_sendCompletionLock)
             {
-                _allSendsCompleted.Reset(); // First send in flight - clear the signal
+                if (Interlocked.Increment(ref _inFlightSendCount) == 1)
+                {
+                    _allSendsCompleted.Reset(); // First send in flight - clear the signal
+                }
             }
 
             // Fire-and-forget: don't await the send, allowing next batch to be processed immediately
@@ -1692,9 +1703,13 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             _sendConcurrencySemaphore.Release();
 
             // Decrement in-flight count and signal if all sends complete
-            if (Interlocked.Decrement(ref _inFlightSendCount) == 0)
+            // Lock ensures atomicity of (decrement + Set) to prevent race with (increment + Reset)
+            lock (_sendCompletionLock)
             {
-                _allSendsCompleted.Set(); // All sends complete - signal waiters
+                if (Interlocked.Decrement(ref _inFlightSendCount) == 0)
+                {
+                    _allSendsCompleted.Set(); // All sends complete - signal waiters
+                }
             }
         }
     }
