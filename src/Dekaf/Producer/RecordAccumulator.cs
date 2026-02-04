@@ -670,7 +670,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 continue;
 
             // ManualResetEventSlim doesn't have native async wait, so use short polling.
-            // Use 5ms poll interval to minimize latency when memory becomes available.
+            // Use up to 5ms poll interval to minimize latency when memory becomes available.
             // The trade-off is slightly more CPU usage, but memory pressure scenarios are
             // transient and this path is only hit under backpressure.
             var waitMs = (int)Math.Min(5, remainingMs);
@@ -753,8 +753,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 throw new OperationCanceledException(_disposalCts.Token);
             }
 
-            // Wait for either: buffer space available, disposal, or timeout
-            // Use WaitHandle.WaitAny with pre-allocated array to avoid per-iteration allocation
+            // Wait for either: buffer space available, disposal, or timeout.
+            // Use WaitHandle.WaitAny with pre-allocated array to avoid per-iteration allocation.
+            // Sync path uses 50ms (vs 5ms async) because: (1) WaitAny provides true signal-based
+            // wake-up so this is max sleep not actual latency, (2) Send() is fire-and-forget so
+            // caller doesn't need low-latency response, (3) longer interval reduces CPU usage.
             var waitMs = Math.Min(50, (int)remainingMs);
             var signaled = WaitHandle.WaitAny(_syncWaitHandles, waitMs);
 
