@@ -264,17 +264,8 @@ public class CertificateLoadingTests : IDisposable
         var notBefore = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
         var notAfter = notBefore.AddYears(1);
 
-        // Use explicit serial number to avoid macOS ASN.1 encoding issues with auto-generated serials
-        var serialNumber = new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x09 };
-        var generator = X509SignatureGenerator.CreateForRSA(rsa, RSASignaturePadding.Pkcs1);
-        using var certWithoutKey = request.Create(new X500DistinguishedName(subjectName), generator, notBefore, notAfter, serialNumber);
-
-        // CopyWithPrivateKey returns a new certificate with the private key attached
-        using var certWithKey = certWithoutKey.CopyWithPrivateKey(rsa);
-
-        // Export and re-import to ensure the private key is exportable on all platforms
-        // On Windows, CopyWithPrivateKey may create a key that's not exportable by default
-        var pfxBytes = certWithKey.Export(X509ContentType.Pfx, "");
-        return X509CertificateLoader.LoadPkcs12(pfxBytes, "", X509KeyStorageFlags.Exportable);
+        // CreateSelfSigned is the simplest approach - it handles key attachment properly
+        // and creates an ephemeral key that's exportable on all platforms
+        return request.CreateSelfSigned(notBefore, notAfter);
     }
 }
