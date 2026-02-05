@@ -1887,9 +1887,18 @@ public sealed class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Update the oldest batch tracking for next check
-        // Use Volatile.Write for visibility to the fast path check
-        Volatile.Write(ref _oldestBatchCreatedTicks, newOldestTicks);
+        // Update the oldest batch tracking for next check using CAS to prevent race condition.
+        // A concurrent batch addition via UpdateOldestBatchTracking() may have set a valid
+        // timestamp after we started enumeration. Only update if we found an older batch
+        // than currently tracked, preserving timestamps from concurrent additions.
+        var current = Volatile.Read(ref _oldestBatchCreatedTicks);
+        while (newOldestTicks < current)
+        {
+            var original = Interlocked.CompareExchange(ref _oldestBatchCreatedTicks, newOldestTicks, current);
+            if (original == current)
+                break;
+            current = original;
+        }
     }
 
     /// <summary>
