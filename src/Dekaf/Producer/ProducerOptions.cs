@@ -253,6 +253,13 @@ public sealed class ProducerOptions
     /// Default is 300000 (5 minutes).
     /// </summary>
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
+
+    /// <summary>
+    /// Producer interceptors, called in order during the produce pipeline.
+    /// Interceptors are called on the hot path (OnSend) and on acknowledgement (OnAcknowledgement).
+    /// Interceptor exceptions are caught and logged, not propagated.
+    /// </summary>
+    internal IReadOnlyList<object>? Interceptors { get; init; }
 }
 
 /// <summary>

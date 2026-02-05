@@ -42,6 +42,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int? _maxBlockMs;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
+    private List<IProducerInterceptor<TKey, TValue>>? _interceptors;
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -460,6 +461,20 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Adds a producer interceptor to the pipeline.
+    /// Interceptors are called in the order they are added.
+    /// </summary>
+    /// <param name="interceptor">The interceptor to add.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ProducerBuilder<TKey, TValue> AddInterceptor(IProducerInterceptor<TKey, TValue> interceptor)
+    {
+        ArgumentNullException.ThrowIfNull(interceptor);
+        _interceptors ??= [];
+        _interceptors.Add(interceptor);
+        return this;
+    }
+
     public IKafkaProducer<TKey, TValue> Build()
     {
         if (_bootstrapServers.Count == 0)
@@ -493,7 +508,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             StatisticsInterval = _statisticsInterval,
             StatisticsHandler = _statisticsHandler,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
-            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
+            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
+            Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null
         };
 
         return new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory);
@@ -558,6 +574,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _sessionTimeoutMs = 45000;
     private bool _useTls;
     private TlsConfig? _tlsConfig;
+    private List<IConsumerInterceptor<TKey, TValue>>? _interceptors;
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
@@ -981,6 +998,20 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Adds a consumer interceptor to the pipeline.
+    /// Interceptors are called in the order they are added.
+    /// </summary>
+    /// <param name="interceptor">The interceptor to add.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> AddInterceptor(IConsumerInterceptor<TKey, TValue> interceptor)
+    {
+        ArgumentNullException.ThrowIfNull(interceptor);
+        _interceptors ??= [];
+        _interceptors.Add(interceptor);
+        return this;
+    }
+
     public IKafkaConsumer<TKey, TValue> Build()
     {
         if (_bootstrapServers.Count == 0)
@@ -1020,7 +1051,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             StatisticsHandler = _statisticsHandler,
             QueuedMinMessages = _queuedMinMessages,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
-            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
+            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
+            Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null
         };
 
         var consumer = new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory);
