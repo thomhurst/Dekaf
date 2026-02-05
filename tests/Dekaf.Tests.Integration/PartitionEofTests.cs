@@ -38,6 +38,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithPartitionEof(true)
+            .WithQueuedMinMessages(1) // Disable prefetching for predictable EOF timing
             .Build();
 
         var tp = new TopicPartition(topic, 0);
@@ -95,6 +96,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithPartitionEof(false) // Explicitly disabled
+            .WithQueuedMinMessages(1) // Disable prefetching for predictable behavior
             .Build();
 
         var tp = new TopicPartition(topic, 0);
@@ -159,6 +161,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithPartitionEof(true)
+            .WithQueuedMinMessages(1) // Disable prefetching for predictable EOF timing
             .Build();
 
         var tp = new TopicPartition(topic, 0);
@@ -243,6 +246,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithPartitionEof(true)
+            .WithQueuedMinMessages(1) // Disable prefetching for predictable EOF timing
             .Build();
 
         var tp = new TopicPartition(topic, 0);
@@ -297,6 +301,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithPartitionEof(true)
+            .WithQueuedMinMessages(1) // Disable prefetching for predictable EOF timing
             .Build();
 
         var tp = new TopicPartition(topic, 0);
@@ -360,6 +365,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithPartitionEof(true)
+            .WithQueuedMinMessages(1) // Disable prefetching for predictable EOF timing
             .Build();
 
         // Assign all 3 partitions
@@ -393,5 +399,66 @@ public class PartitionEofTests(KafkaTestContainer kafka)
         await Assert.That(eofPartitions).Contains(0);
         await Assert.That(eofPartitions).Contains(1);
         await Assert.That(eofPartitions).Contains(2);
+    }
+
+    [Test]
+    public async Task Consumer_EofWithPrefetchingEnabled_FiresEofCorrectly()
+    {
+        // This test verifies EOF events work correctly with the default prefetching behavior
+        // (QueuedMinMessages = 100000). Unlike other EOF tests that disable prefetching,
+        // this uses the default settings to ensure EOF works in the common case.
+
+        // Arrange
+        var topic = await kafka.CreateTestTopicAsync();
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer")
+            .Build();
+
+        // Produce a few messages
+        const int messageCount = 5;
+        for (var i = 0; i < messageCount; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            });
+        }
+
+        // Act - consumer with default prefetching (does NOT call WithQueuedMinMessages)
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-consumer")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithPartitionEof(true)
+            // Intentionally NOT calling WithQueuedMinMessages to test default behavior
+            .Build();
+
+        var tp = new TopicPartition(topic, 0);
+        consumer.Assign(tp);
+
+        var messages = new List<string>();
+        var eofReceived = false;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await foreach (var result in consumer.ConsumeAsync(cts.Token))
+        {
+            if (result.IsPartitionEof)
+            {
+                eofReceived = true;
+                break;
+            }
+            else
+            {
+                messages.Add(result.Value);
+            }
+        }
+
+        // Assert - should have all messages and received EOF
+        await Assert.That(messages.Count).IsEqualTo(messageCount);
+        await Assert.That(eofReceived).IsTrue();
     }
 }

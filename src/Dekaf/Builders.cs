@@ -479,6 +479,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private bool _enablePartitionEof;
     private TimeSpan? _statisticsInterval;
     private Action<Statistics.ConsumerStatistics>? _statisticsHandler;
+    private int _queuedMinMessages = 100000;
     private readonly List<string> _topicsToSubscribe = [];
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
@@ -745,6 +746,23 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the minimum number of messages to prefetch per partition.
+    /// </summary>
+    /// <remarks>
+    /// <para>When set to 1, prefetching is disabled (fetch on demand).</para>
+    /// <para>Higher values improve throughput by prefetching messages in the background.</para>
+    /// <para>Default is 100000 (matching Confluent's <c>queued.min.messages</c>).</para>
+    /// </remarks>
+    /// <param name="count">Minimum messages to prefetch. Set to 1 to disable prefetching.</param>
+    public ConsumerBuilder<TKey, TValue> WithQueuedMinMessages(int count)
+    {
+        if (count < 1)
+            throw new ArgumentOutOfRangeException(nameof(count), "Queued min messages must be at least 1");
+        _queuedMinMessages = count;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the interval for emitting statistics events.
     /// </summary>
     /// <param name="interval">The interval between statistics events. Must be positive.</param>
@@ -849,7 +867,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             RebalanceListener = _rebalanceListener,
             EnablePartitionEof = _enablePartitionEof,
             StatisticsInterval = _statisticsInterval,
-            StatisticsHandler = _statisticsHandler
+            StatisticsHandler = _statisticsHandler,
+            QueuedMinMessages = _queuedMinMessages
         };
 
         var consumer = new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory);
