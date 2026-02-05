@@ -110,6 +110,23 @@ public sealed class ProducerOptions
     public int CloseTimeoutMs { get; init; } = 30000;
 
     /// <summary>
+    /// Maximum time in milliseconds that <see cref="KafkaProducer{TKey,TValue}.ProduceAsync"/>
+    /// and <see cref="KafkaProducer{TKey,TValue}.Send"/> will block when the producer's buffer
+    /// is full or metadata is unavailable.
+    /// <para>
+    /// This controls how long the producer waits for buffer space (backpressure) and for
+    /// initial metadata when producing to a new topic for the first time.
+    /// </para>
+    /// <para>
+    /// If the timeout expires, a <see cref="TimeoutException"/> is thrown with a descriptive message.
+    /// </para>
+    /// <para>
+    /// Equivalent to Kafka's <c>max.block.ms</c> configuration. Default is 60000ms (60 seconds).
+    /// </para>
+    /// </summary>
+    public int MaxBlockMs { get; init; } = 60000;
+
+    /// <summary>
     /// Maximum request size in bytes.
     /// </summary>
     public int MaxRequestSize { get; init; } = 1048576;

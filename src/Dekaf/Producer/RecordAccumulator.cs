@@ -644,10 +644,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
         }
 
         // Slow path: wait for space to become available with timeout protection
-        // Protect against overflow if DeliveryTimeoutMs is configured to a very large value
+        // Use MaxBlockMs to limit how long we block waiting for buffer space (equivalent to Kafka's max.block.ms)
+        // Protect against overflow if MaxBlockMs is configured to a very large value
         var currentTicks = Environment.TickCount64;
-        var deadline = (long.MaxValue - currentTicks > _options.DeliveryTimeoutMs)
-            ? currentTicks + _options.DeliveryTimeoutMs
+        var deadline = (long.MaxValue - currentTicks > _options.MaxBlockMs)
+            ? currentTicks + _options.MaxBlockMs
             : long.MaxValue;
 
         while (!TryReserveMemory(recordSize))
@@ -658,15 +659,15 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Check if we've exceeded the delivery timeout
+            // Check if we've exceeded max.block.ms
             var remainingMs = deadline - Environment.TickCount64;
             if (remainingMs <= 0)
             {
                 throw new TimeoutException(
-                    $"Timeout waiting for buffer memory after {_options.DeliveryTimeoutMs}ms. " +
+                    $"Failed to allocate buffer within max.block.ms ({_options.MaxBlockMs}ms). " +
                     $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes. " +
                     $"Producer is generating messages faster than the network can send them. " +
-                    $"Consider: increasing BufferMemory, reducing production rate, or checking network connectivity.");
+                    $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
             }
 
             // Reset event before waiting - ReleaseMemory will Set() it when space becomes available.
@@ -718,9 +719,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
         }
 
         // Slow path: wait for space with timeout and cancellation support
+        // Use MaxBlockMs to limit how long we block waiting for buffer space (equivalent to Kafka's max.block.ms)
         var currentTicks = Environment.TickCount64;
-        var deadline = (long.MaxValue - currentTicks > _options.DeliveryTimeoutMs)
-            ? currentTicks + _options.DeliveryTimeoutMs
+        var deadline = (long.MaxValue - currentTicks > _options.MaxBlockMs)
+            ? currentTicks + _options.MaxBlockMs
             : long.MaxValue;
 
         var spinWait = new SpinWait();
@@ -750,10 +752,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
             if (remainingMs <= 0)
             {
                 throw new TimeoutException(
-                    $"Timeout waiting for buffer memory after {_options.DeliveryTimeoutMs}ms. " +
+                    $"Failed to allocate buffer within max.block.ms ({_options.MaxBlockMs}ms). " +
                     $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes. " +
                     $"Producer is generating messages faster than the network can send them. " +
-                    $"Consider: increasing BufferMemory, reducing production rate, or checking network connectivity.");
+                    $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
             }
 
             // Reset event before waiting - ReleaseMemory will Set() it when space becomes available.
