@@ -472,6 +472,17 @@ public sealed class RecordAccumulator : IAsyncDisposable
     // Not volatile - use Volatile.Read/Interlocked for thread-safe access
     private TaskCompletionSource<bool>? _flushTcs;
 
+    // Optimization: Track the oldest batch creation time to skip unnecessary enumeration.
+    // With LingerMs=5ms and 1ms timer, we'd enumerate 5x per batch without this optimization.
+    // By tracking the oldest batch, we can skip enumeration when no batch is old enough to flush.
+    // Uses ticks (100ns units) for precision. long.MaxValue means no batches exist.
+    private long _oldestBatchCreatedTicks = long.MaxValue;
+
+    // Track whether there are pending awaited produces (ProduceAsync with completion sources).
+    // These need immediate flushing via ShouldFlush() regardless of LingerMs, so we can't
+    // skip enumeration when this counter is non-zero.
+    private int _pendingAwaitedProduceCount;
+
     private volatile bool _disposed;
     private volatile bool _closed;
 
@@ -992,6 +1003,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 else
                 {
                     batch = newBatch;
+                    // Update oldest batch tracking for linger timer optimization
+                    UpdateOldestBatchTracking(newBatch);
                 }
             }
 
@@ -1000,6 +1013,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
             {
                 continue; // Retry the loop
             }
+
+            // Track pending awaited produce BEFORE append to prevent race condition:
+            // Without this, ExpireLingerAsync could see _pendingAwaitedProduceCount == 0
+            // after the message is in the batch but before the counter is incremented.
+            Interlocked.Increment(ref _pendingAwaitedProduceCount);
 
             var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
 
@@ -1016,6 +1034,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 return result;
             }
 
+            // Append failed (batch full) - decrement counter since message wasn't added.
+            // The loop will increment again before the next TryAppend attempt.
+            Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+
             // Batch is full - atomically remove it from dictionary BEFORE completing.
             // Only the thread that wins the TryRemove race will complete the batch.
             // This prevents a race where:
@@ -1023,9 +1045,15 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // 2. Thread B (holding stale reference) calls Complete() on recycled batch
             if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
             {
+                // Reset oldest batch tracking if dictionary is now empty
+                ResetOldestBatchTrackingIfEmpty();
+
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
+                    // Decrement pending awaited produce count by the number of completion sources in this batch
+                    if (readyBatch.CompletionSourcesCount > 0)
+                        Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
 #if DEBUG
                     ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
 #endif
@@ -1130,8 +1158,15 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 else
                 {
                     batch = newBatch;
+                    // Update oldest batch tracking for linger timer optimization
+                    UpdateOldestBatchTracking(newBatch);
                 }
             }
+
+            // Track pending awaited produce BEFORE append to prevent race condition:
+            // Without this, ExpireLingerAsync could see _pendingAwaitedProduceCount == 0
+            // after the message is in the batch but before the counter is incremented.
+            Interlocked.Increment(ref _pendingAwaitedProduceCount);
 
             var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
 
@@ -1149,13 +1184,23 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 return true;
             }
 
+            // Append failed (batch full) - decrement counter since message wasn't added.
+            // The loop will increment again before the next TryAppend attempt.
+            Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+
             // Batch is full - atomically remove it from dictionary BEFORE completing.
             // Only the thread that wins the TryRemove race will complete the batch.
             if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
             {
+                // Reset oldest batch tracking if dictionary is now empty
+                ResetOldestBatchTrackingIfEmpty();
+
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
+                    // Decrement pending awaited produce count by the number of completion sources in this batch
+                    if (readyBatch.CompletionSourcesCount > 0)
+                        Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
 #if DEBUG
                     ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
 #endif
@@ -1297,6 +1342,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Only the thread that wins the TryRemove race will complete the batch.
         if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, oldBatch)))
         {
+            // Reset oldest batch tracking if dictionary is now empty
+            ResetOldestBatchTrackingIfEmpty();
+
             var readyBatch = oldBatch.Complete();
             if (readyBatch is not null)
             {
@@ -1329,6 +1377,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 t_cachedBatch = null;
                 return TryAppendFireAndForgetSlow(topic, partition, timestamp, key, value, headers, pooledHeaderArray);
             }
+        }
+        else
+        {
+            // Update oldest batch tracking for linger timer optimization
+            UpdateOldestBatchTracking(newBatch);
         }
 
         // Append to the new batch
@@ -1423,6 +1476,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 else
                 {
                     batch = newBatch;
+                    // Update oldest batch tracking for linger timer optimization
+                    UpdateOldestBatchTracking(newBatch);
                 }
             }
 
@@ -1455,6 +1510,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Only the thread that wins the TryRemove race will complete the batch.
             if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
             {
+                // Reset oldest batch tracking if dictionary is now empty
+                ResetOldestBatchTrackingIfEmpty();
+
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
@@ -1544,6 +1602,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 else
                 {
                     batch = newBatch;
+                    // Update oldest batch tracking for linger timer optimization
+                    UpdateOldestBatchTracking(newBatch);
                 }
             }
 
@@ -1561,6 +1621,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Batch is full - atomically remove and complete it
             if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
             {
+                // Reset oldest batch tracking if dictionary is now empty
+                ResetOldestBatchTrackingIfEmpty();
+
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
@@ -1646,6 +1709,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     else
                     {
                         batch = newBatch;
+                        // Update oldest batch tracking for linger timer optimization
+                        UpdateOldestBatchTracking(newBatch);
                     }
                 }
 
@@ -1671,6 +1736,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     // Only the thread that wins the TryRemove race will complete the batch.
                     if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
                     {
+                        // Reset oldest batch tracking if dictionary is now empty
+                        ResetOldestBatchTrackingIfEmpty();
+
                         var readyBatch = batch.Complete();
                         if (readyBatch is not null)
                         {
@@ -1741,15 +1809,40 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// between Complete() and TryRemove() calls.
     /// </summary>
     /// <remarks>
-    /// Optimized to avoid async state machine allocation when there are no batches to process.
+    /// Optimized with multiple fast paths:
+    /// 1. Empty dictionary check - avoids enumeration overhead
+    /// 2. Oldest batch age check - skips enumeration if no batch can possibly be ready
+    /// With LingerMs=5ms and 1ms timer, this reduces enumeration from 5x to 1x per batch lifetime.
     /// Also uses synchronous TryWrite when possible to avoid async overhead.
     /// </remarks>
     public ValueTask ExpireLingerAsync(CancellationToken cancellationToken)
     {
-        // Fast path: no batches to check - avoid enumeration and async overhead entirely
+        // Fast path 1: no batches to check - avoid enumeration and async overhead entirely
         if (_batches.IsEmpty)
         {
+            // Reset oldest batch tracking since there are no batches
+            Volatile.Write(ref _oldestBatchCreatedTicks, long.MaxValue);
             return ValueTask.CompletedTask;
+        }
+
+        // Fast path 2: if the oldest batch hasn't reached linger time yet AND there are no
+        // pending awaited produces, skip enumeration. Awaited produces (ProduceAsync) need
+        // immediate flushing via ShouldFlush() regardless of LingerMs.
+        // This is the key optimization: with LingerMs=5 and 1ms timer, we'd enumerate 5x per batch.
+        // By tracking the oldest batch, we skip 4 out of 5 enumerations for fire-and-forget workloads.
+        if (Volatile.Read(ref _pendingAwaitedProduceCount) == 0)
+        {
+            var oldestTicks = Volatile.Read(ref _oldestBatchCreatedTicks);
+            if (oldestTicks != long.MaxValue)
+            {
+                var nowTicks = DateTimeOffset.UtcNow.Ticks;
+                var millisSinceOldest = (nowTicks - oldestTicks) / TimeSpan.TicksPerMillisecond;
+                if (millisSinceOldest < _options.LingerMs)
+                {
+                    // No batch is old enough to flush yet - skip the O(n) enumeration
+                    return ValueTask.CompletedTask;
+                }
+            }
         }
 
         return ExpireLingerAsyncCore(cancellationToken);
@@ -1758,6 +1851,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private async ValueTask ExpireLingerAsyncCore(CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
+        var newOldestTicks = long.MaxValue;
 
         foreach (var kvp in _batches)
         {
@@ -1768,9 +1862,16 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 // Only the thread that wins the TryRemove race will complete the batch.
                 if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch)))
                 {
+                    // Note: We don't call ResetOldestBatchTrackingIfEmpty() here because
+                    // ExpireLingerAsyncCore already recalculates _oldestBatchCreatedTicks
+                    // at the end of enumeration based on remaining batches.
+
                     var readyBatch = batch.Complete();
                     if (readyBatch is not null)
                     {
+                        // Decrement pending awaited produce count by the number of completion sources in this batch
+                        if (readyBatch.CompletionSourcesCount > 0)
+                            Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
 #if DEBUG
                         ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
 #endif
@@ -1812,6 +1913,28 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     }
                 }
             }
+            else
+            {
+                // Batch not ready for flush - track its creation time for oldest batch calculation
+                var batchCreatedTicks = batch.CreatedAtTicks;
+                if (batchCreatedTicks < newOldestTicks)
+                {
+                    newOldestTicks = batchCreatedTicks;
+                }
+            }
+        }
+
+        // Update the oldest batch tracking for next check using CAS to prevent race condition.
+        // A concurrent batch addition via UpdateOldestBatchTracking() may have set a valid
+        // timestamp after we started enumeration. Only update if we found an older batch
+        // than currently tracked, preserving timestamps from concurrent additions.
+        var current = Volatile.Read(ref _oldestBatchCreatedTicks);
+        while (newOldestTicks < current)
+        {
+            var original = Interlocked.CompareExchange(ref _oldestBatchCreatedTicks, newOldestTicks, current);
+            if (original == current)
+                break;
+            current = original;
         }
     }
 
@@ -1850,6 +1973,55 @@ public sealed class RecordAccumulator : IAsyncDisposable
         if (readyBatch is not null)
         {
             OnBatchEntersPipeline();
+        }
+    }
+
+    /// <summary>
+    /// Updates the oldest batch tracking when a new batch is added to the dictionary.
+    /// Uses lock-free CAS loop to atomically set to min(current, newBatchTicks).
+    /// This is called when TryAdd succeeds for a new batch.
+    /// </summary>
+    /// <remarks>
+    /// Since new batches are always created with current time, they're newer than existing batches.
+    /// This only updates when the dictionary was empty (_oldestBatchCreatedTicks == MaxValue)
+    /// or in rare race conditions.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void UpdateOldestBatchTracking(PartitionBatch newBatch)
+    {
+        var newBatchTicks = newBatch.CreatedAtTicks;
+        var current = Volatile.Read(ref _oldestBatchCreatedTicks);
+
+        // CAS loop to atomically set to min(current, newBatchTicks)
+        while (newBatchTicks < current)
+        {
+            var original = Interlocked.CompareExchange(ref _oldestBatchCreatedTicks, newBatchTicks, current);
+            if (original == current)
+                break;
+            current = original;
+        }
+    }
+
+    /// <summary>
+    /// Resets the oldest batch tracking when a batch is removed from the dictionary.
+    /// This prevents stale timestamps from blocking the fast path optimization.
+    /// </summary>
+    /// <remarks>
+    /// Called after TryRemove succeeds. If the dictionary is now empty, resets to MaxValue.
+    /// This fixes a race condition where:
+    /// 1. ExpireLingerAsyncCore reads batch X's timestamp during enumeration
+    /// 2. Another thread removes batch X
+    /// 3. ExpireLingerAsyncCore writes a stale oldest timestamp
+    /// 4. New batches fail to update oldest (CAS fails since new > stale)
+    ///
+    /// By resetting when empty, we ensure the next batch addition will correctly set oldest.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ResetOldestBatchTrackingIfEmpty()
+    {
+        if (_batches.IsEmpty)
+        {
+            Volatile.Write(ref _oldestBatchCreatedTicks, long.MaxValue);
         }
     }
 
@@ -1893,12 +2065,17 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 // Only the thread that wins the TryRemove race will complete the batch.
                 if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(key, batch)))
                 {
+                    // Reset oldest batch tracking if dictionary is now empty
+                    ResetOldestBatchTrackingIfEmpty();
 #if DEBUG
                     ProducerDebugCounters.RecordBatchFlushedFromDictionary();
 #endif
                     var readyBatch = batch.Complete();
                     if (readyBatch is not null)
                     {
+                        // Decrement pending awaited produce count by the number of completion sources in this batch
+                        if (readyBatch.CompletionSourcesCount > 0)
+                            Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
 #if DEBUG
                         ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
 #endif
@@ -2067,9 +2244,16 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // This prevents races where a batch is completed and recycled while we're disposing.
             if (_batches.TryRemove(kvp))
             {
+                // Reset oldest batch tracking (not strictly needed during disposal, but consistent)
+                ResetOldestBatchTrackingIfEmpty();
+
                 var readyBatch = kvp.Value.Complete();
                 if (readyBatch is not null)
                 {
+                    // Decrement pending awaited produce count by the number of completion sources in this batch
+                    if (readyBatch.CompletionSourcesCount > 0)
+                        Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
+
                     readyBatch.Fail(disposedException);
                     // Release the batch's buffer memory
                     ReleaseMemory(readyBatch.DataSize);
@@ -2379,6 +2563,12 @@ internal sealed class PartitionBatch
     public TopicPartition TopicPartition => _topicPartition;
     public int RecordCount => _recordCount;
     public int EstimatedSize => _estimatedSize;
+
+    /// <summary>
+    /// Returns the batch creation time in ticks for efficient age comparisons.
+    /// Used by ExpireLingerAsync to track the oldest batch without enumeration.
+    /// </summary>
+    public long CreatedAtTicks => _createdAt.Ticks;
 
     /// <summary>
     /// Appends a record to the batch with completion tracking.
