@@ -534,8 +534,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                             }
                             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
                             {
-                                // Prefetch not ready, continue loop
-                                continue;
+                                // Prefetch not ready - check for EOF events before continuing
+                                // (EOF events are queued by prefetch loop when partition is caught up)
                             }
                         }
                         finally
