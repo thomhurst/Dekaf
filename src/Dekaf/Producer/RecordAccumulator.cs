@@ -1031,6 +1031,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // 2. Thread B (holding stale reference) calls Complete() on recycled batch
             if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
             {
+                // Reset oldest batch tracking if dictionary is now empty
+                ResetOldestBatchTrackingIfEmpty();
+
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
@@ -1163,6 +1166,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Only the thread that wins the TryRemove race will complete the batch.
             if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
             {
+                // Reset oldest batch tracking if dictionary is now empty
+                ResetOldestBatchTrackingIfEmpty();
+
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
@@ -1307,6 +1313,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Only the thread that wins the TryRemove race will complete the batch.
         if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, oldBatch)))
         {
+            // Reset oldest batch tracking if dictionary is now empty
+            ResetOldestBatchTrackingIfEmpty();
+
             var readyBatch = oldBatch.Complete();
             if (readyBatch is not null)
             {
@@ -1472,6 +1481,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Only the thread that wins the TryRemove race will complete the batch.
             if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
             {
+                // Reset oldest batch tracking if dictionary is now empty
+                ResetOldestBatchTrackingIfEmpty();
+
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
@@ -1580,6 +1592,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // Batch is full - atomically remove and complete it
             if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
             {
+                // Reset oldest batch tracking if dictionary is now empty
+                ResetOldestBatchTrackingIfEmpty();
+
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
@@ -1692,6 +1707,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     // Only the thread that wins the TryRemove race will complete the batch.
                     if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
                     {
+                        // Reset oldest batch tracking if dictionary is now empty
+                        ResetOldestBatchTrackingIfEmpty();
+
                         var readyBatch = batch.Complete();
                         if (readyBatch is not null)
                         {
@@ -1810,6 +1828,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 // Only the thread that wins the TryRemove race will complete the batch.
                 if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch)))
                 {
+                    // Note: We don't call ResetOldestBatchTrackingIfEmpty() here because
+                    // ExpireLingerAsyncCore already recalculates _oldestBatchCreatedTicks
+                    // at the end of enumeration based on remaining batches.
+
                     var readyBatch = batch.Complete();
                     if (readyBatch is not null)
                     {
@@ -1935,6 +1957,29 @@ public sealed class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Resets the oldest batch tracking when a batch is removed from the dictionary.
+    /// This prevents stale timestamps from blocking the fast path optimization.
+    /// </summary>
+    /// <remarks>
+    /// Called after TryRemove succeeds. If the dictionary is now empty, resets to MaxValue.
+    /// This fixes a race condition where:
+    /// 1. ExpireLingerAsyncCore reads batch X's timestamp during enumeration
+    /// 2. Another thread removes batch X
+    /// 3. ExpireLingerAsyncCore writes a stale oldest timestamp
+    /// 4. New batches fail to update oldest (CAS fails since new > stale)
+    ///
+    /// By resetting when empty, we ensure the next batch addition will correctly set oldest.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ResetOldestBatchTrackingIfEmpty()
+    {
+        if (_batches.IsEmpty)
+        {
+            Volatile.Write(ref _oldestBatchCreatedTicks, long.MaxValue);
+        }
+    }
+
+    /// <summary>
     /// Flushes all batches and waits for them to be delivered to Kafka.
     /// </summary>
     /// <remarks>
@@ -1974,6 +2019,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 // Only the thread that wins the TryRemove race will complete the batch.
                 if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(key, batch)))
                 {
+                    // Reset oldest batch tracking if dictionary is now empty
+                    ResetOldestBatchTrackingIfEmpty();
 #if DEBUG
                     ProducerDebugCounters.RecordBatchFlushedFromDictionary();
 #endif
@@ -2148,6 +2195,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
             // This prevents races where a batch is completed and recycled while we're disposing.
             if (_batches.TryRemove(kvp))
             {
+                // Reset oldest batch tracking (not strictly needed during disposal, but consistent)
+                ResetOldestBatchTrackingIfEmpty();
+
                 var readyBatch = kvp.Value.Complete();
                 if (readyBatch is not null)
                 {
