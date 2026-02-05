@@ -696,10 +696,24 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
 
             // Fetch from all brokers in parallel for maximum throughput
-            var fetchTasks = partitionsByBroker.Select(kvp => PrefetchFromBrokerWithErrorHandlingAsync(
-                kvp.Key, kvp.Value, linkedCts.Token, wakeupCts.Token)).ToArray();
+            // Use pooled array to avoid allocation per fetch cycle
+            var brokerCount = partitionsByBroker.Count;
+            var fetchTasks = ArrayPool<Task>.Shared.Rent(brokerCount);
+            try
+            {
+                var i = 0;
+                foreach (var (brokerId, partitions) in partitionsByBroker)
+                {
+                    fetchTasks[i++] = PrefetchFromBrokerWithErrorHandlingAsync(
+                        brokerId, partitions, linkedCts.Token, wakeupCts.Token);
+                }
 
-            await Task.WhenAll(fetchTasks).ConfigureAwait(false);
+                await Task.WhenAll((IEnumerable<Task>)new ArraySegment<Task>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
+            }
+            finally
+            {
+                ArrayPool<Task>.Shared.Return(fetchTasks, clearArray: true);
+            }
         }
         finally
         {
@@ -1604,10 +1618,24 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
 
             // Fetch from all brokers in parallel for maximum throughput
-            var fetchTasks = partitionsByBroker.Select(kvp => FetchFromBrokerWithErrorHandlingAsync(
-                kvp.Key, kvp.Value, linkedCts.Token, wakeupCts.Token)).ToArray();
+            // Use pooled array to avoid allocation per fetch cycle
+            var brokerCount = partitionsByBroker.Count;
+            var fetchTasks = ArrayPool<Task>.Shared.Rent(brokerCount);
+            try
+            {
+                var i = 0;
+                foreach (var (brokerId, partitions) in partitionsByBroker)
+                {
+                    fetchTasks[i++] = FetchFromBrokerWithErrorHandlingAsync(
+                        brokerId, partitions, linkedCts.Token, wakeupCts.Token);
+                }
 
-            await Task.WhenAll(fetchTasks).ConfigureAwait(false);
+                await Task.WhenAll((IEnumerable<Task>)new ArraySegment<Task>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
+            }
+            finally
+            {
+                ArrayPool<Task>.Shared.Return(fetchTasks, clearArray: true);
+            }
         }
         finally
         {
@@ -1669,25 +1697,40 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         // Build the cache outside the lock - allocate once per assignment change
         // Resolve all partition leaders in parallel for maximum throughput
-        var partitionsToResolve = assignmentSnapshot
-            .Where(p => !pausedSnapshot.Contains(p))
-            .ToArray();
+        // Use pooled arrays to avoid allocation per fetch cycle
+        var maxPartitions = assignmentSnapshot.Count;
+        var partitionsToResolve = ArrayPool<TopicPartition>.Shared.Rent(maxPartitions);
+        var partitionCount = 0;
 
-        var leaderTasks = partitionsToResolve
-            .Select(async partition =>
-            {
-                var leader = await _metadataManager.GetPartitionLeaderAsync(
-                    partition.Topic, partition.Partition, cancellationToken).ConfigureAwait(false);
-                return (Partition: partition, Leader: leader);
-            })
-            .ToArray();
-
-        var resolvedPartitions = await Task.WhenAll(leaderTasks).ConfigureAwait(false);
-
-        // Build result dictionary from resolved partitions
-        var result = new Dictionary<int, List<TopicPartition>>();
-        foreach (var (partition, leader) in resolvedPartitions)
+        foreach (var partition in assignmentSnapshot)
         {
+            if (!pausedSnapshot.Contains(partition))
+            {
+                partitionsToResolve[partitionCount++] = partition;
+            }
+        }
+
+        var leaderTasks = ArrayPool<Task<(TopicPartition Partition, BrokerNode? Leader)>>.Shared.Rent(partitionCount);
+        try
+        {
+            for (var i = 0; i < partitionCount; i++)
+            {
+                var partition = partitionsToResolve[i];
+                leaderTasks[i] = ResolvePartitionLeaderAsync(partition, cancellationToken);
+            }
+
+            await Task.WhenAll(new ArraySegment<Task<(TopicPartition Partition, BrokerNode? Leader)>>(leaderTasks, 0, partitionCount)).ConfigureAwait(false);
+        }
+        finally
+        {
+            ArrayPool<TopicPartition>.Shared.Return(partitionsToResolve, clearArray: true);
+        }
+
+        // Build result dictionary from resolved partitions (tasks already completed)
+        var result = new Dictionary<int, List<TopicPartition>>();
+        for (var i = 0; i < partitionCount; i++)
+        {
+            var (partition, leader) = leaderTasks[i].Result;
             if (leader is null)
                 continue;
 
@@ -1700,6 +1743,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             list.Add(partition);
         }
 
+        // Return pooled array after extracting results
+        ArrayPool<Task<(TopicPartition Partition, BrokerNode? Leader)>>.Shared.Return(leaderTasks, clearArray: true);
+
         // Cache the result - will be reused until assignment/paused changes (synchronized write)
         // Use double-checked locking: another thread may have populated cache while we were building.
         // First writer wins (has fresher metadata from earlier point in time).
@@ -1711,6 +1757,15 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             }
             return _cachedPartitionsByBroker;
         }
+    }
+
+    private async Task<(TopicPartition Partition, BrokerNode? Leader)> ResolvePartitionLeaderAsync(
+        TopicPartition partition,
+        CancellationToken cancellationToken)
+    {
+        var leader = await _metadataManager.GetPartitionLeaderAsync(
+            partition.Topic, partition.Partition, cancellationToken).ConfigureAwait(false);
+        return (partition, leader);
     }
 
     private async ValueTask FetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)

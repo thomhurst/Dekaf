@@ -193,6 +193,21 @@ public sealed class ConsumerOptions
     /// The consumer will attempt to keep at least this many messages buffered.
     /// Set to 1 to disable prefetching (fetch on demand). Default is 100000.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// When prefetching is enabled (value > 1), the consumer fetches messages in the background
+    /// to reduce latency when calling <c>ConsumeAsync</c>. This significantly improves throughput
+    /// but increases memory usage.
+    /// </para>
+    /// <para>
+    /// Memory usage is bounded by <see cref="QueuedMaxMessagesKbytes"/> (default: 64 MB).
+    /// To reduce memory usage, either lower this value or set <c>QueuedMinMessages</c> to 1.
+    /// </para>
+    /// <para>
+    /// <b>Breaking change:</b> Prior versions defaulted to 1 (prefetching disabled).
+    /// The new default of 100000 matches Confluent's <c>queued.min.messages</c> default.
+    /// </para>
+    /// </remarks>
     public int QueuedMinMessages { get; init; } = 100000;
 
     /// <summary>
