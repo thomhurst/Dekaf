@@ -11,6 +11,10 @@ namespace Dekaf.Producer;
 /// <see cref="ProducerBuilder{TKey, TValue}.AddInterceptor"/>.</para>
 /// <para>Exceptions thrown by interceptors are caught and logged, not propagated.
 /// This ensures interceptor failures do not impact message production.</para>
+/// <para><b>Warning:</b> Interceptor implementations that accumulate state (e.g., tracking
+/// in-flight messages, caching metadata, or collecting metrics) must manage their own
+/// cleanup to avoid unbounded memory growth. The producer does not manage interceptor
+/// lifecycle beyond invoking the callback methods.</para>
 /// </remarks>
 public interface IProducerInterceptor<TKey, TValue>
 {

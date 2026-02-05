@@ -1086,8 +1086,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     _committed[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
                 }
 
-                // Invoke OnCommit interceptors
-                InvokeOnCommitInterceptors(offsetsArray.AsSpan(0, offsetCount));
+                // Invoke OnCommit interceptors - wrap array as ArraySegment to avoid Span→Array copy
+                InvokeOnCommitInterceptors(new ArraySegment<TopicPartitionOffset>(offsetsArray, 0, offsetCount));
             }
             finally
             {
@@ -2073,18 +2073,6 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
     }
 
-    /// <summary>
-    /// Invokes OnCommit on all interceptors using a Span (converts to array for interface compatibility).
-    /// </summary>
-    private void InvokeOnCommitInterceptors(ReadOnlySpan<TopicPartitionOffset> offsets)
-    {
-        if (_interceptors is null)
-            return;
-
-        // Convert span to array for interface compatibility
-        var offsetsArray = offsets.ToArray();
-        InvokeOnCommitInterceptors((IReadOnlyList<TopicPartitionOffset>)offsetsArray);
-    }
 
     /// <summary>
     /// Updates the watermark cache from a fetch response partition.

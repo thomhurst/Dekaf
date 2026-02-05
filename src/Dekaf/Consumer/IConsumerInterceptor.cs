@@ -13,6 +13,10 @@ namespace Dekaf.Consumer;
 /// <see cref="ConsumerBuilder{TKey, TValue}.AddInterceptor"/>.</para>
 /// <para>Exceptions thrown by interceptors are caught and logged, not propagated.
 /// This ensures interceptor failures do not impact message consumption.</para>
+/// <para><b>Warning:</b> Interceptor implementations that accumulate state (e.g., tracking
+/// consumed offsets, caching records, or collecting metrics) must manage their own
+/// cleanup to avoid unbounded memory growth. The consumer does not manage interceptor
+/// lifecycle beyond invoking the callback methods.</para>
 /// </remarks>
 public interface IConsumerInterceptor<TKey, TValue>
 {
