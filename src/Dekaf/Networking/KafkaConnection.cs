@@ -1035,19 +1035,32 @@ public sealed class KafkaConnection : IKafkaConnection
             _saslSessionState.ReauthenticationDeadline,
             BrokerId);
 
-        // Dispose any existing timer before creating a new one
-        _reauthTimer?.Dispose();
+        // Replace existing timer, disposing old one AFTER assignment to avoid race window
+        var oldTimer = _reauthTimer;
         _reauthTimer = new Timer(
             OnReauthenticationTimerElapsed,
             null,
             delayMs,
             Timeout.Infinite); // One-shot timer, re-scheduled after each re-auth
+        oldTimer?.Dispose();
     }
 
     private void OnReauthenticationTimerElapsed(object? state)
     {
-        // Fire and forget - errors are logged but don't crash the connection
-        _ = PerformReauthenticationAsync();
+        var task = PerformReauthenticationAsync();
+        if (!task.IsCompleted)
+        {
+            _ = task.ContinueWith(
+                static (t, state) =>
+                {
+                    // Exception already logged inside PerformReauthenticationAsync
+                    _ = t.Exception;
+                },
+                null,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
     }
 
     /// <summary>
@@ -1127,7 +1140,7 @@ public sealed class KafkaConnection : IKafkaConnection
         try
         {
             // Step 1: Send SaslHandshake to negotiate mechanism
-            // Uses the multiplexed pipeline (write lock already held by caller)
+            // Uses the multiplexed pipeline for in-band re-authentication per KIP-368
             var handshakeResponse = await SendAsync<SaslHandshakeRequest, SaslHandshakeResponse>(
                 new SaslHandshakeRequest { Mechanism = authenticator.MechanismName },
                 1,
