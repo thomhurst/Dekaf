@@ -56,6 +56,17 @@ public sealed class ProducerOptions
     public CompressionType CompressionType { get; init; } = CompressionType.None;
 
     /// <summary>
+    /// Compression level for the configured compression codec.
+    /// When null, the codec's default level is used.
+    /// Valid ranges depend on the compression type:
+    /// - Gzip: 0-9 (0 = no compression, 9 = best compression)
+    /// - LZ4: 0-12 (0 = fast, 12 = max compression)
+    /// - Zstd: 1-22 (1 = fast, 22 = best compression)
+    /// - Snappy: not supported (fixed algorithm, this value is ignored)
+    /// </summary>
+    public int? CompressionLevel { get; init; }
+
+    /// <summary>
     /// Maximum in-flight requests per connection.
     /// </summary>
     public int MaxInFlightRequestsPerConnection { get; init; } = 5;

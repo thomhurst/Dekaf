@@ -79,6 +79,55 @@ public static class Lz4CompressionExtensions
         registry.Register(new Lz4CompressionCodec(compressionLevel));
         return registry;
     }
+
+    /// <summary>
+    /// Registers the LZ4 compression codec with an integer compression level (0-12).
+    /// If no explicit level is provided, falls back to <see cref="CompressionCodecRegistry.DefaultCompressionLevel"/>,
+    /// then to LZ4's default (L00_FAST).
+    /// </summary>
+    /// <param name="registry">The compression codec registry.</param>
+    /// <param name="compressionLevel">The compression level (0-12). Null uses the registry default or codec default.</param>
+    /// <returns>The registry for fluent chaining.</returns>
+    public static CompressionCodecRegistry AddLz4(this CompressionCodecRegistry registry, int? compressionLevel)
+    {
+        var level = compressionLevel ?? registry.DefaultCompressionLevel;
+
+        if (level.HasValue)
+        {
+            if (level.Value < 0 || level.Value > 12)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(compressionLevel),
+                    $"LZ4 compression level must be between 0 and 12, but was {level.Value}.");
+            }
+
+            var lz4Level = level.Value switch
+            {
+                0 => LZ4Level.L00_FAST,
+                1 => LZ4Level.L03_HC,
+                2 => LZ4Level.L04_HC,
+                3 => LZ4Level.L05_HC,
+                4 => LZ4Level.L06_HC,
+                5 => LZ4Level.L07_HC,
+                6 => LZ4Level.L08_HC,
+                7 => LZ4Level.L09_HC,
+                8 => LZ4Level.L10_OPT,
+                9 => LZ4Level.L11_OPT,
+                10 => LZ4Level.L12_MAX,
+                11 => LZ4Level.L12_MAX,
+                12 => LZ4Level.L12_MAX,
+                _ => LZ4Level.L00_FAST
+            };
+
+            registry.Register(new Lz4CompressionCodec(lz4Level));
+        }
+        else
+        {
+            registry.Register(new Lz4CompressionCodec());
+        }
+
+        return registry;
+    }
 }
 
 /// <summary>

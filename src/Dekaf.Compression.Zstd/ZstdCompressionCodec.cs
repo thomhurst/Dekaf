@@ -12,8 +12,19 @@ public sealed class ZstdCompressionCodec : ICompressionCodec
 {
     private readonly int _compressionLevel;
 
+    /// <summary>
+    /// Creates a new Zstd compression codec with the specified compression level.
+    /// </summary>
+    /// <param name="compressionLevel">The compression level (1-22). Default is 3.</param>
     public ZstdCompressionCodec(int compressionLevel = 3)
     {
+        if (compressionLevel < 1 || compressionLevel > 22)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(compressionLevel),
+                $"Zstd compression level must be between 1 and 22, but was {compressionLevel}.");
+        }
+
         _compressionLevel = compressionLevel;
     }
 
@@ -107,11 +118,45 @@ public sealed class ZstdCompressionCodec : ICompressionCodec
 public static class ZstdCompressionExtensions
 {
     /// <summary>
-    /// Registers the Zstd compression codec.
+    /// Registers the Zstd compression codec with the specified compression level.
     /// </summary>
+    /// <param name="registry">The compression codec registry.</param>
+    /// <param name="compressionLevel">The compression level to use (1-22). Default is 3.</param>
+    /// <returns>The registry for fluent chaining.</returns>
     public static CompressionCodecRegistry AddZstd(this CompressionCodecRegistry registry, int compressionLevel = 3)
     {
         registry.Register(new ZstdCompressionCodec(compressionLevel));
+        return registry;
+    }
+
+    /// <summary>
+    /// Registers the Zstd compression codec, using the registry's default compression level if available.
+    /// If no explicit level is provided, falls back to <see cref="CompressionCodecRegistry.DefaultCompressionLevel"/>,
+    /// then to Zstd's default (3).
+    /// </summary>
+    /// <param name="registry">The compression codec registry.</param>
+    /// <param name="compressionLevel">The compression level (1-22). Null uses the registry default or codec default (3).</param>
+    /// <returns>The registry for fluent chaining.</returns>
+    public static CompressionCodecRegistry AddZstdWithLevel(this CompressionCodecRegistry registry, int? compressionLevel = null)
+    {
+        var level = compressionLevel ?? registry.DefaultCompressionLevel;
+
+        if (level.HasValue)
+        {
+            if (level.Value < 1 || level.Value > 22)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(compressionLevel),
+                    $"Zstd compression level must be between 1 and 22, but was {level.Value}.");
+            }
+
+            registry.Register(new ZstdCompressionCodec(level.Value));
+        }
+        else
+        {
+            registry.Register(new ZstdCompressionCodec());
+        }
+
         return registry;
     }
 }
