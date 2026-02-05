@@ -13,9 +13,16 @@ public sealed class AvroSerializerConfig
 
     /// <summary>
     /// The strategy for determining the subject name for schema registration.
-    /// Default is TopicName.
+    /// Default is TopicName. This is ignored if <see cref="CustomSubjectNameStrategy"/> is set.
     /// </summary>
     public SubjectNameStrategy SubjectNameStrategy { get; init; } = SubjectNameStrategy.TopicName;
+
+    /// <summary>
+    /// A custom subject name strategy implementation. When set, this takes precedence
+    /// over the <see cref="SubjectNameStrategy"/> enum value.
+    /// Default is null (uses enum-based strategy).
+    /// </summary>
+    public ISubjectNameStrategy? CustomSubjectNameStrategy { get; init; }
 
     /// <summary>
     /// Whether to use the latest schema version from the registry instead of the schema
@@ -24,6 +31,7 @@ public sealed class AvroSerializerConfig
     /// Default is false.
     /// </summary>
     public bool UseLatestVersion { get; init; }
+
 }
 
 /// <summary>

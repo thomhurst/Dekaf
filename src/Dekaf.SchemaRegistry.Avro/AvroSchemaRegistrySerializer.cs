@@ -247,6 +247,11 @@ public sealed class AvroSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
 
     private string GetSubjectName(string topic, bool isKey)
     {
+        if (_config.CustomSubjectNameStrategy is not null)
+        {
+            return _config.CustomSubjectNameStrategy.GetSubjectName(topic, GetRecordName(), isKey);
+        }
+
         var suffix = isKey ? "-key" : "-value";
         return _config.SubjectNameStrategy switch
         {
