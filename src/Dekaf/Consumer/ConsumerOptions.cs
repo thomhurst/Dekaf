@@ -267,6 +267,13 @@ public sealed class ConsumerOptions
     /// Default is 300000 (5 minutes).
     /// </summary>
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
+
+    /// <summary>
+    /// Consumer interceptors, called in order during the consume pipeline.
+    /// Interceptors are called on consume (OnConsume) and on commit (OnCommit).
+    /// Interceptor exceptions are caught and logged, not propagated.
+    /// </summary>
+    internal IReadOnlyList<object>? Interceptors { get; init; }
 }
 
 /// <summary>

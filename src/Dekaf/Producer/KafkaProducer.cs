@@ -66,6 +66,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     // Unlike TaskCompletionSource, these can be reset and reused
     private readonly ValueTaskSourcePool<RecordMetadata> _valueTaskSourcePool;
 
+    // Interceptors - stored as typed array for zero-allocation iteration
+    private readonly IProducerInterceptor<TKey, TValue>[]? _interceptors;
+
     // Thread-local reusable SerializationContext to avoid per-message allocations
     // Since SerializationContext contains reference types (Topic, Headers), copying it
     // involves copying those references. Using ThreadStatic avoids repeated struct creation.
@@ -123,6 +126,17 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _keySerializer = keySerializer;
         _valueSerializer = valueSerializer;
         _logger = loggerFactory?.CreateLogger<KafkaProducer<TKey, TValue>>();
+
+        // Initialize interceptors from options
+        if (options.Interceptors is { Count: > 0 })
+        {
+            var interceptors = new IProducerInterceptor<TKey, TValue>[options.Interceptors.Count];
+            for (var i = 0; i < options.Interceptors.Count; i++)
+            {
+                interceptors[i] = (IProducerInterceptor<TKey, TValue>)options.Interceptors[i];
+            }
+            _interceptors = interceptors;
+        }
 
         // Initialize ValueTaskSource pool with configured size
         _valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>(options.ValueTaskSourcePoolSize);
@@ -283,6 +297,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Check cancellation upfront before any work
         cancellationToken.ThrowIfCancellationRequested();
 
+        // Apply OnSend interceptors before serialization
+        message = ApplyOnSendInterceptors(message);
+
         // Fast path: Try synchronous produce if metadata is initialized and cached.
         // This bypasses channel overhead for 99%+ of calls after warmup.
         if (TryProduceSyncForAsync(message, out var completion))
@@ -440,6 +457,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
+        // Apply OnSend interceptors before serialization
+        message = ApplyOnSendInterceptors(message);
+
         // Fast path: Try synchronous fire-and-forget produce if metadata is cached
         // This bypasses PooledValueTaskSource rental entirely for fire-and-forget operations
         if (TryProduceSyncFireAndForget(message))
@@ -488,6 +508,13 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
+        // When interceptors are present, we must create a ProducerMessage so interceptors can operate
+        if (_interceptors is not null)
+        {
+            Send(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
+            return;
+        }
 
         // Fast path: Try synchronous fire-and-forget produce if metadata is cached
         // This bypasses both ProducerMessage allocation and PooledValueTaskSource rental
@@ -1065,6 +1092,86 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <summary>
+    /// Applies OnSend interceptors to the message before serialization.
+    /// Interceptor exceptions are caught and logged - the original message is used on failure.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private ProducerMessage<TKey, TValue> ApplyOnSendInterceptors(ProducerMessage<TKey, TValue> message)
+    {
+        if (_interceptors is null)
+            return message;
+
+        return ApplyOnSendInterceptorsSlow(message);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private ProducerMessage<TKey, TValue> ApplyOnSendInterceptorsSlow(ProducerMessage<TKey, TValue> message)
+    {
+        foreach (var interceptor in _interceptors!)
+        {
+            try
+            {
+                message = interceptor.OnSend(message);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Producer interceptor {Interceptor} OnSend threw an exception",
+                    interceptor.GetType().Name);
+            }
+        }
+        return message;
+    }
+
+    /// <summary>
+    /// Invokes OnAcknowledgement on all interceptors.
+    /// Interceptor exceptions are caught and logged.
+    /// </summary>
+    internal void InvokeOnAcknowledgement(RecordMetadata metadata, Exception? exception)
+    {
+        if (_interceptors is null)
+            return;
+
+        foreach (var interceptor in _interceptors)
+        {
+            try
+            {
+                interceptor.OnAcknowledgement(metadata, exception);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Producer interceptor {Interceptor} OnAcknowledgement threw an exception",
+                    interceptor.GetType().Name);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Invokes OnAcknowledgement interceptors for all messages in a batch.
+    /// </summary>
+    private void InvokeOnAcknowledgementForBatch(
+        TopicPartition topicPartition,
+        long baseOffset,
+        DateTimeOffset timestamp,
+        int messageCount,
+        Exception? exception)
+    {
+        if (_interceptors is null)
+            return;
+
+        for (var i = 0; i < messageCount; i++)
+        {
+            var metadata = new RecordMetadata
+            {
+                Topic = topicPartition.Topic,
+                Partition = topicPartition.Partition,
+                Offset = baseOffset >= 0 ? baseOffset + i : -1,
+                Timestamp = timestamp
+            };
+            InvokeOnAcknowledgement(metadata, exception);
+        }
+    }
+
+    /// <summary>
     /// Estimates message size conservatively for backpressure purposes.
     /// Used when queueing to the work channel before serialization occurs.
     /// The actual size will be determined after serialization in AppendAsync.
@@ -1110,6 +1217,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
         ArgumentNullException.ThrowIfNull(deliveryHandler);
+
+        // Apply OnSend interceptors before serialization
+        message = ApplyOnSendInterceptors(message);
 
         // Fast path: Try synchronous produce if metadata is initialized and cached
         if (TryProduceSyncWithHandler(message, deliveryHandler))
@@ -1711,6 +1821,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     batch.TopicPartition.Topic, batch.TopicPartition.Partition);
             }
 
+            // Invoke OnAcknowledgement interceptors for failed batch
+            InvokeOnAcknowledgementForBatch(batch.TopicPartition, -1, DateTimeOffset.UtcNow, batch.CompletionSourcesCount, ex);
+
             // NOTE: BufferMemory is released in SendBatchAsync's finally block
         }
         finally
@@ -1975,7 +2088,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // Offset is unknown (-1) for fire-and-forget
             _logger?.LogDebug("[SendBatch] COMPLETE (fire-and-forget) {Topic}-{Partition}",
                 batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-            batch.CompleteSend(-1, DateTimeOffset.UtcNow);
+            var fireAndForgetTimestamp = DateTimeOffset.UtcNow;
+            batch.CompleteSend(-1, fireAndForgetTimestamp);
+
+            // Invoke OnAcknowledgement interceptors for each message in the batch
+            InvokeOnAcknowledgementForBatch(batch.TopicPartition, -1, fireAndForgetTimestamp, messageCount, exception: null);
 
             return ErrorCode.None;
         }
@@ -2042,6 +2159,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _logger?.LogDebug("[SendBatch] COMPLETE (normal) {Topic}-{Partition} at offset {Offset}",
             batch.TopicPartition.Topic, batch.TopicPartition.Partition, partitionResponse.BaseOffset);
         batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
+
+        // Invoke OnAcknowledgement interceptors for each message in the batch
+        InvokeOnAcknowledgementForBatch(batch.TopicPartition, partitionResponse.BaseOffset, timestamp, messageCount, exception: null);
 
         return ErrorCode.None;
     }

@@ -219,6 +219,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly ConsumerStatisticsCollector _statisticsCollector = new();
     private readonly StatisticsEmitter<ConsumerStatistics>? _statisticsEmitter;
 
+    // Interceptors - stored as typed array for zero-allocation iteration
+    private readonly IConsumerInterceptor<TKey, TValue>[]? _interceptors;
+
     // Cached partition grouping by broker to avoid allocations on every fetch
     // Invalidated whenever _assignment or _paused changes
     // Access to _cachedPartitionsByBroker must be synchronized via _partitionCacheLock
@@ -241,6 +244,17 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         _keyDeserializer = keyDeserializer;
         _valueDeserializer = valueDeserializer;
         _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>();
+
+        // Initialize interceptors from options
+        if (options.Interceptors is { Count: > 0 })
+        {
+            var interceptors = new IConsumerInterceptor<TKey, TValue>[options.Interceptors.Count];
+            for (var i = 0; i < options.Interceptors.Count; i++)
+            {
+                interceptors[i] = (IConsumerInterceptor<TKey, TValue>)options.Interceptors[i];
+            }
+            _interceptors = interceptors;
+        }
 
         _connectionPool = new ConnectionPool(
             options.ClientId,
@@ -601,6 +615,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
                                        (record.IsValueNull ? 0 : record.Value.Length);
                     pending.TrackConsumed(offset, messageBytes);
+
+                    // Apply OnConsume interceptors before yielding to user
+                    result = ApplyOnConsumeInterceptors(result);
 
                     yield return result;
                 }
@@ -1068,6 +1085,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 {
                     _committed[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
                 }
+
+                // Invoke OnCommit interceptors - wrap array as ArraySegment to avoid Span→Array copy
+                InvokeOnCommitInterceptors(new ArraySegment<TopicPartitionOffset>(offsetsArray, 0, offsetCount));
             }
             finally
             {
@@ -1081,12 +1101,18 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         if (_coordinator is null)
             return;
 
-        await _coordinator.CommitOffsetsAsync(offsets, cancellationToken).ConfigureAwait(false);
+        // Materialize to list to allow iteration for both commit tracking and interceptors
+        var offsetsList = offsets as IReadOnlyList<TopicPartitionOffset> ?? offsets.ToArray();
 
-        foreach (var offset in offsets)
+        await _coordinator.CommitOffsetsAsync(offsetsList, cancellationToken).ConfigureAwait(false);
+
+        foreach (var offset in offsetsList)
         {
             _committed[new TopicPartition(offset.Topic, offset.Partition)] = offset.Offset;
         }
+
+        // Invoke OnCommit interceptors
+        InvokeOnCommitInterceptors(offsetsList);
     }
 
     public async ValueTask<long?> GetCommittedOffsetAsync(TopicPartition partition, CancellationToken cancellationToken = default)
@@ -1992,6 +2018,61 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         // Return directly - no conversion needed, zero allocation
         return recordHeaders;
     }
+
+    /// <summary>
+    /// Applies OnConsume interceptors to a consume result before yielding to the user.
+    /// Interceptor exceptions are caught and logged - the original result is used on failure.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private ConsumeResult<TKey, TValue> ApplyOnConsumeInterceptors(ConsumeResult<TKey, TValue> result)
+    {
+        if (_interceptors is null)
+            return result;
+
+        return ApplyOnConsumeInterceptorsSlow(result);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private ConsumeResult<TKey, TValue> ApplyOnConsumeInterceptorsSlow(ConsumeResult<TKey, TValue> result)
+    {
+        foreach (var interceptor in _interceptors!)
+        {
+            try
+            {
+                result = interceptor.OnConsume(result);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Consumer interceptor {Interceptor} OnConsume threw an exception",
+                    interceptor.GetType().Name);
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Invokes OnCommit on all interceptors.
+    /// Interceptor exceptions are caught and logged.
+    /// </summary>
+    private void InvokeOnCommitInterceptors(IReadOnlyList<TopicPartitionOffset> offsets)
+    {
+        if (_interceptors is null)
+            return;
+
+        foreach (var interceptor in _interceptors)
+        {
+            try
+            {
+                interceptor.OnCommit(offsets);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Consumer interceptor {Interceptor} OnCommit threw an exception",
+                    interceptor.GetType().Name);
+            }
+        }
+    }
+
 
     /// <summary>
     /// Updates the watermark cache from a fetch response partition.
