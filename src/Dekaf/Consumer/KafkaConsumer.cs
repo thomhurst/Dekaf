@@ -537,6 +537,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                                 // Prefetch not ready - check for EOF events before continuing
                                 // (EOF events are queued by prefetch loop when partition is caught up)
                             }
+                            catch (ChannelClosedException ex) when (ex.InnerException is KafkaException kafkaEx)
+                            {
+                                // Rethrow the original KafkaException from the prefetch task
+                                throw kafkaEx;
+                            }
                         }
                         finally
                         {
