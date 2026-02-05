@@ -1079,6 +1079,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                             // CRITICAL: If WriteAsync fails (cancellation or disposal), fail the batch
                             // and release memory to prevent permanent leak
                             readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                            OnBatchExitsPipeline(); // Decrement counter on failure
                             ReleaseMemory(readyBatch.DataSize);
                             throw;
                         }
@@ -1216,6 +1217,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
 #endif
                         // Channel is closed, fail the batch and return false
                         readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                        OnBatchExitsPipeline(); // Decrement counter on failure
                         // Release the batch's buffer memory since it won't go through producer
                         ReleaseMemory(readyBatch.DataSize);
                         return false;
@@ -1529,6 +1531,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     {
                         // Channel is closed, fail the batch and return false
                         readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                        OnBatchExitsPipeline(); // Decrement counter on failure
                         // Release the batch's buffer memory since it won't go through producer
                         ReleaseMemory(readyBatch.DataSize);
                         // Invalidate caches
@@ -1636,6 +1639,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
                     {
                         readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                        OnBatchExitsPipeline(); // Decrement counter on failure
                         ReleaseMemory(readyBatch.DataSize);
                         return false;
                     }
@@ -1759,6 +1763,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                                 if (!_readyBatches.Writer.TryWrite(readyBatch))
                                 {
                                     readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                                    OnBatchExitsPipeline(); // Decrement counter on failure
                                     // Release the batch's buffer memory since it won't go through producer
                                     // Note: This releases the actual batch memory, not from our reserved pool
                                     ReleaseMemory(readyBatch.DataSize);
@@ -1777,6 +1782,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                                 // CRITICAL: If exception occurs after Complete(), must clean up ReadyBatch
                                 // to prevent ArrayPool leaks from pooled arrays in the batch
                                 readyBatch.Fail(new InvalidOperationException("Batch append failed"));
+                                OnBatchExitsPipeline(); // Decrement counter on failure
                                 // Release the batch memory here since it won't reach SendBatchAsync
                                 ReleaseMemory(readyBatch.DataSize);
                                 // NOTE: Don't decrement memoryUsed - this keeps the accounting correct:
@@ -1901,6 +1907,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                                 // CRITICAL: If WriteAsync fails (cancellation or disposal), fail the batch
                                 // and release memory to prevent permanent leak
                                 readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                                OnBatchExitsPipeline(); // Decrement counter on failure
                                 ReleaseMemory(readyBatch.DataSize);
                                 throw;
                             }
@@ -2273,6 +2280,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
         while (_readyBatches.Reader.TryRead(out var readyBatch))
         {
             readyBatch.Fail(disposedException);
+            OnBatchExitsPipeline(); // Decrement counter for batches drained during disposal
         }
 
         // Wait for all in-flight batches to complete with a timeout using counter-based tracking
