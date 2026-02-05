@@ -21,7 +21,7 @@ public sealed class AdminClient : IAdminClient
     private readonly ILogger<AdminClient>? _logger;
     private volatile bool _disposed;
 
-    public AdminClient(AdminClientOptions options, ILoggerFactory? loggerFactory = null)
+    public AdminClient(AdminClientOptions options, ILoggerFactory? loggerFactory = null, MetadataOptions? metadataOptions = null)
     {
         _options = options;
         _logger = loggerFactory?.CreateLogger<AdminClient>();
@@ -41,6 +41,7 @@ public sealed class AdminClient : IAdminClient
         _metadataManager = new MetadataManager(
             _connectionPool,
             options.BootstrapServers,
+            options: metadataOptions,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
     }
 
@@ -1239,6 +1240,7 @@ public sealed class AdminClientBuilder
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
+    private TimeSpan? _metadataMaxAge;
 
     public AdminClientBuilder WithBootstrapServers(string servers)
     {
@@ -1310,6 +1312,36 @@ public sealed class AdminClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets the maximum age of metadata before it is refreshed.
+    /// This controls how frequently the client refreshes its view of the cluster topology.
+    /// Equivalent to Kafka's <c>metadata.max.age.ms</c> configuration.
+    /// Default is 15 minutes.
+    /// </summary>
+    /// <param name="interval">The maximum age of metadata. Must be positive.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public AdminClientBuilder WithMetadataMaxAge(TimeSpan interval)
+    {
+        if (interval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(interval), "Metadata max age must be positive");
+
+        _metadataMaxAge = interval;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum age of metadata before it is refreshed, in milliseconds.
+    /// This controls how frequently the client refreshes its view of the cluster topology.
+    /// Equivalent to Kafka's <c>metadata.max.age.ms</c> configuration.
+    /// Default is 900000 (15 minutes).
+    /// </summary>
+    /// <param name="ms">The maximum age of metadata in milliseconds. Must be positive.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public AdminClientBuilder WithMetadataMaxAgeMs(int ms)
+    {
+        return WithMetadataMaxAge(TimeSpan.FromMilliseconds(ms));
+    }
+
     public IAdminClient Build()
     {
         if (_bootstrapServers.Count == 0)
@@ -1327,6 +1359,10 @@ public sealed class AdminClientBuilder
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
         };
 
-        return new AdminClient(options, _loggerFactory);
+        var metadataOptions = _metadataMaxAge.HasValue
+            ? new MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
+            : null;
+
+        return new AdminClient(options, _loggerFactory, metadataOptions);
     }
 }

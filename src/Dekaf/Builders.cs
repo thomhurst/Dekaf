@@ -43,6 +43,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private List<IProducerInterceptor<TKey, TValue>>? _interceptors;
+    private TimeSpan? _metadataMaxAge;
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -399,6 +400,36 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the maximum age of metadata before it is refreshed.
+    /// This controls how frequently the client refreshes its view of the cluster topology.
+    /// Equivalent to Kafka's <c>metadata.max.age.ms</c> configuration.
+    /// Default is 15 minutes.
+    /// </summary>
+    /// <param name="interval">The maximum age of metadata. Must be positive.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ProducerBuilder<TKey, TValue> WithMetadataMaxAge(TimeSpan interval)
+    {
+        if (interval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(interval), "Metadata max age must be positive");
+
+        _metadataMaxAge = interval;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum age of metadata before it is refreshed, in milliseconds.
+    /// This controls how frequently the client refreshes its view of the cluster topology.
+    /// Equivalent to Kafka's <c>metadata.max.age.ms</c> configuration.
+    /// Default is 900000 (15 minutes).
+    /// </summary>
+    /// <param name="ms">The maximum age of metadata in milliseconds. Must be positive.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ProducerBuilder<TKey, TValue> WithMetadataMaxAgeMs(int ms)
+    {
+        return WithMetadataMaxAge(TimeSpan.FromMilliseconds(ms));
+    }
+
+    /// <summary>
     /// Configures the producer for high throughput scenarios.
     /// </summary>
     /// <remarks>
@@ -512,7 +543,11 @@ public sealed class ProducerBuilder<TKey, TValue>
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null
         };
 
-        return new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory);
+        var metadataOptions = _metadataMaxAge.HasValue
+            ? new Metadata.MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
+            : null;
+
+        return new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory, metadataOptions);
     }
 
     /// <summary>
@@ -592,6 +627,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private readonly List<string> _topicsToSubscribe = [];
+    private TimeSpan? _metadataMaxAge;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -957,6 +993,36 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the maximum age of metadata before it is refreshed.
+    /// This controls how frequently the client refreshes its view of the cluster topology.
+    /// Equivalent to Kafka's <c>metadata.max.age.ms</c> configuration.
+    /// Default is 15 minutes.
+    /// </summary>
+    /// <param name="interval">The maximum age of metadata. Must be positive.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> WithMetadataMaxAge(TimeSpan interval)
+    {
+        if (interval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(interval), "Metadata max age must be positive");
+
+        _metadataMaxAge = interval;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum age of metadata before it is refreshed, in milliseconds.
+    /// This controls how frequently the client refreshes its view of the cluster topology.
+    /// Equivalent to Kafka's <c>metadata.max.age.ms</c> configuration.
+    /// Default is 900000 (15 minutes).
+    /// </summary>
+    /// <param name="ms">The maximum age of metadata in milliseconds. Must be positive.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> WithMetadataMaxAgeMs(int ms)
+    {
+        return WithMetadataMaxAge(TimeSpan.FromMilliseconds(ms));
+    }
+
+    /// <summary>
     /// Configures the consumer for high throughput scenarios.
     /// </summary>
     /// <remarks>
@@ -1055,7 +1121,11 @@ public sealed class ConsumerBuilder<TKey, TValue>
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null
         };
 
-        var consumer = new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory);
+        var metadataOptions = _metadataMaxAge.HasValue
+            ? new Metadata.MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
+            : null;
+
+        var consumer = new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory, metadataOptions);
 
         if (_topicsToSubscribe.Count > 0)
         {

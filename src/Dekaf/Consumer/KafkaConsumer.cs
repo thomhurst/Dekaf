@@ -204,6 +204,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private Task? _prefetchTask;
     private long _prefetchedBytes;
     private readonly object _prefetchLock = new();
+    private readonly SemaphoreSlim _assignmentLock = new(1, 1);
 
     private CancellationTokenSource? _wakeupCts;
     private CancellationTokenSource? _autoCommitCts;
@@ -238,7 +239,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         ConsumerOptions options,
         IDeserializer<TKey> keyDeserializer,
         IDeserializer<TValue> valueDeserializer,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null,
+        Metadata.MetadataOptions? metadataOptions = null)
     {
         _options = options;
         _keyDeserializer = keyDeserializer;
@@ -277,6 +279,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         _metadataManager = new MetadataManager(
             _connectionPool,
             options.BootstrapServers,
+            options: metadataOptions,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
         if (!string.IsNullOrEmpty(options.GroupId))
@@ -1416,89 +1419,100 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     private async ValueTask EnsureAssignmentAsync(CancellationToken cancellationToken)
     {
-        if (_subscription.Count > 0 && _coordinator is not null)
+        // Serialize access: both ConsumeAsync and PrefetchLoopAsync call this method
+        // concurrently. Without synchronization, concurrent access to non-thread-safe
+        // _assignment HashSet causes NullReferenceException during enumeration.
+        await _assignmentLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            await _coordinator.EnsureActiveGroupAsync(_subscription, cancellationToken).ConfigureAwait(false);
-
-            // Check for new partitions that need initialization
-            var newPartitions = new List<TopicPartition>();
-            foreach (var partition in _coordinator.Assignment)
+            if (_subscription.Count > 0 && _coordinator is not null)
             {
-                if (!_assignment.Contains(partition))
+                await _coordinator.EnsureActiveGroupAsync(_subscription, cancellationToken).ConfigureAwait(false);
+
+                // Check for new partitions that need initialization
+                var newPartitions = new List<TopicPartition>();
+                foreach (var partition in _coordinator.Assignment)
                 {
-                    newPartitions.Add(partition);
+                    if (!_assignment.Contains(partition))
+                    {
+                        newPartitions.Add(partition);
+                    }
                 }
-            }
 
-            // Check for partitions that were removed (for EOF state cleanup)
-            var removedPartitions = new List<TopicPartition>();
-            foreach (var partition in _assignment)
-            {
-                if (!_coordinator.Assignment.Contains(partition))
+                // Check for partitions that were removed (for EOF state cleanup)
+                var removedPartitions = new List<TopicPartition>();
+                foreach (var partition in _assignment)
                 {
-                    removedPartitions.Add(partition);
+                    if (!_coordinator.Assignment.Contains(partition))
+                    {
+                        removedPartitions.Add(partition);
+                    }
                 }
-            }
 
-            // Track rebalance if assignment changed
-            var assignmentChanged = _assignment.Count != _coordinator.Assignment.Count ||
-                                    newPartitions.Count > 0;
+                // Track rebalance if assignment changed
+                var assignmentChanged = _assignment.Count != _coordinator.Assignment.Count ||
+                                        newPartitions.Count > 0;
 
-            // Update assignment from coordinator
-            _assignment.Clear();
-            foreach (var partition in _coordinator.Assignment)
-            {
-                _assignment.Add(partition);
-            }
-            InvalidatePartitionCache();
-            InvalidateFetchRequestCache();
+                // Update assignment from coordinator
+                _assignment.Clear();
+                foreach (var partition in _coordinator.Assignment)
+                {
+                    _assignment.Add(partition);
+                }
+                InvalidatePartitionCache();
+                InvalidateFetchRequestCache();
 
-            // Clean up state for removed partitions
-            foreach (var partition in removedPartitions)
-            {
-                _highWatermarks.TryRemove(partition, out _);
-                _positions.TryRemove(partition, out _);
-                _fetchPositions.TryRemove(partition, out _);
-            }
-
-            // Clean up EOF state (still needs lock)
-            lock (_prefetchLock)
-            {
+                // Clean up state for removed partitions
                 foreach (var partition in removedPartitions)
                 {
-                    _eofEmitted.Remove(partition);
+                    _highWatermarks.TryRemove(partition, out _);
+                    _positions.TryRemove(partition, out _);
+                    _fetchPositions.TryRemove(partition, out _);
+                }
+
+                // Clean up EOF state (still needs lock)
+                lock (_prefetchLock)
+                {
+                    foreach (var partition in removedPartitions)
+                    {
+                        _eofEmitted.Remove(partition);
+                    }
+                }
+
+                // Track rebalance
+                if (assignmentChanged)
+                {
+                    _statisticsCollector.RecordRebalance();
+                }
+
+                // Initialize positions for new partitions
+                if (newPartitions.Count > 0)
+                {
+                    await InitializePositionsAsync(newPartitions, cancellationToken).ConfigureAwait(false);
                 }
             }
-
-            // Track rebalance
-            if (assignmentChanged)
+            else if (_assignment.Count > 0)
             {
-                _statisticsCollector.RecordRebalance();
-            }
+                // Manual assignment - initialize positions for partitions that don't have positions yet
+                List<TopicPartition>? uninitializedPartitions = null;
+                foreach (var p in _assignment)
+                {
+                    if (!_fetchPositions.ContainsKey(p))
+                    {
+                        uninitializedPartitions ??= new List<TopicPartition>();
+                        uninitializedPartitions.Add(p);
+                    }
+                }
 
-            // Initialize positions for new partitions
-            if (newPartitions.Count > 0)
-            {
-                await InitializePositionsAsync(newPartitions, cancellationToken).ConfigureAwait(false);
+                if (uninitializedPartitions is not null)
+                {
+                    await InitializeManualAssignmentPositionsAsync(uninitializedPartitions, cancellationToken).ConfigureAwait(false);
+                }
             }
         }
-        else if (_assignment.Count > 0)
+        finally
         {
-            // Manual assignment - initialize positions for partitions that don't have positions yet
-            List<TopicPartition>? uninitializedPartitions = null;
-            foreach (var p in _assignment)
-            {
-                if (!_fetchPositions.ContainsKey(p))
-                {
-                    uninitializedPartitions ??= new List<TopicPartition>();
-                    uninitializedPartitions.Add(p);
-                }
-            }
-
-            if (uninitializedPartitions is not null)
-            {
-                await InitializeManualAssignmentPositionsAsync(uninitializedPartitions, cancellationToken).ConfigureAwait(false);
-            }
+            _assignmentLock.Release();
         }
     }
 
@@ -2573,6 +2587,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             prefetched.Dispose();
         }
+
+        _assignmentLock.Dispose();
 
         // Dispose statistics emitter
         if (_statisticsEmitter is not null)

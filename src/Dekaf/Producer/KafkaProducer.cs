@@ -120,7 +120,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         ProducerOptions options,
         ISerializer<TKey> keySerializer,
         ISerializer<TValue> valueSerializer,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null,
+        Metadata.MetadataOptions? metadataOptions = null)
     {
         _options = options;
         _keySerializer = keySerializer;
@@ -170,6 +171,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _metadataManager = new MetadataManager(
             _connectionPool,
             options.BootstrapServers,
+            options: metadataOptions,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
         _accumulator = new RecordAccumulator(options);
