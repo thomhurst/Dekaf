@@ -238,7 +238,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         ConsumerOptions options,
         IDeserializer<TKey> keyDeserializer,
         IDeserializer<TValue> valueDeserializer,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null,
+        Metadata.MetadataOptions? metadataOptions = null)
     {
         _options = options;
         _keyDeserializer = keyDeserializer;
@@ -277,6 +278,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         _metadataManager = new MetadataManager(
             _connectionPool,
             options.BootstrapServers,
+            options: metadataOptions,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
         if (!string.IsNullOrEmpty(options.GroupId))
