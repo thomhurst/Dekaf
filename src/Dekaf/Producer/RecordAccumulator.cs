@@ -472,6 +472,12 @@ public sealed class RecordAccumulator : IAsyncDisposable
     // Not volatile - use Volatile.Read/Interlocked for thread-safe access
     private TaskCompletionSource<bool>? _flushTcs;
 
+    // Optimization: Track the oldest batch creation time to skip unnecessary enumeration.
+    // With LingerMs=5ms and 1ms timer, we'd enumerate 5x per batch without this optimization.
+    // By tracking the oldest batch, we can skip enumeration when no batch is old enough to flush.
+    // Uses ticks (100ns units) for precision. long.MaxValue means no batches exist.
+    private long _oldestBatchCreatedTicks = long.MaxValue;
+
     private volatile bool _disposed;
     private volatile bool _closed;
 
@@ -992,6 +998,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 else
                 {
                     batch = newBatch;
+                    // Update oldest batch tracking for linger timer optimization
+                    UpdateOldestBatchTracking(newBatch);
                 }
             }
 
@@ -1130,6 +1138,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 else
                 {
                     batch = newBatch;
+                    // Update oldest batch tracking for linger timer optimization
+                    UpdateOldestBatchTracking(newBatch);
                 }
             }
 
@@ -1330,6 +1340,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 return TryAppendFireAndForgetSlow(topic, partition, timestamp, key, value, headers, pooledHeaderArray);
             }
         }
+        else
+        {
+            // Update oldest batch tracking for linger timer optimization
+            UpdateOldestBatchTracking(newBatch);
+        }
 
         // Append to the new batch
         var result = newBatch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
@@ -1423,6 +1438,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 else
                 {
                     batch = newBatch;
+                    // Update oldest batch tracking for linger timer optimization
+                    UpdateOldestBatchTracking(newBatch);
                 }
             }
 
@@ -1544,6 +1561,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 else
                 {
                     batch = newBatch;
+                    // Update oldest batch tracking for linger timer optimization
+                    UpdateOldestBatchTracking(newBatch);
                 }
             }
 
@@ -1646,6 +1665,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     else
                     {
                         batch = newBatch;
+                        // Update oldest batch tracking for linger timer optimization
+                        UpdateOldestBatchTracking(newBatch);
                     }
                 }
 
@@ -1741,15 +1762,35 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// between Complete() and TryRemove() calls.
     /// </summary>
     /// <remarks>
-    /// Optimized to avoid async state machine allocation when there are no batches to process.
+    /// Optimized with multiple fast paths:
+    /// 1. Empty dictionary check - avoids enumeration overhead
+    /// 2. Oldest batch age check - skips enumeration if no batch can possibly be ready
+    /// With LingerMs=5ms and 1ms timer, this reduces enumeration from 5x to 1x per batch lifetime.
     /// Also uses synchronous TryWrite when possible to avoid async overhead.
     /// </remarks>
     public ValueTask ExpireLingerAsync(CancellationToken cancellationToken)
     {
-        // Fast path: no batches to check - avoid enumeration and async overhead entirely
+        // Fast path 1: no batches to check - avoid enumeration and async overhead entirely
         if (_batches.IsEmpty)
         {
+            // Reset oldest batch tracking since there are no batches
+            Volatile.Write(ref _oldestBatchCreatedTicks, long.MaxValue);
             return ValueTask.CompletedTask;
+        }
+
+        // Fast path 2: if the oldest batch hasn't reached linger time yet, skip enumeration.
+        // This is the key optimization: with LingerMs=5 and 1ms timer, we'd enumerate 5x per batch.
+        // By tracking the oldest batch, we skip 4 out of 5 enumerations.
+        var oldestTicks = Volatile.Read(ref _oldestBatchCreatedTicks);
+        if (oldestTicks != long.MaxValue)
+        {
+            var nowTicks = DateTimeOffset.UtcNow.Ticks;
+            var millisSinceOldest = (nowTicks - oldestTicks) / TimeSpan.TicksPerMillisecond;
+            if (millisSinceOldest < _options.LingerMs)
+            {
+                // No batch is old enough to flush yet - skip the O(n) enumeration
+                return ValueTask.CompletedTask;
+            }
         }
 
         return ExpireLingerAsyncCore(cancellationToken);
@@ -1758,6 +1799,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private async ValueTask ExpireLingerAsyncCore(CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
+        var newOldestTicks = long.MaxValue;
 
         foreach (var kvp in _batches)
         {
@@ -1812,7 +1854,20 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     }
                 }
             }
+            else
+            {
+                // Batch not ready for flush - track its creation time for oldest batch calculation
+                var batchCreatedTicks = batch.CreatedAtTicks;
+                if (batchCreatedTicks < newOldestTicks)
+                {
+                    newOldestTicks = batchCreatedTicks;
+                }
+            }
         }
+
+        // Update the oldest batch tracking for next check
+        // Use Volatile.Write for visibility to the fast path check
+        Volatile.Write(ref _oldestBatchCreatedTicks, newOldestTicks);
     }
 
     /// <summary>
@@ -1850,6 +1905,32 @@ public sealed class RecordAccumulator : IAsyncDisposable
         if (readyBatch is not null)
         {
             OnBatchEntersPipeline();
+        }
+    }
+
+    /// <summary>
+    /// Updates the oldest batch tracking when a new batch is added to the dictionary.
+    /// Uses lock-free CAS loop to atomically set to min(current, newBatchTicks).
+    /// This is called when TryAdd succeeds for a new batch.
+    /// </summary>
+    /// <remarks>
+    /// Since new batches are always created with current time, they're newer than existing batches.
+    /// This only updates when the dictionary was empty (_oldestBatchCreatedTicks == MaxValue)
+    /// or in rare race conditions.
+    /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void UpdateOldestBatchTracking(PartitionBatch newBatch)
+    {
+        var newBatchTicks = newBatch.CreatedAtTicks;
+        var current = Volatile.Read(ref _oldestBatchCreatedTicks);
+
+        // CAS loop to atomically set to min(current, newBatchTicks)
+        while (newBatchTicks < current)
+        {
+            var original = Interlocked.CompareExchange(ref _oldestBatchCreatedTicks, newBatchTicks, current);
+            if (original == current)
+                break;
+            current = original;
         }
     }
 
@@ -2379,6 +2460,12 @@ internal sealed class PartitionBatch
     public TopicPartition TopicPartition => _topicPartition;
     public int RecordCount => _recordCount;
     public int EstimatedSize => _estimatedSize;
+
+    /// <summary>
+    /// Returns the batch creation time in ticks for efficient age comparisons.
+    /// Used by ExpireLingerAsync to track the oldest batch without enumeration.
+    /// </summary>
+    public long CreatedAtTicks => _createdAt.Ticks;
 
     /// <summary>
     /// Appends a record to the batch with completion tracking.
