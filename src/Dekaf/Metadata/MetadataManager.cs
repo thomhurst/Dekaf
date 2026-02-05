@@ -33,7 +33,6 @@ public sealed class MetadataManager : IAsyncDisposable
     // Rebootstrap recovery state
     private readonly List<string> _originalBootstrapHostnames;
     private long _allBrokersUnavailableSince;
-    private readonly object _rebootstrapLock = new();
 
     public MetadataManager(
         IConnectionPool connectionPool,
@@ -313,16 +312,13 @@ public sealed class MetadataManager : IAsyncDisposable
     {
         var now = Environment.TickCount64;
 
-        lock (_rebootstrapLock)
+        // Atomically set the timestamp only if it hasn't been set yet (compare-and-set from 0)
+        if (Interlocked.CompareExchange(ref _allBrokersUnavailableSince, now, 0) == 0)
         {
-            if (_allBrokersUnavailableSince == 0)
-            {
-                // First time all brokers are unavailable - record the timestamp
-                _allBrokersUnavailableSince = now;
-                _logger?.LogWarning("All known brokers are unavailable. Rebootstrap will trigger after {TriggerMs}ms",
-                    _options.MetadataRecoveryRebootstrapTriggerMs);
-                return false;
-            }
+            // First time all brokers are unavailable - we just recorded the timestamp
+            _logger?.LogWarning("All known brokers are unavailable. Rebootstrap will trigger after {TriggerMs}ms",
+                _options.MetadataRecoveryRebootstrapTriggerMs);
+            return false;
         }
 
         var elapsedMs = now - Interlocked.Read(ref _allBrokersUnavailableSince);
@@ -399,6 +395,7 @@ public sealed class MetadataManager : IAsyncDisposable
     /// </summary>
     internal async ValueTask<List<(string Host, int Port)>> ResolveBootstrapEndpointsAsync(CancellationToken cancellationToken)
     {
+        var seen = new HashSet<(string Host, int Port)>();
         var resolved = new List<(string Host, int Port)>();
 
         foreach (var (host, port) in _bootstrapEndpoints)
@@ -408,20 +405,21 @@ public sealed class MetadataManager : IAsyncDisposable
                 var addresses = await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
                 foreach (var address in addresses)
                 {
-                    var ip = address.ToString();
+                    var endpoint = (address.ToString(), port);
                     // Add both the resolved IP and the original hostname
                     // The original hostname is important because the broker may expect
                     // connections using the hostname (e.g., for TLS SNI)
-                    if (!resolved.Any(e => e.Host == ip && e.Port == port))
+                    if (seen.Add(endpoint))
                     {
-                        resolved.Add((ip, port));
+                        resolved.Add(endpoint);
                     }
                 }
 
                 // Also add the original hostname endpoint (it may resolve differently now)
-                if (!resolved.Any(e => e.Host == host && e.Port == port))
+                var hostnameEndpoint = (host, port);
+                if (seen.Add(hostnameEndpoint))
                 {
-                    resolved.Add((host, port));
+                    resolved.Add(hostnameEndpoint);
                 }
 
                 _logger?.LogDebug("Rebootstrap DNS resolution for {Host}:{Port} returned {Count} addresses",
@@ -431,9 +429,10 @@ public sealed class MetadataManager : IAsyncDisposable
             {
                 _logger?.LogWarning(ex, "Rebootstrap DNS resolution failed for {Host}:{Port}", host, port);
                 // Still add the original hostname as a fallback
-                if (!resolved.Any(e => e.Host == host && e.Port == port))
+                var fallbackEndpoint = (host, port);
+                if (seen.Add(fallbackEndpoint))
                 {
-                    resolved.Add((host, port));
+                    resolved.Add(fallbackEndpoint);
                 }
             }
         }
