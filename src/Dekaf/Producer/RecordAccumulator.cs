@@ -1014,6 +1014,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 continue; // Retry the loop
             }
 
+            // Track pending awaited produce BEFORE append to prevent race condition:
+            // Without this, ExpireLingerAsync could see _pendingAwaitedProduceCount == 0
+            // after the message is in the batch but before the counter is incremented.
+            Interlocked.Increment(ref _pendingAwaitedProduceCount);
+
             var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
 
             if (result.Success)
@@ -1021,9 +1026,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
 #if DEBUG
                 ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: true);
 #endif
-                // Track pending awaited produce for linger timer optimization
-                Interlocked.Increment(ref _pendingAwaitedProduceCount);
-
                 // Release the difference between estimated and actual size to prevent memory leak
                 // The actual batch memory will be released when the batch is sent via SendBatchAsync
                 var overestimate = recordSize - result.ActualSizeAdded;
@@ -1031,6 +1033,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     ReleaseMemory(overestimate);
                 return result;
             }
+
+            // Append failed (batch full) - decrement counter since message wasn't added.
+            // The loop will increment again before the next TryAppend attempt.
+            Interlocked.Decrement(ref _pendingAwaitedProduceCount);
 
             // Batch is full - atomically remove it from dictionary BEFORE completing.
             // Only the thread that wins the TryRemove race will complete the batch.
@@ -1157,6 +1163,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 }
             }
 
+            // Track pending awaited produce BEFORE append to prevent race condition:
+            // Without this, ExpireLingerAsync could see _pendingAwaitedProduceCount == 0
+            // after the message is in the batch but before the counter is incremented.
+            Interlocked.Increment(ref _pendingAwaitedProduceCount);
+
             var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
 
             if (result.Success)
@@ -1164,9 +1175,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
 #if DEBUG
                 ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: true);
 #endif
-                // Track pending awaited produce for linger timer optimization
-                Interlocked.Increment(ref _pendingAwaitedProduceCount);
-
                 // Release the difference between estimated and actual size to prevent memory leak
                 // The actual batch memory will be released when the batch is sent via SendBatchAsync
                 var overestimate = recordSize - result.ActualSizeAdded;
@@ -1175,6 +1183,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
                 return true;
             }
+
+            // Append failed (batch full) - decrement counter since message wasn't added.
+            // The loop will increment again before the next TryAppend attempt.
+            Interlocked.Decrement(ref _pendingAwaitedProduceCount);
 
             // Batch is full - atomically remove it from dictionary BEFORE completing.
             // Only the thread that wins the TryRemove race will complete the batch.
