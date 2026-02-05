@@ -478,6 +478,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
     // Uses ticks (100ns units) for precision. long.MaxValue means no batches exist.
     private long _oldestBatchCreatedTicks = long.MaxValue;
 
+    // Track whether there are pending awaited produces (ProduceAsync with completion sources).
+    // These need immediate flushing via ShouldFlush() regardless of LingerMs, so we can't
+    // skip enumeration when this counter is non-zero.
+    private int _pendingAwaitedProduceCount;
+
     private volatile bool _disposed;
     private volatile bool _closed;
 
@@ -1016,6 +1021,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
 #if DEBUG
                 ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: true);
 #endif
+                // Track pending awaited produce for linger timer optimization
+                Interlocked.Increment(ref _pendingAwaitedProduceCount);
+
                 // Release the difference between estimated and actual size to prevent memory leak
                 // The actual batch memory will be released when the batch is sent via SendBatchAsync
                 var overestimate = recordSize - result.ActualSizeAdded;
@@ -1037,6 +1045,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
+                    // Decrement pending awaited produce count by the number of completion sources in this batch
+                    if (readyBatch.CompletionSourcesCount > 0)
+                        Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
 #if DEBUG
                     ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
 #endif
@@ -1153,6 +1164,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
 #if DEBUG
                 ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: true);
 #endif
+                // Track pending awaited produce for linger timer optimization
+                Interlocked.Increment(ref _pendingAwaitedProduceCount);
+
                 // Release the difference between estimated and actual size to prevent memory leak
                 // The actual batch memory will be released when the batch is sent via SendBatchAsync
                 var overestimate = recordSize - result.ActualSizeAdded;
@@ -1172,6 +1186,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
+                    // Decrement pending awaited produce count by the number of completion sources in this batch
+                    if (readyBatch.CompletionSourcesCount > 0)
+                        Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
 #if DEBUG
                     ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
 #endif
@@ -1796,18 +1813,23 @@ public sealed class RecordAccumulator : IAsyncDisposable
             return ValueTask.CompletedTask;
         }
 
-        // Fast path 2: if the oldest batch hasn't reached linger time yet, skip enumeration.
+        // Fast path 2: if the oldest batch hasn't reached linger time yet AND there are no
+        // pending awaited produces, skip enumeration. Awaited produces (ProduceAsync) need
+        // immediate flushing via ShouldFlush() regardless of LingerMs.
         // This is the key optimization: with LingerMs=5 and 1ms timer, we'd enumerate 5x per batch.
-        // By tracking the oldest batch, we skip 4 out of 5 enumerations.
-        var oldestTicks = Volatile.Read(ref _oldestBatchCreatedTicks);
-        if (oldestTicks != long.MaxValue)
+        // By tracking the oldest batch, we skip 4 out of 5 enumerations for fire-and-forget workloads.
+        if (Volatile.Read(ref _pendingAwaitedProduceCount) == 0)
         {
-            var nowTicks = DateTimeOffset.UtcNow.Ticks;
-            var millisSinceOldest = (nowTicks - oldestTicks) / TimeSpan.TicksPerMillisecond;
-            if (millisSinceOldest < _options.LingerMs)
+            var oldestTicks = Volatile.Read(ref _oldestBatchCreatedTicks);
+            if (oldestTicks != long.MaxValue)
             {
-                // No batch is old enough to flush yet - skip the O(n) enumeration
-                return ValueTask.CompletedTask;
+                var nowTicks = DateTimeOffset.UtcNow.Ticks;
+                var millisSinceOldest = (nowTicks - oldestTicks) / TimeSpan.TicksPerMillisecond;
+                if (millisSinceOldest < _options.LingerMs)
+                {
+                    // No batch is old enough to flush yet - skip the O(n) enumeration
+                    return ValueTask.CompletedTask;
+                }
             }
         }
 
@@ -1835,6 +1857,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     var readyBatch = batch.Complete();
                     if (readyBatch is not null)
                     {
+                        // Decrement pending awaited produce count by the number of completion sources in this batch
+                        if (readyBatch.CompletionSourcesCount > 0)
+                            Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
 #if DEBUG
                         ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
 #endif
@@ -2036,6 +2061,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     var readyBatch = batch.Complete();
                     if (readyBatch is not null)
                     {
+                        // Decrement pending awaited produce count by the number of completion sources in this batch
+                        if (readyBatch.CompletionSourcesCount > 0)
+                            Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
 #if DEBUG
                         ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
 #endif
@@ -2210,6 +2238,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = kvp.Value.Complete();
                 if (readyBatch is not null)
                 {
+                    // Decrement pending awaited produce count by the number of completion sources in this batch
+                    if (readyBatch.CompletionSourcesCount > 0)
+                        Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
+
                     readyBatch.Fail(disposedException);
                     // Release the batch's buffer memory
                     ReleaseMemory(readyBatch.DataSize);
