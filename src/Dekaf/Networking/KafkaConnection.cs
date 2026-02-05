@@ -114,6 +114,12 @@ public sealed class KafkaConnection : IKafkaConnection
     private OAuthBearerTokenProvider? _ownedTokenProvider;
     private volatile bool _disposed;
 
+    // SASL re-authentication (KIP-368)
+    private SaslSessionState? _saslSessionState;
+    private Timer? _reauthTimer;
+    private readonly SemaphoreSlim _reauthLock = new(1, 1);
+    private volatile bool _reauthenticating;
+
     // Certificates loaded from files that we own and must dispose
     private X509Certificate2Collection? _loadedCaCertificates;
     private X509Certificate2? _loadedClientCertificate;
@@ -131,6 +137,12 @@ public sealed class KafkaConnection : IKafkaConnection
     /// Unique identifier for this connection instance (for debugging).
     /// </summary>
     public int ConnectionInstanceId => _connectionInstanceId;
+
+    /// <summary>
+    /// Gets the current SASL session state, if SASL authentication was performed.
+    /// Returns null if no SASL authentication occurred or if re-authentication is disabled.
+    /// </summary>
+    internal SaslSessionState? SaslSession => _saslSessionState;
 
     public KafkaConnection(
         string host,
@@ -887,26 +899,24 @@ public sealed class KafkaConnection : IKafkaConnection
 
         _logger?.LogDebug("Starting SASL authentication with mechanism {Mechanism}", _options.SaslMechanism);
 
+        var sessionLifetimeMs = await PerformSaslExchangeAsync(cancellationToken).ConfigureAwait(false);
+
+        _logger?.LogInformation("SASL authentication successful with mechanism {Mechanism}", _options.SaslMechanism);
+
+        // Schedule re-authentication if the broker reported a session lifetime (KIP-368)
+        ScheduleReauthentication(sessionLifetimeMs);
+    }
+
+    /// <summary>
+    /// Performs the full SASL handshake + authenticate exchange and returns the session lifetime in milliseconds.
+    /// This method is used for both initial authentication and re-authentication.
+    /// </summary>
+    private async ValueTask<long> PerformSaslExchangeAsync(CancellationToken cancellationToken)
+    {
         // Create the appropriate authenticator
-        ISaslAuthenticator authenticator = _options.SaslMechanism switch
-        {
-            SaslMechanism.Plain => new PlainAuthenticator(
-                _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
-                _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
-            SaslMechanism.ScramSha256 => new ScramAuthenticator(
-                SaslMechanism.ScramSha256,
-                _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
-                _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
-            SaslMechanism.ScramSha512 => new ScramAuthenticator(
-                SaslMechanism.ScramSha512,
-                _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
-                _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
-            SaslMechanism.Gssapi => new GssapiAuthenticator(
-                _options.GssapiConfig ?? throw new InvalidOperationException("GSSAPI configuration not provided"),
-                _host),
-            SaslMechanism.OAuthBearer => CreateOAuthBearerAuthenticator(),
-            _ => throw new InvalidOperationException($"Unsupported SASL mechanism: {_options.SaslMechanism}")
-        };
+        ISaslAuthenticator authenticator = CreateSaslAuthenticator();
+
+        long sessionLifetimeMs = 0;
 
         try
         {
@@ -948,6 +958,9 @@ public sealed class KafkaConnection : IKafkaConnection
                         (authResponse.ErrorMessage is not null ? $" - {authResponse.ErrorMessage}" : ""));
                 }
 
+                // Capture session lifetime from the last successful auth response (KIP-368)
+                sessionLifetimeMs = authResponse.SessionLifetimeMs;
+
                 if (authenticator.IsComplete)
                     break;
 
@@ -959,14 +972,216 @@ public sealed class KafkaConnection : IKafkaConnection
 
                 authBytes = response;
             }
-
-            _logger?.LogInformation("SASL authentication successful with mechanism {Mechanism}", _options.SaslMechanism);
         }
         finally
         {
             // Dispose the authenticator if it implements IDisposable (e.g., GssapiAuthenticator)
             (authenticator as IDisposable)?.Dispose();
         }
+
+        return sessionLifetimeMs;
+    }
+
+    private ISaslAuthenticator CreateSaslAuthenticator() => _options.SaslMechanism switch
+    {
+        SaslMechanism.Plain => new PlainAuthenticator(
+            _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
+            _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
+        SaslMechanism.ScramSha256 => new ScramAuthenticator(
+            SaslMechanism.ScramSha256,
+            _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
+            _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
+        SaslMechanism.ScramSha512 => new ScramAuthenticator(
+            SaslMechanism.ScramSha512,
+            _options.SaslUsername ?? throw new InvalidOperationException("SASL username not configured"),
+            _options.SaslPassword ?? throw new InvalidOperationException("SASL password not configured")),
+        SaslMechanism.Gssapi => new GssapiAuthenticator(
+            _options.GssapiConfig ?? throw new InvalidOperationException("GSSAPI configuration not provided"),
+            _host),
+        SaslMechanism.OAuthBearer => CreateOAuthBearerAuthenticator(),
+        _ => throw new InvalidOperationException($"Unsupported SASL mechanism: {_options.SaslMechanism}")
+    };
+
+    /// <summary>
+    /// Schedules re-authentication based on the broker-reported session lifetime.
+    /// </summary>
+    private void ScheduleReauthentication(long sessionLifetimeMs)
+    {
+        var reauthConfig = _options.SaslReauthenticationConfig ?? new SaslReauthenticationConfig();
+
+        if (!reauthConfig.Enabled)
+        {
+            _logger?.LogDebug("SASL re-authentication is disabled");
+            return;
+        }
+
+        _saslSessionState = new SaslSessionState(sessionLifetimeMs, reauthConfig);
+
+        if (!_saslSessionState.RequiresReauthentication)
+        {
+            _logger?.LogDebug(
+                "SASL re-authentication not needed: sessionLifetimeMs={SessionLifetimeMs}",
+                sessionLifetimeMs);
+            return;
+        }
+
+        var delayMs = _saslSessionState.ReauthenticationDelayMs;
+
+        _logger?.LogInformation(
+            "SASL session lifetime is {SessionLifetimeMs}ms. Scheduling re-authentication in {DelayMs}ms " +
+            "(at {ReauthTime:O}) for broker {BrokerId}",
+            sessionLifetimeMs,
+            delayMs,
+            _saslSessionState.ReauthenticationDeadline,
+            BrokerId);
+
+        // Dispose any existing timer before creating a new one
+        _reauthTimer?.Dispose();
+        _reauthTimer = new Timer(
+            OnReauthenticationTimerElapsed,
+            null,
+            delayMs,
+            Timeout.Infinite); // One-shot timer, re-scheduled after each re-auth
+    }
+
+    private void OnReauthenticationTimerElapsed(object? state)
+    {
+        // Fire and forget - errors are logged but don't crash the connection
+        _ = PerformReauthenticationAsync();
+    }
+
+    /// <summary>
+    /// Performs re-authentication on the existing connection (KIP-368).
+    /// Re-authentication uses standard SaslHandshake + SaslAuthenticate API messages sent
+    /// through the normal multiplexed pipeline. The broker handles these in-band with
+    /// other requests per KIP-368.
+    /// </summary>
+    internal async Task PerformReauthenticationAsync()
+    {
+        if (_disposed || !IsConnected)
+            return;
+
+        if (_reauthenticating)
+            return;
+
+        // Only one re-authentication at a time
+        if (!await _reauthLock.WaitAsync(0).ConfigureAwait(false))
+            return;
+
+        try
+        {
+            _reauthenticating = true;
+
+            _logger?.LogInformation(
+                "Starting SASL re-authentication for broker {BrokerId} at {Host}:{Port}",
+                BrokerId, _host, _port);
+
+            // Use a timeout for re-authentication to prevent indefinite blocking
+            using var timeoutCts = new CancellationTokenSource(_options.RequestTimeout);
+
+            var sessionLifetimeMs = await PerformSaslReauthExchangeAsync(timeoutCts.Token)
+                .ConfigureAwait(false);
+
+            _logger?.LogInformation(
+                "SASL re-authentication successful for broker {BrokerId}. New session lifetime: {SessionLifetimeMs}ms",
+                BrokerId, sessionLifetimeMs);
+
+            // Schedule the next re-authentication
+            ScheduleReauthentication(sessionLifetimeMs);
+        }
+        catch (Exception ex) when (!_disposed)
+        {
+            _logger?.LogError(ex,
+                "SASL re-authentication failed for broker {BrokerId}. " +
+                "Connection may be terminated by the broker when the session expires",
+                BrokerId);
+
+            // Don't tear down the connection - let it fail naturally when the broker
+            // rejects requests after session expiry. The connection pool will handle
+            // reconnection at that point.
+        }
+        finally
+        {
+            _reauthenticating = false;
+            _reauthLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Performs SASL re-authentication exchange using the multiplexed pipeline.
+    /// Re-authentication happens after the pipeline is established, so we use the
+    /// pipeline-based SendAsync rather than the direct stream methods used during initial auth.
+    /// Per KIP-368, re-authentication uses standard SaslHandshake + SaslAuthenticate API messages
+    /// with correlation IDs, sent as normal Kafka protocol messages.
+    /// </summary>
+    private async ValueTask<long> PerformSaslReauthExchangeAsync(CancellationToken cancellationToken)
+    {
+        if (!IsConnected)
+            throw new InvalidOperationException("Not connected");
+
+        // Create the appropriate authenticator (fresh instance for each re-auth)
+        ISaslAuthenticator authenticator = CreateSaslAuthenticator();
+
+        long sessionLifetimeMs = 0;
+
+        try
+        {
+            // Step 1: Send SaslHandshake to negotiate mechanism
+            // Uses the multiplexed pipeline (write lock already held by caller)
+            var handshakeResponse = await SendAsync<SaslHandshakeRequest, SaslHandshakeResponse>(
+                new SaslHandshakeRequest { Mechanism = authenticator.MechanismName },
+                1,
+                cancellationToken).ConfigureAwait(false);
+
+            if (handshakeResponse.ErrorCode != ErrorCode.None)
+            {
+                throw new AuthenticationException(
+                    $"SASL re-auth handshake failed: {handshakeResponse.ErrorCode}. " +
+                    $"Supported mechanisms: {string.Join(", ", handshakeResponse.Mechanisms)}");
+            }
+
+            // Step 2: For OAUTHBEARER, fetch fresh token
+            if (authenticator is OAuthBearerAuthenticator oauthAuthenticator)
+            {
+                await oauthAuthenticator.GetTokenAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            var authBytes = authenticator.GetInitialResponse();
+
+            while (!authenticator.IsComplete)
+            {
+                var authResponse = await SendAsync<SaslAuthenticateRequest, SaslAuthenticateResponse>(
+                    new SaslAuthenticateRequest { AuthBytes = authBytes },
+                    2,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (authResponse.ErrorCode != ErrorCode.None)
+                {
+                    throw new AuthenticationException(
+                        $"SASL re-authentication failed: {authResponse.ErrorCode}" +
+                        (authResponse.ErrorMessage is not null ? $" - {authResponse.ErrorMessage}" : ""));
+                }
+
+                sessionLifetimeMs = authResponse.SessionLifetimeMs;
+
+                if (authenticator.IsComplete)
+                    break;
+
+                var challenge = authResponse.AuthBytes;
+                var response = authenticator.EvaluateChallenge(challenge);
+
+                if (response is null)
+                    break;
+
+                authBytes = response;
+            }
+        }
+        finally
+        {
+            (authenticator as IDisposable)?.Dispose();
+        }
+
+        return sessionLifetimeMs;
     }
 
     private OAuthBearerAuthenticator CreateOAuthBearerAuthenticator()
@@ -1160,6 +1375,8 @@ public sealed class KafkaConnection : IKafkaConnection
         _stream?.Dispose();
         _socket?.Dispose();
 
+        _reauthTimer?.Dispose();
+        _reauthLock.Dispose();
         _writeLock.Dispose();
         _ownedTokenProvider?.Dispose();
 
@@ -1234,6 +1451,13 @@ public sealed class ConnectionOptions
     /// Use this for pre-obtained tokens; for dynamic token retrieval, use OAuthBearerTokenProvider instead.
     /// </summary>
     public OAuthBearerToken? OAuthBearerToken { get; init; }
+
+    /// <summary>
+    /// SASL re-authentication configuration (KIP-368).
+    /// When enabled (default), connections will proactively re-authenticate
+    /// before SASL session credentials expire.
+    /// </summary>
+    public SaslReauthenticationConfig? SaslReauthenticationConfig { get; init; }
 
     /// <summary>
     /// Send buffer size in bytes.
