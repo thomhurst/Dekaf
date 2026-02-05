@@ -534,8 +534,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                             }
                             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
                             {
-                                // Prefetch not ready, continue loop
-                                continue;
+                                // Prefetch not ready - check for EOF events before continuing
+                                // (EOF events are queued by prefetch loop when partition is caught up)
                             }
                         }
                         finally
@@ -695,26 +695,50 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
 
-            foreach (var (brokerId, partitions) in partitionsByBroker)
+            // Fetch from all brokers in parallel for maximum throughput
+            // Use pooled array to avoid allocation per fetch cycle
+            var brokerCount = partitionsByBroker.Count;
+            var fetchTasks = ArrayPool<Task>.Shared.Rent(brokerCount);
+            try
             {
-                try
+                var i = 0;
+                foreach (var (brokerId, partitions) in partitionsByBroker)
                 {
-                    await PrefetchFromBrokerAsync(brokerId, partitions, linkedCts.Token).ConfigureAwait(false);
+                    fetchTasks[i++] = PrefetchFromBrokerWithErrorHandlingAsync(
+                        brokerId, partitions, linkedCts.Token, wakeupCts.Token);
                 }
-                catch (OperationCanceledException) when (wakeupCts.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    _logger?.LogError(ex, "Failed to prefetch from broker {BrokerId}", brokerId);
-                }
+
+                await Task.WhenAll((IEnumerable<Task>)new ArraySegment<Task>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
+            }
+            finally
+            {
+                ArrayPool<Task>.Shared.Return(fetchTasks, clearArray: true);
             }
         }
         finally
         {
             _wakeupCts = null;
             _ctsPool.Return(wakeupCts);
+        }
+    }
+
+    private async Task PrefetchFromBrokerWithErrorHandlingAsync(
+        int brokerId,
+        List<TopicPartition> partitions,
+        CancellationToken linkedToken,
+        CancellationToken wakeupToken)
+    {
+        try
+        {
+            await PrefetchFromBrokerAsync(brokerId, partitions, linkedToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (wakeupToken.IsCancellationRequested)
+        {
+            // Wakeup requested, exit silently
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Failed to prefetch from broker {BrokerId}", brokerId);
         }
     }
 
@@ -929,9 +953,16 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             // Fast path: if no external cancellation, use timeout CTS directly (avoids allocation)
             if (!cancellationToken.CanBeCanceled)
             {
-                await foreach (var result in ConsumeAsync(timeoutCts.Token).ConfigureAwait(false))
+                try
                 {
-                    return result;
+                    await foreach (var result in ConsumeAsync(timeoutCts.Token).ConfigureAwait(false))
+                    {
+                        return result;
+                    }
+                }
+                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+                {
+                    // Timeout expired with no messages - return null instead of throwing
                 }
                 return null;
             }
@@ -939,9 +970,16 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             // Slow path: need to link external cancellation with timeout
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
-            await foreach (var result in ConsumeAsync(linkedCts.Token).ConfigureAwait(false))
+            try
             {
-                return result;
+                await foreach (var result in ConsumeAsync(linkedCts.Token).ConfigureAwait(false))
+                {
+                    return result;
+                }
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                // Our timeout expired (not user cancellation) with no messages - return null
             }
 
             return null;
@@ -1351,6 +1389,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             foreach (var partition in removedPartitions)
             {
                 _highWatermarks.TryRemove(partition, out _);
+                _positions.TryRemove(partition, out _);
+                _fetchPositions.TryRemove(partition, out _);
             }
 
             // Clean up EOF state (still needs lock)
@@ -1593,26 +1633,65 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
 
-            foreach (var (brokerId, partitions) in partitionsByBroker)
+            // Fetch from all brokers in parallel for maximum throughput
+            // Use pooled array to avoid allocation per fetch cycle
+            var brokerCount = partitionsByBroker.Count;
+            var fetchTasks = ArrayPool<Task<List<PendingFetchData>?>>.Shared.Rent(brokerCount);
+            try
             {
-                try
+                var i = 0;
+                foreach (var (brokerId, partitions) in partitionsByBroker)
                 {
-                    await FetchFromBrokerAsync(brokerId, partitions, linkedCts.Token).ConfigureAwait(false);
+                    fetchTasks[i++] = FetchFromBrokerWithErrorHandlingAsync(
+                        brokerId, partitions, linkedCts.Token, wakeupCts.Token);
                 }
-                catch (OperationCanceledException) when (wakeupCts.IsCancellationRequested)
+
+                await Task.WhenAll(new ArraySegment<Task<List<PendingFetchData>?>>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
+
+                // Enqueue results from all brokers (now on main thread, safe for Queue)
+                for (var j = 0; j < brokerCount; j++)
                 {
-                    return;
+                    var pendingItems = fetchTasks[j].Result;
+                    if (pendingItems is not null)
+                    {
+                        foreach (var pending in pendingItems)
+                        {
+                            _pendingFetches.Enqueue(pending);
+                        }
+                    }
                 }
-                catch (Exception ex)
-                {
-                    _logger?.LogError(ex, "Failed to fetch from broker {BrokerId}", brokerId);
-                }
+            }
+            finally
+            {
+                ArrayPool<Task<List<PendingFetchData>?>>.Shared.Return(fetchTasks, clearArray: true);
             }
         }
         finally
         {
             _wakeupCts = null;
             _ctsPool.Return(wakeupCts);
+        }
+    }
+
+    private async Task<List<PendingFetchData>?> FetchFromBrokerWithErrorHandlingAsync(
+        int brokerId,
+        List<TopicPartition> partitions,
+        CancellationToken linkedToken,
+        CancellationToken wakeupToken)
+    {
+        try
+        {
+            return await FetchFromBrokerAsync(brokerId, partitions, linkedToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (wakeupToken.IsCancellationRequested)
+        {
+            // Wakeup requested, exit silently
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Failed to fetch from broker {BrokerId}", brokerId);
+            return null;
         }
     }
 
@@ -1648,16 +1727,41 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
 
         // Build the cache outside the lock - allocate once per assignment change
-        var result = new Dictionary<int, List<TopicPartition>>();
+        // Resolve all partition leaders in parallel for maximum throughput
+        // Use pooled arrays to avoid allocation per fetch cycle
+        var maxPartitions = assignmentSnapshot.Count;
+        var partitionsToResolve = ArrayPool<TopicPartition>.Shared.Rent(maxPartitions);
+        var partitionCount = 0;
 
         foreach (var partition in assignmentSnapshot)
         {
-            if (pausedSnapshot.Contains(partition))
-                continue;
+            if (!pausedSnapshot.Contains(partition))
+            {
+                partitionsToResolve[partitionCount++] = partition;
+            }
+        }
 
-            var leader = await _metadataManager.GetPartitionLeaderAsync(partition.Topic, partition.Partition, cancellationToken)
-                .ConfigureAwait(false);
+        var leaderTasks = ArrayPool<Task<(TopicPartition Partition, BrokerNode? Leader)>>.Shared.Rent(partitionCount);
+        try
+        {
+            for (var i = 0; i < partitionCount; i++)
+            {
+                var partition = partitionsToResolve[i];
+                leaderTasks[i] = ResolvePartitionLeaderAsync(partition, cancellationToken);
+            }
 
+            await Task.WhenAll(new ArraySegment<Task<(TopicPartition Partition, BrokerNode? Leader)>>(leaderTasks, 0, partitionCount)).ConfigureAwait(false);
+        }
+        finally
+        {
+            ArrayPool<TopicPartition>.Shared.Return(partitionsToResolve, clearArray: true);
+        }
+
+        // Build result dictionary from resolved partitions (tasks already completed)
+        var result = new Dictionary<int, List<TopicPartition>>();
+        for (var i = 0; i < partitionCount; i++)
+        {
+            var (partition, leader) = leaderTasks[i].Result;
             if (leader is null)
                 continue;
 
@@ -1669,6 +1773,9 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             list.Add(partition);
         }
+
+        // Return pooled array after extracting results
+        ArrayPool<Task<(TopicPartition Partition, BrokerNode? Leader)>>.Shared.Return(leaderTasks, clearArray: true);
 
         // Cache the result - will be reused until assignment/paused changes (synchronized write)
         // Use double-checked locking: another thread may have populated cache while we were building.
@@ -1683,7 +1790,16 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
     }
 
-    private async ValueTask FetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
+    private async Task<(TopicPartition Partition, BrokerNode? Leader)> ResolvePartitionLeaderAsync(
+        TopicPartition partition,
+        CancellationToken cancellationToken)
+    {
+        var leader = await _metadataManager.GetPartitionLeaderAsync(
+            partition.Topic, partition.Partition, cancellationToken).ConfigureAwait(false);
+        return (partition, leader);
+    }
+
+    private async ValueTask<List<PendingFetchData>?> FetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
         var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
 
@@ -1802,30 +1918,23 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             }
         }
 
-        // Enqueue all pending items, with memory owner attached to the last one
-        if (pendingItems is not null)
+        // Attach memory owner to the last item (will be disposed last due to FIFO processing)
+        if (pendingItems is not null && pendingItems.Count > 0 && memoryOwner is not null)
         {
-            for (var i = 0; i < pendingItems.Count; i++)
-            {
-                var pending = pendingItems[i];
-
-                // Assign memory owner to the LAST item (will be disposed last due to FIFO)
-                if (i == pendingItems.Count - 1 && memoryOwner is not null)
-                {
-                    pending = new PendingFetchData(
-                        pending.Topic,
-                        pending.PartitionIndex,
-                        pending.GetBatches(),
-                        memoryOwner);
-                    memoryOwner = null; // Transferred
-                }
-
-                _pendingFetches.Enqueue(pending);
-            }
+            var lastIndex = pendingItems.Count - 1;
+            var lastPending = pendingItems[lastIndex];
+            pendingItems[lastIndex] = new PendingFetchData(
+                lastPending.Topic,
+                lastPending.PartitionIndex,
+                lastPending.GetBatches(),
+                memoryOwner);
+            memoryOwner = null; // Transferred
         }
 
         // If no pending items were created but we have a memory owner, dispose it
         memoryOwner?.Dispose();
+
+        return pendingItems;
     }
 
     /// <summary>

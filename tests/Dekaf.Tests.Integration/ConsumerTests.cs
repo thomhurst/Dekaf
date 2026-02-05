@@ -949,4 +949,184 @@ public class ConsumerTests(KafkaTestContainer kafka)
         await Assert.That(r.Offset).IsEqualTo(7);
         await Assert.That(r.Value).IsEqualTo("value-7");
     }
+
+    [Test]
+    public async Task Consumer_ParallelFetchFromMultiplePartitions_ConsumesAllMessages()
+    {
+        // This test verifies that parallel fetches work correctly across multiple partitions
+        // Arrange
+        var topic = await kafka.CreateTestTopicAsync(partitions: 6);
+        var groupId = $"test-group-{Guid.NewGuid():N}";
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer")
+            .Build();
+
+        // Produce messages to all 6 partitions
+        const int messagesPerPartition = 100;
+        for (var partition = 0; partition < 6; partition++)
+        {
+            for (var i = 0; i < messagesPerPartition; i++)
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = $"key-p{partition}-{i}",
+                    Value = $"value-p{partition}-{i}",
+                    Partition = partition
+                });
+            }
+        }
+
+        await producer.FlushAsync();
+
+        // Act - consume with prefetching enabled (default)
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-consumer")
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .Build();
+
+        consumer.Subscribe(topic);
+
+        var receivedMessages = new List<ConsumeResult<string, string>>();
+        var partitionCounts = new Dictionary<int, int>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            receivedMessages.Add(msg);
+            partitionCounts[msg.Partition] = partitionCounts.GetValueOrDefault(msg.Partition) + 1;
+            if (receivedMessages.Count >= 6 * messagesPerPartition) break;
+        }
+
+        // Assert - should receive all messages from all partitions
+        await Assert.That(receivedMessages.Count).IsEqualTo(6 * messagesPerPartition);
+        await Assert.That(partitionCounts.Count).IsEqualTo(6);
+        foreach (var (partition, count) in partitionCounts)
+        {
+            await Assert.That(count).IsEqualTo(messagesPerPartition);
+        }
+    }
+
+    [Test]
+    public async Task Consumer_PrefetchEnabled_ImprovesThroughput()
+    {
+        // This test verifies that prefetching (enabled by default) works correctly
+        // by consuming a large number of messages and checking timing
+        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var groupId = $"test-group-{Guid.NewGuid():N}";
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer")
+            .WithLingerMs(5)
+            .WithBatchSize(65536)
+            .Build();
+
+        // Produce a batch of messages
+        const int totalMessages = 1000;
+        for (var i = 0; i < totalMessages; i++)
+        {
+            producer.Send(topic, $"key-{i}", $"value-{i}");
+        }
+
+        await producer.FlushAsync();
+
+        // Act - consume with prefetching (default QueuedMinMessages = 100000)
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-consumer")
+            .WithGroupId(groupId)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .Build();
+
+        consumer.Subscribe(topic);
+
+        var receivedCount = 0;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            receivedCount++;
+            if (receivedCount >= totalMessages) break;
+        }
+
+        sw.Stop();
+
+        // Assert - should receive all messages
+        await Assert.That(receivedCount).IsEqualTo(totalMessages);
+
+        // With prefetching enabled, we should consume messages efficiently
+        // This is more of a smoke test - if parallelization is broken, this would timeout
+        await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(30));
+    }
+
+    [Test]
+    public async Task Consumer_ManualAssignMultiplePartitions_FetchesInParallel()
+    {
+        // This test verifies parallel fetching with manual partition assignment
+        var topic = await kafka.CreateTestTopicAsync(partitions: 4);
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer")
+            .Build();
+
+        // Produce messages to each partition
+        const int messagesPerPartition = 50;
+        for (var partition = 0; partition < 4; partition++)
+        {
+            for (var i = 0; i < messagesPerPartition; i++)
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = $"key-{partition}-{i}",
+                    Value = $"partition-{partition}-msg-{i}",
+                    Partition = partition
+                });
+            }
+        }
+
+        await producer.FlushAsync();
+
+        // Act - manually assign all 4 partitions
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-consumer")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .Build();
+
+        // Assign all partitions
+        consumer.Assign(
+            new TopicPartition(topic, 0),
+            new TopicPartition(topic, 1),
+            new TopicPartition(topic, 2),
+            new TopicPartition(topic, 3));
+
+        var receivedByPartition = new Dictionary<int, List<string>>();
+        for (var i = 0; i < 4; i++)
+        {
+            receivedByPartition[i] = [];
+        }
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            receivedByPartition[msg.Partition].Add(msg.Value);
+            var totalReceived = receivedByPartition.Values.Sum(l => l.Count);
+            if (totalReceived >= 4 * messagesPerPartition) break;
+        }
+
+        // Assert - should have received all messages from all partitions
+        for (var partition = 0; partition < 4; partition++)
+        {
+            await Assert.That(receivedByPartition[partition].Count).IsEqualTo(messagesPerPartition);
+        }
+    }
 }
