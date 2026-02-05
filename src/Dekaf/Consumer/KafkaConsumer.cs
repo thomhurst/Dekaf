@@ -812,13 +812,19 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     {
                         // CRITICAL: Reset fetch position based on auto.offset.reset policy
                         // Without this, we would retry with the same invalid offset forever
-                        var resetTimestamp = _options.AutoOffsetReset == AutoOffsetReset.Latest ? -1L : -2L;
+                        var (resetTimestamp, resetName) = _options.AutoOffsetReset switch
+                        {
+                            AutoOffsetReset.Latest => (-1L, "latest"),
+                            AutoOffsetReset.Earliest => (-2L, "earliest"),
+                            AutoOffsetReset.None => throw new KafkaException(
+                                $"OffsetOutOfRange for {topic}-{partitionResponse.PartitionIndex} and auto.offset.reset is 'none'"),
+                            _ => throw new InvalidOperationException($"Unknown AutoOffsetReset value: {_options.AutoOffsetReset}")
+                        };
                         _fetchPositions[tp] = resetTimestamp;
                         _positions[tp] = resetTimestamp;
-                        _logger?.LogInformation(
+                        _logger?.LogWarning(
                             "OffsetOutOfRange for {Topic}-{Partition}, resetting to {Reset}",
-                            topic, partitionResponse.PartitionIndex,
-                            _options.AutoOffsetReset == AutoOffsetReset.Latest ? "latest" : "earliest");
+                            topic, partitionResponse.PartitionIndex, resetName);
                     }
                     else if (partitionResponse.ErrorCode == ErrorCode.NotLeaderOrFollower)
                     {

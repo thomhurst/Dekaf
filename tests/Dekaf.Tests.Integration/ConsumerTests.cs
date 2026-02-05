@@ -1,4 +1,5 @@
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 
@@ -1063,6 +1064,167 @@ public class ConsumerTests(KafkaTestContainer kafka)
         // With prefetching enabled, we should consume messages efficiently
         // This is more of a smoke test - if parallelization is broken, this would timeout
         await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(30));
+    }
+
+    [Test]
+    public async Task Consumer_OffsetOutOfRange_WithEarliest_ResetsToBeginning()
+    {
+        // This tests that when a consumer seeks to an invalid offset (beyond high watermark),
+        // it recovers by resetting to earliest when AutoOffsetReset.Earliest is configured
+        var topic = await kafka.CreateTestTopicAsync();
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer")
+            .Build();
+
+        // Produce 3 messages (offsets 0, 1, 2)
+        for (var i = 0; i < 3; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{i}",
+                Value = $"value-{i}"
+            });
+        }
+
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-consumer")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .Build();
+
+        var tp = new TopicPartition(topic, 0);
+        consumer.Assign(tp);
+
+        // Seek to an offset that doesn't exist (way beyond high watermark)
+        // This will cause OffsetOutOfRange error on fetch
+        consumer.Seek(new TopicPartitionOffset(topic, 0, 999999));
+
+        // With AutoOffsetReset.Earliest, should recover and get messages from beginning
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+
+        // Assert - should reset to earliest and get first message
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Offset).IsEqualTo(0);
+        await Assert.That(result.Value.Value).IsEqualTo("value-0");
+    }
+
+    [Test]
+    public async Task Consumer_OffsetOutOfRange_WithLatest_ResetsToEnd()
+    {
+        // This tests that when AutoOffsetReset.Latest is configured and OffsetOutOfRange occurs,
+        // the consumer resets to the end and only receives new messages
+        var topic = await kafka.CreateTestTopicAsync();
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer")
+            .Build();
+
+        // Produce 3 old messages
+        for (var i = 0; i < 3; i++)
+        {
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"old-key-{i}",
+                Value = $"old-value-{i}"
+            });
+        }
+
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-consumer")
+            .WithAutoOffsetReset(AutoOffsetReset.Latest)
+            .Build();
+
+        var tp = new TopicPartition(topic, 0);
+        consumer.Assign(tp);
+
+        // Seek to an invalid offset to trigger OffsetOutOfRange
+        consumer.Seek(new TopicPartitionOffset(topic, 0, 999999));
+
+        // Start consuming in background
+        var receivedMessages = new List<ConsumeResult<string, string>>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        var consumeTask = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+                {
+                    receivedMessages.Add(msg);
+                    if (receivedMessages.Count >= 1) break;
+                }
+            }
+            catch (OperationCanceledException) { }
+        });
+
+        // Wait for consumer to recover from OffsetOutOfRange
+        await Task.Delay(2000);
+
+        // Produce a new message
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "new-key",
+            Value = "new-value"
+        });
+
+        await consumeTask;
+
+        // Assert - with Latest, should only get the new message
+        await Assert.That(receivedMessages.Count).IsEqualTo(1);
+        await Assert.That(receivedMessages[0].Key).IsEqualTo("new-key");
+        await Assert.That(receivedMessages[0].Value).IsEqualTo("new-value");
+    }
+
+    [Test]
+    public async Task Consumer_OffsetOutOfRange_WithNone_ThrowsException()
+    {
+        // This tests that when AutoOffsetReset.None is configured and OffsetOutOfRange occurs,
+        // the consumer throws a KafkaException
+        var topic = await kafka.CreateTestTopicAsync();
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-producer")
+            .Build();
+
+        // Produce a message
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic,
+            Key = "key",
+            Value = "value"
+        });
+
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithClientId("test-consumer")
+            .WithAutoOffsetReset(AutoOffsetReset.None)
+            .Build();
+
+        var tp = new TopicPartition(topic, 0);
+        consumer.Assign(tp);
+
+        // Seek to an invalid offset to trigger OffsetOutOfRange
+        consumer.Seek(new TopicPartitionOffset(topic, 0, 999999));
+
+        // With AutoOffsetReset.None, should throw KafkaException
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        await Assert.That(async () =>
+        {
+            await foreach (var _ in consumer.ConsumeAsync(cts.Token))
+            {
+                // Should never get here
+            }
+        }).Throws<KafkaException>();
     }
 
     [Test]
