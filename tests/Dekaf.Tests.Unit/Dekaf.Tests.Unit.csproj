@@ -13,10 +13,13 @@
     <ProjectReference Include="..\..\src\Dekaf.Compression.Lz4\Dekaf.Compression.Lz4.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Compression.Zstd\Dekaf.Compression.Zstd.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.SchemaRegistry.Avro\Dekaf.SchemaRegistry.Avro.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Serialization.Json\Dekaf.Serialization.Json.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Extensions.DependencyInjection\Dekaf.Extensions.DependencyInjection.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Google.Protobuf" Version="3.*" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="*" />
     <PackageReference Include="Microsoft.Testing.Extensions.HangDump" Version="*" />
     <PackageReference Include="NSubstitute" Version="5.*" />
     <PackageReference Include="TUnit" Version="1.12.111" />

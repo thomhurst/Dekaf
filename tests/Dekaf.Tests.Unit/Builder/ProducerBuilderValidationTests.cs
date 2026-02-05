@@ -1,0 +1,279 @@
+namespace Dekaf.Tests.Unit.Builder;
+
+public class ProducerBuilderValidationTests
+{
+    #region Build Validation
+
+    [Test]
+    public async Task Build_WithoutBootstrapServers_ThrowsInvalidOperationException()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+
+        var act = () => builder.Build();
+
+        await Assert.That(act).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task Build_WithBootstrapServers_Succeeds()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092");
+
+        var act = () => builder.Build();
+
+        await Assert.That(act).ThrowsNothing();
+    }
+
+    [Test]
+    public async Task Build_WithUnsupportedKeyType_ThrowsInvalidOperationException()
+    {
+        var builder = Kafka.CreateProducer<DateTime, string>()
+            .WithBootstrapServers("localhost:9092");
+
+        var act = () => builder.Build();
+
+        await Assert.That(act).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task Build_WithUnsupportedValueType_ThrowsInvalidOperationException()
+    {
+        var builder = Kafka.CreateProducer<string, DateTime>()
+            .WithBootstrapServers("localhost:9092");
+
+        var act = () => builder.Build();
+
+        await Assert.That(act).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task BuildForTopic_WithNullTopic_ThrowsArgumentNullException()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092");
+
+        var act = () => builder.BuildForTopic(null!);
+
+        await Assert.That(act).Throws<ArgumentNullException>();
+    }
+
+    #endregion
+
+    #region Chaining Tests
+
+    [Test]
+    public async Task WithBootstrapServers_String_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithBootstrapServers("localhost:9092");
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithBootstrapServers_Array_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithBootstrapServers("host1:9092", "host2:9092");
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithClientId_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithClientId("my-client");
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithAcks_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithAcks(Dekaf.Producer.Acks.Leader);
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithLingerMs_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithLingerMs(5);
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithLinger_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithLinger(TimeSpan.FromMilliseconds(5));
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithBatchSize_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithBatchSize(2048);
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithBufferMemory_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithBufferMemory(1024);
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task EnableIdempotence_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.EnableIdempotence();
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithTransactionalId_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithTransactionalId("txn-1");
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task UseZstdCompression_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.UseZstdCompression();
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task UseLz4Compression_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.UseLz4Compression();
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task UseGzipCompression_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.UseGzipCompression();
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task UseSnappyCompression_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.UseSnappyCompression();
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithPartitioner_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithPartitioner(Dekaf.Producer.PartitionerType.RoundRobin);
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task UseTls_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.UseTls();
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithSaslPlain_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithSaslPlain("user", "pass");
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithSaslScramSha256_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithSaslScramSha256("user", "pass");
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task WithSaslScramSha512_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithSaslScramSha512("user", "pass");
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    #endregion
+
+    #region Preset Methods
+
+    [Test]
+    public async Task ForHighThroughput_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.ForHighThroughput();
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task ForLowLatency_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.ForLowLatency();
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task ForReliability_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.ForReliability();
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task ForHighThroughput_ThenBuild_Succeeds()
+    {
+        var act = () => Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .ForHighThroughput()
+            .Build();
+
+        await Assert.That(act).ThrowsNothing();
+    }
+
+    [Test]
+    public async Task ForLowLatency_ThenBuild_Succeeds()
+    {
+        var act = () => Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .ForLowLatency()
+            .Build();
+
+        await Assert.That(act).ThrowsNothing();
+    }
+
+    [Test]
+    public async Task ForReliability_ThenBuild_Succeeds()
+    {
+        var act = () => Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .ForReliability()
+            .Build();
+
+        await Assert.That(act).ThrowsNothing();
+    }
+
+    #endregion
+}
