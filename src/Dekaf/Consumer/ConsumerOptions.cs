@@ -1,3 +1,4 @@
+using Dekaf.Metadata;
 using Dekaf.Protocol.Messages;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
@@ -249,6 +250,23 @@ public sealed class ConsumerOptions
     /// Handler for statistics events. Called periodically based on StatisticsInterval.
     /// </summary>
     public Action<Statistics.ConsumerStatistics>? StatisticsHandler { get; init; }
+
+    /// <summary>
+    /// Strategy for recovering cluster metadata when all known brokers become unavailable.
+    /// <see cref="MetadataRecoveryStrategy.Rebootstrap"/> re-resolves bootstrap server DNS
+    /// to discover new broker IPs, which is critical in cloud environments where broker IPs
+    /// change during rolling upgrades.
+    /// Default is <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
+    /// </summary>
+    public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; } = MetadataRecoveryStrategy.Rebootstrap;
+
+    /// <summary>
+    /// How long in milliseconds to wait before triggering a rebootstrap when all known brokers
+    /// are unavailable. Only applies when <see cref="MetadataRecoveryStrategy"/> is
+    /// <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
+    /// Default is 300000 (5 minutes).
+    /// </summary>
+    public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
 }
 
 /// <summary>

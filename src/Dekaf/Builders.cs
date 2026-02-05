@@ -1,5 +1,6 @@
 using System.Security.Cryptography.X509Certificates;
 using Dekaf.Consumer;
+using Dekaf.Metadata;
 using Dekaf.Producer;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
@@ -39,6 +40,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     private Action<Statistics.ProducerStatistics>? _statisticsHandler;
     private ulong? _bufferMemory;
     private int? _maxBlockMs;
+    private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
+    private int _metadataRecoveryRebootstrapTriggerMs = 300000;
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -374,6 +377,27 @@ public sealed class ProducerBuilder<TKey, TValue>
         => WithStatisticsHandler(handler);
 
     /// <summary>
+    /// Sets the metadata recovery strategy for when all known brokers become unavailable.
+    /// </summary>
+    /// <param name="strategy">The recovery strategy to use.</param>
+    public ProducerBuilder<TKey, TValue> WithMetadataRecoveryStrategy(MetadataRecoveryStrategy strategy)
+    {
+        _metadataRecoveryStrategy = strategy;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets how long to wait in milliseconds before triggering a rebootstrap when all known
+    /// brokers are unavailable.
+    /// </summary>
+    /// <param name="triggerMs">The trigger delay in milliseconds. Default is 300000 (5 minutes).</param>
+    public ProducerBuilder<TKey, TValue> WithMetadataRecoveryRebootstrapTriggerMs(int triggerMs)
+    {
+        _metadataRecoveryRebootstrapTriggerMs = triggerMs;
+        return this;
+    }
+
+    /// <summary>
     /// Configures the producer for high throughput scenarios.
     /// </summary>
     /// <remarks>
@@ -467,7 +491,9 @@ public sealed class ProducerBuilder<TKey, TValue>
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
             StatisticsInterval = _statisticsInterval,
-            StatisticsHandler = _statisticsHandler
+            StatisticsHandler = _statisticsHandler,
+            MetadataRecoveryStrategy = _metadataRecoveryStrategy,
+            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
         };
 
         return new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory);
@@ -546,6 +572,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private TimeSpan? _statisticsInterval;
     private Action<Statistics.ConsumerStatistics>? _statisticsHandler;
     private int _queuedMinMessages = 100000;
+    private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
+    private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private readonly List<string> _topicsToSubscribe = [];
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
@@ -891,6 +919,27 @@ public sealed class ConsumerBuilder<TKey, TValue>
         => WithStatisticsHandler(handler);
 
     /// <summary>
+    /// Sets the metadata recovery strategy for when all known brokers become unavailable.
+    /// </summary>
+    /// <param name="strategy">The recovery strategy to use.</param>
+    public ConsumerBuilder<TKey, TValue> WithMetadataRecoveryStrategy(MetadataRecoveryStrategy strategy)
+    {
+        _metadataRecoveryStrategy = strategy;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets how long to wait in milliseconds before triggering a rebootstrap when all known
+    /// brokers are unavailable.
+    /// </summary>
+    /// <param name="triggerMs">The trigger delay in milliseconds. Default is 300000 (5 minutes).</param>
+    public ConsumerBuilder<TKey, TValue> WithMetadataRecoveryRebootstrapTriggerMs(int triggerMs)
+    {
+        _metadataRecoveryRebootstrapTriggerMs = triggerMs;
+        return this;
+    }
+
+    /// <summary>
     /// Configures the consumer for high throughput scenarios.
     /// </summary>
     /// <remarks>
@@ -969,7 +1018,9 @@ public sealed class ConsumerBuilder<TKey, TValue>
             EnablePartitionEof = _enablePartitionEof,
             StatisticsInterval = _statisticsInterval,
             StatisticsHandler = _statisticsHandler,
-            QueuedMinMessages = _queuedMinMessages
+            QueuedMinMessages = _queuedMinMessages,
+            MetadataRecoveryStrategy = _metadataRecoveryStrategy,
+            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
         };
 
         var consumer = new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory);

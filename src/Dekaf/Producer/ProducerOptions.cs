@@ -1,4 +1,5 @@
 using Dekaf.Compression;
+using Dekaf.Metadata;
 using Dekaf.Protocol.Records;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
@@ -235,6 +236,23 @@ public sealed class ProducerOptions
     /// Default is 64, balancing memory usage and resize frequency.
     /// </summary>
     public int InitialBatchRecordCapacity { get; init; } = 64;
+
+    /// <summary>
+    /// Strategy for recovering cluster metadata when all known brokers become unavailable.
+    /// <see cref="MetadataRecoveryStrategy.Rebootstrap"/> re-resolves bootstrap server DNS
+    /// to discover new broker IPs, which is critical in cloud environments where broker IPs
+    /// change during rolling upgrades.
+    /// Default is <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
+    /// </summary>
+    public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; } = MetadataRecoveryStrategy.Rebootstrap;
+
+    /// <summary>
+    /// How long in milliseconds to wait before triggering a rebootstrap when all known brokers
+    /// are unavailable. Only applies when <see cref="MetadataRecoveryStrategy"/> is
+    /// <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
+    /// Default is 300000 (5 minutes).
+    /// </summary>
+    public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
 }
 
 /// <summary>
