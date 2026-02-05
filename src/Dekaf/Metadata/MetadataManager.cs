@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Runtime.CompilerServices;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -29,6 +30,10 @@ public sealed class MetadataManager : IAsyncDisposable
     private CancellationTokenSource? _backgroundRefreshCts;
     private Task? _backgroundRefreshTask;
 
+    // Rebootstrap recovery state
+    private readonly List<string> _originalBootstrapHostnames;
+    private long _allBrokersUnavailableSince;
+
     public MetadataManager(
         IConnectionPool connectionPool,
         IEnumerable<string> bootstrapServers,
@@ -41,6 +46,7 @@ public sealed class MetadataManager : IAsyncDisposable
 
         // Pre-parse bootstrap servers to avoid allocation in hot path
         _bootstrapEndpoints = new List<(string Host, int Port)>();
+        _originalBootstrapHostnames = new List<string>();
         foreach (var server in bootstrapServers)
         {
             var colonIndex = server.IndexOf(':');
@@ -51,6 +57,7 @@ public sealed class MetadataManager : IAsyncDisposable
                 if (int.TryParse(server.AsSpan(colonIndex + 1), out var port))
                 {
                     _bootstrapEndpoints.Add((host, port));
+                    _originalBootstrapHostnames.Add(server);
                 }
             }
         }
@@ -272,6 +279,9 @@ public sealed class MetadataManager : IAsyncDisposable
                     response.Brokers.Count,
                     response.Topics.Count);
 
+                // Success - reset the rebootstrap timer
+                ResetAllBrokersUnavailableTimestamp();
+
                 return;
             }
             catch (Exception ex)
@@ -281,7 +291,158 @@ public sealed class MetadataManager : IAsyncDisposable
             }
         }
 
+        // All known endpoints failed - try rebootstrap if configured
+        if (_options.MetadataRecoveryStrategy == MetadataRecoveryStrategy.Rebootstrap)
+        {
+            var rebootstrapped = await TryRebootstrapAsync(topics, cancellationToken).ConfigureAwait(false);
+            if (rebootstrapped)
+            {
+                return;
+            }
+        }
+
         throw new InvalidOperationException("Failed to refresh metadata from any broker", lastException);
+    }
+
+    /// <summary>
+    /// Attempts to recover by re-resolving bootstrap server DNS to discover new broker IPs.
+    /// Only triggers after the configured delay has elapsed since all brokers became unavailable.
+    /// </summary>
+    internal async ValueTask<bool> TryRebootstrapAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
+    {
+        var now = Environment.TickCount64;
+
+        // Atomically set the timestamp only if it hasn't been set yet (compare-and-set from 0)
+        if (Interlocked.CompareExchange(ref _allBrokersUnavailableSince, now, 0) == 0)
+        {
+            // First time all brokers are unavailable - we just recorded the timestamp
+            _logger?.LogWarning("All known brokers are unavailable. Rebootstrap will trigger after {TriggerMs}ms",
+                _options.MetadataRecoveryRebootstrapTriggerMs);
+            return false;
+        }
+
+        var elapsedMs = now - Interlocked.Read(ref _allBrokersUnavailableSince);
+        if (elapsedMs < _options.MetadataRecoveryRebootstrapTriggerMs)
+        {
+            _logger?.LogDebug(
+                "Rebootstrap not yet triggered. Elapsed: {ElapsedMs}ms, Trigger: {TriggerMs}ms",
+                elapsedMs, _options.MetadataRecoveryRebootstrapTriggerMs);
+            return false;
+        }
+
+        _logger?.LogInformation("Triggering rebootstrap: re-resolving bootstrap server DNS after {ElapsedMs}ms of broker unavailability",
+            elapsedMs);
+
+        // Re-resolve DNS for each original bootstrap server
+        var newEndpoints = await ResolveBootstrapEndpointsAsync(cancellationToken).ConfigureAwait(false);
+
+        if (newEndpoints.Count == 0)
+        {
+            _logger?.LogWarning("Rebootstrap DNS resolution returned no endpoints");
+            return false;
+        }
+
+        // Try the newly resolved endpoints
+        Exception? lastException = null;
+        foreach (var (host, port) in newEndpoints)
+        {
+            try
+            {
+                var connection = await _connectionPool.GetConnectionAsync(host, port, cancellationToken)
+                    .ConfigureAwait(false);
+
+                // Re-negotiate API versions with new broker
+                await NegotiateApiVersionsAsync(connection, cancellationToken).ConfigureAwait(false);
+
+                var request = topics is null
+                    ? MetadataRequest.ForAllTopics()
+                    : MetadataRequest.ForTopics(topics);
+
+                var response = await connection.SendAsync<MetadataRequest, MetadataResponse>(
+                    request,
+                    _metadataApiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                _metadata.Update(response);
+
+                foreach (var broker in response.Brokers)
+                {
+                    _connectionPool.RegisterBroker(broker.NodeId, broker.Host, broker.Port);
+                }
+
+                _logger?.LogInformation(
+                    "Rebootstrap successful: discovered {BrokerCount} brokers via {Host}:{Port}",
+                    response.Brokers.Count, host, port);
+
+                // Success - reset the rebootstrap timer
+                ResetAllBrokersUnavailableTimestamp();
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Rebootstrap: failed to connect to resolved endpoint {Host}:{Port}", host, port);
+                lastException = ex;
+            }
+        }
+
+        _logger?.LogWarning(lastException, "Rebootstrap failed: could not connect to any resolved endpoint");
+        return false;
+    }
+
+    /// <summary>
+    /// Re-resolves DNS for the original bootstrap servers to discover new broker IPs.
+    /// </summary>
+    internal async ValueTask<List<(string Host, int Port)>> ResolveBootstrapEndpointsAsync(CancellationToken cancellationToken)
+    {
+        var seen = new HashSet<(string Host, int Port)>();
+        var resolved = new List<(string Host, int Port)>();
+
+        foreach (var (host, port) in _bootstrapEndpoints)
+        {
+            try
+            {
+                var addresses = await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
+                foreach (var address in addresses)
+                {
+                    var endpoint = (address.ToString(), port);
+                    // Add both the resolved IP and the original hostname
+                    // The original hostname is important because the broker may expect
+                    // connections using the hostname (e.g., for TLS SNI)
+                    if (seen.Add(endpoint))
+                    {
+                        resolved.Add(endpoint);
+                    }
+                }
+
+                // Also add the original hostname endpoint (it may resolve differently now)
+                var hostnameEndpoint = (host, port);
+                if (seen.Add(hostnameEndpoint))
+                {
+                    resolved.Add(hostnameEndpoint);
+                }
+
+                _logger?.LogDebug("Rebootstrap DNS resolution for {Host}:{Port} returned {Count} addresses",
+                    host, port, addresses.Length);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Rebootstrap DNS resolution failed for {Host}:{Port}", host, port);
+                // Still add the original hostname as a fallback
+                var fallbackEndpoint = (host, port);
+                if (seen.Add(fallbackEndpoint))
+                {
+                    resolved.Add(fallbackEndpoint);
+                }
+            }
+        }
+
+        return resolved;
+    }
+
+    private void ResetAllBrokersUnavailableTimestamp()
+    {
+        Interlocked.Exchange(ref _allBrokersUnavailableSince, 0);
     }
 
     private async ValueTask NegotiateApiVersionsAsync(IKafkaConnection connection, CancellationToken cancellationToken)
@@ -479,4 +640,18 @@ public sealed class MetadataOptions
     /// Whether to allow auto-creation of topics.
     /// </summary>
     public bool AllowAutoTopicCreation { get; init; } = true;
+
+    /// <summary>
+    /// Strategy for recovering cluster metadata when all known brokers become unavailable.
+    /// Default is <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
+    /// </summary>
+    public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; } = MetadataRecoveryStrategy.Rebootstrap;
+
+    /// <summary>
+    /// How long in milliseconds to wait before triggering a rebootstrap when all known brokers
+    /// are unavailable. Only applies when <see cref="MetadataRecoveryStrategy"/> is
+    /// <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
+    /// Default is 300000 (5 minutes).
+    /// </summary>
+    public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
 }

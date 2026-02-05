@@ -1209,6 +1209,20 @@ public sealed class AdminClientOptions
     public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
     public string? SaslUsername { get; init; }
     public string? SaslPassword { get; init; }
+
+    /// <summary>
+    /// Strategy for recovering cluster metadata when all known brokers become unavailable.
+    /// Default is <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
+    /// </summary>
+    public MetadataRecoveryStrategy MetadataRecoveryStrategy { get; init; } = MetadataRecoveryStrategy.Rebootstrap;
+
+    /// <summary>
+    /// How long in milliseconds to wait before triggering a rebootstrap when all known brokers
+    /// are unavailable. Only applies when <see cref="MetadataRecoveryStrategy"/> is
+    /// <see cref="MetadataRecoveryStrategy.Rebootstrap"/>.
+    /// Default is 300000 (5 minutes).
+    /// </summary>
+    public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
 }
 
 /// <summary>
@@ -1223,6 +1237,8 @@ public sealed class AdminClientBuilder
     private string? _saslUsername;
     private string? _saslPassword;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
+    private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
+    private int _metadataRecoveryRebootstrapTriggerMs = 300000;
 
     public AdminClientBuilder WithBootstrapServers(string servers)
     {
@@ -1273,6 +1289,27 @@ public sealed class AdminClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets the metadata recovery strategy for when all known brokers become unavailable.
+    /// </summary>
+    /// <param name="strategy">The recovery strategy to use.</param>
+    public AdminClientBuilder WithMetadataRecoveryStrategy(MetadataRecoveryStrategy strategy)
+    {
+        _metadataRecoveryStrategy = strategy;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets how long to wait in milliseconds before triggering a rebootstrap when all known
+    /// brokers are unavailable.
+    /// </summary>
+    /// <param name="triggerMs">The trigger delay in milliseconds. Default is 300000 (5 minutes).</param>
+    public AdminClientBuilder WithMetadataRecoveryRebootstrapTriggerMs(int triggerMs)
+    {
+        _metadataRecoveryRebootstrapTriggerMs = triggerMs;
+        return this;
+    }
+
     public IAdminClient Build()
     {
         if (_bootstrapServers.Count == 0)
@@ -1285,7 +1322,9 @@ public sealed class AdminClientBuilder
             UseTls = _useTls,
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
-            SaslPassword = _saslPassword
+            SaslPassword = _saslPassword,
+            MetadataRecoveryStrategy = _metadataRecoveryStrategy,
+            MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs
         };
 
         return new AdminClient(options, _loggerFactory);
