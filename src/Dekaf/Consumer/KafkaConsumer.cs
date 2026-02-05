@@ -537,6 +537,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                                 // Prefetch not ready - check for EOF events before continuing
                                 // (EOF events are queued by prefetch loop when partition is caught up)
                             }
+                            catch (ChannelClosedException ex) when (ex.InnerException is KafkaException kafkaEx)
+                            {
+                                // Rethrow the original KafkaException from the prefetch task
+                                throw kafkaEx;
+                            }
                         }
                         finally
                         {
@@ -736,6 +741,14 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             // Wakeup requested, exit silently
         }
+        catch (KafkaException ex)
+        {
+            // Fatal Kafka errors (e.g., AutoOffsetReset.None with OffsetOutOfRange)
+            // should propagate to the consumer by completing the channel with the exception
+            _logger?.LogError(ex, "Fatal error prefetching from broker {BrokerId}", brokerId);
+            _prefetchChannel.Writer.TryComplete(ex);
+            throw;
+        }
         catch (Exception ex)
         {
             _logger?.LogError(ex, "Failed to prefetch from broker {BrokerId}", brokerId);
@@ -808,9 +821,38 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
                 if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
-                    _logger?.LogWarning(
-                        "Prefetch error for {Topic}-{Partition}: {Error}",
-                        topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                    if (partitionResponse.ErrorCode == ErrorCode.OffsetOutOfRange)
+                    {
+                        // CRITICAL: Reset fetch position based on auto.offset.reset policy
+                        // Without this, we would retry with the same invalid offset forever
+                        var (resetTimestamp, resetName) = _options.AutoOffsetReset switch
+                        {
+                            AutoOffsetReset.Latest => (-1L, "latest"),
+                            AutoOffsetReset.Earliest => (-2L, "earliest"),
+                            AutoOffsetReset.None => throw new KafkaException(
+                                $"OffsetOutOfRange for {topic}-{partitionResponse.PartitionIndex} and auto.offset.reset is 'none'"),
+                            _ => throw new InvalidOperationException($"Unknown AutoOffsetReset value: {_options.AutoOffsetReset}")
+                        };
+                        _fetchPositions[tp] = resetTimestamp;
+                        _positions[tp] = resetTimestamp;
+                        _logger?.LogWarning(
+                            "OffsetOutOfRange for {Topic}-{Partition}, resetting to {Reset}",
+                            topic, partitionResponse.PartitionIndex, resetName);
+                    }
+                    else if (partitionResponse.ErrorCode == ErrorCode.NotLeaderOrFollower)
+                    {
+                        // Invalidate metadata cache to force re-discovery of leader
+                        InvalidatePartitionCache();
+                        _logger?.LogWarning(
+                            "NotLeaderOrFollower for {Topic}-{Partition}, will refresh metadata",
+                            topic, partitionResponse.PartitionIndex);
+                    }
+                    else
+                    {
+                        _logger?.LogWarning(
+                            "Prefetch error for {Topic}-{Partition}: {Error}",
+                            topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                    }
                     continue;
                 }
 
