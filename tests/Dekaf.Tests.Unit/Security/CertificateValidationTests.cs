@@ -1,4 +1,3 @@
-using System.Net.Security;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Dekaf.Security;
@@ -16,10 +15,10 @@ public class CertificateValidationTests
     public async Task SelfSignedCert_ValidatesAgainstItselfAsCA()
     {
         // Create a self-signed CA certificate
-        using var caCert = CreateCaCertificate("CN=Test CA");
+        using var caCert = TestCertificateHelper.CreateCaCertificate("CN=Test CA");
 
         // Create a certificate signed by the CA
-        using var serverCert = CreateSignedCertificate("CN=Server", caCert);
+        using var serverCert = TestCertificateHelper.CreateSignedCertificate("CN=Server", caCert);
 
         // Build chain with custom trust store
         using var chain = new X509Chain();
@@ -37,11 +36,11 @@ public class CertificateValidationTests
     public async Task CertificateChain_RejectsUntrustedRoot()
     {
         // Create an untrusted CA
-        using var untrustedCa = CreateCaCertificate("CN=Untrusted CA");
-        using var trustedCa = CreateCaCertificate("CN=Trusted CA");
+        using var untrustedCa = TestCertificateHelper.CreateCaCertificate("CN=Untrusted CA");
+        using var trustedCa = TestCertificateHelper.CreateCaCertificate("CN=Trusted CA");
 
         // Create a certificate signed by the untrusted CA
-        using var serverCert = CreateSignedCertificate("CN=Server", untrustedCa);
+        using var serverCert = TestCertificateHelper.CreateSignedCertificate("CN=Server", untrustedCa);
 
         // Build chain with only the trusted CA in trust store
         using var chain = new X509Chain();
@@ -59,7 +58,7 @@ public class CertificateValidationTests
     public async Task ChainStatus_IncludesUntrustedRootForSelfSigned()
     {
         // Create a self-signed certificate (not in any trust store)
-        using var selfSignedCert = CreateCaCertificate("CN=Self Signed");
+        using var selfSignedCert = TestCertificateHelper.CreateCaCertificate("CN=Self Signed");
 
         // Build chain with empty custom trust store
         using var chain = new X509Chain();
@@ -80,8 +79,8 @@ public class CertificateValidationTests
     [Test]
     public async Task ChainStatus_DetectsExpiredCertificate()
     {
-        // Create an expired certificate
-        using var rsa = RSA.Create(2048);
+        // Create an expired certificate using the fixed key
+        using var rsa = TestCertificateHelper.CreateRsaKey();
         var request = new CertificateRequest("CN=Expired Cert", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
 
         // Certificate that expired yesterday
@@ -104,8 +103,8 @@ public class CertificateValidationTests
     public async Task ChainValidation_AllowsUntrustedRootInCustomTrustMode()
     {
         // Create a CA and signed certificate
-        using var caCert = CreateCaCertificate("CN=Test CA");
-        using var serverCert = CreateSignedCertificate("CN=Server", caCert);
+        using var caCert = TestCertificateHelper.CreateCaCertificate("CN=Test CA");
+        using var serverCert = TestCertificateHelper.CreateSignedCertificate("CN=Server", caCert);
 
         using var chain = new X509Chain();
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
@@ -136,22 +135,19 @@ public class CertificateValidationTests
     public async Task ChainValidation_RejectsNotTimeValidEvenWithCustomCA()
     {
         // Create a CA certificate that spans a longer time period (starting 5 years ago)
-        using var caCert = CreateCaCertificateWithCustomDates("CN=Test CA",
+        using var caCert = TestCertificateHelper.CreateCaCertificateWithCustomDates("CN=Test CA",
             DateTimeOffset.UtcNow.AddYears(-5),
             DateTimeOffset.UtcNow.AddYears(10));
 
-        using var rsa = RSA.Create(2048);
+        using var rsa = TestCertificateHelper.CreateRsaKey();
         var request = new CertificateRequest("CN=Expired Server", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
 
         // Create an expired certificate (expired yesterday, but within the CA's validity period)
-        var serialNumber = new byte[16];
-        RandomNumberGenerator.Fill(serialNumber);
-
         using var expiredCert = request.Create(
             caCert,
             DateTimeOffset.UtcNow.AddYears(-2),
             DateTimeOffset.UtcNow.AddDays(-1),
-            serialNumber);
+            TestCertificateHelper.FixedSerialNumber);
 
         using var chain = new X509Chain();
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
@@ -170,12 +166,12 @@ public class CertificateValidationTests
     public async Task MultipleCAsInTrustStore_ValidatesCorrectly()
     {
         // Create multiple CAs
-        using var ca1 = CreateCaCertificate("CN=CA1");
-        using var ca2 = CreateCaCertificate("CN=CA2");
-        using var ca3 = CreateCaCertificate("CN=CA3");
+        using var ca1 = TestCertificateHelper.CreateCaCertificate("CN=CA1");
+        using var ca2 = TestCertificateHelper.CreateCaCertificate("CN=CA2");
+        using var ca3 = TestCertificateHelper.CreateCaCertificate("CN=CA3");
 
         // Create certificate signed by CA2
-        using var serverCert = CreateSignedCertificate("CN=Server", ca2);
+        using var serverCert = TestCertificateHelper.CreateSignedCertificate("CN=Server", ca2);
 
         using var chain = new X509Chain();
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
@@ -201,8 +197,8 @@ public class CertificateValidationTests
         // Even if Build() returns true with AllowUnknownCertificateAuthority,
         // we must check for other errors like NotTimeValid, Revoked, etc.
 
-        using var caCert = CreateCaCertificate("CN=Test CA");
-        using var serverCert = CreateSignedCertificate("CN=Server", caCert);
+        using var caCert = TestCertificateHelper.CreateCaCertificate("CN=Test CA");
+        using var serverCert = TestCertificateHelper.CreateSignedCertificate("CN=Server", caCert);
 
         using var chain = new X509Chain();
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
@@ -227,63 +223,5 @@ public class CertificateValidationTests
             s.Status != X509ChainStatusFlags.OfflineRevocation);
 
         await Assert.That(hasSecurityIssue).IsFalse();
-    }
-
-    private static X509Certificate2 CreateCaCertificate(string subjectName)
-    {
-        return CreateCaCertificateWithCustomDates(subjectName,
-            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddYears(10));
-    }
-
-    private static X509Certificate2 CreateCaCertificateWithCustomDates(string subjectName,
-        DateTimeOffset notBefore, DateTimeOffset notAfter)
-    {
-        using var rsa = RSA.Create(2048);
-        var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-
-        // Add CA extensions
-        request.CertificateExtensions.Add(
-            new X509BasicConstraintsExtension(
-                certificateAuthority: true,
-                hasPathLengthConstraint: false,
-                pathLengthConstraint: 0,
-                critical: true));
-
-        request.CertificateExtensions.Add(
-            new X509KeyUsageExtension(
-                X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign,
-                critical: true));
-
-        return request.CreateSelfSigned(notBefore, notAfter);
-    }
-
-    private static X509Certificate2 CreateSignedCertificate(string subjectName, X509Certificate2 issuer)
-    {
-        using var rsa = RSA.Create(2048);
-        var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-
-        request.CertificateExtensions.Add(
-            new X509BasicConstraintsExtension(
-                certificateAuthority: false,
-                hasPathLengthConstraint: false,
-                pathLengthConstraint: 0,
-                critical: true));
-
-        request.CertificateExtensions.Add(
-            new X509KeyUsageExtension(
-                X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment,
-                critical: true));
-
-        var serialNumber = new byte[16];
-        RandomNumberGenerator.Fill(serialNumber);
-
-        using var certWithoutKey = request.Create(
-            issuer,
-            DateTimeOffset.UtcNow,
-            DateTimeOffset.UtcNow.AddYears(1),
-            serialNumber);
-
-        // Return certificate with private key attached
-        return certWithoutKey.CopyWithPrivateKey(rsa);
     }
 }

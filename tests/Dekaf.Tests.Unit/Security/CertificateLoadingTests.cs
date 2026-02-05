@@ -33,7 +33,7 @@ public class CertificateLoadingTests : IDisposable
     public async Task TlsConfig_CaCertificatePath_CanPointToPemFile()
     {
         // Create a test CA certificate
-        using var caCert = CreateSelfSignedCertificate("CN=Test CA");
+        using var caCert = TestCertificateHelper.CreateSelfSignedCertificate("CN=Test CA");
         var pemPath = WriteCertificateToPem(caCert, "ca.pem");
 
         var config = new TlsConfig
@@ -49,7 +49,7 @@ public class CertificateLoadingTests : IDisposable
     public async Task TlsConfig_CaCertificatePath_CanPointToPfxFile()
     {
         // Create a test CA certificate
-        using var caCert = CreateSelfSignedCertificate("CN=Test CA");
+        using var caCert = TestCertificateHelper.CreateSelfSignedCertificate("CN=Test CA");
         var pfxPath = WriteCertificateToPfx(caCert, "ca.pfx", password: null);
 
         var config = new TlsConfig
@@ -65,7 +65,7 @@ public class CertificateLoadingTests : IDisposable
     public async Task TlsConfig_ClientCertificatePath_WithKeyPath_ForPem()
     {
         // Create a test client certificate with private key
-        using var clientCert = CreateSelfSignedCertificateWithKey("CN=Test Client");
+        using var clientCert = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=Test Client");
         var (certPath, keyPath) = WriteCertificateAndKeyToPem(clientCert, "client.pem", "client.key");
 
         var config = new TlsConfig
@@ -84,7 +84,7 @@ public class CertificateLoadingTests : IDisposable
     public async Task TlsConfig_ClientCertificatePath_ForPfx()
     {
         // Create a test client certificate with private key
-        using var clientCert = CreateSelfSignedCertificateWithKey("CN=Test Client");
+        using var clientCert = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=Test Client");
         var pfxPath = WriteCertificateToPfx(clientCert, "client.pfx", password: "testpass");
 
         var config = new TlsConfig
@@ -101,8 +101,8 @@ public class CertificateLoadingTests : IDisposable
     public async Task PemFile_CanContainMultipleCertificates()
     {
         // Create multiple CA certificates
-        using var ca1 = CreateSelfSignedCertificate("CN=CA1");
-        using var ca2 = CreateSelfSignedCertificate("CN=CA2");
+        using var ca1 = TestCertificateHelper.CreateSelfSignedCertificate("CN=CA1");
+        using var ca2 = TestCertificateHelper.CreateSelfSignedCertificate("CN=CA2");
 
         var pemPath = WriteMultipleCertificatesToPem([ca1, ca2], "ca-bundle.pem");
 
@@ -117,8 +117,8 @@ public class CertificateLoadingTests : IDisposable
     public async Task X509Certificate2Collection_ImportFromPemFile_LoadsMultipleCerts()
     {
         // Create multiple CA certificates
-        using var ca1 = CreateSelfSignedCertificate("CN=CA1");
-        using var ca2 = CreateSelfSignedCertificate("CN=CA2");
+        using var ca1 = TestCertificateHelper.CreateSelfSignedCertificate("CN=CA1");
+        using var ca2 = TestCertificateHelper.CreateSelfSignedCertificate("CN=CA2");
 
         var pemPath = WriteMultipleCertificatesToPem([ca1, ca2], "ca-bundle.pem");
 
@@ -138,8 +138,8 @@ public class CertificateLoadingTests : IDisposable
     public async Task CreateMutualTls_WithFilePaths_SetsAllPaths()
     {
         // Create test certificates
-        using var caCert = CreateSelfSignedCertificate("CN=Test CA");
-        using var clientCert = CreateSelfSignedCertificateWithKey("CN=Test Client");
+        using var caCert = TestCertificateHelper.CreateSelfSignedCertificate("CN=Test CA");
+        using var clientCert = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=Test Client");
 
         var caPemPath = WriteCertificateToPem(caCert, "ca.pem");
         var (clientCertPath, clientKeyPath) = WriteCertificateAndKeyToPem(clientCert, "client.pem", "client.key");
@@ -159,7 +159,7 @@ public class CertificateLoadingTests : IDisposable
     [Test]
     public async Task PfxFile_CanBeLoadedWithPassword()
     {
-        using var cert = CreateSelfSignedCertificateWithKey("CN=Test");
+        using var cert = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=Test");
         var pfxPath = WriteCertificateToPfx(cert, "test.pfx", "mypassword");
 
         // Verify the PFX can be loaded with the correct password using modern API
@@ -172,7 +172,7 @@ public class CertificateLoadingTests : IDisposable
     [Test]
     public async Task PfxFile_WithWrongPassword_ThrowsException()
     {
-        using var cert = CreateSelfSignedCertificateWithKey("CN=Test");
+        using var cert = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=Test");
         var pfxPath = WriteCertificateToPfx(cert, "test.pfx", "correctpassword");
 
         // Verify that wrong password throws
@@ -225,47 +225,5 @@ public class CertificateLoadingTests : IDisposable
         }
 
         return (certPath, keyPath);
-    }
-
-    private static X509Certificate2 CreateSelfSignedCertificate(string subjectName)
-    {
-        using var rsa = RSA.Create(2048);
-        var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-
-        // Add SubjectKeyIdentifier extension to help with consistent certificate generation
-        request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
-
-        // Add BasicConstraints to ensure valid cert structure
-        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
-
-        // Use fixed timestamps for deterministic test behavior
-        var notBefore = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
-        var notAfter = notBefore.AddYears(1);
-
-        // Use explicit serial number to avoid macOS ASN.1 encoding issues with auto-generated serials
-        // The serial must not have leading zero bytes that would cause "first 9 bits same value" error
-        var serialNumber = new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
-        var generator = X509SignatureGenerator.CreateForRSA(rsa, RSASignaturePadding.Pkcs1);
-        return request.Create(new X500DistinguishedName(subjectName), generator, notBefore, notAfter, serialNumber);
-    }
-
-    private static X509Certificate2 CreateSelfSignedCertificateWithKey(string subjectName)
-    {
-        using var rsa = RSA.Create(2048);
-        var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-
-        // Add SubjectKeyIdentifier extension to help with consistent certificate generation
-        request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
-
-        // Add BasicConstraints to ensure valid cert structure
-        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
-
-        // Use fixed timestamps for deterministic test behavior
-        var notBefore = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
-        var notAfter = notBefore.AddYears(1);
-
-        // CreateSelfSigned is the simplest approach - it handles key attachment properly
-        // and creates an ephemeral key that's exportable on all platforms
-        return request.CreateSelfSigned(notBefore, notAfter);
     }
 }
