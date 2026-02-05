@@ -65,20 +65,13 @@ internal static class TestCertificateHelper
     /// <summary>
     /// Creates a self-signed certificate without a private key attached (public cert only).
     /// Suitable for CA trust store tests and PEM export.
+    /// Uses CreateSelfSigned then strips the private key to avoid the ASN.1 encoding
+    /// bug in request.Create() + X509SignatureGenerator path.
     /// </summary>
     internal static X509Certificate2 CreateSelfSignedCertificate(string subjectName)
     {
-        using var rsa = CreateRsaKey();
-        var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-
-        request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
-        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
-
-        var notBefore = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
-        var notAfter = new DateTimeOffset(2034, 1, 1, 0, 0, 0, TimeSpan.Zero);
-
-        var generator = X509SignatureGenerator.CreateForRSA(rsa, RSASignaturePadding.Pkcs1);
-        return request.Create(new X500DistinguishedName(subjectName), generator, notBefore, notAfter, FixedSerialNumber);
+        using var withKey = CreateSelfSignedCertificateWithKey(subjectName);
+        return X509CertificateLoader.LoadCertificate(withKey.RawData);
     }
 
     /// <summary>
