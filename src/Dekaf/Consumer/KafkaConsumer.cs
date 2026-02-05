@@ -1620,7 +1620,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             // Fetch from all brokers in parallel for maximum throughput
             // Use pooled array to avoid allocation per fetch cycle
             var brokerCount = partitionsByBroker.Count;
-            var fetchTasks = ArrayPool<Task>.Shared.Rent(brokerCount);
+            var fetchTasks = ArrayPool<Task<List<PendingFetchData>?>>.Shared.Rent(brokerCount);
             try
             {
                 var i = 0;
@@ -1630,11 +1630,24 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                         brokerId, partitions, linkedCts.Token, wakeupCts.Token);
                 }
 
-                await Task.WhenAll((IEnumerable<Task>)new ArraySegment<Task>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
+                await Task.WhenAll(new ArraySegment<Task<List<PendingFetchData>?>>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
+
+                // Enqueue results from all brokers (now on main thread, safe for Queue)
+                for (var j = 0; j < brokerCount; j++)
+                {
+                    var pendingItems = fetchTasks[j].Result;
+                    if (pendingItems is not null)
+                    {
+                        foreach (var pending in pendingItems)
+                        {
+                            _pendingFetches.Enqueue(pending);
+                        }
+                    }
+                }
             }
             finally
             {
-                ArrayPool<Task>.Shared.Return(fetchTasks, clearArray: true);
+                ArrayPool<Task<List<PendingFetchData>?>>.Shared.Return(fetchTasks, clearArray: true);
             }
         }
         finally
@@ -1644,7 +1657,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
     }
 
-    private async Task FetchFromBrokerWithErrorHandlingAsync(
+    private async Task<List<PendingFetchData>?> FetchFromBrokerWithErrorHandlingAsync(
         int brokerId,
         List<TopicPartition> partitions,
         CancellationToken linkedToken,
@@ -1652,15 +1665,17 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     {
         try
         {
-            await FetchFromBrokerAsync(brokerId, partitions, linkedToken).ConfigureAwait(false);
+            return await FetchFromBrokerAsync(brokerId, partitions, linkedToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (wakeupToken.IsCancellationRequested)
         {
             // Wakeup requested, exit silently
+            return null;
         }
         catch (Exception ex)
         {
             _logger?.LogError(ex, "Failed to fetch from broker {BrokerId}", brokerId);
+            return null;
         }
     }
 
@@ -1768,7 +1783,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         return (partition, leader);
     }
 
-    private async ValueTask FetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
+    private async ValueTask<List<PendingFetchData>?> FetchFromBrokerAsync(int brokerId, List<TopicPartition> partitions, CancellationToken cancellationToken)
     {
         var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
 
@@ -1887,30 +1902,23 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             }
         }
 
-        // Enqueue all pending items, with memory owner attached to the last one
-        if (pendingItems is not null)
+        // Attach memory owner to the last item (will be disposed last due to FIFO processing)
+        if (pendingItems is not null && pendingItems.Count > 0 && memoryOwner is not null)
         {
-            for (var i = 0; i < pendingItems.Count; i++)
-            {
-                var pending = pendingItems[i];
-
-                // Assign memory owner to the LAST item (will be disposed last due to FIFO)
-                if (i == pendingItems.Count - 1 && memoryOwner is not null)
-                {
-                    pending = new PendingFetchData(
-                        pending.Topic,
-                        pending.PartitionIndex,
-                        pending.GetBatches(),
-                        memoryOwner);
-                    memoryOwner = null; // Transferred
-                }
-
-                _pendingFetches.Enqueue(pending);
-            }
+            var lastIndex = pendingItems.Count - 1;
+            var lastPending = pendingItems[lastIndex];
+            pendingItems[lastIndex] = new PendingFetchData(
+                lastPending.Topic,
+                lastPending.PartitionIndex,
+                lastPending.GetBatches(),
+                memoryOwner);
+            memoryOwner = null; // Transferred
         }
 
         // If no pending items were created but we have a memory owner, dispose it
         memoryOwner?.Dispose();
+
+        return pendingItems;
     }
 
     /// <summary>
