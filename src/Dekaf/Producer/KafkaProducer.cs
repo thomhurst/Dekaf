@@ -159,7 +159,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
         _accumulator = new RecordAccumulator(options);
-        _compressionCodecs = new CompressionCodecRegistry();
+        _compressionCodecs = CreateCompressionCodecRegistry(options);
 
         // Initialize pipelining semaphore - allows up to MaxInFlightRequestsPerConnection concurrent batch sends
         // This enables overlapping network round-trips, dramatically improving throughput
@@ -203,6 +203,29 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 CollectStatistics,
                 options.StatisticsHandler);
         }
+    }
+
+    private static CompressionCodecRegistry CreateCompressionCodecRegistry(ProducerOptions options)
+    {
+        var registry = new CompressionCodecRegistry();
+
+        if (options.CompressionLevel.HasValue)
+        {
+            var level = options.CompressionLevel.Value;
+
+            // Set the default compression level hint on the registry so external codec
+            // extensions (AddLz4, AddZstd) can use it as a fallback when registering
+            registry.DefaultCompressionLevel = level;
+
+            // Re-register the built-in Gzip codec with the specified level.
+            // The GzipCompressionCodec(int) constructor validates the range (0-9).
+            if (options.CompressionType == CompressionType.Gzip)
+            {
+                registry.Register(new Compression.GzipCompressionCodec(level));
+            }
+        }
+
+        return registry;
     }
 
     private ProducerStatistics CollectStatistics()
@@ -1903,7 +1926,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                         {
                             Index = expectedPartition,
                             Records = [batch.RecordBatch],
-                            Compression = _options.CompressionType
+                            Compression = _options.CompressionType,
+                            CompressionCodecs = _compressionCodecs
                         }
                     ]
                 }

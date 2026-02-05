@@ -1,3 +1,4 @@
+using Dekaf.Compression;
 using Dekaf.Protocol.Records;
 
 namespace Dekaf.Protocol.Messages;
@@ -157,6 +158,12 @@ public sealed class ProduceRequestPartitionData
     /// </summary>
     public CompressionType Compression { get; init; } = CompressionType.None;
 
+    /// <summary>
+    /// Compression codec registry to use for compression.
+    /// When null, the default registry is used.
+    /// </summary>
+    public CompressionCodecRegistry? CompressionCodecs { get; init; }
+
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
         var isFlexible = version >= 9;
@@ -167,7 +174,7 @@ public sealed class ProduceRequestPartitionData
         var recordsBuffer = GetRecordsBuffer();
         foreach (var batch in Records)
         {
-            batch.Write(recordsBuffer, Compression);
+            batch.Write(recordsBuffer, Compression, CompressionCodecs);
         }
 
         if (isFlexible)

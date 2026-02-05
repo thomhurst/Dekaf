@@ -39,9 +39,36 @@ public sealed class GzipCompressionCodec : ICompressionCodec
 {
     private readonly CompressionLevel _compressionLevel;
 
+    /// <summary>
+    /// Creates a new Gzip compression codec with the specified .NET compression level.
+    /// </summary>
+    /// <param name="compressionLevel">The .NET CompressionLevel to use. Default is Fastest.</param>
     public GzipCompressionCodec(CompressionLevel compressionLevel = CompressionLevel.Fastest)
     {
         _compressionLevel = compressionLevel;
+    }
+
+    /// <summary>
+    /// Creates a new Gzip compression codec with an integer compression level (0-9).
+    /// Maps to .NET CompressionLevel: 0 = NoCompression, 1-3 = Fastest, 4-6 = Optimal, 7-9 = SmallestSize.
+    /// </summary>
+    /// <param name="compressionLevel">The compression level (0-9).</param>
+    public GzipCompressionCodec(int compressionLevel)
+    {
+        if (compressionLevel < 0 || compressionLevel > 9)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(compressionLevel),
+                $"Gzip compression level must be between 0 and 9, but was {compressionLevel}.");
+        }
+
+        _compressionLevel = compressionLevel switch
+        {
+            0 => CompressionLevel.NoCompression,
+            >= 1 and <= 3 => CompressionLevel.Fastest,
+            >= 4 and <= 6 => CompressionLevel.Optimal,
+            _ => CompressionLevel.SmallestSize
+        };
     }
 
     public CompressionType Type => CompressionType.Gzip;

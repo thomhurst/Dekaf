@@ -169,6 +169,8 @@ public static class SnappyCompressionExtensions
 {
     /// <summary>
     /// Registers the Snappy compression codec.
+    /// Snappy is a fixed-algorithm codec and does not support compression levels.
+    /// The <see cref="CompressionCodecRegistry.DefaultCompressionLevel"/> property is ignored for Snappy.
     /// </summary>
     /// <param name="registry">The compression codec registry.</param>
     /// <param name="blockSize">The block size for compression. Defaults to 64KB.</param>

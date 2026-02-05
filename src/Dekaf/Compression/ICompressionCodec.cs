@@ -38,6 +38,14 @@ public sealed class CompressionCodecRegistry
     public static CompressionCodecRegistry Default { get; } = new();
 
     /// <summary>
+    /// Default compression level hint for codec registration.
+    /// When set, codec extension methods (AddLz4, AddZstd, etc.) can use this level
+    /// as a fallback when no explicit level is provided.
+    /// Null means use each codec's built-in default.
+    /// </summary>
+    public int? DefaultCompressionLevel { get; set; }
+
+    /// <summary>
     /// Creates a registry with built-in codecs.
     /// </summary>
     public CompressionCodecRegistry()

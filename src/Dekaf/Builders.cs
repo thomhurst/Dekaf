@@ -22,6 +22,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private bool _enableIdempotence;
     private string? _transactionalId;
     private Protocol.Records.CompressionType _compressionType = Protocol.Records.CompressionType.None;
+    private int? _compressionLevel;
     private PartitionerType _partitionerType = PartitionerType.Default;
     private bool _useTls;
     private TlsConfig? _tlsConfig;
@@ -141,6 +142,19 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> UseCompression(Protocol.Records.CompressionType compressionType)
     {
         _compressionType = compressionType;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the compression level for the configured compression codec.
+    /// Valid ranges depend on the compression type:
+    /// Gzip: 0-9, LZ4: 0-12, Zstd: 1-22. Snappy does not support levels.
+    /// When not set, the codec's default level is used.
+    /// </summary>
+    /// <param name="level">The compression level.</param>
+    public ProducerBuilder<TKey, TValue> WithCompressionLevel(int level)
+    {
+        _compressionLevel = level;
         return this;
     }
 
@@ -393,6 +407,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             EnableIdempotence = _enableIdempotence,
             TransactionalId = _transactionalId,
             CompressionType = _compressionType,
+            CompressionLevel = _compressionLevel,
             Partitioner = _partitionerType,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
