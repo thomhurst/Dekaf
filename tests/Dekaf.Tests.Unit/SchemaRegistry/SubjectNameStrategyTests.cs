@@ -173,13 +173,6 @@ public sealed class SubjectNameStrategyTests
     }
 
     [Test]
-    public async Task AvroSerializerConfig_NormalizeSchemas_DefaultsToFalse()
-    {
-        var config = new AvroSerializerConfig();
-        await Assert.That(config.NormalizeSchemas).IsFalse();
-    }
-
-    [Test]
     public async Task AvroSerializerConfig_AutoRegisterSchemas_DefaultsToTrue()
     {
         var config = new AvroSerializerConfig();
@@ -219,13 +212,6 @@ public sealed class SubjectNameStrategyTests
     {
         var config = new ProtobufSerializerConfig();
         await Assert.That(config.UseLatestVersion).IsFalse();
-    }
-
-    [Test]
-    public async Task ProtobufSerializerConfig_NormalizeSchemas_DefaultsToFalse()
-    {
-        var config = new ProtobufSerializerConfig();
-        await Assert.That(config.NormalizeSchemas).IsFalse();
     }
 
     // --- Integration with AvroSchemaRegistrySerializer ---

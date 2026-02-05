@@ -32,13 +32,6 @@ public sealed class AvroSerializerConfig
     /// </summary>
     public bool UseLatestVersion { get; init; }
 
-    /// <summary>
-    /// Whether to normalize the schema before registering it with the Schema Registry.
-    /// Normalization can help ensure that semantically equivalent schemas are treated
-    /// as the same schema, avoiding unnecessary version bumps.
-    /// Default is false.
-    /// </summary>
-    public bool NormalizeSchemas { get; init; }
 }
 
 /// <summary>
