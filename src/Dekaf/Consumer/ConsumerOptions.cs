@@ -49,6 +49,21 @@ public sealed class ConsumerOptions
     public string? GroupInstanceId { get; init; }
 
     /// <summary>
+    /// The consumer group protocol to use for group coordination.
+    /// Default is <see cref="GroupProtocol.Classic"/> for backward compatibility.
+    /// Set to <see cref="GroupProtocol.Consumer"/> to use the KIP-848 protocol (Kafka 4.0+).
+    /// </summary>
+    public GroupProtocol GroupProtocol { get; init; } = GroupProtocol.Classic;
+
+    /// <summary>
+    /// The server-side partition assignor to use when <see cref="GroupProtocol"/> is
+    /// <see cref="GroupProtocol.Consumer"/>. Common values are "uniform" and "range".
+    /// When null, the broker uses its default assignor.
+    /// This setting is only applicable with the Consumer group protocol (KIP-848).
+    /// </summary>
+    public string? GroupRemoteAssignor { get; init; }
+
+    /// <summary>
     /// Offset commit mode controlling how offsets are stored and committed.
     /// Default is <see cref="OffsetCommitMode.Auto"/>.
     /// </summary>
@@ -234,6 +249,27 @@ public sealed class ConsumerOptions
     /// Handler for statistics events. Called periodically based on StatisticsInterval.
     /// </summary>
     public Action<Statistics.ConsumerStatistics>? StatisticsHandler { get; init; }
+}
+
+/// <summary>
+/// Specifies the consumer group protocol to use for group coordination.
+/// </summary>
+public enum GroupProtocol
+{
+    /// <summary>
+    /// Classic consumer group protocol using JoinGroup/SyncGroup/Heartbeat APIs.
+    /// This is the traditional protocol used in Kafka versions prior to 4.0.
+    /// Partition assignment is performed client-side by the group leader.
+    /// </summary>
+    Classic,
+
+    /// <summary>
+    /// New consumer group protocol introduced in KIP-848 (Kafka 4.0+).
+    /// Uses the ConsumerGroupHeartbeat API for group coordination.
+    /// Partition assignment is performed server-side by the group coordinator,
+    /// providing up to 20x faster rebalancing.
+    /// </summary>
+    Consumer
 }
 
 /// <summary>

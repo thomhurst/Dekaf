@@ -457,6 +457,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private string? _clientId;
     private string? _groupId;
     private string? _groupInstanceId;
+    private GroupProtocol _groupProtocol = GroupProtocol.Classic;
+    private string? _groupRemoteAssignor;
     private OffsetCommitMode _offsetCommitMode = OffsetCommitMode.Auto;
     private int _autoCommitIntervalMs = 5000;
     private AutoOffsetReset _autoOffsetReset = AutoOffsetReset.Latest;
@@ -511,6 +513,37 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithGroupInstanceId(string groupInstanceId)
     {
         _groupInstanceId = groupInstanceId;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the consumer group protocol to use for group coordination.
+    /// </summary>
+    /// <param name="groupProtocol">The group protocol to use.</param>
+    /// <remarks>
+    /// <list type="bullet">
+    /// <item><description><see cref="GroupProtocol.Classic"/>: Traditional JoinGroup/SyncGroup/Heartbeat protocol (default)</description></item>
+    /// <item><description><see cref="GroupProtocol.Consumer"/>: KIP-848 ConsumerGroupHeartbeat protocol (Kafka 4.0+)</description></item>
+    /// </list>
+    /// </remarks>
+    public ConsumerBuilder<TKey, TValue> WithGroupProtocol(GroupProtocol groupProtocol)
+    {
+        _groupProtocol = groupProtocol;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the server-side partition assignor for the Consumer group protocol (KIP-848).
+    /// Common values are "uniform" and "range".
+    /// </summary>
+    /// <param name="assignor">The server-side assignor name.</param>
+    /// <remarks>
+    /// This setting is only applicable when using <see cref="GroupProtocol.Consumer"/>.
+    /// When not set, the broker uses its default assignor.
+    /// </remarks>
+    public ConsumerBuilder<TKey, TValue> WithGroupRemoteAssignor(string assignor)
+    {
+        _groupRemoteAssignor = assignor ?? throw new ArgumentNullException(nameof(assignor));
         return this;
     }
 
@@ -843,12 +876,16 @@ public sealed class ConsumerBuilder<TKey, TValue>
         var keyDeserializer = _keyDeserializer ?? GetDefaultDeserializer<TKey>();
         var valueDeserializer = _valueDeserializer ?? GetDefaultDeserializer<TValue>();
 
+        ValidateGroupProtocolConfig();
+
         var options = new ConsumerOptions
         {
             BootstrapServers = _bootstrapServers,
             ClientId = _clientId,
             GroupId = _groupId,
             GroupInstanceId = _groupInstanceId,
+            GroupProtocol = _groupProtocol,
+            GroupRemoteAssignor = _groupRemoteAssignor,
             OffsetCommitMode = _offsetCommitMode,
             AutoCommitIntervalMs = _autoCommitIntervalMs,
             AutoOffsetReset = _autoOffsetReset,
@@ -879,6 +916,16 @@ public sealed class ConsumerBuilder<TKey, TValue>
         }
 
         return consumer;
+    }
+
+    private void ValidateGroupProtocolConfig()
+    {
+        if (_groupRemoteAssignor is not null && _groupProtocol != GroupProtocol.Consumer)
+        {
+            throw new InvalidOperationException(
+                "GroupRemoteAssignor can only be set when using GroupProtocol.Consumer. " +
+                "Call WithGroupProtocol(GroupProtocol.Consumer) to use server-side assignment.");
+        }
     }
 
     private static IDeserializer<T> GetDefaultDeserializer<T>()
