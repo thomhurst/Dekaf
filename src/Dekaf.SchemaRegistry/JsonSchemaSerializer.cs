@@ -28,6 +28,7 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     private readonly ISchemaRegistryClient _schemaRegistry;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly SubjectNameStrategy _subjectNameStrategy;
+    private readonly ISubjectNameStrategy? _customSubjectNameStrategy;
     private readonly bool _autoRegisterSchemas;
     private readonly Schema _schema;
     private readonly bool _ownsClient;
@@ -58,6 +59,38 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         };
         _subjectNameStrategy = subjectNameStrategy;
+        _autoRegisterSchemas = autoRegisterSchemas;
+        _ownsClient = ownsClient;
+        _schema = new Schema
+        {
+            SchemaType = SchemaType.Json,
+            SchemaString = jsonSchema
+        };
+    }
+
+    /// <summary>
+    /// Creates a new JSON Schema Registry serializer with a custom subject name strategy.
+    /// </summary>
+    /// <param name="schemaRegistry">The Schema Registry client.</param>
+    /// <param name="jsonSchema">The JSON schema string for type T.</param>
+    /// <param name="customSubjectNameStrategy">Custom strategy for determining subject names.</param>
+    /// <param name="jsonOptions">JSON serializer options.</param>
+    /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
+    /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
+    public JsonSchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        string jsonSchema,
+        ISubjectNameStrategy customSubjectNameStrategy,
+        JsonSerializerOptions? jsonOptions = null,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false)
+    {
+        _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _customSubjectNameStrategy = customSubjectNameStrategy ?? throw new ArgumentNullException(nameof(customSubjectNameStrategy));
+        _jsonOptions = jsonOptions ?? new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        };
         _autoRegisterSchemas = autoRegisterSchemas;
         _ownsClient = ownsClient;
         _schema = new Schema
@@ -109,6 +142,11 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
 
     private string GetSubjectName(string topic, bool isKey)
     {
+        if (_customSubjectNameStrategy is not null)
+        {
+            return _customSubjectNameStrategy.GetSubjectName(topic, typeof(T).FullName, isKey);
+        }
+
         var suffix = isKey ? "-key" : "-value";
         return _subjectNameStrategy switch
         {

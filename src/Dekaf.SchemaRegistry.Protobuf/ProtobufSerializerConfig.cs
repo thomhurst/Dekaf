@@ -8,14 +8,38 @@ public sealed class ProtobufSerializerConfig
     /// <summary>
     /// Strategy for determining the subject name.
     /// Default is <see cref="SubjectNameStrategy.TopicName"/>.
+    /// This is ignored if <see cref="CustomSubjectNameStrategy"/> is set.
     /// </summary>
     public SubjectNameStrategy SubjectNameStrategy { get; init; } = SubjectNameStrategy.TopicName;
+
+    /// <summary>
+    /// A custom subject name strategy implementation. When set, this takes precedence
+    /// over the <see cref="SubjectNameStrategy"/> enum value.
+    /// Default is null (uses enum-based strategy).
+    /// </summary>
+    public ISubjectNameStrategy? CustomSubjectNameStrategy { get; init; }
 
     /// <summary>
     /// Whether to auto-register schemas when producing messages.
     /// Default is true.
     /// </summary>
     public bool AutoRegisterSchemas { get; init; } = true;
+
+    /// <summary>
+    /// Whether to use the latest schema version from the registry instead of the schema
+    /// derived from the .NET type. This is useful when the writer schema should come
+    /// from the registry rather than from code.
+    /// Default is false.
+    /// </summary>
+    public bool UseLatestVersion { get; init; }
+
+    /// <summary>
+    /// Whether to normalize the schema before registering it with the Schema Registry.
+    /// Normalization can help ensure that semantically equivalent schemas are treated
+    /// as the same schema, avoiding unnecessary version bumps.
+    /// Default is false.
+    /// </summary>
+    public bool NormalizeSchemas { get; init; }
 
     /// <summary>
     /// Whether to use the deprecated subject naming format (without -key/-value suffix for RecordName strategy).

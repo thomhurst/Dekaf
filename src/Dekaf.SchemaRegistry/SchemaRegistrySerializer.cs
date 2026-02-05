@@ -34,6 +34,7 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
     private readonly Func<T, byte[]> _serialize;
     private readonly Func<string, Schema> _getSchema;
     private readonly SubjectNameStrategy _subjectNameStrategy;
+    private readonly ISubjectNameStrategy? _customSubjectNameStrategy;
     private readonly bool _autoRegisterSchemas;
     private readonly bool _ownsClient;
 
@@ -61,6 +62,31 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
         _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
         _getSchema = getSchema ?? throw new ArgumentNullException(nameof(getSchema));
         _subjectNameStrategy = subjectNameStrategy;
+        _autoRegisterSchemas = autoRegisterSchemas;
+        _ownsClient = ownsClient;
+    }
+
+    /// <summary>
+    /// Creates a new Schema Registry serializer with a custom subject name strategy.
+    /// </summary>
+    /// <param name="schemaRegistry">The Schema Registry client.</param>
+    /// <param name="serialize">Function to serialize the value to bytes (without wire format).</param>
+    /// <param name="getSchema">Function to get the schema for a type.</param>
+    /// <param name="customSubjectNameStrategy">Custom strategy for determining subject names.</param>
+    /// <param name="autoRegisterSchemas">Whether to auto-register schemas.</param>
+    /// <param name="ownsClient">Whether this serializer owns the client and should dispose it.</param>
+    public SchemaRegistrySerializer(
+        ISchemaRegistryClient schemaRegistry,
+        Func<T, byte[]> serialize,
+        Func<string, Schema> getSchema,
+        ISubjectNameStrategy customSubjectNameStrategy,
+        bool autoRegisterSchemas = true,
+        bool ownsClient = false)
+    {
+        _schemaRegistry = schemaRegistry ?? throw new ArgumentNullException(nameof(schemaRegistry));
+        _serialize = serialize ?? throw new ArgumentNullException(nameof(serialize));
+        _getSchema = getSchema ?? throw new ArgumentNullException(nameof(getSchema));
+        _customSubjectNameStrategy = customSubjectNameStrategy ?? throw new ArgumentNullException(nameof(customSubjectNameStrategy));
         _autoRegisterSchemas = autoRegisterSchemas;
         _ownsClient = ownsClient;
     }
@@ -110,6 +136,11 @@ public sealed class SchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisposab
 
     private string GetSubjectName(string topic, bool isKey)
     {
+        if (_customSubjectNameStrategy is not null)
+        {
+            return _customSubjectNameStrategy.GetSubjectName(topic, typeof(T).FullName, isKey);
+        }
+
         var suffix = isKey ? "-key" : "-value";
         return _subjectNameStrategy switch
         {

@@ -107,9 +107,21 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
         if (_schemaIdCache.TryGetValue(subject, out var cachedId))
             return cachedId;
 
-        var task = _config.AutoRegisterSchemas
-            ? _schemaRegistry.GetOrRegisterSchemaAsync(subject, _schema)
-            : _schemaRegistry.GetSchemaBySubjectAsync(subject).ContinueWith(t => t.Result.Id, TaskScheduler.Default);
+        Task<int> task;
+        if (_config.UseLatestVersion)
+        {
+            task = _schemaRegistry.GetSchemaBySubjectAsync(subject)
+                .ContinueWith(t => t.Result.Id, TaskScheduler.Default);
+        }
+        else if (_config.AutoRegisterSchemas)
+        {
+            task = _schemaRegistry.GetOrRegisterSchemaAsync(subject, _schema);
+        }
+        else
+        {
+            task = _schemaRegistry.GetSchemaBySubjectAsync(subject)
+                .ContinueWith(t => t.Result.Id, TaskScheduler.Default);
+        }
 
         // Add timeout to prevent indefinite blocking
         var id = task.WaitAsync(SchemaRegistryTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
@@ -119,6 +131,11 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
 
     private string GetSubjectName(string topic, bool isKey)
     {
+        if (_config.CustomSubjectNameStrategy is not null)
+        {
+            return _config.CustomSubjectNameStrategy.GetSubjectName(topic, _descriptor.FullName, isKey);
+        }
+
         var suffix = isKey ? "-key" : "-value";
 
         return _config.SubjectNameStrategy switch
