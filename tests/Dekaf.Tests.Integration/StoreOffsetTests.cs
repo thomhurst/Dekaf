@@ -384,8 +384,9 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka)
         consumer2.Subscribe(topic);
 
         // Consume one message to ensure the consumer has joined the group and has an assignment
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts2.Token).ConfigureAwait(false);
+        // Use a longer safety timeout for the token than the actual consume timeout
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(10), cts2.Token).ConfigureAwait(false);
 
         // If we got a message, it should be from offset 3 or later (after auto-committed offset)
         // If the topic is empty (all consumed and committed), result may be null

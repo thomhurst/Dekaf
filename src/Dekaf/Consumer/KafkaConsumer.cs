@@ -953,9 +953,16 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             // Fast path: if no external cancellation, use timeout CTS directly (avoids allocation)
             if (!cancellationToken.CanBeCanceled)
             {
-                await foreach (var result in ConsumeAsync(timeoutCts.Token).ConfigureAwait(false))
+                try
                 {
-                    return result;
+                    await foreach (var result in ConsumeAsync(timeoutCts.Token).ConfigureAwait(false))
+                    {
+                        return result;
+                    }
+                }
+                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+                {
+                    // Timeout expired with no messages - return null instead of throwing
                 }
                 return null;
             }
@@ -963,9 +970,16 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             // Slow path: need to link external cancellation with timeout
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
-            await foreach (var result in ConsumeAsync(linkedCts.Token).ConfigureAwait(false))
+            try
             {
-                return result;
+                await foreach (var result in ConsumeAsync(linkedCts.Token).ConfigureAwait(false))
+                {
+                    return result;
+                }
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                // Our timeout expired (not user cancellation) with no messages - return null
             }
 
             return null;
