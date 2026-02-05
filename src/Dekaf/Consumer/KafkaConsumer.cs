@@ -1375,6 +1375,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             foreach (var partition in removedPartitions)
             {
                 _highWatermarks.TryRemove(partition, out _);
+                _positions.TryRemove(partition, out _);
+                _fetchPositions.TryRemove(partition, out _);
             }
 
             // Clean up EOF state (still needs lock)
