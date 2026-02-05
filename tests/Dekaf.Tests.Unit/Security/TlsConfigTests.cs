@@ -1,5 +1,4 @@
 using System.Security.Authentication;
-using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Dekaf.Security;
 
@@ -44,8 +43,8 @@ public class TlsConfigTests
     [Test]
     public async Task CreateMutualTls_WithCertificateObjects_SetsCorrectProperties()
     {
-        using var clientCert = CreateSelfSignedCertificate("CN=Client");
-        using var caCert = CreateSelfSignedCertificate("CN=CA");
+        using var clientCert = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=Client");
+        using var caCert = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=CA");
 
         var config = TlsConfig.CreateMutualTls(clientCert, caCert);
 
@@ -57,7 +56,7 @@ public class TlsConfigTests
     [Test]
     public async Task CreateMutualTls_WithNullCaCertificate_AllowsNull()
     {
-        using var clientCert = CreateSelfSignedCertificate("CN=Client");
+        using var clientCert = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=Client");
 
         var config = TlsConfig.CreateMutualTls(clientCert, caCertificate: null);
 
@@ -68,8 +67,8 @@ public class TlsConfigTests
     [Test]
     public async Task Config_CanSetCaCertificateCollection()
     {
-        using var cert1 = CreateSelfSignedCertificate("CN=CA1");
-        using var cert2 = CreateSelfSignedCertificate("CN=CA2");
+        using var cert1 = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=CA1");
+        using var cert2 = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=CA2");
         var collection = new X509Certificate2Collection { cert1, cert2 };
 
         var config = new TlsConfig
@@ -138,7 +137,7 @@ public class TlsConfigTests
         await Assert.That(pathConfig.CaCertificateCollection).IsNull();
 
         // Object only
-        using var cert = CreateSelfSignedCertificate("CN=CA");
+        using var cert = TestCertificateHelper.CreateSelfSignedCertificateWithKey("CN=CA");
         var objectConfig = new TlsConfig { CaCertificateObject = cert };
         await Assert.That(objectConfig.CaCertificatePath).IsNull();
         await Assert.That(objectConfig.CaCertificateObject).IsNotNull();
@@ -150,12 +149,5 @@ public class TlsConfigTests
         await Assert.That(collectionConfig.CaCertificatePath).IsNull();
         await Assert.That(collectionConfig.CaCertificateObject).IsNull();
         await Assert.That(collectionConfig.CaCertificateCollection).IsNotNull();
-    }
-
-    private static X509Certificate2 CreateSelfSignedCertificate(string subjectName)
-    {
-        using var rsa = RSA.Create(2048);
-        var request = new CertificateRequest(subjectName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        return request.CreateSelfSigned(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddYears(1));
     }
 }
