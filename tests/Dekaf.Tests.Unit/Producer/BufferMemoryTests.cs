@@ -255,7 +255,7 @@ public class BufferMemoryTests
             BufferMemory = 1000, // Very small buffer - 1KB
             BatchSize = 16384,
             LingerMs = 100,
-            DeliveryTimeoutMs = 500 // Short timeout - 500ms
+            MaxBlockMs = 500 // Short timeout - 500ms (controls buffer wait timeout)
         };
 
         var accumulator = new RecordAccumulator(options);
@@ -352,8 +352,8 @@ public class BufferMemoryTests
                     await Task.CompletedTask.ConfigureAwait(false);
                 });
 
-                // Assert: Should throw immediately, not wait for timeout
-                await Assert.That(exception!.Message).Contains("buffer memory");
+                // Assert: Should throw with descriptive message about max.block.ms
+                await Assert.That(exception!.Message).Contains("max.block.ms");
             }
             finally
             {

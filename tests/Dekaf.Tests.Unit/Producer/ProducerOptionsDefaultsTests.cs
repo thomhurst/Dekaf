@@ -209,6 +209,13 @@ public class ProducerOptionsDefaultsTests
     }
 
     [Test]
+    public async Task MaxBlockMs_DefaultsTo_60000()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.MaxBlockMs).IsEqualTo(60000);
+    }
+
+    [Test]
     public async Task SocketSendBufferBytes_DefaultsTo_0()
     {
         var options = CreateOptions();

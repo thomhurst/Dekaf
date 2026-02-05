@@ -37,6 +37,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private TimeSpan? _statisticsInterval;
     private Action<Statistics.ProducerStatistics>? _statisticsHandler;
     private ulong? _bufferMemory;
+    private int? _maxBlockMs;
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -98,6 +99,53 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithBufferMemory(ulong bufferMemory)
     {
         _bufferMemory = bufferMemory;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum time in milliseconds that produce operations will block when the buffer
+    /// is full or metadata is unavailable.
+    /// </summary>
+    /// <param name="maxBlockMs">The maximum block time in milliseconds. Must be positive.</param>
+    /// <remarks>
+    /// <para>
+    /// Equivalent to Kafka's <c>max.block.ms</c> configuration.
+    /// Default is 60000ms (60 seconds).
+    /// </para>
+    /// <para>
+    /// This timeout applies when:
+    /// <list type="bullet">
+    /// <item><description>Waiting for buffer space due to backpressure (buffer full)</description></item>
+    /// <item><description>Waiting for initial metadata when producing to a new topic</description></item>
+    /// </list>
+    /// </para>
+    /// </remarks>
+    public ProducerBuilder<TKey, TValue> WithMaxBlockMs(int maxBlockMs)
+    {
+        if (maxBlockMs <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxBlockMs), "MaxBlockMs must be positive");
+
+        _maxBlockMs = maxBlockMs;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum time that produce operations will block when the buffer
+    /// is full or metadata is unavailable.
+    /// </summary>
+    /// <param name="maxBlock">The maximum block time. Must be positive.</param>
+    /// <remarks>
+    /// <para>
+    /// Equivalent to Kafka's <c>max.block.ms</c> configuration.
+    /// Default is 60 seconds.
+    /// </para>
+    /// </remarks>
+    public ProducerBuilder<TKey, TValue> WithMaxBlock(TimeSpan maxBlock)
+    {
+        if (maxBlock <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(maxBlock), "MaxBlock must be positive");
+
+        _maxBlockMs = (int)maxBlock.TotalMilliseconds;
         return this;
     }
 
@@ -390,6 +438,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             LingerMs = _lingerMs,
             BatchSize = _batchSize,
             BufferMemory = _bufferMemory ?? 268435456, // 256 MB default
+            MaxBlockMs = _maxBlockMs ?? 60000, // 60 seconds default
             EnableIdempotence = _enableIdempotence,
             TransactionalId = _transactionalId,
             CompressionType = _compressionType,

@@ -1442,9 +1442,21 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         TopicInfo? topicInfo;
         if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo))
         {
-            // Slow path: cache miss, need async refresh
-            topicInfo = await _metadataManager.GetTopicMetadataAsync(message.Topic, cancellationToken)
-                .ConfigureAwait(false);
+            // Slow path: cache miss, need async refresh with MaxBlockMs timeout
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(_options.MaxBlockMs);
+
+            try
+            {
+                topicInfo = await _metadataManager.GetTopicMetadataAsync(message.Topic, timeoutCts.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    $"Failed to fetch metadata for topic '{message.Topic}' within max.block.ms ({_options.MaxBlockMs}ms). " +
+                    $"Ensure the topic exists and the Kafka cluster is reachable.");
+            }
         }
 
         if (topicInfo is null)
@@ -2023,8 +2035,26 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             return ValueTask.CompletedTask;
         }
 
-        // Slow path: need to initialize metadata
-        return _metadataManager.InitializeAsync(cancellationToken);
+        // Slow path: need to initialize metadata with MaxBlockMs timeout
+        return EnsureInitializedWithTimeoutAsync(cancellationToken);
+    }
+
+    private async ValueTask EnsureInitializedWithTimeoutAsync(CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(_options.MaxBlockMs);
+
+        try
+        {
+            await _metadataManager.InitializeAsync(timeoutCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // The timeout fired, not the caller's token - throw a descriptive TimeoutException
+            throw new TimeoutException(
+                $"Failed to fetch initial metadata within max.block.ms ({_options.MaxBlockMs}ms). " +
+                $"Ensure the Kafka cluster is reachable and the bootstrap servers are correct.");
+        }
     }
 
     /// <summary>
