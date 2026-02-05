@@ -808,9 +808,32 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
                 if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
-                    _logger?.LogWarning(
-                        "Prefetch error for {Topic}-{Partition}: {Error}",
-                        topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                    if (partitionResponse.ErrorCode == ErrorCode.OffsetOutOfRange)
+                    {
+                        // CRITICAL: Reset fetch position based on auto.offset.reset policy
+                        // Without this, we would retry with the same invalid offset forever
+                        var resetTimestamp = _options.AutoOffsetReset == AutoOffsetReset.Latest ? -1L : -2L;
+                        _fetchPositions[tp] = resetTimestamp;
+                        _positions[tp] = resetTimestamp;
+                        _logger?.LogInformation(
+                            "OffsetOutOfRange for {Topic}-{Partition}, resetting to {Reset}",
+                            topic, partitionResponse.PartitionIndex,
+                            _options.AutoOffsetReset == AutoOffsetReset.Latest ? "latest" : "earliest");
+                    }
+                    else if (partitionResponse.ErrorCode == ErrorCode.NotLeaderOrFollower)
+                    {
+                        // Invalidate metadata cache to force re-discovery of leader
+                        InvalidatePartitionCache();
+                        _logger?.LogWarning(
+                            "NotLeaderOrFollower for {Topic}-{Partition}, will refresh metadata",
+                            topic, partitionResponse.PartitionIndex);
+                    }
+                    else
+                    {
+                        _logger?.LogWarning(
+                            "Prefetch error for {Topic}-{Partition}: {Error}",
+                            topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                    }
                     continue;
                 }
 
