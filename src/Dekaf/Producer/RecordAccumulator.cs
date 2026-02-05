@@ -1348,9 +1348,13 @@ public sealed class RecordAccumulator : IAsyncDisposable
             var readyBatch = oldBatch.Complete();
             if (readyBatch is not null)
             {
+                // Track delivery task for FlushAsync to wait on
+                TrackDeliveryTask(readyBatch);
+
                 if (!_readyBatches.Writer.TryWrite(readyBatch))
                 {
                     readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                    OnBatchExitsPipeline(); // Decrement counter on failure
                     // Release the batch's buffer memory since it won't go through producer
                     ReleaseMemory(readyBatch.DataSize);
                     t_cachedBatch = null;
