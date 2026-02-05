@@ -156,7 +156,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _metadataManager = new MetadataManager(
             _connectionPool,
             options.BootstrapServers,
-            logger: loggerFactory?.CreateLogger<MetadataManager>());
+            new MetadataOptions
+            {
+                MetadataRefreshInterval = TimeSpan.FromMilliseconds(options.MetadataMaxAgeMs),
+                EnableBackgroundRefresh = true
+            },
+            loggerFactory?.CreateLogger<MetadataManager>());
 
         _accumulator = new RecordAccumulator(options);
         _compressionCodecs = new CompressionCodecRegistry();

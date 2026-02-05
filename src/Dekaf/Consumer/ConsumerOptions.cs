@@ -226,6 +226,14 @@ public sealed class ConsumerOptions
     public bool EnablePartitionEof { get; init; }
 
     /// <summary>
+    /// The maximum age in milliseconds of metadata before a forced refresh is triggered.
+    /// This ensures the client discovers new partitions, leader changes, and new brokers
+    /// even when no errors occur. Matches Java client's metadata.max.age.ms.
+    /// Default is 300000 (5 minutes).
+    /// </summary>
+    public int MetadataMaxAgeMs { get; init; } = 300000;
+
+    /// <summary>
     /// Interval at which statistics events are emitted. Set to null or TimeSpan.Zero to disable.
     /// </summary>
     public TimeSpan? StatisticsInterval { get; init; }

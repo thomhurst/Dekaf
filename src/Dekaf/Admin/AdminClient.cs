@@ -41,7 +41,12 @@ public sealed class AdminClient : IAdminClient
         _metadataManager = new MetadataManager(
             _connectionPool,
             options.BootstrapServers,
-            logger: loggerFactory?.CreateLogger<MetadataManager>());
+            new MetadataOptions
+            {
+                MetadataRefreshInterval = TimeSpan.FromMilliseconds(options.MetadataMaxAgeMs),
+                EnableBackgroundRefresh = true
+            },
+            loggerFactory?.CreateLogger<MetadataManager>());
     }
 
     public ClusterMetadata Metadata => _metadataManager.Metadata;
@@ -1209,6 +1214,14 @@ public sealed class AdminClientOptions
     public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
     public string? SaslUsername { get; init; }
     public string? SaslPassword { get; init; }
+
+    /// <summary>
+    /// The maximum age in milliseconds of metadata before a forced refresh is triggered.
+    /// This ensures the client discovers new partitions, leader changes, and new brokers
+    /// even when no errors occur. Matches Java client's metadata.max.age.ms.
+    /// Default is 300000 (5 minutes).
+    /// </summary>
+    public int MetadataMaxAgeMs { get; init; } = 300000;
 }
 
 /// <summary>
@@ -1222,6 +1235,7 @@ public sealed class AdminClientBuilder
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
+    private int _metadataMaxAgeMs = 300000;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
 
     public AdminClientBuilder WithBootstrapServers(string servers)
@@ -1267,6 +1281,36 @@ public sealed class AdminClientBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets the maximum age of metadata in milliseconds before a forced refresh is triggered.
+    /// This ensures the admin client discovers new partitions, leader changes, and new brokers
+    /// even when no errors occur. Default is 300000 (5 minutes).
+    /// </summary>
+    /// <param name="maxAgeMs">The maximum metadata age in milliseconds. Must be positive.</param>
+    public AdminClientBuilder WithMetadataMaxAgeMs(int maxAgeMs)
+    {
+        if (maxAgeMs <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxAgeMs), "Metadata max age must be positive");
+
+        _metadataMaxAgeMs = maxAgeMs;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum age of metadata before a forced refresh is triggered.
+    /// This ensures the admin client discovers new partitions, leader changes, and new brokers
+    /// even when no errors occur. Default is 5 minutes.
+    /// </summary>
+    /// <param name="maxAge">The maximum metadata age. Must be positive.</param>
+    public AdminClientBuilder WithMetadataMaxAge(TimeSpan maxAge)
+    {
+        if (maxAge <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(maxAge), "Metadata max age must be positive");
+
+        _metadataMaxAgeMs = (int)maxAge.TotalMilliseconds;
+        return this;
+    }
+
     public AdminClientBuilder WithLoggerFactory(Microsoft.Extensions.Logging.ILoggerFactory loggerFactory)
     {
         _loggerFactory = loggerFactory;
@@ -1285,7 +1329,8 @@ public sealed class AdminClientBuilder
             UseTls = _useTls,
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
-            SaslPassword = _saslPassword
+            SaslPassword = _saslPassword,
+            MetadataMaxAgeMs = _metadataMaxAgeMs
         };
 
         return new AdminClient(options, _loggerFactory);

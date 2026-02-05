@@ -263,7 +263,12 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         _metadataManager = new MetadataManager(
             _connectionPool,
             options.BootstrapServers,
-            logger: loggerFactory?.CreateLogger<MetadataManager>());
+            new MetadataOptions
+            {
+                MetadataRefreshInterval = TimeSpan.FromMilliseconds(options.MetadataMaxAgeMs),
+                EnableBackgroundRefresh = true
+            },
+            loggerFactory?.CreateLogger<MetadataManager>());
 
         if (!string.IsNullOrEmpty(options.GroupId))
         {

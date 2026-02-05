@@ -37,6 +37,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private TimeSpan? _statisticsInterval;
     private Action<Statistics.ProducerStatistics>? _statisticsHandler;
     private ulong? _bufferMemory;
+    private int _metadataMaxAgeMs = 300000;
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -312,6 +313,36 @@ public sealed class ProducerBuilder<TKey, TValue>
         => WithStatisticsHandler(handler);
 
     /// <summary>
+    /// Sets the maximum age of metadata in milliseconds before a forced refresh is triggered.
+    /// This ensures the producer discovers new partitions, leader changes, and new brokers
+    /// even when no errors occur. Default is 300000 (5 minutes).
+    /// </summary>
+    /// <param name="maxAgeMs">The maximum metadata age in milliseconds. Must be positive.</param>
+    public ProducerBuilder<TKey, TValue> WithMetadataMaxAgeMs(int maxAgeMs)
+    {
+        if (maxAgeMs <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxAgeMs), "Metadata max age must be positive");
+
+        _metadataMaxAgeMs = maxAgeMs;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum age of metadata before a forced refresh is triggered.
+    /// This ensures the producer discovers new partitions, leader changes, and new brokers
+    /// even when no errors occur. Default is 5 minutes.
+    /// </summary>
+    /// <param name="maxAge">The maximum metadata age. Must be positive.</param>
+    public ProducerBuilder<TKey, TValue> WithMetadataMaxAge(TimeSpan maxAge)
+    {
+        if (maxAge <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(maxAge), "Metadata max age must be positive");
+
+        _metadataMaxAgeMs = (int)maxAge.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
     /// Configures the producer for high throughput scenarios.
     /// </summary>
     /// <remarks>
@@ -403,7 +434,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
             StatisticsInterval = _statisticsInterval,
-            StatisticsHandler = _statisticsHandler
+            StatisticsHandler = _statisticsHandler,
+            MetadataMaxAgeMs = _metadataMaxAgeMs
         };
 
         return new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory);
@@ -480,6 +512,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private TimeSpan? _statisticsInterval;
     private Action<Statistics.ConsumerStatistics>? _statisticsHandler;
     private int _queuedMinMessages = 100000;
+    private int _metadataMaxAgeMs = 300000;
     private readonly List<string> _topicsToSubscribe = [];
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
@@ -763,6 +796,36 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the maximum age of metadata in milliseconds before a forced refresh is triggered.
+    /// This ensures the consumer discovers new partitions, leader changes, and new brokers
+    /// even when no errors occur. Default is 300000 (5 minutes).
+    /// </summary>
+    /// <param name="maxAgeMs">The maximum metadata age in milliseconds. Must be positive.</param>
+    public ConsumerBuilder<TKey, TValue> WithMetadataMaxAgeMs(int maxAgeMs)
+    {
+        if (maxAgeMs <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxAgeMs), "Metadata max age must be positive");
+
+        _metadataMaxAgeMs = maxAgeMs;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum age of metadata before a forced refresh is triggered.
+    /// This ensures the consumer discovers new partitions, leader changes, and new brokers
+    /// even when no errors occur. Default is 5 minutes.
+    /// </summary>
+    /// <param name="maxAge">The maximum metadata age. Must be positive.</param>
+    public ConsumerBuilder<TKey, TValue> WithMetadataMaxAge(TimeSpan maxAge)
+    {
+        if (maxAge <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(maxAge), "Metadata max age must be positive");
+
+        _metadataMaxAgeMs = (int)maxAge.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the interval for emitting statistics events.
     /// </summary>
     /// <param name="interval">The interval between statistics events. Must be positive.</param>
@@ -868,7 +931,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             EnablePartitionEof = _enablePartitionEof,
             StatisticsInterval = _statisticsInterval,
             StatisticsHandler = _statisticsHandler,
-            QueuedMinMessages = _queuedMinMessages
+            QueuedMinMessages = _queuedMinMessages,
+            MetadataMaxAgeMs = _metadataMaxAgeMs
         };
 
         var consumer = new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory);

@@ -466,9 +466,9 @@ public sealed class MetadataOptions
     /// <summary>
     /// Interval for background metadata refresh.
     /// Metadata is never considered stale - it refreshes periodically and swaps in silently.
-    /// Default matches Confluent's metadata.max.age.ms (15 minutes).
+    /// Default matches Java client's metadata.max.age.ms (5 minutes / 300000ms).
     /// </summary>
-    public TimeSpan MetadataRefreshInterval { get; init; } = TimeSpan.FromMinutes(15);
+    public TimeSpan MetadataRefreshInterval { get; init; } = TimeSpan.FromMilliseconds(300000);
 
     /// <summary>
     /// Whether to enable background metadata refresh.
