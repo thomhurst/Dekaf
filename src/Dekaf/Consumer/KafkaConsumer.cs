@@ -736,6 +736,14 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             // Wakeup requested, exit silently
         }
+        catch (KafkaException ex)
+        {
+            // Fatal Kafka errors (e.g., AutoOffsetReset.None with OffsetOutOfRange)
+            // should propagate to the consumer by completing the channel with the exception
+            _logger?.LogError(ex, "Fatal error prefetching from broker {BrokerId}", brokerId);
+            _prefetchChannel.Writer.TryComplete(ex);
+            throw;
+        }
         catch (Exception ex)
         {
             _logger?.LogError(ex, "Failed to prefetch from broker {BrokerId}", brokerId);
