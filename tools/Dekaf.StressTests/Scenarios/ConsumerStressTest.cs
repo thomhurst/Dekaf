@@ -44,6 +44,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
             .WithClientId("stress-consumer-dekaf")
             .WithGroupId($"stress-group-dekaf-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .ForHighThroughput()
             .Build();
 
         consumer.Subscribe(options.Topic);

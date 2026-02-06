@@ -627,19 +627,10 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                         keyDeserializer: _keyDeserializer,
                         valueDeserializer: _valueDeserializer);
 
-                    // Update position immediately (per-message) to maintain API contract
-                    // Position() must return the next offset to be consumed
-                    var nextOffset = offset + 1;
-                    _positions[pending.TopicPartition] = nextOffset;
+                    // Update consumed position per-message so GetPosition()/CommitAsync()
+                    // reflect the latest yielded offset even when the enumerator is paused.
+                    _positions[pending.TopicPartition] = offset + 1;
 
-                    // When prefetching, the prefetch thread already advances _fetchPositions
-                    // in UpdateFetchPositionsFromPrefetch() — skip the redundant write here
-                    if (!_prefetchEnabled)
-                    {
-                        _fetchPositions[pending.TopicPartition] = nextOffset;
-                    }
-
-                    // Track consumed for batch-level statistics update (not position)
                     var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
                                        (record.IsValueNull ? 0 : record.Value.Length);
                     pending.TrackConsumed(offset, messageBytes);
@@ -650,8 +641,16 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     yield return result;
                 }
 
+                // Batch-level _fetchPositions update (once per partition-fetch, not per message).
+                // When prefetching is enabled, the prefetch thread already advances
+                // _fetchPositions in UpdateFetchPositionsFromPrefetch() — skip redundant writes.
+                // When disabled, we only need the final offset for the next fetch request.
+                if (!_prefetchEnabled && pending.LastYieldedOffset >= 0)
+                {
+                    _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
+                }
+
                 // Batch-level statistics update (once per partition-fetch, not per message)
-                // Position is already updated per-message above to maintain API contract
                 if (pending.MessageCount > 0)
                 {
                     _statisticsCollector.RecordMessagesConsumedBatch(
