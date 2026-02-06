@@ -3,19 +3,18 @@ using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
 
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class RebalanceListenerTests(KafkaTestContainer kafka)
+public class RebalanceListenerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task OnPartitionsAssigned_CalledWhenConsumerSubscribes()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
         var listener = new TestRebalanceListener();
 
         // Produce a message first so the consumer has something to join for
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -26,7 +25,7 @@ public class RebalanceListenerTests(KafkaTestContainer kafka)
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener)

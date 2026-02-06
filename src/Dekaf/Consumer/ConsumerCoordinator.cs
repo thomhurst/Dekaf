@@ -131,6 +131,17 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                     await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                     retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
                 }
+                catch (ObjectDisposedException)
+                {
+                    // Connection was disposed (e.g., broker closed it or receive timeout) - reconnect
+                    _logger?.LogDebug(
+                        "Coordinator connection disposed, will re-discover coordinator");
+
+                    MarkCoordinatorUnknown();
+
+                    await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                    retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                }
             }
         }
         finally

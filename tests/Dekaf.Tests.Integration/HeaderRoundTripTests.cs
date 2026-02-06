@@ -5,17 +5,16 @@ using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Integration;
 
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class HeaderRoundTripTests(KafkaTestContainer kafka)
+public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task ProduceWithHeaders_ConsumePreservesHeaders()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         var headers = new Headers()
@@ -31,7 +30,7 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka)
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -55,11 +54,11 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka)
     [Test]
     public async Task MultipleHeadersWithSameKey_AllPreserved()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         var headers = new Headers()
@@ -76,7 +75,7 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka)
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -97,11 +96,11 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka)
     [Test]
     public async Task NullHeaderValue_Preserved()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         var headers = new Headers()
@@ -117,7 +116,7 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka)
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -138,11 +137,11 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka)
     [Test]
     public async Task EmptyHeaderValue_Preserved()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         var headers = new Headers()
@@ -157,7 +156,7 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka)
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -176,11 +175,11 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka)
     [Test]
     public async Task UnicodeHeaderValue_Preserved()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         var headers = new Headers()
@@ -195,7 +194,7 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka)
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();

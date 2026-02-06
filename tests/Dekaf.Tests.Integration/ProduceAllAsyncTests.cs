@@ -3,16 +3,15 @@ using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
 
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class ProduceAllAsyncTests(KafkaTestContainer kafka)
+public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task ProduceAllAsync_MultipleMessages_AllDelivered()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         var messages = Enumerable.Range(0, 10).Select(i => new ProducerMessage<string, string>
@@ -37,10 +36,10 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka)
     [Test]
     public async Task ProduceAllAsync_ToSingleTopic_WithKeyValuePairs_AllDelivered()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         var messages = Enumerable.Range(0, 5)
@@ -62,7 +61,7 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka)
     public async Task ProduceAllAsync_EmptyList_ReturnsEmptyResults()
     {
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         var results = await producer.ProduceAllAsync(Array.Empty<ProducerMessage<string, string>>());
@@ -73,11 +72,11 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka)
     [Test]
     public async Task ProduceAllAsync_VerifyAllMessagesConsumed()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         var messages = Enumerable.Range(0, 5).Select(i => new ProducerMessage<string, string>
@@ -91,7 +90,7 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka)
 
         // Consume all messages
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();

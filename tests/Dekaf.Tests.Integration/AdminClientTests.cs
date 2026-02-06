@@ -9,13 +9,12 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for the Kafka admin client.
 /// </summary>
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class AdminClientTests(KafkaTestContainer kafka)
+public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     private IAdminClient CreateAdminClient()
     {
         return new AdminClientBuilder()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-admin-client")
             .Build();
     }
@@ -47,7 +46,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task DescribeConfigsAsync_Topic_ReturnsConfiguration()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
         // Act
@@ -88,7 +87,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task DescribeConfigsAsync_WithSynonyms_ReturnsSynonymInfo()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
         // Act
@@ -112,7 +111,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task AlterConfigsAsync_Topic_UpdatesConfiguration()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
         // First get current config
@@ -148,7 +147,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task AlterConfigsAsync_ValidateOnly_DoesNotModify()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
         // Get current config
@@ -186,7 +185,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task IncrementalAlterConfigsAsync_SetOperation_UpdatesValue()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
         // Act
@@ -216,7 +215,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task IncrementalAlterConfigsAsync_DeleteOperation_ResetsToDefault()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
         // First set a custom value
@@ -251,7 +250,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task CreateAclsAsync_AndDescribeAclsAsync_WorksTogether()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
         var aclBinding = AclBinding.Allow(
@@ -287,7 +286,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task DeleteAclsAsync_RemovesAcls()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
         try
@@ -359,14 +358,14 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task DeleteConsumerGroupOffsetsAsync_DeletesCommittedOffsets()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         try
         {
             // Produce a message
             await using var producer = Kafka.CreateProducer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-producer")
                 .Build();
 
@@ -379,7 +378,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
 
             // Consume and commit
             await using (var consumer = Kafka.CreateConsumer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-consumer")
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -467,7 +466,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task ListOffsetsAsync_Earliest_ReturnsZeroForEmptyTopic()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
         // Act
@@ -491,12 +490,12 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task ListOffsetsAsync_Latest_ReturnsEndOffset()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
         // Produce some messages
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -531,7 +530,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task ListOffsetsAsync_Timestamp_ReturnsCorrectOffset()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
         // Record timestamp before producing
@@ -541,7 +540,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
 
         // Produce messages
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -577,7 +576,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task ListOffsetsAsync_MultiplePartitions_ReturnsAllOffsets()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3).ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3).ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
         // Act
@@ -617,7 +616,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task ElectLeadersAsync_Preferred_SucceedsForTopic()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
         // Act
@@ -637,7 +636,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task ElectLeadersAsync_AllPartitions_ReturnsResults()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
         // Act - null partitions means all partitions
@@ -814,7 +813,7 @@ public class AdminClientTests(KafkaTestContainer kafka)
     public async Task DescribeTopicsAsync_ReturnsTopicDetails()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3).ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3).ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
         // Act

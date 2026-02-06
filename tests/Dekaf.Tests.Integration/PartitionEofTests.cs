@@ -7,17 +7,16 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for partition EOF (end-of-file) events.
 /// Tests verify that EOF events fire correctly when reaching the high watermark.
 /// </summary>
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class PartitionEofTests(KafkaTestContainer kafka)
+public class PartitionEofTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task Consumer_EnablePartitionEof_FiresEofWhenReachingHighWatermark()
     {
         // Arrange - produce some messages first
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -34,7 +33,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
 
         // Act - create consumer with EnablePartitionEof and consume
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithPartitionEof(true)
@@ -76,10 +75,10 @@ public class PartitionEofTests(KafkaTestContainer kafka)
     public async Task Consumer_DisabledPartitionEof_DoesNotFireEofEvents()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -92,7 +91,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
 
         // Act - consumer without EnablePartitionEof (default is false)
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithPartitionEof(false) // Explicitly disabled
@@ -141,10 +140,10 @@ public class PartitionEofTests(KafkaTestContainer kafka)
     public async Task Consumer_EofResetsAfterNewMessages()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -157,7 +156,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithPartitionEof(true)
@@ -223,10 +222,10 @@ public class PartitionEofTests(KafkaTestContainer kafka)
     public async Task Consumer_EofResetsOnSeek()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -242,7 +241,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithPartitionEof(true)
@@ -294,10 +293,10 @@ public class PartitionEofTests(KafkaTestContainer kafka)
     public async Task Consumer_EofOnEmptyPartition()
     {
         // Arrange - create a topic with no messages
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithPartitionEof(true)
@@ -341,10 +340,10 @@ public class PartitionEofTests(KafkaTestContainer kafka)
     public async Task Consumer_EofWithMultiplePartitions()
     {
         // Arrange - create a topic with multiple partitions
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -361,7 +360,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithPartitionEof(true)
@@ -409,10 +408,10 @@ public class PartitionEofTests(KafkaTestContainer kafka)
         // this uses the default settings to ensure EOF works in the common case.
 
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -430,7 +429,7 @@ public class PartitionEofTests(KafkaTestContainer kafka)
 
         // Act - consumer with default prefetching (does NOT call WithQueuedMinMessages)
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithPartitionEof(true)

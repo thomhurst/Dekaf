@@ -11,8 +11,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for protocol version negotiation and compatibility.
 /// </summary>
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class ProtocolVersionTests(KafkaTestContainer kafka)
+public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task ApiVersions_SuccessfullyNegotiates()
@@ -25,7 +24,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
         };
 
         var pool = new ConnectionPool("test-client", connectionOptions, null);
-        var parts = kafka.BootstrapServers.Split(':');
+        var parts = KafkaContainer.BootstrapServers.Split(':');
         var host = parts[0];
         var port = int.Parse(parts[1]);
 
@@ -70,7 +69,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
         };
 
         var pool = new ConnectionPool("test-client", connectionOptions, null);
-        var parts = kafka.BootstrapServers.Split(':');
+        var parts = KafkaContainer.BootstrapServers.Split(':');
         var host = parts[0];
         var port = int.Parse(parts[1]);
 
@@ -107,7 +106,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
         };
 
         var pool = new ConnectionPool("test-client", connectionOptions, null);
-        var parts = kafka.BootstrapServers.Split(':');
+        var parts = KafkaContainer.BootstrapServers.Split(':');
         var host = parts[0];
         var port = int.Parse(parts[1]);
 
@@ -143,7 +142,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
         };
 
         var pool = new ConnectionPool("test-client", connectionOptions, null);
-        var parts = kafka.BootstrapServers.Split(':');
+        var parts = KafkaContainer.BootstrapServers.Split(':');
         var host = parts[0];
         var port = int.Parse(parts[1]);
 
@@ -179,7 +178,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
         };
 
         var pool = new ConnectionPool("test-client", connectionOptions, null);
-        var parts = kafka.BootstrapServers.Split(':');
+        var parts = KafkaContainer.BootstrapServers.Split(':');
         var host = parts[0];
         var port = int.Parse(parts[1]);
 
@@ -216,10 +215,10 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
     {
         // This test verifies that the producer correctly negotiates API versions
         // and can produce messages using the negotiated version
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-version")
             .Build();
 
@@ -240,11 +239,11 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
     public async Task Consumer_NegotiatesCompatibleVersion_AndConsumes()
     {
         // This test verifies that the consumer correctly negotiates API versions
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -257,7 +256,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
 
         // Act - consumer should negotiate versions automatically
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-version")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -278,11 +277,11 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
     {
         // Tests that flexible protocol versions (with tagged fields) work correctly
         // Flexible versions use COMPACT_ types and support tagged fields
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-flexible")
             .Build();
 
@@ -302,7 +301,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
 
         // Consume
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-flexible")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -324,11 +323,11 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
     public async Task RecordBatchV2_CorrectlyEncodesAndDecodes()
     {
         // Tests that RecordBatch v2 format (used in Kafka 0.11+) works correctly
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-batch")
             .Build();
 
@@ -346,7 +345,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
 
         // Consume all
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-batch")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -382,7 +381,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
         };
 
         var pool = new ConnectionPool("test-client", connectionOptions, null);
-        var parts = kafka.BootstrapServers.Split(':');
+        var parts = KafkaContainer.BootstrapServers.Split(':');
         var host = parts[0];
         var port = int.Parse(parts[1]);
 
@@ -428,7 +427,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
     public async Task Metadata_SupportsV12FlexibleFormat()
     {
         // Tests that Metadata v12 (flexible) format works correctly
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         var connectionOptions = new ConnectionOptions
         {
@@ -436,7 +435,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka)
         };
 
         var pool = new ConnectionPool("test-client", connectionOptions, null);
-        var parts = kafka.BootstrapServers.Split(':');
+        var parts = KafkaContainer.BootstrapServers.Split(':');
         var host = parts[0];
         var port = int.Parse(parts[1]);
 
