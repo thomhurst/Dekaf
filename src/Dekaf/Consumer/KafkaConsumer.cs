@@ -559,14 +559,16 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                         try
                         {
                             timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(_options.FetchMaxWaitMs));
-                            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+                            using var reg = cancellationToken.CanBeCanceled
+                                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
+                                : default;
                             try
                             {
-                                var fetched = await _prefetchChannel.Reader.ReadAsync(linkedCts.Token).ConfigureAwait(false);
+                                var fetched = await _prefetchChannel.Reader.ReadAsync(timeoutCts.Token).ConfigureAwait(false);
                                 _pendingFetches.Enqueue(fetched);
                                 TrackPrefetchedBytes(fetched, release: true);
                             }
-                            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+                            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                             {
                                 // Prefetch not ready - check for EOF events before continuing
                                 // (EOF events are queued by prefetch loop when partition is caught up)
@@ -733,13 +735,17 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     private async ValueTask PrefetchRecordsAsync(CancellationToken cancellationToken)
     {
-        // Rent wakeup CTS from pool to avoid allocation
+        // Rent wakeup CTS from pool — used as the combined cancellation source
+        // instead of allocating a LinkedCTS
         var wakeupCts = _ctsPool.Rent();
         _wakeupCts = wakeupCts;
 
         try
         {
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, wakeupCts.Token);
+            // Forward outer cancellation and wakeup into the pooled CTS via registrations
+            using var reg1 = cancellationToken.CanBeCanceled
+                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), wakeupCts)
+                : default;
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
 
@@ -753,7 +759,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 foreach (var (brokerId, partitions) in partitionsByBroker)
                 {
                     fetchTasks[i++] = PrefetchFromBrokerWithErrorHandlingAsync(
-                        brokerId, partitions, linkedCts.Token, wakeupCts.Token);
+                        brokerId, partitions, wakeupCts.Token, wakeupCts.Token);
                 }
 
                 await Task.WhenAll((IEnumerable<Task>)new ArraySegment<Task>(fetchTasks, 0, brokerCount)).ConfigureAwait(false);
