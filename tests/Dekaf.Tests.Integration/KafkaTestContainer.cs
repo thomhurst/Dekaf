@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Net.Sockets;
 using Testcontainers.Kafka;
 using TUnit.Core.Interfaces;
@@ -121,27 +120,19 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 
     private async Task CreateTopicViaTestcontainersAsync(string topicName, int partitions, int replicationFactor)
     {
-        // Use docker exec directly to avoid Docker.DotNet JSON parsing issues
-        // that occur with certain Docker daemon versions.
-        // The internal broker listener (BROKER://localhost:9093) is used inside the container.
-        var containerId = Container!.Id;
-        var process = new Process
+        var result = await Container.ExecAsync([
+            "kafka-topics.sh",
+            "--bootstrap-server", $"localhost:{KafkaBuilder.KafkaPort}",
+            "--create",
+            "--topic", topicName,
+            "--partitions", partitions.ToString(),
+            "--replication-factor", replicationFactor.ToString(),
+            "--if-not-exists"
+        ]).ConfigureAwait(false);
+
+        if (result.ExitCode != 0)
         {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "docker",
-                Arguments = $"exec {containerId} kafka-topics --bootstrap-server localhost:9093 --create --topic {topicName} --partitions {partitions} --replication-factor {replicationFactor} --if-not-exists",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false
-            }
-        };
-        process.Start();
-        await process.WaitForExitAsync().ConfigureAwait(false);
-        var error = await process.StandardError.ReadToEndAsync().ConfigureAwait(false);
-        if (process.ExitCode != 0)
-        {
-            Console.WriteLine($"[KafkaTestContainer] Warning: Failed to create topic: {error}");
+            Console.WriteLine($"[KafkaTestContainer] Warning: Failed to create topic (exit code {result.ExitCode}): {result.Stderr} {result.Stdout}");
         }
     }
 
