@@ -8,15 +8,15 @@ namespace Dekaf.Tests.Integration;
 
 /// <summary>
 /// Shared Kafka container for integration tests.
-/// Uses KAFKA_BOOTSTRAP_SERVERS env var if set (for CI), otherwise starts Testcontainers.
 /// Shared across all tests in the session via ClassDataSource(Shared = SharedType.PerTestSession).
 /// </summary>
 public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 {
-    private KafkaContainer Container => field ??= new KafkaBuilder(ContainerName).Build();
+    private KafkaContainer? _container;
+    private KafkaContainer Container => _container ??= new KafkaBuilder(ContainerName).Build();
     private string _bootstrapServers = string.Empty;
     private readonly ConcurrentDictionary<string, byte> _createdTopics = new();
-    
+
     public abstract string ContainerName { get; }
     public abstract int Version { get; }
 
@@ -29,15 +29,15 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
     {
         Console.WriteLine("[KafkaTestContainer] Starting Kafka container via Testcontainers...");
 
-        await Container.StartAsync();
-        
+        await Container.StartAsync().ConfigureAwait(false);
+
         var rawAddress = Container.GetBootstrapAddress();
         // GetBootstrapAddress() may return "plaintext://host:port/" - extract just host:port
         _bootstrapServers = ExtractHostPort(rawAddress);
-        
+
         Console.WriteLine($"[KafkaTestContainer] Kafka started at {_bootstrapServers}");
-        
-        await WaitForKafkaAsync();
+
+        await WaitForKafkaAsync().ConfigureAwait(false);
     }
 
     private static string ExtractHostPort(string address)
@@ -66,12 +66,12 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
             try
             {
                 using var client = new TcpClient();
-                await client.ConnectAsync(host, port);
+                await client.ConnectAsync(host, port).ConfigureAwait(false);
                 if (client.Connected)
                 {
                     Console.WriteLine("[KafkaTestContainer] Kafka is accepting connections");
                     // Give it a moment to fully initialize
-                    await Task.Delay(2000);
+                    await Task.Delay(2000).ConfigureAwait(false);
                     return;
                 }
             }
@@ -80,7 +80,7 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
                 // Ignore and retry
             }
 
-            await Task.Delay(1000);
+            await Task.Delay(1000).ConfigureAwait(false);
         }
 
         throw new InvalidOperationException($"Kafka not ready after {maxAttempts} attempts");
@@ -92,7 +92,7 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
     public async Task<string> CreateTestTopicAsync(int partitions = 1)
     {
         var topicName = $"test-topic-{Guid.NewGuid():N}";
-        await CreateTopicAsync(topicName, partitions);
+        await CreateTopicAsync(topicName, partitions).ConfigureAwait(false);
         return topicName;
     }
 
@@ -111,11 +111,11 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 
         Console.WriteLine($"[KafkaTestContainer] Creating topic '{topicName}' with {partitions} partition(s)...");
 
-        await CreateTopicViaTestcontainersAsync(topicName, partitions, replicationFactor);
+        await CreateTopicViaTestcontainersAsync(topicName, partitions, replicationFactor).ConfigureAwait(false);
 
         // Wait for topic metadata to propagate
         // In containerized environments, metadata propagation can be slow
-        await Task.Delay(3000);
+        await Task.Delay(3000).ConfigureAwait(false);
         Console.WriteLine($"[KafkaTestContainer] Topic '{topicName}' created");
     }
 
@@ -137,8 +137,8 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
             }
         };
         process.Start();
-        await process.WaitForExitAsync();
-        var error = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync().ConfigureAwait(false);
+        var error = await process.StandardError.ReadToEndAsync().ConfigureAwait(false);
         if (process.ExitCode != 0)
         {
             Console.WriteLine($"[KafkaTestContainer] Warning: Failed to create topic: {error}");
@@ -147,7 +147,11 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await Container.DisposeAsync();
+        if (_container is not null)
+        {
+            await _container.DisposeAsync().ConfigureAwait(false);
+        }
+
         GC.SuppressFinalize(this);
     }
 }

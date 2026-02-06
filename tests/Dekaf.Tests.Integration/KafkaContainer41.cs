@@ -3,5 +3,5 @@ namespace Dekaf.Tests.Integration;
 public class KafkaContainer41 : KafkaTestContainer
 {
     public override string ContainerName => "apache/kafka:4.1.1";
-    public override int Version => 411;
+    public override int Version => 411; // major*100 + minor*10 + patch
 }
