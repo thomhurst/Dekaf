@@ -2137,8 +2137,13 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         // Check if cache is valid (same partition list as before)
         if (cachedDict is not null && cachedList is not null && cachedResult is not null && PartitionListsEqual(partitions, cachedList))
         {
-            // Cache hit: update fetch offsets in-place on the existing FetchRequestPartition objects
-            UpdateCachedOffsets(cachedDict);
+            // Cache hit: update fetch offsets in-place on the existing FetchRequestPartition objects.
+            // Lock required: multiple broker tasks call this concurrently via Task.WhenAll.
+            lock (_fetchCacheLock)
+            {
+                UpdateCachedOffsets(cachedDict);
+            }
+
             return cachedResult;
         }
 
@@ -2197,6 +2202,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     /// <summary>
     /// Updates fetch offsets in-place on the cached FetchRequestPartition objects.
     /// Zero-allocation on cache hit — reuses the same list and partition objects.
+    /// Must be called under <see cref="_fetchCacheLock"/> — multiple broker tasks call concurrently.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void UpdateCachedOffsets(
