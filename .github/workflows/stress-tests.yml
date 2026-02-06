@@ -266,8 +266,8 @@ jobs:
               lines = []
               lines.append("## GC Statistics")
               lines.append("")
-              lines.append("| Client | Scenario | Gen0 | Gen1 | Gen2 | Allocated |")
-              lines.append("|--------|----------|------|------|------|-----------|")
+              lines.append("| Client | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated |")
+              lines.append("|--------|----------|------|------|------|-----------------|")
 
               for r in sorted(results, key=lambda x: (x.get('client', ''), x.get('scenario', ''))):
                   client = r.get('client', 'Unknown')
@@ -435,8 +435,8 @@ jobs:
                   # GC Stats
                   output.append("## Memory & GC Statistics")
                   output.append("")
-                  output.append("| Client | Scenario | Gen0 | Gen1 | Gen2 | Allocated |")
-                  output.append("|--------|----------|------|------|------|-----------|")
+                  output.append("| Client | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated |")
+                  output.append("|--------|----------|------|------|------|-----------------|")
 
                   for r in sorted(results, key=lambda x: (x.get('client', ''), x.get('scenario', ''))):
                       gc = r.get('gcStats', {})

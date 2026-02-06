@@ -103,8 +103,8 @@ internal static class MarkdownReporter
     {
         sb.AppendLine("## GC Statistics");
         sb.AppendLine();
-        sb.AppendLine("| Client    | Scenario | Gen0 | Gen1 | Gen2 | Allocated |");
-        sb.AppendLine("|-----------|----------|------|------|------|-----------|");
+        sb.AppendLine("| Client    | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated |");
+        sb.AppendLine("|-----------|----------|------|------|------|-----------------|");
 
         foreach (var result in results.OrderBy(r => r.Client).ThenBy(r => r.Scenario))
         {
