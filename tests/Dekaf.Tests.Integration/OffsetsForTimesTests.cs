@@ -7,8 +7,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for GetOffsetsForTimesAsync functionality.
 /// Tests the ability to look up offsets by timestamp using the ListOffsets API.
 /// </summary>
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class OffsetsForTimesTests(KafkaTestContainer kafka)
+public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 {
     [Test]
     public async Task GetOffsetsForTimesAsync_WithValidTimestamp_ReturnsCorrectOffset()

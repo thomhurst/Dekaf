@@ -6,8 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for multi-partition scenarios.
 /// </summary>
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class MultiPartitionTests(KafkaTestContainer kafka)
+public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 {
     [Test]
     public async Task MultiPartition_KeyBasedPartitioning_SameKeyGoesToSamePartition()

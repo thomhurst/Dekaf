@@ -6,8 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for OffsetCommitMode behavior.
 /// </summary>
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class OffsetCommitModeTests(KafkaTestContainer kafka)
+public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 {
     [Test]
     public async Task OffsetCommitMode_Manual_CommitAsync_CommitsAllConsumedOffsets()

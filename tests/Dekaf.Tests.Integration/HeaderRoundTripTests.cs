@@ -5,8 +5,7 @@ using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Integration;
 
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class HeaderRoundTripTests(KafkaTestContainer kafka)
+public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 {
     [Test]
     public async Task ProduceWithHeaders_ConsumePreservesHeaders()

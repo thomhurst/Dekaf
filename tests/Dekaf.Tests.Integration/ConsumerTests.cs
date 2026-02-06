@@ -8,8 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for the Kafka consumer.
 /// </summary>
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class ConsumerTests(KafkaTestContainer kafka)
+public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 {
     [Test]
     public async Task Consumer_SubscribeAndConsume_ReceivesMessages()

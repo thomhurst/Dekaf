@@ -3,8 +3,7 @@ using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
 
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class ProduceAllAsyncTests(KafkaTestContainer kafka)
+public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 {
     [Test]
     public async Task ProduceAllAsync_MultipleMessages_AllDelivered()

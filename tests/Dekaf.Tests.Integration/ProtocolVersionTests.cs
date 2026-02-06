@@ -11,8 +11,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for protocol version negotiation and compatibility.
 /// </summary>
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class ProtocolVersionTests(KafkaTestContainer kafka)
+public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 {
     [Test]
     public async Task ApiVersions_SuccessfullyNegotiates()

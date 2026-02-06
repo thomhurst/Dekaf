@@ -6,8 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests verifying the BufferMemory fix prevents unbounded memory growth
 /// under sustained load. This is a regression test for the arena fast path bypass bug.
 /// </summary>
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class BufferMemoryStressTests(KafkaTestContainer kafka)
+public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 {
     /// <summary>
     /// Regression test for the BufferMemory arena bypass bug.

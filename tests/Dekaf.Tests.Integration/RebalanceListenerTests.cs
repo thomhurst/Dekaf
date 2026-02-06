@@ -3,8 +3,7 @@ using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
 
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class RebalanceListenerTests(KafkaTestContainer kafka)
+public class RebalanceListenerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 {
     [Test]
     public async Task OnPartitionsAssigned_CalledWhenConsumerSubscribes()

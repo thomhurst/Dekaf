@@ -11,12 +11,14 @@ namespace Dekaf.Tests.Integration;
 /// Uses KAFKA_BOOTSTRAP_SERVERS env var if set (for CI), otherwise starts Testcontainers.
 /// Shared across all tests in the session via ClassDataSource(Shared = SharedType.PerTestSession).
 /// </summary>
-public class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
+public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 {
-    private KafkaContainer? _container;
-    private bool _externalKafka;
+    private KafkaContainer Container => field ??= new KafkaBuilder(ContainerName).Build();
     private string _bootstrapServers = string.Empty;
     private readonly ConcurrentDictionary<string, byte> _createdTopics = new();
+    
+    public abstract string ContainerName { get; }
+    public abstract int Version { get; }
 
     /// <summary>
     /// The Kafka bootstrap servers connection string.
@@ -25,27 +27,16 @@ public class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 
     public async Task InitializeAsync()
     {
-        // Check for external Kafka (CI environment)
-        var externalBootstrap = Environment.GetEnvironmentVariable("KAFKA_BOOTSTRAP_SERVERS");
-        if (!string.IsNullOrEmpty(externalBootstrap))
-        {
-            _bootstrapServers = externalBootstrap;
-            _externalKafka = true;
-            Console.WriteLine($"[KafkaTestContainer] Using external Kafka at {_bootstrapServers}");
-            await WaitForKafkaAsync();
-            return;
-        }
-
         Console.WriteLine("[KafkaTestContainer] Starting Kafka container via Testcontainers...");
-        // Use KafkaBuilder without custom port binding - it handles listeners correctly
-        _container = new KafkaBuilder("confluentinc/cp-kafka:7.5.0")
-            .Build();
 
-        await _container.StartAsync();
-        var rawAddress = _container.GetBootstrapAddress();
+        await Container.StartAsync();
+        
+        var rawAddress = Container.GetBootstrapAddress();
         // GetBootstrapAddress() may return "plaintext://host:port/" - extract just host:port
         _bootstrapServers = ExtractHostPort(rawAddress);
+        
         Console.WriteLine($"[KafkaTestContainer] Kafka started at {_bootstrapServers}");
+        
         await WaitForKafkaAsync();
     }
 
@@ -120,14 +111,7 @@ public class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 
         Console.WriteLine($"[KafkaTestContainer] Creating topic '{topicName}' with {partitions} partition(s)...");
 
-        if (_externalKafka)
-        {
-            await CreateTopicViaDockerExecAsync(topicName, partitions, replicationFactor);
-        }
-        else if (_container is not null)
-        {
-            await CreateTopicViaTestcontainersAsync(topicName, partitions, replicationFactor);
-        }
+        await CreateTopicViaTestcontainersAsync(topicName, partitions, replicationFactor);
 
         // Wait for topic metadata to propagate
         // In containerized environments, metadata propagation can be slow
@@ -135,34 +119,12 @@ public class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
         Console.WriteLine($"[KafkaTestContainer] Topic '{topicName}' created");
     }
 
-    private static async Task CreateTopicViaDockerExecAsync(string topicName, int partitions, int replicationFactor)
-    {
-        var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = "docker",
-                Arguments = $"exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic {topicName} --partitions {partitions} --replication-factor {replicationFactor} --if-not-exists",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false
-            }
-        };
-        process.Start();
-        await process.WaitForExitAsync();
-        var error = await process.StandardError.ReadToEndAsync();
-        if (process.ExitCode != 0)
-        {
-            Console.WriteLine($"[KafkaTestContainer] Warning: Failed to create topic: {error}");
-        }
-    }
-
     private async Task CreateTopicViaTestcontainersAsync(string topicName, int partitions, int replicationFactor)
     {
         // Use docker exec directly to avoid Docker.DotNet JSON parsing issues
         // that occur with certain Docker daemon versions.
         // The internal broker listener (BROKER://localhost:9093) is used inside the container.
-        var containerId = _container!.Id;
+        var containerId = Container!.Id;
         var process = new Process
         {
             StartInfo = new ProcessStartInfo
@@ -185,16 +147,7 @@ public class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_externalKafka)
-        {
-            GC.SuppressFinalize(this);
-            return;
-        }
-
-        if (_container is not null)
-        {
-            await _container.DisposeAsync();
-        }
+        await Container.DisposeAsync();
         GC.SuppressFinalize(this);
     }
 }

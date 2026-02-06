@@ -6,8 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for watermark offsets functionality.
 /// </summary>
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class WatermarkOffsetsTests(KafkaTestContainer kafka)
+public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 {
     [Test]
     public async Task GetWatermarkOffsets_ReturnsNull_WhenNoDataCached()

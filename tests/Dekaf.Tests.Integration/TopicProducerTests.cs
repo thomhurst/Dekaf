@@ -7,8 +7,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for the topic-specific producer.
 /// </summary>
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class TopicProducerTests(KafkaTestContainer kafka)
+public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 {
     [Test]
     public async Task TopicProducer_ProduceAsync_MessageDelivered()

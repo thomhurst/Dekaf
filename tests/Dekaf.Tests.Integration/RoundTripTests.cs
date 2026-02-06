@@ -7,8 +7,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// End-to-end round-trip tests validating produce and consume scenarios.
 /// </summary>
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class RoundTripTests(KafkaTestContainer kafka)
+public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 {
     [Test]
     public async Task RoundTrip_SimpleMessage_PreservesData()

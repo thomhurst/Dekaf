@@ -9,8 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for the Kafka admin client.
 /// </summary>
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class AdminClientTests(KafkaTestContainer kafka)
+public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 {
     private IAdminClient CreateAdminClient()
     {

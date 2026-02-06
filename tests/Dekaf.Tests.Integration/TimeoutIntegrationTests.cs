@@ -7,8 +7,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests verifying timeout protection in connection, flush, receive, and disposal operations.
 /// These tests exercise code paths that have timeout protection to ensure operations complete without hanging.
 /// </summary>
-[ClassDataSource<KafkaTestContainer>(Shared = SharedType.PerTestSession)]
-public class TimeoutIntegrationTests(KafkaTestContainer kafka)
+public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 {
     [Test]
     public async Task Producer_ConnectionEstablishment_CompletesWithinDefaultTimeout()
