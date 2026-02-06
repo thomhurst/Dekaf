@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Unit.Security;
 /// Tests for certificate loading functionality.
 /// Tests PEM and PFX certificate loading from files.
 /// </summary>
+[NotInParallel("CertificateGeneration")]
 public class CertificateLoadingTests : IDisposable
 {
     private readonly string _tempDir;

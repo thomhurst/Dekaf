@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Unit.Security;
 /// These tests verify the certificate chain validation behavior by creating
 /// test certificates and validating them against custom trust stores.
 /// </summary>
+[NotInParallel("CertificateGeneration")]
 public class CertificateValidationTests
 {
     [Test]
@@ -79,12 +80,8 @@ public class CertificateValidationTests
     [Test]
     public async Task ChainStatus_DetectsExpiredCertificate()
     {
-        // Create an expired certificate using the fixed key
-        using var rsa = TestCertificateHelper.CreateRsaKey();
-        var request = new CertificateRequest("CN=Expired Cert", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-
-        // Certificate that expired yesterday
-        using var expiredCert = request.CreateSelfSigned(
+        // Create an expired certificate using the helper with custom dates
+        using var expiredCert = TestCertificateHelper.CreateCaCertificateWithCustomDates("CN=Expired Cert",
             DateTimeOffset.UtcNow.AddYears(-2),
             DateTimeOffset.UtcNow.AddDays(-1));
 
