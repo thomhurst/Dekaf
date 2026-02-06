@@ -46,10 +46,26 @@ internal static class TestCertificateHelper
         """;
 
     /// <summary>
-    /// Fixed serial number for certificate creation.
+    /// Fixed serial number for certificate creation (used by tests that reference it directly).
     /// Starts with 0x01 to avoid leading-zero ASN.1 encoding issues.
     /// </summary>
     internal static readonly byte[] FixedSerialNumber = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+
+    /// <summary>
+    /// Generates a deterministic serial number derived from the subject name.
+    /// Each unique subject produces a unique serial, avoiding chain validation
+    /// confusion when multiple CAs share the same key material.
+    /// The first byte is always 0x01 to avoid leading-zero ASN.1 encoding issues.
+    /// </summary>
+    private static byte[] DeriveSerialNumber(string subjectName)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(subjectName));
+        var serial = new byte[9];
+        serial[0] = 0x01; // Ensure no leading-zero ASN.1 issue
+        hash.AsSpan(0, 8).CopyTo(serial.AsSpan(1));
+        return serial;
+    }
 
     /// <summary>
     /// Creates an RSA instance loaded with the fixed pre-generated key.
@@ -77,6 +93,9 @@ internal static class TestCertificateHelper
     /// <summary>
     /// Creates a self-signed certificate with the private key attached.
     /// Suitable for PFX export and client certificate tests.
+    /// Uses Create() with a fixed serial number instead of CreateSelfSigned()
+    /// because CreateSelfSigned generates a random serial number that can
+    /// trigger ASN.1 "first 9 bits" encoding failures in .NET 10+.
     /// </summary>
     internal static X509Certificate2 CreateSelfSignedCertificateWithKey(string subjectName)
     {
@@ -89,7 +108,15 @@ internal static class TestCertificateHelper
         var notBefore = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero);
         var notAfter = new DateTimeOffset(2034, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
-        return request.CreateSelfSigned(notBefore, notAfter);
+        var generator = X509SignatureGenerator.CreateForRSA(rsa, RSASignaturePadding.Pkcs1);
+        using var cert = request.Create(
+            new X500DistinguishedName(subjectName),
+            generator,
+            notBefore,
+            notAfter,
+            DeriveSerialNumber(subjectName));
+
+        return cert.CopyWithPrivateKey(rsa);
     }
 
     /// <summary>
@@ -105,6 +132,9 @@ internal static class TestCertificateHelper
     /// <summary>
     /// Creates a CA certificate with custom validity dates.
     /// Useful for expired certificate tests.
+    /// Uses Create() with a fixed serial number instead of CreateSelfSigned()
+    /// because CreateSelfSigned generates a random serial number that can
+    /// trigger ASN.1 "first 9 bits" encoding failures in .NET 10+.
     /// </summary>
     internal static X509Certificate2 CreateCaCertificateWithCustomDates(string subjectName,
         DateTimeOffset notBefore, DateTimeOffset notAfter)
@@ -124,7 +154,15 @@ internal static class TestCertificateHelper
                 X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign,
                 critical: true));
 
-        return request.CreateSelfSigned(notBefore, notAfter);
+        var generator = X509SignatureGenerator.CreateForRSA(rsa, RSASignaturePadding.Pkcs1);
+        using var cert = request.Create(
+            new X500DistinguishedName(subjectName),
+            generator,
+            notBefore,
+            notAfter,
+            DeriveSerialNumber(subjectName));
+
+        return cert.CopyWithPrivateKey(rsa);
     }
 
     /// <summary>
@@ -155,7 +193,7 @@ internal static class TestCertificateHelper
             issuer,
             notBefore,
             notAfter,
-            FixedSerialNumber);
+            DeriveSerialNumber(subjectName));
 
         return certWithoutKey.CopyWithPrivateKey(rsa);
     }

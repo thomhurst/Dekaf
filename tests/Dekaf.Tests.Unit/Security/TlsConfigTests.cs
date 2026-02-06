@@ -4,6 +4,7 @@ using Dekaf.Security;
 
 namespace Dekaf.Tests.Unit.Security;
 
+[NotInParallel("CertificateGeneration")]
 public class TlsConfigTests
 {
     [Test]
