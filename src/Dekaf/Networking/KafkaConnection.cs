@@ -320,19 +320,28 @@ public sealed class KafkaConnection : IKafkaConnection
             }
             else
             {
-                // Slow path: must use linked source (can't pool linked CTS)
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeoutCts.CancelAfter(_options.RequestTimeout);
-                pending.RegisterCancellation(timeoutCts.Token);
-
+                // Slow path: pool CTS + register outer cancellation token
+                var timeoutCts = _timeoutCtsPool.Rent();
                 try
                 {
-                    // Zero-allocation await via IValueTaskSource
-                    pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
+                    timeoutCts.CancelAfter(_options.RequestTimeout);
+                    using var reg = cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts);
+                    pending.RegisterCancellation(timeoutCts.Token);
+
+                    try
+                    {
+                        // Zero-allocation await via IValueTaskSource
+                        pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                    {
+                        throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
+                    }
                 }
-                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                finally
                 {
-                    throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
+                    pending.DisposeRegistration();
+                    _timeoutCtsPool.Return(timeoutCts);
                 }
             }
 
@@ -495,30 +504,38 @@ public sealed class KafkaConnection : IKafkaConnection
 
         _writer.Advance(4 + totalSize);
 
-        // Apply RequestTimeout to flush operation
-        using var timeoutCts = new CancellationTokenSource(_options.RequestTimeout);
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            timeoutCts.Token);
-
-        FlushResult result;
+        // Apply RequestTimeout to flush operation using pooled CTS
+        var timeoutCts = _timeoutCtsPool.Rent();
         try
         {
-            result = await _writer.FlushAsync(linkedCts.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
-        {
-            _logger?.LogError(
-                "Flush timeout after {Timeout}ms for request {CorrelationId} to broker {BrokerId}",
-                _options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
+            timeoutCts.CancelAfter(_options.RequestTimeout);
+            using var reg = cancellationToken.CanBeCanceled
+                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
+                : default;
 
-            throw new KafkaException(
-                $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
-        }
+            FlushResult result;
+            try
+            {
+                result = await _writer.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                _logger?.LogError(
+                    "Flush timeout after {Timeout}ms for request {CorrelationId} to broker {BrokerId}",
+                    _options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
-        if (result.IsCompleted || result.IsCanceled)
+                throw new KafkaException(
+                    $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
+            }
+
+            if (result.IsCompleted || result.IsCanceled)
+            {
+                throw new IOException("Connection closed while writing");
+            }
+        }
+        finally
         {
-            throw new IOException("Connection closed while writing");
+            _timeoutCtsPool.Return(timeoutCts);
         }
     }
 
@@ -533,60 +550,67 @@ public sealed class KafkaConnection : IKafkaConnection
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                // Apply RequestTimeout to each read operation
-                using var timeoutCts = new CancellationTokenSource(_options.RequestTimeout);
-                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
-                    cancellationToken,
-                    timeoutCts.Token);
-
-                ReadResult result;
+                // Apply RequestTimeout to each read operation using pooled CTS
+                var timeoutCts = _timeoutCtsPool.Rent();
                 try
                 {
-                    result = await _reader.ReadAsync(linkedCts.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
-                {
-                    _logger?.LogError(
-                        "Receive timeout after {Timeout}ms on broker {BrokerId} - marking connection as failed",
-                        _options.RequestTimeout.TotalMilliseconds, BrokerId);
-
-                    // Mark connection as failed to trigger reconnection
-                    _disposed = true;
-
-                    throw new KafkaException(
-                        $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
-                }
-
-                var buffer = result.Buffer;
-
-                _logger?.LogTrace("Received {Length} bytes from {Host}:{Port}", buffer.Length, _host, _port);
-
-                while (TryReadResponse(ref buffer, out var correlationId, out var responseData))
-                {
-                    _logger?.LogDebug("Received response for correlation ID {CorrelationId}, {Length} bytes", correlationId, responseData.Length);
-
-                    if (_pendingRequests.TryGetValue(correlationId, out var pending))
+                    ReadResult result;
+                    try
                     {
-                        if (!pending.TryComplete(responseData))
+                        timeoutCts.CancelAfter(_options.RequestTimeout);
+                        using var reg = cancellationToken.CanBeCanceled
+                            ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
+                            : default;
+                        result = await _reader.ReadAsync(timeoutCts.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                    {
+                        _logger?.LogError(
+                            "Receive timeout after {Timeout}ms on broker {BrokerId} - marking connection as failed",
+                            _options.RequestTimeout.TotalMilliseconds, BrokerId);
+
+                        // Mark connection as failed to trigger reconnection
+                        _disposed = true;
+
+                        throw new KafkaException(
+                            $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
+                    }
+
+                    var buffer = result.Buffer;
+
+                    _logger?.LogTrace("Received {Length} bytes from {Host}:{Port}", buffer.Length, _host, _port);
+
+                    while (TryReadResponse(ref buffer, out var correlationId, out var responseData))
+                    {
+                        _logger?.LogDebug("Received response for correlation ID {CorrelationId}, {Length} bytes", correlationId, responseData.Length);
+
+                        if (_pendingRequests.TryGetValue(correlationId, out var pending))
                         {
-                            // Request was already cancelled/failed - dispose the buffer
+                            if (!pending.TryComplete(responseData))
+                            {
+                                // Request was already cancelled/failed - dispose the buffer
+                                responseData.Dispose();
+                            }
+                        }
+                        else
+                        {
+                            _logger?.LogWarning("Received response for unknown correlation ID {CorrelationId}", correlationId);
+                            // No pending request - dispose the buffer
                             responseData.Dispose();
                         }
                     }
-                    else
+
+                    _reader.AdvanceTo(buffer.Start, buffer.End);
+
+                    if (result.IsCompleted)
                     {
-                        _logger?.LogWarning("Received response for unknown correlation ID {CorrelationId}", correlationId);
-                        // No pending request - dispose the buffer
-                        responseData.Dispose();
+                        _logger?.LogDebug("Receive loop completed (connection closed) for {Host}:{Port}", _host, _port);
+                        break;
                     }
                 }
-
-                _reader.AdvanceTo(buffer.Start, buffer.End);
-
-                if (result.IsCompleted)
+                finally
                 {
-                    _logger?.LogDebug("Receive loop completed (connection closed) for {Host}:{Port}", _host, _port);
-                    break;
+                    _timeoutCtsPool.Return(timeoutCts);
                 }
             }
         }
