@@ -597,71 +597,77 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             {
                 var pending = _pendingFetches.Peek();
 
-                while (pending.MoveNext())
+                // try/finally ensures position is flushed even when the iterator is
+                // disposed mid-batch (e.g., ConsumeOneAsync, break, cancellation).
+                try
                 {
-                    var record = pending.CurrentRecord;
-                    var batch = pending.CurrentBatch;
-
-                    var offset = batch.BaseOffset + record.OffsetDelta;
-                    var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
-                        batch.BaseTimestamp + record.TimestampDelta);
-
-                    var headers = GetHeaders(record.Headers);
-                    var timestampType = ((int)batch.Attributes & 0x08) != 0
-                        ? TimestampType.LogAppendTime
-                        : TimestampType.CreateTime;
-
-                    // Create result - deserialization happens eagerly in the constructor
-                    var result = new ConsumeResult<TKey, TValue>(
-                        topic: pending.Topic,
-                        partition: pending.PartitionIndex,
-                        offset: offset,
-                        keyData: record.Key,
-                        isKeyNull: record.IsKeyNull,
-                        valueData: record.Value,
-                        isValueNull: record.IsValueNull,
-                        headers: headers,
-                        timestamp: timestamp,
-                        timestampType: timestampType,
-                        leaderEpoch: null,
-                        keyDeserializer: _keyDeserializer,
-                        valueDeserializer: _valueDeserializer);
-
-                    // Track consumed offset and bytes — position dict updates are deferred
-                    // to batch-level below (after all records from this fetch are yielded)
-                    // to minimize ConcurrentDictionary write pressure in the hot path.
-                    var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
-                                       (record.IsValueNull ? 0 : record.Value.Length);
-                    pending.TrackConsumed(offset, messageBytes);
-
-                    // Apply OnConsume interceptors before yielding to user
-                    result = ApplyOnConsumeInterceptors(result);
-
-                    yield return result;
-                }
-
-                // Batch-level position update (once per partition-fetch, not per message).
-                // This reduces ConcurrentDictionary write pressure from ~N writes per fetch
-                // to 1 write per fetch, inspired by librdkafka's batch-level position tracking.
-                if (pending.LastYieldedOffset >= 0)
-                {
-                    var nextOffset = pending.LastYieldedOffset + 1;
-                    _positions[pending.TopicPartition] = nextOffset;
-
-                    if (!_prefetchEnabled)
+                    while (pending.MoveNext())
                     {
-                        _fetchPositions[pending.TopicPartition] = nextOffset;
+                        var record = pending.CurrentRecord;
+                        var batch = pending.CurrentBatch;
+
+                        var offset = batch.BaseOffset + record.OffsetDelta;
+                        var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(
+                            batch.BaseTimestamp + record.TimestampDelta);
+
+                        var headers = GetHeaders(record.Headers);
+                        var timestampType = ((int)batch.Attributes & 0x08) != 0
+                            ? TimestampType.LogAppendTime
+                            : TimestampType.CreateTime;
+
+                        // Create result - deserialization happens eagerly in the constructor
+                        var result = new ConsumeResult<TKey, TValue>(
+                            topic: pending.Topic,
+                            partition: pending.PartitionIndex,
+                            offset: offset,
+                            keyData: record.Key,
+                            isKeyNull: record.IsKeyNull,
+                            valueData: record.Value,
+                            isValueNull: record.IsValueNull,
+                            headers: headers,
+                            timestamp: timestamp,
+                            timestampType: timestampType,
+                            leaderEpoch: null,
+                            keyDeserializer: _keyDeserializer,
+                            valueDeserializer: _valueDeserializer);
+
+                        // Track consumed offset and bytes — position dict updates are deferred
+                        // to the finally block (once per fetch or on iterator disposal)
+                        // to minimize ConcurrentDictionary write pressure in the hot path.
+                        var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
+                                           (record.IsValueNull ? 0 : record.Value.Length);
+                        pending.TrackConsumed(offset, messageBytes);
+
+                        // Apply OnConsume interceptors before yielding to user
+                        result = ApplyOnConsumeInterceptors(result);
+
+                        yield return result;
                     }
                 }
-
-                // Batch-level statistics update (once per partition-fetch, not per message)
-                if (pending.MessageCount > 0)
+                finally
                 {
-                    _statisticsCollector.RecordMessagesConsumedBatch(
-                        pending.Topic,
-                        pending.PartitionIndex,
-                        pending.MessageCount,
-                        pending.TotalBytesConsumed);
+                    // Batch-level position update (once per partition-fetch, not per message).
+                    // Runs both on normal loop completion and on iterator disposal (break/cancel),
+                    // reducing ConcurrentDictionary writes from ~N per fetch to 1 per fetch.
+                    if (pending.LastYieldedOffset >= 0)
+                    {
+                        var nextOffset = pending.LastYieldedOffset + 1;
+                        _positions[pending.TopicPartition] = nextOffset;
+
+                        if (!_prefetchEnabled)
+                        {
+                            _fetchPositions[pending.TopicPartition] = nextOffset;
+                        }
+                    }
+
+                    if (pending.MessageCount > 0)
+                    {
+                        _statisticsCollector.RecordMessagesConsumedBatch(
+                            pending.Topic,
+                            pending.PartitionIndex,
+                            pending.MessageCount,
+                            pending.TotalBytesConsumed);
+                    }
                 }
 
                 // This pending fetch is exhausted, remove and dispose it
