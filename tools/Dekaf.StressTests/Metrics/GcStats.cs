@@ -21,7 +21,7 @@ internal struct GcStats
         _gen0Before = GC.CollectionCount(0);
         _gen1Before = GC.CollectionCount(1);
         _gen2Before = GC.CollectionCount(2);
-        _allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        _allocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
         Gen0 = Gen1 = Gen2 = 0;
         AllocatedBytes = 0;
     }
@@ -31,7 +31,7 @@ internal struct GcStats
         Gen0 = GC.CollectionCount(0) - _gen0Before;
         Gen1 = GC.CollectionCount(1) - _gen1Before;
         Gen2 = GC.CollectionCount(2) - _gen2Before;
-        AllocatedBytes = GC.GetAllocatedBytesForCurrentThread() - _allocatedBefore;
+        AllocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - _allocatedBefore;
     }
 
     public GcSnapshot ToSnapshot() => new()
