@@ -652,15 +652,17 @@ public sealed class KafkaConnection : IKafkaConnection
         responseBuffer.Slice(0, 4).CopyTo(correlationBuffer);
         correlationId = BinaryPrimitives.ReadInt32BigEndian(correlationBuffer);
 
-        // Use ArrayPool for responses <= 1MB, direct allocation for larger ones
-        // ArrayPool.Shared typically pools arrays up to ~1MB (2^20 bytes)
-        const int maxPooledSize = 1024 * 1024;
+        // Use dedicated response pool for responses <= 4MB.
+        // Kafka fetch responses are typically slightly over 1MB (due to protocol overhead
+        // on top of max.partition.fetch.bytes default of 1,048,576), so ArrayPool<byte>.Shared
+        // (which only pools up to 2^20 bytes) can't pool them, causing LOH allocations on every fetch.
+        const int maxPooledSize = 4 * 1024 * 1024;
         byte[] responseArray;
         bool isPooled;
 
         if (size <= maxPooledSize)
         {
-            responseArray = ArrayPool<byte>.Shared.Rent(size);
+            responseArray = PooledResponseBuffer.Pool.Rent(size);
             isPooled = true;
         }
         else
@@ -1534,6 +1536,17 @@ public sealed class ConnectionOptions
 /// </summary>
 internal readonly struct PooledResponseBuffer : IDisposable
 {
+    /// <summary>
+    /// Dedicated pool for Kafka response buffers. Sized to accommodate fetch responses
+    /// which are typically slightly over 1MB due to protocol overhead on top of
+    /// max.partition.fetch.bytes (default 1,048,576). ArrayPool&lt;byte&gt;.Shared only pools
+    /// arrays up to 2^20 (1,048,576) bytes, so responses of ~1,048,712 bytes would bypass
+    /// pooling entirely, causing ~693 LOH allocations/sec under load.
+    /// </summary>
+    internal static readonly ArrayPool<byte> Pool = ArrayPool<byte>.Create(
+        maxArrayLength: 4 * 1024 * 1024,
+        maxArraysPerBucket: 256);
+
     private readonly byte[] _buffer;
     private readonly int _offset;
 
@@ -1573,7 +1586,7 @@ internal readonly struct PooledResponseBuffer : IDisposable
     {
         if (IsPooled && _buffer is not null)
         {
-            ArrayPool<byte>.Shared.Return(_buffer);
+            Pool.Return(_buffer);
         }
     }
 }
@@ -1607,7 +1620,7 @@ internal sealed class PooledResponseMemory : Protocol.IPooledMemory
         var buffer = Interlocked.Exchange(ref _buffer, null);
         if (_isPooled && buffer is not null)
         {
-            ArrayPool<byte>.Shared.Return(buffer);
+            PooledResponseBuffer.Pool.Return(buffer);
         }
     }
 }
