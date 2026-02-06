@@ -157,7 +157,6 @@ public static class Program
         var sw = Stopwatch.StartNew();
         var count = 0L;
         var gcStats = new GcStats();
-        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
 
         while (!cts.Token.IsCancellationRequested)
         {
@@ -173,10 +172,9 @@ public static class Program
         await producer.FlushAsync().ConfigureAwait(false);
 
         sw.Stop();
-        var allocatedAfter = GC.GetAllocatedBytesForCurrentThread();
         gcStats.Capture();
 
-        PrintResults("Messages sent", count, sw.Elapsed, gcStats, allocatedAfter - allocatedBefore);
+        PrintResults("Messages sent", count, sw.Elapsed, gcStats);
     }
 
     private static async Task RunProducerAckedAsync(string bootstrapServers, int durationSeconds, int messageSize)
@@ -211,7 +209,6 @@ public static class Program
         var sw = Stopwatch.StartNew();
         var count = 0L;
         var gcStats = new GcStats();
-        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
 
         while (!cts.Token.IsCancellationRequested)
         {
@@ -232,10 +229,9 @@ public static class Program
         }
 
         sw.Stop();
-        var allocatedAfter = GC.GetAllocatedBytesForCurrentThread();
         gcStats.Capture();
 
-        PrintResults("Messages sent", count, sw.Elapsed, gcStats, allocatedAfter - allocatedBefore);
+        PrintResults("Messages sent", count, sw.Elapsed, gcStats);
     }
 
     private static async Task RunProducerBatchAsync(string bootstrapServers, int durationSeconds, int messageSize, int batchSize)
@@ -269,7 +265,6 @@ public static class Program
         var sw = Stopwatch.StartNew();
         var count = 0L;
         var gcStats = new GcStats();
-        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
 
         while (!cts.Token.IsCancellationRequested)
         {
@@ -296,10 +291,9 @@ public static class Program
         }
 
         sw.Stop();
-        var allocatedAfter = GC.GetAllocatedBytesForCurrentThread();
         gcStats.Capture();
 
-        PrintResults("Messages sent", count, sw.Elapsed, gcStats, allocatedAfter - allocatedBefore);
+        PrintResults("Messages sent", count, sw.Elapsed, gcStats);
     }
 
     private static async Task RunConsumerAsync(string bootstrapServers, int durationSeconds, int messageSize, int batchSize)
@@ -343,7 +337,6 @@ public static class Program
         var sw = Stopwatch.StartNew();
         var count = 0L;
         var gcStats = new GcStats();
-        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
 
         try
         {
@@ -358,10 +351,9 @@ public static class Program
         }
 
         sw.Stop();
-        var allocatedAfter = GC.GetAllocatedBytesForCurrentThread();
         gcStats.Capture();
 
-        PrintResults("Messages consumed", count, sw.Elapsed, gcStats, allocatedAfter - allocatedBefore);
+        PrintResults("Messages consumed", count, sw.Elapsed, gcStats);
     }
 
     private static async Task RunRoundtripAsync(KafkaEnvironment kafka, int durationSeconds, int messageSize, int batchSize)
@@ -397,7 +389,6 @@ public static class Program
         var produced = 0L;
         var consumed = 0L;
         var gcStats = new GcStats();
-        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
 
         // Start consumer in background
         var consumerTask = Task.Run(async () =>
@@ -440,14 +431,13 @@ public static class Program
         try { await consumerTask.ConfigureAwait(false); } catch { }
 
         sw.Stop();
-        var allocatedAfter = GC.GetAllocatedBytesForCurrentThread();
         gcStats.Capture();
 
         Console.WriteLine($"  Messages produced: {produced:N0}");
         Console.WriteLine($"  Messages consumed: {consumed:N0}");
         Console.WriteLine($"  Producer throughput: {produced / sw.Elapsed.TotalSeconds:N0} msg/sec");
         Console.WriteLine($"  Consumer throughput: {consumed / sw.Elapsed.TotalSeconds:N0} msg/sec");
-        PrintGcStats(gcStats, allocatedAfter - allocatedBefore);
+        PrintGcStats(gcStats);
     }
 
     private static async Task<KafkaEnvironment> StartKafkaAsync()
@@ -544,19 +534,19 @@ public static class Program
             """);
     }
 
-    private static void PrintResults(string label, long count, TimeSpan elapsed, GcStats gcStats, long allocatedBytes)
+    private static void PrintResults(string label, long count, TimeSpan elapsed, GcStats gcStats)
     {
         Console.WriteLine($"  {label}: {count:N0}");
         Console.WriteLine($"  Throughput: {count / elapsed.TotalSeconds:N0} msg/sec");
-        PrintGcStats(gcStats, allocatedBytes);
+        PrintGcStats(gcStats);
     }
 
-    private static void PrintGcStats(GcStats gcStats, long allocatedBytes)
+    private static void PrintGcStats(GcStats gcStats)
     {
         Console.WriteLine($"  Gen0 GCs: {gcStats.Gen0}");
         Console.WriteLine($"  Gen1 GCs: {gcStats.Gen1}");
         Console.WriteLine($"  Gen2 GCs: {gcStats.Gen2}");
-        Console.WriteLine($"  Allocated: {FormatBytes(allocatedBytes)}");
+        Console.WriteLine($"  Allocated: {FormatBytes(gcStats.AllocatedBytes)}");
     }
 
     private static string FormatBytes(long bytes)
@@ -579,17 +569,21 @@ public static class Program
         private readonly int _gen0Before;
         private readonly int _gen1Before;
         private readonly int _gen2Before;
+        private readonly long _allocatedBefore;
 
         public int Gen0 { get; private set; }
         public int Gen1 { get; private set; }
         public int Gen2 { get; private set; }
+        public long AllocatedBytes { get; private set; }
 
         public GcStats()
         {
             _gen0Before = GC.CollectionCount(0);
             _gen1Before = GC.CollectionCount(1);
             _gen2Before = GC.CollectionCount(2);
+            _allocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
             Gen0 = Gen1 = Gen2 = 0;
+            AllocatedBytes = 0;
         }
 
         public void Capture()
@@ -597,6 +591,7 @@ public static class Program
             Gen0 = GC.CollectionCount(0) - _gen0Before;
             Gen1 = GC.CollectionCount(1) - _gen1Before;
             Gen2 = GC.CollectionCount(2) - _gen2Before;
+            AllocatedBytes = GC.GetTotalAllocatedBytes(precise: false) - _allocatedBefore;
         }
     }
 
