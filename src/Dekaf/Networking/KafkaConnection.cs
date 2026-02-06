@@ -131,7 +131,7 @@ public sealed class KafkaConnection : IKafkaConnection
     public int BrokerId { get; private set; } = -1;
     public string Host => _host;
     public int Port => _port;
-    public bool IsConnected => _socket?.Connected ?? false;
+    public bool IsConnected => !_disposed && (_socket?.Connected ?? false);
 
     /// <summary>
     /// Unique identifier for this connection instance (for debugging).
