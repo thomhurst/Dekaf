@@ -1415,6 +1415,7 @@ public sealed class KafkaConnection : IKafkaConnection
         _reauthTimer?.Dispose();
         _reauthLock.Dispose();
         _writeLock.Dispose();
+        _timeoutCtsPool.Clear();
         _ownedTokenProvider?.Dispose();
 
         // Dispose certificates loaded from files
