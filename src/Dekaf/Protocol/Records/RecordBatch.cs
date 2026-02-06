@@ -351,7 +351,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     // Under high concurrency, the pool may temporarily exceed MaxPooledLists, but this is acceptable
     // as it only affects memory usage slightly and avoids the overhead of stricter synchronization.
     private static readonly System.Collections.Concurrent.ConcurrentBag<List<Record>> s_listPool = new();
-    private const int MaxPooledLists = 64;
+    private const int MaxPooledLists = 256;
 
     private readonly ReadOnlyMemory<byte> _rawData;
     private readonly byte[]? _pooledArray; // Track pooled array for cleanup
