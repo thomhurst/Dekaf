@@ -53,7 +53,14 @@ public sealed class KafkaConsumerServiceTests
         var service = new FailingConsumerService(consumer, ["topic-a"]);
 
         await service.StartAsync(CancellationToken.None);
-        await Task.Delay(200);
+
+        // Poll until the error is recorded rather than using a fixed delay
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (service.Errors.Count == 0 && !timeout.IsCancellationRequested)
+        {
+            await Task.Delay(50).ConfigureAwait(false);
+        }
+
         await service.StopAsync(CancellationToken.None);
 
         await Assert.That(service.Errors).Count().IsGreaterThanOrEqualTo(1);

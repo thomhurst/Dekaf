@@ -1,6 +1,8 @@
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Producer;
+using Dekaf.Protocol;
 
 namespace Dekaf.Tests.Integration;
 
@@ -420,9 +422,20 @@ public class AdminClientTests(KafkaTestContainer kafka)
             await Assert.That(offsetsBefore).IsNotNull();
             await Assert.That(offsetsBefore!).ContainsKey(new TopicPartition(topic, 0));
 
-            // Act - Delete the offset
-            await admin.DeleteConsumerGroupOffsetsAsync(groupId, [new TopicPartition(topic, 0)])
-                .ConfigureAwait(false);
+            // Act - Delete the offset (retry if group is still considered subscribed after rebalance)
+            for (var i = 0; i < 10; i++)
+            {
+                try
+                {
+                    await admin.DeleteConsumerGroupOffsetsAsync(groupId, [new TopicPartition(topic, 0)])
+                        .ConfigureAwait(false);
+                    break;
+                }
+                catch (KafkaException ex) when (ex.ErrorCode == ErrorCode.GroupSubscribedToTopic && i < 9)
+                {
+                    await Task.Delay(2000).ConfigureAwait(false);
+                }
+            }
 
             // Assert - Offset should be gone
             var offsetsAfter = await admin.ListConsumerGroupOffsetsAsync(groupId)
