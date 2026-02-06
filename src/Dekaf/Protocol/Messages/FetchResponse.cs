@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Dekaf.Protocol.Records;
 
 namespace Dekaf.Protocol.Messages;
@@ -125,6 +126,27 @@ public sealed class FetchResponseTopic
 /// </summary>
 public sealed class FetchResponsePartition
 {
+    // Pool for reusing List<RecordBatch> instances to reduce GC pressure.
+    // Soft limit of 64, matching LazyRecordList pattern in RecordBatch.cs.
+    private static readonly ConcurrentBag<List<RecordBatch>> s_recordBatchListPool = new();
+    private const int MaxPooledLists = 64;
+
+    internal static List<RecordBatch> RentRecordBatchList()
+    {
+        if (s_recordBatchListPool.TryTake(out var list))
+            return list;
+        return [];
+    }
+
+    internal static void ReturnRecordBatchList(List<RecordBatch> list)
+    {
+        if (s_recordBatchListPool.Count < MaxPooledLists)
+        {
+            list.Clear();
+            s_recordBatchListPool.Add(list);
+        }
+    }
+
     /// <summary>
     /// Partition index.
     /// </summary>
@@ -220,7 +242,7 @@ public sealed class FetchResponsePartition
         List<RecordBatch>? records = null;
         if (recordsLength > 0)
         {
-            records = [];
+            records = RentRecordBatchList();
             var recordsEndPosition = reader.Consumed + recordsLength;
 
             while (reader.Consumed < recordsEndPosition && !reader.End)

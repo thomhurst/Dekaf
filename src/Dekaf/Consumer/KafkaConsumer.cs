@@ -28,7 +28,7 @@ namespace Dekaf.Consumer;
 internal sealed class PendingFetchData : IDisposable
 {
     private readonly IReadOnlyList<RecordBatch> _batches;
-    private readonly Protocol.IPooledMemory? _memoryOwner;
+    private Protocol.IPooledMemory? _memoryOwner;
     private int _batchIndex = -1;
     private int _recordIndex = -1;
     private bool _disposed;
@@ -69,6 +69,14 @@ internal sealed class PendingFetchData : IDisposable
         PartitionIndex = partitionIndex;
         TopicPartition = new TopicPartition(topic, partitionIndex);
         _batches = batches;
+        _memoryOwner = memoryOwner;
+    }
+
+    /// <summary>
+    /// Attaches a memory owner to this instance, avoiding the need to create a new PendingFetchData.
+    /// </summary>
+    public void SetMemoryOwner(Protocol.IPooledMemory memoryOwner)
+    {
         _memoryOwner = memoryOwner;
     }
 
@@ -149,6 +157,12 @@ internal sealed class PendingFetchData : IDisposable
             batch.Dispose();
         }
 
+        // Return the batch list to the pool for reuse
+        if (_batches is List<RecordBatch> batchList)
+        {
+            FetchResponsePartition.ReturnRecordBatchList(batchList);
+        }
+
         // Release the pooled network buffer
         _memoryOwner?.Dispose();
     }
@@ -212,6 +226,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private int _fetchApiVersion = -1;
     private volatile bool _disposed;
     private volatile bool _closed;
+    private bool _prefetchEnabled;
 
     // CancellationTokenSource pool to avoid allocations in hot paths
     private readonly CancellationTokenSourcePool _ctsPool = new();
@@ -234,6 +249,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly object _fetchCacheLock = new();
     private Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>? _cachedTopicPartitions;
     private List<TopicPartition>? _cachedPartitionsList;
+    private List<FetchRequestTopic>? _cachedFetchRequestTopics;
 
     public KafkaConsumer(
         ConsumerOptions options,
@@ -298,7 +314,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         _prefetchChannel = Channel.CreateBounded<PendingFetchData>(new BoundedChannelOptions(prefetchCapacity * 10)
         {
             SingleReader = true,
-            SingleWriter = true,
+            SingleWriter = false, // Multiple brokers write concurrently via PrefetchFromBrokerAsync
             FullMode = BoundedChannelFullMode.Wait
         });
 
@@ -508,6 +524,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         // Start background prefetch if enabled (QueuedMinMessages > 1)
         var prefetchEnabled = _options.QueuedMinMessages > 1;
+        _prefetchEnabled = prefetchEnabled;
         if (prefetchEnabled)
         {
             StartPrefetch(cancellationToken);
@@ -612,7 +629,13 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     // Position() must return the next offset to be consumed
                     var nextOffset = offset + 1;
                     _positions[pending.TopicPartition] = nextOffset;
-                    _fetchPositions[pending.TopicPartition] = nextOffset;
+
+                    // When prefetching, the prefetch thread already advances _fetchPositions
+                    // in UpdateFetchPositionsFromPrefetch() — skip the redundant write here
+                    if (!_prefetchEnabled)
+                    {
+                        _fetchPositions[pending.TopicPartition] = nextOffset;
+                    }
 
                     // Track consumed for batch-level statistics update (not position)
                     var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
@@ -935,22 +958,16 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         // Write all pending items to the channel, with memory owner attached to the last one
         if (pendingItems is not null)
         {
+            // Assign memory owner to the LAST item (will be disposed last due to FIFO)
+            if (memoryOwner is not null)
+            {
+                pendingItems[^1].SetMemoryOwner(memoryOwner);
+                memoryOwner = null; // Transferred
+            }
+
             for (var i = 0; i < pendingItems.Count; i++)
             {
-                var pending = pendingItems[i];
-
-                // Assign memory owner to the LAST item (will be disposed last due to FIFO)
-                if (i == pendingItems.Count - 1 && memoryOwner is not null)
-                {
-                    pending = new PendingFetchData(
-                        pending.Topic,
-                        pending.PartitionIndex,
-                        pending.GetBatches(),
-                        memoryOwner);
-                    memoryOwner = null; // Transferred
-                }
-
-                await _prefetchChannel.Writer.WriteAsync(pending, cancellationToken).ConfigureAwait(false);
+                await _prefetchChannel.Writer.WriteAsync(pendingItems[i], cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -2003,13 +2020,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         // Attach memory owner to the last item (will be disposed last due to FIFO processing)
         if (pendingItems is not null && pendingItems.Count > 0 && memoryOwner is not null)
         {
-            var lastIndex = pendingItems.Count - 1;
-            var lastPending = pendingItems[lastIndex];
-            pendingItems[lastIndex] = new PendingFetchData(
-                lastPending.Topic,
-                lastPending.PartitionIndex,
-                lastPending.GetBatches(),
-                memoryOwner);
+            pendingItems[^1].SetMemoryOwner(memoryOwner);
             memoryOwner = null; // Transferred
         }
 
@@ -2114,19 +2125,26 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         // Take snapshots of current state under lock
         Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>>? cachedDict;
         List<TopicPartition>? cachedList;
+        List<FetchRequestTopic>? cachedResult;
 
         lock (_fetchCacheLock)
         {
             cachedDict = _cachedTopicPartitions;
             cachedList = _cachedPartitionsList;
+            cachedResult = _cachedFetchRequestTopics;
         }
 
         // Check if cache is valid (same partition list as before)
-        if (cachedDict is not null && cachedList is not null && PartitionListsEqual(partitions, cachedList))
+        if (cachedDict is not null && cachedList is not null && cachedResult is not null && PartitionListsEqual(partitions, cachedList))
         {
-            // Cache hit: clone and update fetch offsets
-            // Must clone because FetchOffset changes between calls
-            return CloneCacheWithUpdatedOffsets(cachedDict);
+            // Cache hit: update fetch offsets in-place on the existing FetchRequestPartition objects.
+            // Lock required: multiple broker tasks call this concurrently via Task.WhenAll.
+            lock (_fetchCacheLock)
+            {
+                UpdateCachedOffsets(cachedDict);
+            }
+
+            return cachedResult;
         }
 
         // Cache miss: build fresh structure with TopicPartition stored alongside
@@ -2174,6 +2192,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             {
                 _cachedTopicPartitions = topicPartitions;
                 _cachedPartitionsList = new List<TopicPartition>(partitions);
+                _cachedFetchRequestTopics = result;
             }
         }
 
@@ -2181,41 +2200,24 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     }
 
     /// <summary>
-    /// Clones the cached structure with updated fetch offsets.
-    /// Must clone because FetchOffset changes between fetch calls.
-    /// Uses pre-cached TopicPartition stored alongside FetchRequestPartition to avoid allocations.
+    /// Updates fetch offsets in-place on the cached FetchRequestPartition objects.
+    /// Zero-allocation on cache hit — reuses the same list and partition objects.
+    /// Must be called under <see cref="_fetchCacheLock"/> — multiple broker tasks call concurrently.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private List<FetchRequestTopic> CloneCacheWithUpdatedOffsets(
+    private void UpdateCachedOffsets(
         Dictionary<string, List<(FetchRequestPartition Partition, TopicPartition TopicPartition)>> cachedDict)
     {
-        var result = new List<FetchRequestTopic>(cachedDict.Count);
-
         foreach (var kvp in cachedDict)
         {
-            var topic = kvp.Key;
             var cachedPartitions = kvp.Value;
-            var newPartitions = new List<FetchRequestPartition>(cachedPartitions.Count);
 
             foreach (var (p, tp) in cachedPartitions)
             {
-                // Use cached TopicPartition directly - no allocation needed
-                newPartitions.Add(new FetchRequestPartition
-                {
-                    Partition = p.Partition,
-                    FetchOffset = _fetchPositions.GetValueOrDefault(tp, 0),
-                    PartitionMaxBytes = p.PartitionMaxBytes
-                });
+                // Mutate FetchOffset in-place — no new objects allocated
+                p.FetchOffset = _fetchPositions.GetValueOrDefault(tp, 0);
             }
-
-            result.Add(new FetchRequestTopic
-            {
-                Topic = topic,
-                Partitions = newPartitions
-            });
         }
-
-        return result;
     }
 
     /// <summary>
@@ -2268,6 +2270,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             _cachedTopicPartitions = null;
             _cachedPartitionsList = null;
+            _cachedFetchRequestTopics = null;
         }
     }
 
