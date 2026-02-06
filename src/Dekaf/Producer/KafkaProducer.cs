@@ -700,8 +700,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         var timestampMs = timestampOverride?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
 
         // Step 4: Convert headers
-        IReadOnlyList<RecordHeader>? recordHeaders = null;
-        RecordHeader[]? pooledHeaderArray = null;
+        IReadOnlyList<Header>? recordHeaders = null;
+        Header[]? pooledHeaderArray = null;
         if (headers is not null && headers.Count > 0)
         {
             recordHeaders = ConvertHeaders(headers, out pooledHeaderArray);
@@ -732,8 +732,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         bool keyIsNull,
         int keyLength,
         int valueLength,
-        IReadOnlyList<RecordHeader>? recordHeaders,
-        ref RecordHeader[]? pooledHeaderArray)
+        IReadOnlyList<Header>? recordHeaders,
+        ref Header[]? pooledHeaderArray)
     {
         // STEP 1: Calculate record size BEFORE any work
         var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, recordHeaders);
@@ -843,8 +843,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         bool keyIsNull,
         int keyLength,
         int valueLength,
-        IReadOnlyList<RecordHeader>? recordHeaders,
-        RecordHeader[]? pooledHeaderArray)
+        IReadOnlyList<Header>? recordHeaders,
+        Header[]? pooledHeaderArray)
     {
         var key = PooledMemory.Null;
         var valueMemory = PooledMemory.Null;
@@ -1025,7 +1025,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     {
         var key = PooledMemory.Null;
         var value = PooledMemory.Null;
-        RecordHeader[]? pooledHeaderArray = null;
+        Header[]? pooledHeaderArray = null;
 
         try
         {
@@ -1042,7 +1042,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
 
             // Convert headers
-            IReadOnlyList<RecordHeader>? recordHeaders = null;
+            IReadOnlyList<Header>? recordHeaders = null;
             if (message.Headers is not null && message.Headers.Count > 0)
             {
                 recordHeaders = ConvertHeaders(message.Headers, out pooledHeaderArray);
@@ -1083,13 +1083,13 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// Cleans up pooled resources in exception paths.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void CleanupPooledResources(PooledMemory key, PooledMemory value, RecordHeader[]? pooledHeaderArray)
+    private static void CleanupPooledResources(PooledMemory key, PooledMemory value, Header[]? pooledHeaderArray)
     {
         key.Return();
         value.Return();
         if (pooledHeaderArray is not null)
         {
-            ArrayPool<RecordHeader>.Shared.Return(pooledHeaderArray);
+            ArrayPool<Header>.Shared.Return(pooledHeaderArray);
         }
     }
 
@@ -1356,8 +1356,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         var timestampMs = timestampOverride?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
 
         // Step 4: Convert headers
-        IReadOnlyList<RecordHeader>? recordHeaders = null;
-        RecordHeader[]? pooledHeaderArray = null;
+        IReadOnlyList<Header>? recordHeaders = null;
+        Header[]? pooledHeaderArray = null;
         if (headers is not null && headers.Count > 0)
         {
             recordHeaders = ConvertHeaders(headers, out pooledHeaderArray);
@@ -1387,8 +1387,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         bool keyIsNull,
         int keyLength,
         int valueLength,
-        IReadOnlyList<RecordHeader>? recordHeaders,
-        ref RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? recordHeaders,
+        ref Header[]? pooledHeaderArray,
         Action<RecordMetadata, Exception?> callback)
     {
         // STEP 1: Calculate record size BEFORE any work
@@ -1482,8 +1482,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         bool keyIsNull,
         int keyLength,
         int valueLength,
-        IReadOnlyList<RecordHeader>? recordHeaders,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? recordHeaders,
+        Header[]? pooledHeaderArray,
         Action<RecordMetadata, Exception?> callback)
     {
         var key = PooledMemory.Null;
@@ -1618,8 +1618,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         var timestampMs = timestamp.ToUnixTimeMilliseconds();
 
         // Convert headers with minimal allocations
-        IReadOnlyList<RecordHeader>? recordHeaders = null;
-        RecordHeader[]? pooledHeaderArray = null;
+        IReadOnlyList<Header>? recordHeaders = null;
+        Header[]? pooledHeaderArray = null;
         if (message.Headers is not null && message.Headers.Count > 0)
         {
             recordHeaders = ConvertHeaders(message.Headers, out pooledHeaderArray);
@@ -1644,7 +1644,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // Return pooled array before throwing to avoid resource leak
             if (pooledHeaderArray is not null)
             {
-                ArrayPool<RecordHeader>.Shared.Return(pooledHeaderArray);
+                ArrayPool<Header>.Shared.Return(pooledHeaderArray);
             }
             throw new InvalidOperationException("Failed to append record");
         }
@@ -2273,23 +2273,23 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <summary>
-    /// Converts Headers to RecordHeaders with minimal allocations.
+    /// Converts Headers collection to a pooled Header array with minimal allocations.
     /// Always uses ArrayPool to avoid per-message heap allocations.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static IReadOnlyList<RecordHeader> ConvertHeaders(Headers headers, out RecordHeader[]? pooledArray)
+    private static IReadOnlyList<Header> ConvertHeaders(Headers headers, out Header[]? pooledArray)
     {
         var count = headers.Count;
 
         // Always pool to eliminate per-message allocations
-        var result = ArrayPool<RecordHeader>.Shared.Rent(count);
+        var result = ArrayPool<Header>.Shared.Rent(count);
         pooledArray = result;
 
         // Use index-based iteration to avoid enumerator boxing allocation
         for (var i = 0; i < count; i++)
         {
             var h = headers[i];
-            result[i] = new RecordHeader
+            result[i] = new Header
             {
                 Key = h.Key,
                 Value = h.Value,
@@ -2771,18 +2771,18 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
 /// The array is returned to the pool when the wrapper is no longer needed.
 /// This struct is used to avoid List allocations in the producer hot path.
 /// </summary>
-internal readonly struct HeaderListWrapper : IReadOnlyList<RecordHeader>
+internal readonly struct HeaderListWrapper : IReadOnlyList<Header>
 {
-    private readonly RecordHeader[] _array;
+    private readonly Header[] _array;
     private readonly int _count;
 
-    public HeaderListWrapper(RecordHeader[] array, int count)
+    public HeaderListWrapper(Header[] array, int count)
     {
         _array = array;
         _count = count;
     }
 
-    public RecordHeader this[int index]
+    public Header this[int index]
     {
         get
         {
@@ -2796,24 +2796,24 @@ internal readonly struct HeaderListWrapper : IReadOnlyList<RecordHeader>
 
     public Enumerator GetEnumerator() => new(_array, _count);
 
-    IEnumerator<RecordHeader> IEnumerable<RecordHeader>.GetEnumerator() => GetEnumerator();
+    IEnumerator<Header> IEnumerable<Header>.GetEnumerator() => GetEnumerator();
 
     System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 
-    public struct Enumerator : IEnumerator<RecordHeader>
+    public struct Enumerator : IEnumerator<Header>
     {
-        private readonly RecordHeader[] _array;
+        private readonly Header[] _array;
         private readonly int _count;
         private int _index;
 
-        public Enumerator(RecordHeader[] array, int count)
+        public Enumerator(Header[] array, int count)
         {
             _array = array;
             _count = count;
             _index = -1;
         }
 
-        public RecordHeader Current => _array[_index];
+        public Header Current => _array[_index];
 
         object System.Collections.IEnumerator.Current => Current;
 

@@ -200,6 +200,17 @@ public sealed record ProducerMessage<TKey, TValue>
     public DateTimeOffset? Timestamp { get; init; }
 
     /// <summary>
+    /// Creates a new producer message with a null key.
+    /// </summary>
+    /// <param name="topic">The topic to produce to.</param>
+    /// <param name="value">The message value.</param>
+    /// <returns>A new producer message with a null key.</returns>
+#pragma warning disable CA1000 // Do not declare static members on generic types - factory method pattern
+    public static ProducerMessage<TKey, TValue> Create(string topic, TValue value)
+#pragma warning restore CA1000
+        => new() { Topic = topic, Value = value };
+
+    /// <summary>
     /// Creates a new producer message.
     /// </summary>
     /// <param name="topic">The topic to produce to.</param>

@@ -1,3 +1,5 @@
+using Dekaf.Serialization;
+
 namespace Dekaf.Protocol.Records;
 
 /// <summary>
@@ -14,7 +16,7 @@ public readonly record struct Record
     public int OffsetDelta { get; init; }
     public ReadOnlyMemory<byte> Key { get; init; }
     public ReadOnlyMemory<byte> Value { get; init; }
-    public IReadOnlyList<RecordHeader>? Headers { get; init; }
+    public IReadOnlyList<Header>? Headers { get; init; }
 
     /// <summary>
     /// Returns true if the key is null (empty memory with special flag).
@@ -101,15 +103,15 @@ public readonly record struct Record
         var value = isValueNull ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(valueLength);
 
         var headerCount = reader.ReadVarInt();
-        RecordHeader[]? headers = null;
+        Header[]? headers = null;
 
         if (headerCount > 0)
         {
             // Use array directly instead of List to avoid List's internal array allocation
-            headers = new RecordHeader[headerCount];
+            headers = new Header[headerCount];
             for (var i = 0; i < headerCount; i++)
             {
-                headers[i] = RecordHeader.Read(ref reader);
+                headers[i] = Header.Read(ref reader);
             }
         }
 
@@ -182,80 +184,6 @@ public readonly record struct Record
             size++;
             value >>= 7;
         }
-        return size;
-    }
-}
-
-/// <summary>
-/// A header within a record.
-/// Uses ReadOnlyMemory for zero-copy value storage.
-/// This is a struct to avoid heap allocations in the hot path.
-/// </summary>
-public readonly record struct RecordHeader
-{
-    public string Key { get; init; }
-    public ReadOnlyMemory<byte> Value { get; init; }
-
-    /// <summary>
-    /// Returns true if the value is null.
-    /// </summary>
-    public bool IsValueNull { get; init; }
-
-    /// <summary>
-    /// Writes the header to the protocol writer.
-    /// </summary>
-    public void Write(ref KafkaProtocolWriter writer)
-    {
-        // Write key with VarInt length prefix - use the writer's string encoding support
-        var keyByteCount = System.Text.Encoding.UTF8.GetByteCount(Key);
-        writer.WriteVarInt(keyByteCount);
-        writer.WriteStringContent(Key);
-
-        if (IsValueNull)
-        {
-            writer.WriteVarInt(-1);
-        }
-        else
-        {
-            writer.WriteVarInt(Value.Length);
-            writer.WriteRawBytes(Value.Span);
-        }
-    }
-
-    /// <summary>
-    /// Reads a header from the protocol reader.
-    /// </summary>
-    public static RecordHeader Read(ref KafkaProtocolReader reader)
-    {
-        var keyLength = reader.ReadVarInt();
-        var key = reader.ReadStringContent(keyLength);
-
-        var valueLength = reader.ReadVarInt();
-        var isValueNull = valueLength < 0;
-        var value = isValueNull ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(valueLength);
-
-        return new RecordHeader
-        {
-            Key = key,
-            Value = value,
-            IsValueNull = isValueNull
-        };
-    }
-
-    internal int CalculateSize()
-    {
-        var keyBytes = System.Text.Encoding.UTF8.GetByteCount(Key);
-        var size = Record.VarIntSize(keyBytes) + keyBytes;
-
-        if (IsValueNull)
-        {
-            size += Record.VarIntSize(-1);
-        }
-        else
-        {
-            size += Record.VarIntSize(Value.Length) + Value.Length;
-        }
-
         return size;
     }
 }

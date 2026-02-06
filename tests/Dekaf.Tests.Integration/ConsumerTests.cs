@@ -249,7 +249,7 @@ public class ConsumerTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithSessionTimeout(10000) // Short timeout for faster rebalance
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000)) // Short timeout for faster rebalance
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .Build();
 
@@ -279,7 +279,7 @@ public class ConsumerTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithSessionTimeout(10000) // Short timeout for faster rebalance
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000)) // Short timeout for faster rebalance
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .Build();
 
@@ -864,7 +864,7 @@ public class ConsumerTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithSessionTimeout(10000)
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .Build())
         {
@@ -888,7 +888,7 @@ public class ConsumerTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithSessionTimeout(10000)
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .Build();
 
         var tp = new TopicPartition(topic, 0);
@@ -1023,7 +1023,7 @@ public class ConsumerTests(KafkaTestContainer kafka)
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer")
-            .WithLingerMs(5)
+            .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithBatchSize(65536)
             .Build();
 

@@ -137,7 +137,7 @@ public static class Program
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("profiling-producer")
             .WithAcks(Acks.Leader)
-            .WithLingerMs(5)
+            .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithBatchSize(16384)
             .Build();
 
@@ -185,7 +185,7 @@ public static class Program
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("profiling-producer-acked")
             .WithAcks(Acks.All)
-            .WithLingerMs(1)
+            .WithLinger(TimeSpan.FromMilliseconds(1))
             .WithBatchSize(16384)
             .Build();
 
@@ -242,7 +242,7 @@ public static class Program
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("profiling-producer-batch")
             .WithAcks(Acks.Leader)
-            .WithLingerMs(5)
+            .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithBatchSize(16384)
             .Build();
 
@@ -307,7 +307,7 @@ public static class Program
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("profiling-seeder")
             .WithAcks(Acks.Leader)
-            .WithLingerMs(1)
+            .WithLinger(TimeSpan.FromMilliseconds(1))
             .Build())
         {
             for (var i = 0; i < messagesToSeed; i++)
@@ -367,7 +367,7 @@ public static class Program
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("profiling-roundtrip-producer")
             .WithAcks(Acks.Leader)
-            .WithLingerMs(1)
+            .WithLinger(TimeSpan.FromMilliseconds(1))
             .Build();
 
         await using var consumer = Kafka.CreateConsumer<string, string>()

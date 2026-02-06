@@ -66,7 +66,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer-flush-timeout")
-            .WithLingerMs(100) // Add some linger to batch messages
+            .WithLinger(TimeSpan.FromMilliseconds(100)) // Add some linger to batch messages
             .Build();
 
         // Act - Send multiple messages then flush
@@ -162,7 +162,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer-backpressure-timeout")
             .WithBatchSize(16384)
-            .WithLingerMs(10)
+            .WithLinger(TimeSpan.FromMilliseconds(10))
             .Build();
 
         // Act - Send many messages to trigger backpressure
@@ -245,7 +245,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer-cancel-after-append")
-            .WithLingerMs(5000) // Doesn't matter - awaited produces flush immediately
+            .WithLinger(TimeSpan.FromMilliseconds(5000)) // Doesn't matter - awaited produces flush immediately
             .Build();
 
         // Act - Start produce, then cancel after message is already appended
@@ -391,7 +391,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer-concurrent-flush-produce")
-            .WithLingerMs(50)
+            .WithLinger(TimeSpan.FromMilliseconds(50))
             .Build();
 
         // Send initial messages
@@ -694,7 +694,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-cancel-after-memory-reserved")
-            .WithLingerMs(5000)
+            .WithLinger(TimeSpan.FromMilliseconds(5000))
             .Build();
 
         using var cts = new CancellationTokenSource();
@@ -778,7 +778,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka)
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-flush-cancelled-batches-deliver")
-            .WithLingerMs(2000)
+            .WithLinger(TimeSpan.FromMilliseconds(2000))
             .Build();
 
         var produceTask = producer.ProduceAsync(new ProducerMessage<string, string>

@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using Dekaf;
 using Dekaf.Compression;
 using Dekaf.Protocol.Records;
 using Snappier;
@@ -160,6 +161,20 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
         }
     }
 
+}
+
+/// <summary>
+/// Extension methods for configuring Snappy compression on the producer builder.
+/// </summary>
+public static class SnappyProducerBuilderExtensions
+{
+    /// <summary>
+    /// Configures the producer to use Snappy compression.
+    /// </summary>
+    public static ProducerBuilder<TKey, TValue> UseSnappyCompression<TKey, TValue>(this ProducerBuilder<TKey, TValue> builder)
+    {
+        return builder.UseCompression(CompressionType.Snappy);
+    }
 }
 
 /// <summary>

@@ -1,5 +1,4 @@
 using Dekaf.Producer;
-using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 
 namespace Dekaf.Consumer;
@@ -224,7 +223,7 @@ public readonly struct ConsumeResult<TKey, TValue>
         bool isKeyNull,
         ReadOnlyMemory<byte> valueData,
         bool isValueNull,
-        IReadOnlyList<RecordHeader>? headers,
+        IReadOnlyList<Header>? headers,
         DateTimeOffset timestamp,
         TimestampType timestampType,
         int? leaderEpoch,
@@ -341,9 +340,8 @@ public readonly struct ConsumeResult<TKey, TValue>
 
     /// <summary>
     /// The message headers. Returns null if no headers.
-    /// Uses RecordHeader directly to avoid per-message conversion allocations.
     /// </summary>
-    public IReadOnlyList<RecordHeader>? Headers { get; }
+    public IReadOnlyList<Header>? Headers { get; }
 
     /// <summary>
     /// The message timestamp.

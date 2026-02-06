@@ -1,4 +1,5 @@
 using System.Buffers;
+using Dekaf;
 using Dekaf.Compression;
 using Dekaf.Protocol.Records;
 using K4os.Compression.LZ4;
@@ -60,6 +61,20 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
+    }
+}
+
+/// <summary>
+/// Extension methods for configuring LZ4 compression on the producer builder.
+/// </summary>
+public static class Lz4ProducerBuilderExtensions
+{
+    /// <summary>
+    /// Configures the producer to use LZ4 compression.
+    /// </summary>
+    public static ProducerBuilder<TKey, TValue> UseLz4Compression<TKey, TValue>(this ProducerBuilder<TKey, TValue> builder)
+    {
+        return builder.UseCompression(CompressionType.Lz4);
     }
 }
 

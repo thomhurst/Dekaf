@@ -125,7 +125,7 @@ public sealed class ProducerServiceBuilder<TKey, TValue>
 
     public ProducerServiceBuilder<TKey, TValue> UseZstdCompression()
     {
-        _builder.UseZstdCompression();
+        _builder.UseCompression(Dekaf.Protocol.Records.CompressionType.Zstd);
         return this;
     }
 
@@ -137,7 +137,7 @@ public sealed class ProducerServiceBuilder<TKey, TValue>
 
     public ProducerServiceBuilder<TKey, TValue> UseLz4Compression()
     {
-        _builder.UseLz4Compression();
+        _builder.UseCompression(Dekaf.Protocol.Records.CompressionType.Lz4);
         return this;
     }
 

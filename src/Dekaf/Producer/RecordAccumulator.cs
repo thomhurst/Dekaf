@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
 using Dekaf.Protocol.Records;
+using Dekaf.Serialization;
 
 namespace Dekaf.Producer;
 
@@ -240,8 +241,8 @@ public readonly struct ProducerRecordData
     public long Timestamp { get; init; }
     public PooledMemory Key { get; init; }
     public PooledMemory Value { get; init; }
-    public IReadOnlyList<RecordHeader>? Headers { get; init; }
-    public RecordHeader[]? PooledHeaderArray { get; init; }
+    public IReadOnlyList<Header>? Headers { get; init; }
+    public Header[]? PooledHeaderArray { get; init; }
 }
 
 /// <summary>
@@ -949,8 +950,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken)
     {
@@ -1114,8 +1115,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         PooledValueTaskSource<RecordMetadata> completion)
     {
         if (_disposed)
@@ -1247,8 +1248,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray)
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray)
     {
         if (_disposed)
             return false;
@@ -1338,8 +1339,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         int recordSize)
     {
         // Atomically remove the old batch from dictionary BEFORE completing.
@@ -1434,8 +1435,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray)
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray)
     {
         // OPTIMIZATION: Use a nested cache to get/create TopicPartition without allocating on hot path.
         var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
@@ -1571,8 +1572,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         Action<RecordMetadata, Exception?> callback)
     {
         if (_disposed)
@@ -2437,7 +2438,7 @@ internal sealed class PartitionBatch
     private byte[][] _pooledArrays;
     private int _pooledArrayCount;
 
-    private RecordHeader[][] _pooledHeaderArrays;
+    private Header[][] _pooledHeaderArrays;
     private int _pooledHeaderArrayCount;
 
     // Exclusive access flag for CAS-based synchronization.
@@ -2487,7 +2488,7 @@ internal sealed class PartitionBatch
         _pooledArrays = ArrayPool<byte[]>.Shared.Rent(_initialRecordCapacity * 2);
         _pooledArrayCount = 0;
 
-        _pooledHeaderArrays = ArrayPool<RecordHeader[]>.Shared.Rent(8); // Headers less common
+        _pooledHeaderArrays = ArrayPool<Header[]>.Shared.Rent(8); // Headers less common
         _pooledHeaderArrayCount = 0;
     }
 
@@ -2549,7 +2550,7 @@ internal sealed class PartitionBatch
         _records = ArrayPool<Record>.Shared.Rent(_initialRecordCapacity);
         _completionSources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(_initialRecordCapacity);
         _pooledArrays = ArrayPool<byte[]>.Shared.Rent(_initialRecordCapacity * 2);
-        _pooledHeaderArrays = ArrayPool<RecordHeader[]>.Shared.Rent(8);
+        _pooledHeaderArrays = ArrayPool<Header[]>.Shared.Rent(8);
 
         // Reset counters and state for reuse.
         // IMPORTANT: Do NOT reset _isCompleted or _exclusiveAccess here!
@@ -2594,8 +2595,8 @@ internal sealed class PartitionBatch
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         PooledValueTaskSource<RecordMetadata> completion)
     {
         // Pre-compute record size outside the lock - depends only on input parameters
@@ -2629,8 +2630,8 @@ internal sealed class PartitionBatch
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         PooledValueTaskSource<RecordMetadata> completion,
         int recordSize)
     {
@@ -2673,7 +2674,7 @@ internal sealed class PartitionBatch
         }
         if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
         {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
+            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
         }
 
         // Track pooled arrays for returning to pool later
@@ -2724,8 +2725,8 @@ internal sealed class PartitionBatch
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         PooledValueTaskSource<RecordMetadata> completion,
         int recordSize)
     {
@@ -2768,8 +2769,8 @@ internal sealed class PartitionBatch
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray)
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray)
     {
         // Pre-compute record size outside the lock - depends only on input parameters
         var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
@@ -2806,8 +2807,8 @@ internal sealed class PartitionBatch
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         Action<RecordMetadata, Exception?> callback)
     {
         // Pre-compute record size outside the lock
@@ -2838,8 +2839,8 @@ internal sealed class PartitionBatch
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         Action<RecordMetadata, Exception?> callback,
         int recordSize)
     {
@@ -2877,7 +2878,7 @@ internal sealed class PartitionBatch
         }
         if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
         {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
+            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
         }
 
         // Ensure callback array exists and has space
@@ -2929,8 +2930,8 @@ internal sealed class PartitionBatch
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         Action<RecordMetadata, Exception?> callback,
         int recordSize)
     {
@@ -2966,8 +2967,8 @@ internal sealed class PartitionBatch
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         int recordSize)
     {
         // Check if batch was completed - Complete() nulls out arrays without synchronization,
@@ -3006,7 +3007,7 @@ internal sealed class PartitionBatch
         }
         if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
         {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
+            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
         }
 
         // Track pooled arrays for returning to pool later
@@ -3051,8 +3052,8 @@ internal sealed class PartitionBatch
         ArenaSlice keySlice,
         bool isKeyNull,
         ArenaSlice valueSlice,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray)
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray)
     {
         var recordSize = EstimateRecordSize(keySlice.Length, valueSlice.Length, headers);
 
@@ -3082,8 +3083,8 @@ internal sealed class PartitionBatch
         ArenaSlice keySlice,
         bool isKeyNull,
         ArenaSlice valueSlice,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         int recordSize)
     {
         if (Volatile.Read(ref _isCompleted) != 0)
@@ -3110,7 +3111,7 @@ internal sealed class PartitionBatch
         // Track pooled header arrays (rare)
         if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
         {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
+            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
         }
         if (pooledHeaderArray is not null)
         {
@@ -3144,8 +3145,8 @@ internal sealed class PartitionBatch
         ArenaSlice keySlice,
         bool isKeyNull,
         ArenaSlice valueSlice,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         int recordSize)
     {
         var spin = new SpinWait();
@@ -3181,8 +3182,8 @@ internal sealed class PartitionBatch
         ArenaSlice keySlice,
         bool isKeyNull,
         ArenaSlice valueSlice,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         Action<RecordMetadata, Exception?> callback)
     {
         var recordSize = EstimateRecordSize(keySlice.Length, valueSlice.Length, headers);
@@ -3213,8 +3214,8 @@ internal sealed class PartitionBatch
         ArenaSlice keySlice,
         bool isKeyNull,
         ArenaSlice valueSlice,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         Action<RecordMetadata, Exception?> callback,
         int recordSize)
     {
@@ -3242,7 +3243,7 @@ internal sealed class PartitionBatch
         // Track pooled header arrays (rare)
         if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
         {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
+            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
         }
         if (pooledHeaderArray is not null)
         {
@@ -3284,8 +3285,8 @@ internal sealed class PartitionBatch
         ArenaSlice keySlice,
         bool isKeyNull,
         ArenaSlice valueSlice,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         Action<RecordMetadata, Exception?> callback,
         int recordSize)
     {
@@ -3320,8 +3321,8 @@ internal sealed class PartitionBatch
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<RecordHeader>? headers,
-        RecordHeader[]? pooledHeaderArray,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
         int recordSize)
     {
         var spin = new SpinWait();
@@ -3413,7 +3414,7 @@ internal sealed class PartitionBatch
                 }
                 if (item.PooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
                 {
-                    GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<RecordHeader[]>.Shared);
+                    GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
                 }
 
                 // Track pooled arrays
@@ -3592,7 +3593,7 @@ internal sealed class PartitionBatch
         if (_pooledArrays is not null)
             ArrayPool<byte[]>.Shared.Return(_pooledArrays, clearArray: false);
         if (_pooledHeaderArrays is not null)
-            ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: false);
+            ArrayPool<Header[]>.Shared.Return(_pooledHeaderArrays, clearArray: false);
 
         // Return arena buffer if present
         _arena?.Return();
@@ -3621,7 +3622,7 @@ internal sealed class PartitionBatch
     /// The actual size may be smaller due to varint compression, but this conservative estimate
     /// ensures we never under-allocate BufferMemory.
     /// </remarks>
-    internal static int EstimateRecordSize(int keyLength, int valueLength, IReadOnlyList<RecordHeader>? headers)
+    internal static int EstimateRecordSize(int keyLength, int valueLength, IReadOnlyList<Header>? headers)
     {
         var size = 20; // Base overhead for varint lengths, timestamp delta, offset delta, etc.
         size += keyLength;
@@ -3750,7 +3751,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     private int _completionSourcesCount;
     private byte[][]? _pooledDataArrays;
     private int _pooledDataArraysCount;
-    private RecordHeader[][]? _pooledHeaderArrays;
+    private Header[][]? _pooledHeaderArrays;
     private int _pooledHeaderArraysCount;
     private Record[]? _pooledRecordsArray; // Pooled records array from RecordBatch
     private BatchArena? _arena; // Arena for zero-copy serialization data
@@ -3784,7 +3785,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         int completionSourcesCount,
         byte[][]? pooledDataArrays,
         int pooledDataArraysCount,
-        RecordHeader[][]? pooledHeaderArrays,
+        Header[][]? pooledHeaderArrays,
         int pooledHeaderArraysCount,
         int dataSize,
         Record[]? pooledRecordsArray = null,
@@ -4053,7 +4054,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         {
             for (var i = 0; i < _pooledHeaderArraysCount; i++)
             {
-                ArrayPool<RecordHeader>.Shared.Return(_pooledHeaderArrays[i], clearArray: false);
+                ArrayPool<Header>.Shared.Return(_pooledHeaderArrays[i], clearArray: false);
             }
         }
 
@@ -4066,7 +4067,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         if (_pooledDataArrays is not null)
             ArrayPool<byte[]>.Shared.Return(_pooledDataArrays, clearArray: false);
         if (_pooledHeaderArrays is not null)
-            ArrayPool<RecordHeader[]>.Shared.Return(_pooledHeaderArrays, clearArray: false);
+            ArrayPool<Header[]>.Shared.Return(_pooledHeaderArrays, clearArray: false);
 
         // Return pooled records array if present
         if (_pooledRecordsArray is not null)

@@ -213,10 +213,10 @@ public sealed class MetadataRecoveryStrategyTests
     }
 
     [Test]
-    public async Task ProducerBuilder_WithMetadataRecoveryRebootstrapTriggerMs_ReturnsSameBuilder()
+    public async Task ProducerBuilder_WithMetadataRecoveryRebootstrapTrigger_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();
-        var result = builder.WithMetadataRecoveryRebootstrapTriggerMs(60000);
+        var result = builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(60000));
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 
@@ -243,11 +243,11 @@ public sealed class MetadataRecoveryStrategyTests
     }
 
     [Test]
-    public async Task ProducerBuilder_WithMetadataRecoveryRebootstrapTriggerMs_ThenBuild_Succeeds()
+    public async Task ProducerBuilder_WithMetadataRecoveryRebootstrapTrigger_ThenBuild_Succeeds()
     {
         var act = () => Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
-            .WithMetadataRecoveryRebootstrapTriggerMs(60000)
+            .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(60000))
             .Build();
 
         await Assert.That(act).ThrowsNothing();
@@ -266,10 +266,10 @@ public sealed class MetadataRecoveryStrategyTests
     }
 
     [Test]
-    public async Task ConsumerBuilder_WithMetadataRecoveryRebootstrapTriggerMs_ReturnsSameBuilder()
+    public async Task ConsumerBuilder_WithMetadataRecoveryRebootstrapTrigger_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();
-        var result = builder.WithMetadataRecoveryRebootstrapTriggerMs(60000);
+        var result = builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(60000));
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 
@@ -308,10 +308,10 @@ public sealed class MetadataRecoveryStrategyTests
     }
 
     [Test]
-    public async Task AdminClientBuilder_WithMetadataRecoveryRebootstrapTriggerMs_ReturnsSameBuilder()
+    public async Task AdminClientBuilder_WithMetadataRecoveryRebootstrapTrigger_ReturnsSameBuilder()
     {
         var builder = new Dekaf.Admin.AdminClientBuilder();
-        var result = builder.WithMetadataRecoveryRebootstrapTriggerMs(60000);
+        var result = builder.WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(60000));
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 
@@ -509,7 +509,7 @@ public sealed class MetadataRecoveryStrategyTests
         var act = () => Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.Rebootstrap)
-            .WithMetadataRecoveryRebootstrapTriggerMs(60000)
+            .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(60000))
             .Build();
 
         await Assert.That(act).ThrowsNothing();
@@ -521,7 +521,7 @@ public sealed class MetadataRecoveryStrategyTests
         var act = () => Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.Rebootstrap)
-            .WithMetadataRecoveryRebootstrapTriggerMs(60000)
+            .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(60000))
             .Build();
 
         await Assert.That(act).ThrowsNothing();
@@ -533,7 +533,7 @@ public sealed class MetadataRecoveryStrategyTests
         var act = () => new Dekaf.Admin.AdminClientBuilder()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.Rebootstrap)
-            .WithMetadataRecoveryRebootstrapTriggerMs(60000)
+            .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(60000))
             .Build();
 
         await Assert.That(act).ThrowsNothing();

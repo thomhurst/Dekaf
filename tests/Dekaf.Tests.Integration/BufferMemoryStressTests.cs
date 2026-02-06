@@ -126,7 +126,7 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka)
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("buffered-bytes-test")
             .WithAcks(Acks.Leader)
-            .WithLingerMs(50) // Short linger for faster batching
+            .WithLinger(TimeSpan.FromMilliseconds(50)) // Short linger for faster batching
             .Build();
 
         var messageValue = new string('x', 1000); // 1KB messages

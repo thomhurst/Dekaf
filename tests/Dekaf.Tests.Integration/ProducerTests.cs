@@ -312,7 +312,7 @@ public class ProducerTests(KafkaTestContainer kafka)
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer-flush")
-            .WithLingerMs(1000) // Long linger to test flush
+            .WithLinger(TimeSpan.FromMilliseconds(1000)) // Long linger to test flush
             .Build();
 
         // Act - produce without awaiting
@@ -543,7 +543,7 @@ public class ProducerTests(KafkaTestContainer kafka)
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer-high-throughput")
             .WithAcks(Acks.Leader) // Faster acks for throughput test
-            .WithLingerMs(5) // Small linger for batching
+            .WithLinger(TimeSpan.FromMilliseconds(5)) // Small linger for batching
             .WithBatchSize(65536) // Larger batches
             .Build();
 
@@ -867,7 +867,7 @@ public class ProducerTests(KafkaTestContainer kafka)
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithClientId("test-producer-sync-batch")
             .WithAcks(Acks.Leader)
-            .WithLingerMs(5)
+            .WithLinger(TimeSpan.FromMilliseconds(5))
             .Build();
 
         // Act - fire-and-forget multiple messages
