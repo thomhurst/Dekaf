@@ -1,5 +1,7 @@
 using System.Collections;
 using System.Text;
+using Dekaf.Protocol;
+using Dekaf.Protocol.Records;
 
 namespace Dekaf.Serialization;
 
@@ -279,4 +281,57 @@ public readonly record struct Header
 
     /// <inheritdoc/>
     public override string ToString() => $"{Key}={GetValueAsString() ?? "(null)"}";
+
+    /// <summary>
+    /// Writes the header to the protocol writer.
+    /// </summary>
+    internal void Write(ref KafkaProtocolWriter writer)
+    {
+        // Write key with VarInt length prefix - use the writer's string encoding support
+        var keyByteCount = Encoding.UTF8.GetByteCount(Key);
+        writer.WriteVarInt(keyByteCount);
+        writer.WriteStringContent(Key);
+
+        if (IsValueNull)
+        {
+            writer.WriteVarInt(-1);
+        }
+        else
+        {
+            writer.WriteVarInt(Value.Length);
+            writer.WriteRawBytes(Value.Span);
+        }
+    }
+
+    /// <summary>
+    /// Reads a header from the protocol reader.
+    /// </summary>
+    internal static Header Read(ref KafkaProtocolReader reader)
+    {
+        var keyLength = reader.ReadVarInt();
+        var key = reader.ReadStringContent(keyLength);
+
+        var valueLength = reader.ReadVarInt();
+        var isValueNull = valueLength < 0;
+        var value = isValueNull ? ReadOnlyMemory<byte>.Empty : reader.ReadMemorySlice(valueLength);
+
+        return new Header(key, value, isNull: isValueNull);
+    }
+
+    internal int CalculateSize()
+    {
+        var keyBytes = Encoding.UTF8.GetByteCount(Key);
+        var size = Record.VarIntSize(keyBytes) + keyBytes;
+
+        if (IsValueNull)
+        {
+            size += Record.VarIntSize(-1);
+        }
+        else
+        {
+            size += Record.VarIntSize(Value.Length) + Value.Length;
+        }
+
+        return size;
+    }
 }

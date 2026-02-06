@@ -95,14 +95,6 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
-    public async Task WithLingerMs_ReturnsSameBuilder()
-    {
-        var builder = Kafka.CreateProducer<string, string>();
-        var result = builder.WithLingerMs(5);
-        await Assert.That(result).IsSameReferenceAs(builder);
-    }
-
-    [Test]
     public async Task WithLinger_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();
@@ -143,22 +135,6 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
-    public async Task UseZstdCompression_ReturnsSameBuilder()
-    {
-        var builder = Kafka.CreateProducer<string, string>();
-        var result = builder.UseZstdCompression();
-        await Assert.That(result).IsSameReferenceAs(builder);
-    }
-
-    [Test]
-    public async Task UseLz4Compression_ReturnsSameBuilder()
-    {
-        var builder = Kafka.CreateProducer<string, string>();
-        var result = builder.UseLz4Compression();
-        await Assert.That(result).IsSameReferenceAs(builder);
-    }
-
-    [Test]
     public async Task UseGzipCompression_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();
@@ -167,10 +143,10 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
-    public async Task UseSnappyCompression_ReturnsSameBuilder()
+    public async Task UseCompression_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();
-        var result = builder.UseSnappyCompression();
+        var result = builder.UseCompression(Dekaf.Protocol.Records.CompressionType.Zstd);
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 

@@ -25,7 +25,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-consumer-feeder-dekaf")
             .WithAcks(Acks.Leader)
-            .WithLingerMs(options.LingerMs)
+            .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize)
             .Build();
 

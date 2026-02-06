@@ -38,7 +38,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithSessionTimeout(10000)
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .Build();
 
@@ -93,7 +93,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithSessionTimeout(10000)
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .Build();
 
@@ -148,7 +148,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithSessionTimeout(10000)
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .Build())
         {
@@ -173,7 +173,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithSessionTimeout(10000)
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .Build();
 
@@ -217,7 +217,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithSessionTimeout(10000)
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .Build())
         {
@@ -241,7 +241,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithSessionTimeout(10000)
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .Build();
 
@@ -283,7 +283,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithSessionTimeout(10000)
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .Build();
 
@@ -351,8 +351,8 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithSessionTimeout(10000)
-            .WithAutoCommitInterval(100) // Fast auto-commit for testing
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
+            .WithAutoCommitInterval(TimeSpan.FromMilliseconds(100)) // Fast auto-commit for testing
             .WithOffsetCommitMode(OffsetCommitMode.Auto)
             .Build())
         {
@@ -377,7 +377,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithSessionTimeout(10000)
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .Build();
 

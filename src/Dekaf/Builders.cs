@@ -71,12 +71,6 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
-    public ProducerBuilder<TKey, TValue> WithLingerMs(int lingerMs)
-    {
-        _lingerMs = lingerMs;
-        return this;
-    }
-
     /// <summary>
     /// Sets the linger time for batching messages.
     /// </summary>
@@ -105,33 +99,6 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithBufferMemory(ulong bufferMemory)
     {
         _bufferMemory = bufferMemory;
-        return this;
-    }
-
-    /// <summary>
-    /// Sets the maximum time in milliseconds that produce operations will block when the buffer
-    /// is full or metadata is unavailable.
-    /// </summary>
-    /// <param name="maxBlockMs">The maximum block time in milliseconds. Must be positive.</param>
-    /// <remarks>
-    /// <para>
-    /// Equivalent to Kafka's <c>max.block.ms</c> configuration.
-    /// Default is 60000ms (60 seconds).
-    /// </para>
-    /// <para>
-    /// This timeout applies when:
-    /// <list type="bullet">
-    /// <item><description>Waiting for buffer space due to backpressure (buffer full)</description></item>
-    /// <item><description>Waiting for initial metadata when producing to a new topic</description></item>
-    /// </list>
-    /// </para>
-    /// </remarks>
-    public ProducerBuilder<TKey, TValue> WithMaxBlockMs(int maxBlockMs)
-    {
-        if (maxBlockMs <= 0)
-            throw new ArgumentOutOfRangeException(nameof(maxBlockMs), "MaxBlockMs must be positive");
-
-        _maxBlockMs = maxBlockMs;
         return this;
     }
 
@@ -168,27 +135,9 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
-    public ProducerBuilder<TKey, TValue> UseZstdCompression()
-    {
-        _compressionType = Protocol.Records.CompressionType.Zstd;
-        return this;
-    }
-
-    public ProducerBuilder<TKey, TValue> UseLz4Compression()
-    {
-        _compressionType = Protocol.Records.CompressionType.Lz4;
-        return this;
-    }
-
     public ProducerBuilder<TKey, TValue> UseGzipCompression()
     {
         _compressionType = Protocol.Records.CompressionType.Gzip;
-        return this;
-    }
-
-    public ProducerBuilder<TKey, TValue> UseSnappyCompression()
-    {
-        _compressionType = Protocol.Records.CompressionType.Snappy;
         return this;
     }
 
@@ -389,13 +338,13 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
-    /// Sets how long to wait in milliseconds before triggering a rebootstrap when all known
+    /// Sets how long to wait before triggering a rebootstrap when all known
     /// brokers are unavailable.
     /// </summary>
-    /// <param name="triggerMs">The trigger delay in milliseconds. Default is 300000 (5 minutes).</param>
-    public ProducerBuilder<TKey, TValue> WithMetadataRecoveryRebootstrapTriggerMs(int triggerMs)
+    /// <param name="trigger">The trigger delay. Default is 5 minutes.</param>
+    public ProducerBuilder<TKey, TValue> WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger)
     {
-        _metadataRecoveryRebootstrapTriggerMs = triggerMs;
+        _metadataRecoveryRebootstrapTriggerMs = (int)trigger.TotalMilliseconds;
         return this;
     }
 
@@ -414,19 +363,6 @@ public sealed class ProducerBuilder<TKey, TValue>
 
         _metadataMaxAge = interval;
         return this;
-    }
-
-    /// <summary>
-    /// Sets the maximum age of metadata before it is refreshed, in milliseconds.
-    /// This controls how frequently the client refreshes its view of the cluster topology.
-    /// Equivalent to Kafka's <c>metadata.max.age.ms</c> configuration.
-    /// Default is 900000 (15 minutes).
-    /// </summary>
-    /// <param name="ms">The maximum age of metadata in milliseconds. Must be positive.</param>
-    /// <returns>The builder instance for method chaining.</returns>
-    public ProducerBuilder<TKey, TValue> WithMetadataMaxAgeMs(int ms)
-    {
-        return WithMetadataMaxAge(TimeSpan.FromMilliseconds(ms));
     }
 
     /// <summary>
@@ -714,12 +650,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
         return this;
     }
 
-    public ConsumerBuilder<TKey, TValue> WithAutoCommitInterval(int intervalMs)
-    {
-        _autoCommitIntervalMs = intervalMs;
-        return this;
-    }
-
     /// <summary>
     /// Sets the interval for automatic offset commits.
     /// </summary>
@@ -756,12 +686,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithMaxPollRecords(int maxPollRecords)
     {
         _maxPollRecords = maxPollRecords;
-        return this;
-    }
-
-    public ConsumerBuilder<TKey, TValue> WithSessionTimeout(int timeoutMs)
-    {
-        _sessionTimeoutMs = timeoutMs;
         return this;
     }
 
@@ -982,13 +906,13 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
-    /// Sets how long to wait in milliseconds before triggering a rebootstrap when all known
+    /// Sets how long to wait before triggering a rebootstrap when all known
     /// brokers are unavailable.
     /// </summary>
-    /// <param name="triggerMs">The trigger delay in milliseconds. Default is 300000 (5 minutes).</param>
-    public ConsumerBuilder<TKey, TValue> WithMetadataRecoveryRebootstrapTriggerMs(int triggerMs)
+    /// <param name="trigger">The trigger delay. Default is 5 minutes.</param>
+    public ConsumerBuilder<TKey, TValue> WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger)
     {
-        _metadataRecoveryRebootstrapTriggerMs = triggerMs;
+        _metadataRecoveryRebootstrapTriggerMs = (int)trigger.TotalMilliseconds;
         return this;
     }
 
@@ -1007,19 +931,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
 
         _metadataMaxAge = interval;
         return this;
-    }
-
-    /// <summary>
-    /// Sets the maximum age of metadata before it is refreshed, in milliseconds.
-    /// This controls how frequently the client refreshes its view of the cluster topology.
-    /// Equivalent to Kafka's <c>metadata.max.age.ms</c> configuration.
-    /// Default is 900000 (15 minutes).
-    /// </summary>
-    /// <param name="ms">The maximum age of metadata in milliseconds. Must be positive.</param>
-    /// <returns>The builder instance for method chaining.</returns>
-    public ConsumerBuilder<TKey, TValue> WithMetadataMaxAgeMs(int ms)
-    {
-        return WithMetadataMaxAge(TimeSpan.FromMilliseconds(ms));
     }
 
     /// <summary>

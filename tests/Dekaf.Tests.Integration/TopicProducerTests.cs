@@ -359,7 +359,7 @@ public class TopicProducerTests(KafkaTestContainer kafka)
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
-            .WithLingerMs(1000) // Long linger
+            .WithLinger(TimeSpan.FromMilliseconds(1000)) // Long linger
             .BuildForTopic(topic);
 
         // Act - send multiple fire-and-forget messages

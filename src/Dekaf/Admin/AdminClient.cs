@@ -1302,13 +1302,13 @@ public sealed class AdminClientBuilder
     }
 
     /// <summary>
-    /// Sets how long to wait in milliseconds before triggering a rebootstrap when all known
+    /// Sets how long to wait before triggering a rebootstrap when all known
     /// brokers are unavailable.
     /// </summary>
-    /// <param name="triggerMs">The trigger delay in milliseconds. Default is 300000 (5 minutes).</param>
-    public AdminClientBuilder WithMetadataRecoveryRebootstrapTriggerMs(int triggerMs)
+    /// <param name="trigger">The trigger delay. Default is 5 minutes.</param>
+    public AdminClientBuilder WithMetadataRecoveryRebootstrapTrigger(TimeSpan trigger)
     {
-        _metadataRecoveryRebootstrapTriggerMs = triggerMs;
+        _metadataRecoveryRebootstrapTriggerMs = (int)trigger.TotalMilliseconds;
         return this;
     }
 
@@ -1327,19 +1327,6 @@ public sealed class AdminClientBuilder
 
         _metadataMaxAge = interval;
         return this;
-    }
-
-    /// <summary>
-    /// Sets the maximum age of metadata before it is refreshed, in milliseconds.
-    /// This controls how frequently the client refreshes its view of the cluster topology.
-    /// Equivalent to Kafka's <c>metadata.max.age.ms</c> configuration.
-    /// Default is 900000 (15 minutes).
-    /// </summary>
-    /// <param name="ms">The maximum age of metadata in milliseconds. Must be positive.</param>
-    /// <returns>The builder instance for method chaining.</returns>
-    public AdminClientBuilder WithMetadataMaxAgeMs(int ms)
-    {
-        return WithMetadataMaxAge(TimeSpan.FromMilliseconds(ms));
     }
 
     public IAdminClient Build()

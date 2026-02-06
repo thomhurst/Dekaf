@@ -42,7 +42,7 @@ public class ProducerBenchmarks
             .WithBootstrapServers(_kafka.BootstrapServers)
             .WithClientId("dekaf-benchmark")
             .WithAcks(DekafProducer.Acks.Leader)
-            .WithLingerMs(5)
+            .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithBatchSize(16384)
             .Build();
 

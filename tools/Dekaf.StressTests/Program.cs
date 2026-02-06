@@ -166,7 +166,7 @@ public static class Program
             .WithBootstrapServers(bootstrapServers)
             .WithClientId("stress-seeder")
             .WithAcks(Acks.Leader)
-            .WithLingerMs(5)
+            .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithBatchSize(16384)
             .Build();
 

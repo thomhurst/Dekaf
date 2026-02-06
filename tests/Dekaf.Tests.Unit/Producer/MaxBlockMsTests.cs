@@ -55,53 +55,53 @@ public sealed class MaxBlockMsTests
 
     #endregion
 
-    #region Builder - WithMaxBlockMs
+    #region Builder - WithMaxBlock (from Ms)
 
     [Test]
-    public async Task WithMaxBlockMs_ReturnsSameBuilder()
+    public async Task WithMaxBlock_Milliseconds_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();
-        var result = builder.WithMaxBlockMs(5000);
+        var result = builder.WithMaxBlock(TimeSpan.FromMilliseconds(5000));
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 
     [Test]
-    public async Task WithMaxBlockMs_BuildSucceeds()
+    public async Task WithMaxBlock_Milliseconds_BuildSucceeds()
     {
         var act = () => Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
-            .WithMaxBlockMs(5000)
+            .WithMaxBlock(TimeSpan.FromMilliseconds(5000))
             .Build();
 
         await Assert.That(act).ThrowsNothing();
     }
 
     [Test]
-    public async Task WithMaxBlockMs_Zero_ThrowsArgumentOutOfRangeException()
+    public async Task WithMaxBlock_ZeroMilliseconds_ThrowsArgumentOutOfRangeException()
     {
         var builder = Kafka.CreateProducer<string, string>();
 
-        var act = () => builder.WithMaxBlockMs(0);
+        var act = () => builder.WithMaxBlock(TimeSpan.FromMilliseconds(0));
 
         await Assert.That(act).Throws<ArgumentOutOfRangeException>();
     }
 
     [Test]
-    public async Task WithMaxBlockMs_Negative_ThrowsArgumentOutOfRangeException()
+    public async Task WithMaxBlock_NegativeMilliseconds_ThrowsArgumentOutOfRangeException()
     {
         var builder = Kafka.CreateProducer<string, string>();
 
-        var act = () => builder.WithMaxBlockMs(-1);
+        var act = () => builder.WithMaxBlock(TimeSpan.FromMilliseconds(-1));
 
         await Assert.That(act).Throws<ArgumentOutOfRangeException>();
     }
 
     [Test]
-    public async Task WithMaxBlockMs_NegativeLargeValue_ThrowsArgumentOutOfRangeException()
+    public async Task WithMaxBlock_NegativeLargeMilliseconds_ThrowsArgumentOutOfRangeException()
     {
         var builder = Kafka.CreateProducer<string, string>();
 
-        var act = () => builder.WithMaxBlockMs(-60000);
+        var act = () => builder.WithMaxBlock(TimeSpan.FromMilliseconds(-60000));
 
         await Assert.That(act).Throws<ArgumentOutOfRangeException>();
     }
@@ -154,13 +154,13 @@ public sealed class MaxBlockMsTests
     #region Builder chaining
 
     [Test]
-    public async Task WithMaxBlockMs_ChainsWithOtherBuilderMethods()
+    public async Task WithMaxBlock_ChainsWithOtherBuilderMethods_Milliseconds()
     {
         var act = () => Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
-            .WithMaxBlockMs(10000)
+            .WithMaxBlock(TimeSpan.FromMilliseconds(10000))
             .WithBufferMemory(1024 * 1024)
-            .WithLingerMs(5)
+            .WithLinger(TimeSpan.FromMilliseconds(5))
             .Build();
 
         await Assert.That(act).ThrowsNothing();

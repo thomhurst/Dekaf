@@ -1,5 +1,6 @@
 namespace Dekaf;
 
+using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 
@@ -60,6 +61,40 @@ public static class Kafka
         return new ConsumerBuilder<TKey, TValue>()
             .WithBootstrapServers(bootstrapServers)
             .WithGroupId(groupId)
+            .Build();
+    }
+
+    /// <summary>
+    /// Creates a consumer with the specified bootstrap servers, group ID, and topic subscriptions.
+    /// </summary>
+    /// <param name="bootstrapServers">Comma-separated list of bootstrap servers.</param>
+    /// <param name="groupId">The consumer group ID.</param>
+    /// <param name="topics">The topics to subscribe to.</param>
+    public static IKafkaConsumer<TKey, TValue> CreateConsumer<TKey, TValue>(string bootstrapServers, string groupId, params string[] topics)
+    {
+        return new ConsumerBuilder<TKey, TValue>()
+            .WithBootstrapServers(bootstrapServers)
+            .WithGroupId(groupId)
+            .SubscribeTo(topics)
+            .Build();
+    }
+
+    /// <summary>
+    /// Creates an admin client builder.
+    /// </summary>
+    public static AdminClientBuilder CreateAdminClient()
+    {
+        return new AdminClientBuilder();
+    }
+
+    /// <summary>
+    /// Creates an admin client with the specified bootstrap servers.
+    /// </summary>
+    /// <param name="bootstrapServers">Comma-separated list of bootstrap servers.</param>
+    public static IAdminClient CreateAdminClient(string bootstrapServers)
+    {
+        return new AdminClientBuilder()
+            .WithBootstrapServers(bootstrapServers)
             .Build();
     }
 }

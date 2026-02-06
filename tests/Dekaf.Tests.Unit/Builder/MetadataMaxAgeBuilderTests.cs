@@ -15,10 +15,10 @@ public sealed class MetadataMaxAgeBuilderTests
     }
 
     [Test]
-    public async Task ProducerBuilder_WithMetadataMaxAgeMs_ReturnsSameBuilder()
+    public async Task ProducerBuilder_WithMetadataMaxAge_Milliseconds_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();
-        var result = builder.WithMetadataMaxAgeMs(300000);
+        var result = builder.WithMetadataMaxAge(TimeSpan.FromMilliseconds(300000));
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 
@@ -43,21 +43,21 @@ public sealed class MetadataMaxAgeBuilderTests
     }
 
     [Test]
-    public async Task ProducerBuilder_WithMetadataMaxAgeMs_Zero_ThrowsArgumentOutOfRangeException()
+    public async Task ProducerBuilder_WithMetadataMaxAge_ZeroMilliseconds_ThrowsArgumentOutOfRangeException()
     {
         var builder = Kafka.CreateProducer<string, string>();
 
-        var act = () => builder.WithMetadataMaxAgeMs(0);
+        var act = () => builder.WithMetadataMaxAge(TimeSpan.FromMilliseconds(0));
 
         await Assert.That(act).Throws<ArgumentOutOfRangeException>();
     }
 
     [Test]
-    public async Task ProducerBuilder_WithMetadataMaxAgeMs_Negative_ThrowsArgumentOutOfRangeException()
+    public async Task ProducerBuilder_WithMetadataMaxAge_NegativeMilliseconds_ThrowsArgumentOutOfRangeException()
     {
         var builder = Kafka.CreateProducer<string, string>();
 
-        var act = () => builder.WithMetadataMaxAgeMs(-1000);
+        var act = () => builder.WithMetadataMaxAge(TimeSpan.FromMilliseconds(-1000));
 
         await Assert.That(act).Throws<ArgumentOutOfRangeException>();
     }
@@ -74,11 +74,11 @@ public sealed class MetadataMaxAgeBuilderTests
     }
 
     [Test]
-    public async Task ProducerBuilder_WithMetadataMaxAgeMs_ThenBuild_Succeeds()
+    public async Task ProducerBuilder_WithMetadataMaxAge_Milliseconds_ThenBuild_Succeeds()
     {
         var act = () => Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
-            .WithMetadataMaxAgeMs(60000)
+            .WithMetadataMaxAge(TimeSpan.FromMilliseconds(60000))
             .Build();
 
         await Assert.That(act).ThrowsNothing();
@@ -91,7 +91,7 @@ public sealed class MetadataMaxAgeBuilderTests
             .WithBootstrapServers("localhost:9092")
             .WithClientId("test")
             .WithMetadataMaxAge(TimeSpan.FromMinutes(5))
-            .WithLingerMs(5)
+            .WithLinger(TimeSpan.FromMilliseconds(5))
             .Build();
 
         await Assert.That(act).ThrowsNothing();
@@ -110,10 +110,10 @@ public sealed class MetadataMaxAgeBuilderTests
     }
 
     [Test]
-    public async Task ConsumerBuilder_WithMetadataMaxAgeMs_ReturnsSameBuilder()
+    public async Task ConsumerBuilder_WithMetadataMaxAge_Milliseconds_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();
-        var result = builder.WithMetadataMaxAgeMs(300000);
+        var result = builder.WithMetadataMaxAge(TimeSpan.FromMilliseconds(300000));
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 
@@ -138,21 +138,21 @@ public sealed class MetadataMaxAgeBuilderTests
     }
 
     [Test]
-    public async Task ConsumerBuilder_WithMetadataMaxAgeMs_Zero_ThrowsArgumentOutOfRangeException()
+    public async Task ConsumerBuilder_WithMetadataMaxAge_ZeroMilliseconds_ThrowsArgumentOutOfRangeException()
     {
         var builder = Kafka.CreateConsumer<string, string>();
 
-        var act = () => builder.WithMetadataMaxAgeMs(0);
+        var act = () => builder.WithMetadataMaxAge(TimeSpan.FromMilliseconds(0));
 
         await Assert.That(act).Throws<ArgumentOutOfRangeException>();
     }
 
     [Test]
-    public async Task ConsumerBuilder_WithMetadataMaxAgeMs_Negative_ThrowsArgumentOutOfRangeException()
+    public async Task ConsumerBuilder_WithMetadataMaxAge_NegativeMilliseconds_ThrowsArgumentOutOfRangeException()
     {
         var builder = Kafka.CreateConsumer<string, string>();
 
-        var act = () => builder.WithMetadataMaxAgeMs(-1000);
+        var act = () => builder.WithMetadataMaxAge(TimeSpan.FromMilliseconds(-1000));
 
         await Assert.That(act).Throws<ArgumentOutOfRangeException>();
     }
@@ -169,11 +169,11 @@ public sealed class MetadataMaxAgeBuilderTests
     }
 
     [Test]
-    public async Task ConsumerBuilder_WithMetadataMaxAgeMs_ThenBuild_Succeeds()
+    public async Task ConsumerBuilder_WithMetadataMaxAge_Milliseconds_ThenBuild_Succeeds()
     {
         var act = () => Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
-            .WithMetadataMaxAgeMs(60000)
+            .WithMetadataMaxAge(TimeSpan.FromMilliseconds(60000))
             .Build();
 
         await Assert.That(act).ThrowsNothing();
@@ -205,10 +205,10 @@ public sealed class MetadataMaxAgeBuilderTests
     }
 
     [Test]
-    public async Task AdminClientBuilder_WithMetadataMaxAgeMs_ReturnsSameBuilder()
+    public async Task AdminClientBuilder_WithMetadataMaxAge_Milliseconds_ReturnsSameBuilder()
     {
         var builder = new AdminClientBuilder();
-        var result = builder.WithMetadataMaxAgeMs(300000);
+        var result = builder.WithMetadataMaxAge(TimeSpan.FromMilliseconds(300000));
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 
@@ -233,21 +233,21 @@ public sealed class MetadataMaxAgeBuilderTests
     }
 
     [Test]
-    public async Task AdminClientBuilder_WithMetadataMaxAgeMs_Zero_ThrowsArgumentOutOfRangeException()
+    public async Task AdminClientBuilder_WithMetadataMaxAge_ZeroMilliseconds_ThrowsArgumentOutOfRangeException()
     {
         var builder = new AdminClientBuilder();
 
-        var act = () => builder.WithMetadataMaxAgeMs(0);
+        var act = () => builder.WithMetadataMaxAge(TimeSpan.FromMilliseconds(0));
 
         await Assert.That(act).Throws<ArgumentOutOfRangeException>();
     }
 
     [Test]
-    public async Task AdminClientBuilder_WithMetadataMaxAgeMs_Negative_ThrowsArgumentOutOfRangeException()
+    public async Task AdminClientBuilder_WithMetadataMaxAge_NegativeMilliseconds_ThrowsArgumentOutOfRangeException()
     {
         var builder = new AdminClientBuilder();
 
-        var act = () => builder.WithMetadataMaxAgeMs(-1000);
+        var act = () => builder.WithMetadataMaxAge(TimeSpan.FromMilliseconds(-1000));
 
         await Assert.That(act).Throws<ArgumentOutOfRangeException>();
     }
@@ -264,11 +264,11 @@ public sealed class MetadataMaxAgeBuilderTests
     }
 
     [Test]
-    public async Task AdminClientBuilder_WithMetadataMaxAgeMs_ThenBuild_Succeeds()
+    public async Task AdminClientBuilder_WithMetadataMaxAge_Milliseconds_ThenBuild_Succeeds()
     {
         var act = () => new AdminClientBuilder()
             .WithBootstrapServers("localhost:9092")
-            .WithMetadataMaxAgeMs(60000)
+            .WithMetadataMaxAge(TimeSpan.FromMilliseconds(60000))
             .Build();
 
         await Assert.That(act).ThrowsNothing();

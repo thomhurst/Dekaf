@@ -110,10 +110,10 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
-    public async Task WithAutoCommitInterval_Int_ReturnsSameBuilder()
+    public async Task WithAutoCommitInterval_Milliseconds_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();
-        var result = builder.WithAutoCommitInterval(1000);
+        var result = builder.WithAutoCommitInterval(TimeSpan.FromMilliseconds(1000));
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 
@@ -150,10 +150,10 @@ public class ConsumerBuilderValidationTests
     }
 
     [Test]
-    public async Task WithSessionTimeout_Int_ReturnsSameBuilder()
+    public async Task WithSessionTimeout_Milliseconds_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateConsumer<string, string>();
-        var result = builder.WithSessionTimeout(10000);
+        var result = builder.WithSessionTimeout(TimeSpan.FromMilliseconds(10000));
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 

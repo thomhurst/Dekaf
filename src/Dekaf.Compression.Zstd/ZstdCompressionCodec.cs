@@ -1,4 +1,5 @@
 using System.Buffers;
+using Dekaf;
 using Dekaf.Compression;
 using Dekaf.Protocol.Records;
 using ZstdSharp;
@@ -109,6 +110,20 @@ public sealed class ZstdCompressionCodec : ICompressionCodec
                 // NeedMoreData or DestinationTooSmall: continue with next iteration
             }
         }
+    }
+}
+
+/// <summary>
+/// Extension methods for configuring Zstd compression on the producer builder.
+/// </summary>
+public static class ZstdProducerBuilderExtensions
+{
+    /// <summary>
+    /// Configures the producer to use Zstd compression.
+    /// </summary>
+    public static ProducerBuilder<TKey, TValue> UseZstdCompression<TKey, TValue>(this ProducerBuilder<TKey, TValue> builder)
+    {
+        return builder.UseCompression(CompressionType.Zstd);
     }
 }
 
