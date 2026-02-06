@@ -8,7 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for admin client workflows that DevOps and platform teams commonly perform:
 /// topic lifecycle management, configuration, and consumer group operations.
 /// </summary>
-public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrationTest
+public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task TopicLifecycle_CreateProduceConsumeDescribeDelete()
@@ -17,7 +17,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
         var topicName = $"lifecycle-topic-{Guid.NewGuid():N}";
 
         await using var admin = Kafka.CreateAdminClient()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Step 1: Create topic
@@ -36,7 +36,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Step 3: Produce some data
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         for (var i = 0; i < 5; i++)
@@ -51,7 +51,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Step 4: Consume to verify data
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"lifecycle-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -81,7 +81,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     public async Task AdminClient_DescribeCluster_ReturnsClusterInfo()
     {
         await using var admin = Kafka.CreateAdminClient()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         var cluster = await admin.DescribeClusterAsync();
@@ -98,7 +98,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
         var topic3 = $"multi-create-3-{Guid.NewGuid():N}";
 
         await using var admin = Kafka.CreateAdminClient()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         await admin.CreateTopicsAsync(
@@ -126,10 +126,10 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     [Test]
     public async Task AdminClient_DescribeTopicConfig_ReturnsConfiguration()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var admin = Kafka.CreateAdminClient()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         var configs = await admin.DescribeConfigsAsync(
@@ -151,7 +151,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     public async Task AdminClient_FactoryShortcut_WorksWithConnectionString()
     {
         // Test the convenience factory: Kafka.CreateAdminClient(servers)
-        await using var admin = Kafka.CreateAdminClient(kafka.BootstrapServers);
+        await using var admin = Kafka.CreateAdminClient(KafkaContainer.BootstrapServers);
 
         var cluster = await admin.DescribeClusterAsync();
         await Assert.That(cluster.Nodes).IsNotEmpty();
@@ -164,14 +164,14 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     [Test]
     public async Task AdminClient_ListConsumerGroups_ReturnsActiveGroups()
     {
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"list-groups-test-{Guid.NewGuid():N}";
 
         try
         {
             // Create a consumer group by consuming
             await using (var consumer = Kafka.CreateConsumer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .Build())
@@ -194,7 +194,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             await Task.Delay(3000).ConfigureAwait(false);
 
             await using var admin = Kafka.CreateAdminClient()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .Build();
 
             var groups = await admin.ListConsumerGroupsAsync().ConfigureAwait(false);
@@ -215,14 +215,14 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     [Test]
     public async Task AdminClient_DescribeConsumerGroups_ReturnsGroupDetails()
     {
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"describe-groups-test-{Guid.NewGuid():N}";
 
         try
         {
             // Produce a message so the consumer has something to fetch
             await using var producer = Kafka.CreateProducer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .Build();
 
             await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -234,7 +234,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             // Create consumer group with active member
             await using var consumer = Kafka.CreateConsumer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .Build();
@@ -247,7 +247,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             // Describe while consumer is still active
             await using var admin = Kafka.CreateAdminClient()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .Build();
 
             var descriptions = await admin.DescribeConsumerGroupsAsync([groupId]).ConfigureAwait(false);
@@ -274,14 +274,14 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     [Test]
     public async Task AdminClient_DeleteConsumerGroups_DeletesEmptyGroup()
     {
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"delete-groups-test-{Guid.NewGuid():N}";
 
         try
         {
             // Create a consumer group, then close it (making it empty)
             await using (var consumer = Kafka.CreateConsumer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .Build())
@@ -303,7 +303,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             await Task.Delay(5000).ConfigureAwait(false);
 
             await using var admin = Kafka.CreateAdminClient()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .Build();
 
             // Verify group exists before deletion
@@ -353,7 +353,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
         var topicName = $"expand-partitions-{Guid.NewGuid():N}";
 
         await using var admin = Kafka.CreateAdminClient()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Create topic with 1 partition
@@ -378,7 +378,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Refresh metadata and verify
         await using var admin2 = Kafka.CreateAdminClient()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         var descAfter = await admin2.DescribeTopicsAsync([topicName]).ConfigureAwait(false);
@@ -391,15 +391,15 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     [Test]
     public async Task AdminClient_DeleteRecords_DeletesUpToOffset()
     {
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var admin = Kafka.CreateAdminClient()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Produce 5 messages
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         for (var i = 0; i < 5; i++)
@@ -450,14 +450,14 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     [Test]
     public async Task AdminClient_AlterConsumerGroupOffsets_ResetsToEarliest()
     {
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"alter-offsets-test-{Guid.NewGuid():N}";
 
         try
         {
             // Produce messages
             await using var producer = Kafka.CreateProducer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .Build();
 
             for (var i = 0; i < 5; i++)
@@ -472,7 +472,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             // Consume all messages and commit
             await using (var consumer = Kafka.CreateConsumer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual)
@@ -498,7 +498,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             await Task.Delay(3000).ConfigureAwait(false);
 
             await using var admin = Kafka.CreateAdminClient()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .Build();
 
             // Verify committed offset is 5 (retry for eventual consistency)
@@ -564,14 +564,14 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     [Test]
     public async Task AdminClient_ListConsumerGroups_WithStateFilter_FiltersCorrectly()
     {
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"state-filter-test-{Guid.NewGuid():N}";
 
         try
         {
             // Create a consumer group and close it so it becomes Empty
             await using (var consumer = Kafka.CreateConsumer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .Build())
@@ -592,7 +592,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             await Task.Delay(5000).ConfigureAwait(false);
 
             await using var admin = Kafka.CreateAdminClient()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .Build();
 
             // First, find the actual state of our group by listing all groups
@@ -638,14 +638,14 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     [Test]
     public async Task AdminClient_DescribeConsumerGroups_VerifiesMemberAssignment()
     {
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3).ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3).ConfigureAwait(false);
         var groupId = $"assignment-verify-{Guid.NewGuid():N}";
 
         try
         {
             // Produce a message so consumer joins and gets partition assignment
             await using var producer = Kafka.CreateProducer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .Build();
 
             await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -657,7 +657,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             // Create active consumer
             await using var consumer = Kafka.CreateConsumer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .Build();
@@ -673,7 +673,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             await Task.Delay(2000).ConfigureAwait(false);
 
             await using var admin = Kafka.CreateAdminClient()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .Build();
 
             var descriptions = await admin.DescribeConsumerGroupsAsync([groupId]).ConfigureAwait(false);
@@ -708,7 +708,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     [Test]
     public async Task AdminClient_DescribeConsumerGroups_MultipleGroups_ReturnsSeparateDescriptions()
     {
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId1 = $"multi-desc-1-{Guid.NewGuid():N}";
         var groupId2 = $"multi-desc-2-{Guid.NewGuid():N}";
 
@@ -716,7 +716,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
         {
             // Create two separate consumer groups
             await using var producer = Kafka.CreateProducer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .Build();
 
             for (var i = 0; i < 2; i++)
@@ -731,7 +731,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             // Consumer 1
             await using var consumer1 = Kafka.CreateConsumer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId1)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .Build();
@@ -742,7 +742,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             // Consumer 2
             await using var consumer2 = Kafka.CreateConsumer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId2)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .Build();
@@ -753,7 +753,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             // Describe both groups in a single call
             await using var admin = Kafka.CreateAdminClient()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .Build();
 
             var descriptions = await admin.DescribeConsumerGroupsAsync([groupId1, groupId2]).ConfigureAwait(false);
@@ -780,7 +780,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
         var topicName = $"shrink-test-{Guid.NewGuid():N}";
 
         await using var admin = Kafka.CreateAdminClient()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Create topic with 3 partitions
@@ -809,15 +809,15 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     [Test]
     public async Task AdminClient_DeleteRecords_MultiplePartitions()
     {
-        var topic = await kafka.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
 
         await using var admin = Kafka.CreateAdminClient()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Produce messages to specific partitions
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Produce to partition 0
@@ -875,14 +875,14 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     [Test]
     public async Task AdminClient_AlterConsumerGroupOffsets_ResetsAndReconsumes()
     {
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"reconsume-test-{Guid.NewGuid():N}";
 
         try
         {
             // Produce 5 messages
             await using var producer = Kafka.CreateProducer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .Build();
 
             for (var i = 0; i < 5; i++)
@@ -897,7 +897,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             // First consumer: consume all 5 and commit
             await using (var consumer = Kafka.CreateConsumer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual)
@@ -925,7 +925,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             // Reset offset to 2
             await using var admin = Kafka.CreateAdminClient()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .Build();
 
             for (var attempt = 0; attempt < 8; attempt++)
@@ -947,7 +947,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             // Second consumer: should start from offset 2 and get messages 2, 3, 4
             await using (var consumer2 = Kafka.CreateConsumer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .Build())
@@ -986,14 +986,14 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     [Test]
     public async Task ConsumerGroupLifecycle_CreateDescribeAlterOffsetsDelete()
     {
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"full-lifecycle-{Guid.NewGuid():N}";
 
         try
         {
             // Step 1: Produce messages
             await using var producer = Kafka.CreateProducer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .Build();
 
             for (var i = 0; i < 3; i++)
@@ -1008,7 +1008,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             // Step 2: Create consumer group by consuming and committing
             await using (var consumer = Kafka.CreateConsumer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual)
@@ -1033,7 +1033,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             await Task.Delay(5000).ConfigureAwait(false);
 
             await using var admin = Kafka.CreateAdminClient()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .Build();
 
             // Step 3: List consumer groups — our group should appear
@@ -1129,7 +1129,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
         var topic2 = $"multi-expand-2-{Guid.NewGuid():N}";
 
         await using var admin = Kafka.CreateAdminClient()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Create two topics with 1 partition each
@@ -1152,7 +1152,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Verify using a fresh admin client (avoids stale metadata cache)
         await using var admin2 = Kafka.CreateAdminClient()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         var descriptions = await admin2.DescribeTopicsAsync([topic1, topic2]).ConfigureAwait(false);
@@ -1166,15 +1166,15 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     [Test]
     public async Task AdminClient_DeleteRecords_AllRecords_ShiftsEarliestToLatest()
     {
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var admin = Kafka.CreateAdminClient()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Produce some messages
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         for (var i = 0; i < 3; i++)

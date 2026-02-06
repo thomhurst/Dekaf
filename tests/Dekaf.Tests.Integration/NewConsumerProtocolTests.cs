@@ -11,16 +11,16 @@ namespace Dekaf.Tests.Integration;
 /// Requires Kafka 4.0+.
 /// </summary>
 [SupportsKafka(400)]
-public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrationTest
+public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task NewProtocol_BasicProduceConsume_Works()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -32,7 +32,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
@@ -52,11 +52,11 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
     [Test]
     public async Task NewProtocol_SingleConsumer_GetsAllPartitions()
     {
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -72,7 +72,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
@@ -99,11 +99,11 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
     [Test]
     public async Task NewProtocol_NewGroupId_StartsFromConfiguredOffset()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -118,7 +118,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
@@ -143,11 +143,11 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
     [Test]
     public async Task NewProtocol_CommittedOffset_NewConsumerStartsFromCommit()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -163,7 +163,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
 
         // First consumer: consume 3 messages and commit
         await using (var consumer1 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
@@ -187,7 +187,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
 
         // Second consumer: should start from committed offset
         await using var consumer2 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
@@ -209,12 +209,12 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
     [Test]
     public async Task NewProtocol_MultipleTopics_SubscribesAndConsumesAll()
     {
-        var topic1 = await kafka.CreateTestTopicAsync();
-        var topic2 = await kafka.CreateTestTopicAsync();
+        var topic1 = await KafkaContainer.CreateTestTopicAsync();
+        var topic2 = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -233,7 +233,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
@@ -259,11 +259,11 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
     [Test]
     public async Task NewProtocol_Heartbeat_KeepsSessionAlive()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -278,7 +278,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
@@ -302,11 +302,11 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
     [Test]
     public async Task NewProtocol_Unsubscribe_LeavesGroup()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
@@ -324,11 +324,11 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
     [Test]
     public async Task NewProtocol_WithRemoteAssignor_UsesServerSideAssignment()
     {
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -344,7 +344,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
@@ -372,11 +372,11 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
     [Test]
     public async Task NewProtocol_OffsetFetch_ReturnsCommittedOffsets()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -391,7 +391,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
@@ -420,11 +420,11 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
     [Test]
     public async Task NewProtocol_Position_ReturnsCurrentOffset()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -439,7 +439,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
@@ -466,11 +466,11 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
     [Test]
     public async Task NewProtocol_SeekToBeginning_RestartsFromOffset0()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -485,7 +485,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
@@ -518,12 +518,12 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
     [Test]
     public async Task NewProtocol_StaticMembership_RejoinsWithoutFullRebalance()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
         var instanceId = $"static-member-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -536,7 +536,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
 
         // First consumer with static membership
         await using (var consumer1 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithGroupInstanceId(instanceId)
@@ -565,7 +565,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
 
         // Second consumer with same static membership should rejoin quickly
         await using var consumer2 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithGroupInstanceId(instanceId)
@@ -586,12 +586,12 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
     [Test]
     public async Task NewProtocol_MultipleMessages_AllConsumedInOrder()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
         const int messageCount = 20;
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -606,7 +606,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
@@ -636,11 +636,11 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
     [Test]
     public async Task NewProtocol_HeadersRoundTrip_PreservesHeaders()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -659,7 +659,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-new-protocol")
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)

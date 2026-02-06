@@ -8,17 +8,17 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for event-driven pipeline patterns that are common in microservice architectures.
 /// These simulate real workflows: consume from input, transform, produce to output.
 /// </summary>
-public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrationTest
+public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task Pipeline_ConsumeTransformProduce_MessagesFlowThroughPipeline()
     {
         // Simulate: OrderService -> order-events -> EnrichmentService -> enriched-orders -> AnalyticsService
-        var inputTopic = await kafka.CreateTestTopicAsync();
-        var outputTopic = await kafka.CreateTestTopicAsync();
+        var inputTopic = await KafkaContainer.CreateTestTopicAsync();
+        var outputTopic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var sourceProducer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("order-service")
             .Build();
 
@@ -35,14 +35,14 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Pipeline worker: consume, transform, produce
         await using var pipelineConsumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"enrichment-service-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .Build();
 
         await using var pipelineProducer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("enrichment-service")
             .Build();
 
@@ -75,7 +75,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Verify output topic has all transformed messages
         await using var outputConsumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"analytics-service-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -107,11 +107,11 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
     public async Task Pipeline_DeadLetterQueue_FailedMessagesRouteToDeadLetterTopic()
     {
         // Simulate: process messages, route failures to DLQ
-        var inputTopic = await kafka.CreateTestTopicAsync();
-        var dlqTopic = await kafka.CreateTestTopicAsync();
+        var inputTopic = await KafkaContainer.CreateTestTopicAsync();
+        var dlqTopic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Produce mix of valid and "invalid" messages
@@ -130,14 +130,14 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Consumer with DLQ routing
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"processor-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .Build();
 
         await using var dlqProducer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         consumer.Subscribe(inputTopic);
@@ -182,7 +182,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Verify DLQ messages
         await using var dlqConsumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"dlq-reader-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -213,12 +213,12 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
     public async Task Pipeline_MessageEnrichment_HeadersAccumulateThroughStages()
     {
         // Simulate multi-stage pipeline where each stage adds headers
-        var stage1Topic = await kafka.CreateTestTopicAsync();
-        var stage2Topic = await kafka.CreateTestTopicAsync();
-        var stage3Topic = await kafka.CreateTestTopicAsync();
+        var stage1Topic = await KafkaContainer.CreateTestTopicAsync();
+        var stage2Topic = await KafkaContainer.CreateTestTopicAsync();
+        var stage3Topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Stage 1: Original event with correlation ID
@@ -236,7 +236,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Stage 2: Consume from stage 1, add enrichment headers, produce to stage 2
         await using var stage1Consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"stage2-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -262,7 +262,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Stage 3: Consume from stage 2, add final headers
         await using var stage2Consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"stage3-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -287,7 +287,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Verify final message has accumulated headers from all stages
         await using var finalConsumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -309,12 +309,12 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
     public async Task Pipeline_MultiTopicAggregation_CombinesEventsFromMultipleSources()
     {
         // Simulate: aggregate events from multiple source topics into a single stream
-        var orderTopic = await kafka.CreateTestTopicAsync();
-        var paymentTopic = await kafka.CreateTestTopicAsync();
-        var shipmentTopic = await kafka.CreateTestTopicAsync();
+        var orderTopic = await KafkaContainer.CreateTestTopicAsync();
+        var paymentTopic = await KafkaContainer.CreateTestTopicAsync();
+        var shipmentTopic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Produce events to different source topics
@@ -341,7 +341,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Aggregating consumer subscribes to all three topics
         await using var aggregator = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"aggregator-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -369,12 +369,12 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
     public async Task Pipeline_FilterAndRoute_MessagesRoutedByContent()
     {
         // Simulate: consume events, route to different output topics based on content
-        var inputTopic = await kafka.CreateTestTopicAsync();
-        var highPriorityTopic = await kafka.CreateTestTopicAsync();
-        var lowPriorityTopic = await kafka.CreateTestTopicAsync();
+        var inputTopic = await KafkaContainer.CreateTestTopicAsync();
+        var highPriorityTopic = await KafkaContainer.CreateTestTopicAsync();
+        var lowPriorityTopic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Produce mixed-priority events
@@ -385,13 +385,13 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Router consumer
         await using var router = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"router-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
 
         await using var routerProducer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         router.Subscribe(inputTopic);
@@ -409,7 +409,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Verify high priority topic
         await using var highConsumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"high-reader-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -433,7 +433,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Verify low priority topic
         await using var lowConsumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"low-reader-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -460,11 +460,11 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
     public async Task Pipeline_BatchCollectAndForward_AggregatesBeforeProducing()
     {
         // Simulate: collect N messages, aggregate, then produce a single summary
-        var inputTopic = await kafka.CreateTestTopicAsync();
-        var summaryTopic = await kafka.CreateTestTopicAsync();
+        var inputTopic = await KafkaContainer.CreateTestTopicAsync();
+        var summaryTopic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Produce individual metric events
@@ -480,7 +480,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Batch aggregator
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"aggregator-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -514,7 +514,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Verify summary
         await using var summaryConsumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"summary-reader-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();

@@ -7,16 +7,16 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for the Kafka producer.
 /// </summary>
-public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
+public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task Producer_ProduceWithAcksAll_SuccessfullyProduces()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-acks-all")
             .WithAcks(Acks.All)
             .Build();
@@ -39,10 +39,10 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_ProduceWithAcksOne_SuccessfullyProduces()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-acks-one")
             .WithAcks(Acks.Leader)
             .Build();
@@ -68,10 +68,10 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         // Offset will be -1 since we don't receive it from the broker.
 
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-acks-none")
             .WithAcks(Acks.None)
             .Build();
@@ -91,7 +91,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 
         // Verify the message was actually produced by consuming it
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-verify")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -112,10 +112,10 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_ProduceWithNullKey_SuccessfullyProduces()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-null-key")
             .Build();
 
@@ -136,10 +136,10 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_ProduceWithHeaders_SuccessfullyProduces()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-headers")
             .Build();
 
@@ -167,10 +167,10 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_ProduceToSpecificPartition_SuccessfullyProduces()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-partition")
             .Build();
 
@@ -192,11 +192,11 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_ProduceMultipleMessages_AllSucceed()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 10;
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-batch")
             .Build();
 
@@ -231,11 +231,11 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_ProduceWithCustomTimestamp_SuccessfullyProduces()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var timestamp = DateTimeOffset.UtcNow.AddHours(-1);
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-timestamp")
             .Build();
 
@@ -257,11 +257,11 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_ProduceLargeMessage_SuccessfullyProduces()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var largeValue = new string('x', 100_000); // 100KB message
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-large")
             .Build();
 
@@ -282,10 +282,10 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_ProduceEmptyValue_SuccessfullyProduces()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-empty")
             .Build();
 
@@ -306,10 +306,10 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_Flush_WaitsForPendingMessages()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-flush")
             .WithLinger(TimeSpan.FromMilliseconds(1000)) // Long linger to test flush
             .Build();
@@ -335,10 +335,10 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_WithStickyPartitioner_DistributesMessages()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-sticky")
             .WithPartitioner(PartitionerType.Sticky)
             .Build();
@@ -372,10 +372,10 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_WithRoundRobinPartitioner_DistributesMessages()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-roundrobin")
             .WithPartitioner(PartitionerType.RoundRobin)
             .Build();
@@ -407,12 +407,12 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_ConcurrentProducesToSameTopic_AllMessagesDelivered()
     {
         // Test high-contention scenario: multiple threads producing to the same topic
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         const int threadCount = 10;
         const int messagesPerThread = 50;
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-concurrent-same-topic")
             .WithAcks(Acks.All)
             .Build();
@@ -469,9 +469,9 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         // Create topics and producers
         for (var i = 0; i < producerCount; i++)
         {
-            topics[i] = await kafka.CreateTestTopicAsync();
+            topics[i] = await KafkaContainer.CreateTestTopicAsync();
             producers[i] = Kafka.CreateProducer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId($"test-producer-isolation-{i}")
                 .WithAcks(Acks.All)
                 .Build();
@@ -535,11 +535,11 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_HighThroughput_HandlesLoadWithoutErrors()
     {
         // Stress test: high message volume from single producer
-        var topic = await kafka.CreateTestTopicAsync(partitions: 6);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 6);
         const int totalMessages = 1000;
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-high-throughput")
             .WithAcks(Acks.Leader) // Faster acks for throughput test
             .WithLinger(TimeSpan.FromMilliseconds(5)) // Small linger for batching
@@ -590,12 +590,12 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_BurstTraffic_RecoversBetweenBursts()
     {
         // Test burst traffic pattern: bursts followed by idle periods
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         const int burstCount = 5;
         const int messagesPerBurst = 100;
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-burst")
             .WithAcks(Acks.All)
             .Build();
@@ -641,17 +641,17 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 
         for (var iteration = 0; iteration < iterations; iteration++)
         {
-            var topicA = await kafka.CreateTestTopicAsync();
-            var topicB = await kafka.CreateTestTopicAsync();
+            var topicA = await KafkaContainer.CreateTestTopicAsync();
+            var topicB = await KafkaContainer.CreateTestTopicAsync();
 
             await using var producerA = Kafka.CreateProducer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId($"producer-a-{iteration}")
                 .WithAcks(Acks.All)
                 .Build();
 
             await using var producerB = Kafka.CreateProducer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId($"producer-b-{iteration}")
                 .WithAcks(Acks.All)
                 .Build();
@@ -699,17 +699,17 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_MinimalCrossContaminationTest_SingleIteration()
     {
         // Minimal test: just two producers, one message each
-        var topicA = await kafka.CreateTestTopicAsync();
-        var topicB = await kafka.CreateTestTopicAsync();
+        var topicA = await KafkaContainer.CreateTestTopicAsync();
+        var topicB = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producerA = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("producer-a-minimal")
             .WithAcks(Acks.All)
             .Build();
 
         await using var producerB = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("producer-b-minimal")
             .WithAcks(Acks.All)
             .Build();
@@ -742,11 +742,11 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_SequentialProducers_NoContamination()
     {
         // Test without any concurrency - should always pass
-        var topicA = await kafka.CreateTestTopicAsync();
-        var topicB = await kafka.CreateTestTopicAsync();
+        var topicA = await KafkaContainer.CreateTestTopicAsync();
+        var topicB = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producerA = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("producer-a-sequential")
             .WithAcks(Acks.All)
             .Build();
@@ -763,7 +763,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 
         // Now create producer B and send
         await using var producerB = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("producer-b-sequential")
             .WithAcks(Acks.All)
             .Build();
@@ -782,10 +782,10 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_SynchronousProduce_SuccessfullyProducesMessage()
     {
         // Test fire-and-forget synchronous produce
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-sync")
             .WithAcks(Acks.Leader)
             .Build();
@@ -803,7 +803,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 
         // Verify by consuming
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-sync-verify")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -824,11 +824,11 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_SynchronousProduceWithCallback_InvokesCallbackOnSuccess()
     {
         // Test synchronous produce with delivery callback
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var callbackInvoked = new TaskCompletionSource<(RecordMetadata Metadata, Exception? Error)>();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-callback")
             .WithAcks(Acks.Leader)
             .Build();
@@ -859,11 +859,11 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_SynchronousProduceMultiple_FlushDeliverAll()
     {
         // Test multiple fire-and-forget produces followed by flush
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 100;
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-sync-batch")
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(5))
@@ -885,7 +885,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 
         // Verify by consuming all messages
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-sync-batch-verify")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -909,13 +909,13 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     public async Task Producer_SynchronousProduceConcurrent_ThreadSafe()
     {
         // Test thread-safety of synchronous produce
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         const int threadCount = 10;
         const int messagesPerThread = 50;
         var deliveredCount = 0;
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-sync-concurrent")
             .WithAcks(Acks.Leader)
             .Build();

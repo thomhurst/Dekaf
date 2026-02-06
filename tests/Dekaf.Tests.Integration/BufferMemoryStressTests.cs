@@ -6,7 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests verifying the BufferMemory fix prevents unbounded memory growth
 /// under sustained load. This is a regression test for the arena fast path bypass bug.
 /// </summary>
-public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegrationTest
+public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     /// <summary>
     /// Regression test for the BufferMemory arena bypass bug.
@@ -19,12 +19,12 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
     public async Task SustainedLoad_DoesNotCauseUnboundedMemoryGrowth()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync(partitions: 1).ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1).ConfigureAwait(false);
 
         // Use small 8MB buffer to make the test more sensitive to leaks
         // Smaller buffer = leak more obvious relative to expected memory footprint
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("memory-stress-test")
             .WithAcks(Acks.Leader)
             .WithBufferMemory(8388608) // 8 MB - small buffer makes leaks more obvious
@@ -119,10 +119,10 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
     public async Task BufferedBytes_StaysWithinReasonableBounds_UnderLoad()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync(partitions: 4).ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4).ConfigureAwait(false);
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("buffered-bytes-test")
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(50)) // Short linger for faster batching

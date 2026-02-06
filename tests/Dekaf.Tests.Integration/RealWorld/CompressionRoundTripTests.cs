@@ -8,15 +8,15 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for producing with compression and consuming, verifying data integrity.
 /// Compression is commonly used in production to reduce network bandwidth and storage costs.
 /// </summary>
-public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest
+public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task Gzip_SingleMessage_RoundTripPreservesData()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
             .Build();
 
@@ -28,7 +28,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"gzip-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -46,11 +46,11 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
     [Test]
     public async Task Gzip_BatchOfMessages_AllPreserved()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 50;
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
             .WithLinger(TimeSpan.FromMilliseconds(10)) // Encourage batching for better compression
             .Build();
@@ -73,7 +73,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"gzip-batch-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -101,11 +101,11 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
     [Test]
     public async Task Gzip_LargeMessage_CompressesAndDecompresses()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var largeValue = new string('A', 50_000); // 50KB of highly compressible data
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
             .Build();
 
@@ -117,7 +117,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"gzip-large-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -135,10 +135,10 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
     [Test]
     public async Task Gzip_WithHeaders_HeadersPreservedWithCompression()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
             .Build();
 
@@ -158,7 +158,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"gzip-headers-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -180,11 +180,11 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
     public async Task Gzip_HighThroughputPreset_CompressesEfficiently()
     {
         // ForHighThroughput preset with explicit compression
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         const int messageCount = 100;
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .ForHighThroughput()
             .UseGzipCompression()
             .Build();
@@ -206,7 +206,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"gzip-ht-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -228,10 +228,10 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
     [Test]
     public async Task Gzip_MixedMessageSizes_AllDecompressCorrectly()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
             .WithLinger(TimeSpan.FromMilliseconds(50)) // Batch them together
             .Build();
@@ -263,7 +263,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"gzip-mixed-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -291,10 +291,10 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
     [Test]
     public async Task Gzip_NullKeyMessages_CompressAndDecompress()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
             .Build();
 
@@ -306,7 +306,7 @@ public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaI
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"gzip-null-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();

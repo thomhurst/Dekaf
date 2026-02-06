@@ -151,29 +151,20 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
 
         Console.WriteLine($"[KafkaWithSchemaRegistry] Creating topic '{topicName}' with {partitions} partition(s)...");
 
-        if (_kafkaContainer is not null)
+        if (!string.IsNullOrEmpty(_bootstrapServers))
         {
-            // Use docker exec directly to avoid Docker.DotNet JSON parsing issues
-            // that occur with certain Docker daemon versions (e.g., 29.x).
-            var containerId = _kafkaContainer.Id;
-            var process = new System.Diagnostics.Process
-            {
-                StartInfo = new System.Diagnostics.ProcessStartInfo
+            await using var adminClient = Kafka.CreateAdminClient()
+                .WithBootstrapServers(_bootstrapServers)
+                .Build();
+
+            await adminClient.CreateTopicsAsync([
+                new Dekaf.Admin.NewTopic
                 {
-                    FileName = "docker",
-                    Arguments = $"exec {containerId} kafka-topics --bootstrap-server localhost:9093 --create --topic {topicName} --partitions {partitions} --replication-factor {replicationFactor} --if-not-exists",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false
+                    Name = topicName,
+                    NumPartitions = partitions,
+                    ReplicationFactor = (short)replicationFactor
                 }
-            };
-            process.Start();
-            await process.WaitForExitAsync().ConfigureAwait(false);
-            var error = await process.StandardError.ReadToEndAsync().ConfigureAwait(false);
-            if (process.ExitCode != 0)
-            {
-                Console.WriteLine($"[KafkaWithSchemaRegistry] Warning: Failed to create topic: {error}");
-            }
+            ]).ConfigureAwait(false);
         }
 
         _createdTopics.Add(topicName);

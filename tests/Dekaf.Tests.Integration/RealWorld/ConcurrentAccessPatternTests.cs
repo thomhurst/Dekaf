@@ -9,18 +9,18 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for concurrent access patterns commonly seen in production applications.
 /// Validates thread-safety of producers and consumers under realistic contention.
 /// </summary>
-public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : KafkaIntegrationTest
+public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task SharedProducer_MultipleTasks_AllMessagesDelivered()
     {
         // Common pattern: single producer shared across multiple async tasks
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         const int taskCount = 10;
         const int messagesPerTask = 20;
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         var allResults = new ConcurrentBag<RecordMetadata>();
@@ -57,10 +57,10 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
     public async Task SharedProducer_MixedFireAndForgetAndAwait_AllDelivered()
     {
         // Real-world: some code paths await, others fire-and-forget
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         const int fireAndForgetCount = 20;
@@ -103,7 +103,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
 
         // Verify all messages arrived
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"mixed-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -127,12 +127,12 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
     public async Task MultipleTopicProducers_SharedBaseProducer_IndependentTopics()
     {
         // Pattern: one base producer, multiple topic-specific producers for different services
-        var ordersTopic = await kafka.CreateTestTopicAsync();
-        var eventsTopic = await kafka.CreateTestTopicAsync();
-        var metricsTopic = await kafka.CreateTestTopicAsync();
+        var ordersTopic = await KafkaContainer.CreateTestTopicAsync();
+        var eventsTopic = await KafkaContainer.CreateTestTopicAsync();
+        var metricsTopic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var baseProducer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         var ordersProducer = baseProducer.ForTopic(ordersTopic);
@@ -171,7 +171,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
     public async Task MultipleProducers_SameTopic_NoResponseCrossContamination()
     {
         // Multiple independent producers writing to the same topic
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         const int producerCount = 3;
         const int messagesPerProducer = 30;
 
@@ -179,7 +179,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
         for (var i = 0; i < producerCount; i++)
         {
             producers.Add(Kafka.CreateProducer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId($"concurrent-producer-{i}")
                 .Build());
         }
@@ -232,15 +232,15 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
     public async Task ProducerAndConsumer_ConcurrentOperation_NoInterference()
     {
         // Produce and consume happening simultaneously on the same topic
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 50;
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"concurrent-op-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -283,13 +283,13 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
     public async Task CallbackBasedProduction_ConcurrentCallbacks_ThreadSafe()
     {
         // Verify callbacks work correctly under concurrent load
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         const int messageCount = 100;
         var delivered = new ConcurrentBag<RecordMetadata>();
         var deliveryErrors = new ConcurrentBag<Exception>();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Send all messages with callbacks
@@ -330,12 +330,12 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
     public async Task MultipleConsumersSameGroup_SharedPartitions_AllMessagesConsumed()
     {
         // Two consumers in the same group share partitions
-        var topic = await kafka.CreateTestTopicAsync(partitions: 4);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
         var groupId = $"shared-group-{Guid.NewGuid():N}";
         const int messageCount = 40;
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Produce to all partitions
@@ -356,7 +356,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
         var consumer1Task = Task.Run(async () =>
         {
             await using var consumer = Kafka.CreateConsumer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .Build();
@@ -373,7 +373,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
         var consumer2Task = Task.Run(async () =>
         {
             await using var consumer = Kafka.CreateConsumer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .Build();
@@ -410,7 +410,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
     private async Task VerifyTopicMessageCount(string topic, int expectedCount)
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();

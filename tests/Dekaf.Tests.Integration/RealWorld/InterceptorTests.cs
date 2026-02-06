@@ -9,16 +9,16 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for producer and consumer interceptors, commonly used for
 /// cross-cutting concerns: tracing, metrics, header injection, auditing.
 /// </summary>
-public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegrationTest
+public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task ProducerInterceptor_OnSend_AddsTraceHeaders()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var interceptor = new TracingProducerInterceptor();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .AddInterceptor(interceptor)
             .Build();
 
@@ -34,7 +34,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
 
         // Verify the trace header was added to the message
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"trace-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -54,11 +54,11 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
     [Test]
     public async Task ProducerInterceptor_OnAcknowledgement_TracksDelivery()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var interceptor = new DeliveryTrackingInterceptor();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .AddInterceptor(interceptor)
             .Build();
 
@@ -84,12 +84,12 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
     [Test]
     public async Task ProducerInterceptor_MultipleInterceptors_ChainedInOrder()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var interceptor1 = new HeaderAddingInterceptor("interceptor-order", "first");
         var interceptor2 = new HeaderAddingInterceptor("interceptor-order", "second");
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .AddInterceptor(interceptor1)
             .AddInterceptor(interceptor2)
             .Build();
@@ -102,7 +102,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"chain-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
@@ -120,11 +120,11 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
     [Test]
     public async Task ConsumerInterceptor_OnConsume_InspectsMessages()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var interceptor = new MessageCountingConsumerInterceptor();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         for (var i = 0; i < 5; i++)
@@ -138,7 +138,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"intercepted-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .AddInterceptor(interceptor)
@@ -162,11 +162,11 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
     [Test]
     public async Task ConsumerInterceptor_OnCommit_TracksCommittedOffsets()
     {
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var interceptor = new CommitTrackingConsumerInterceptor();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         for (var i = 0; i < 3; i++)
@@ -180,7 +180,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"commit-track-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
@@ -211,12 +211,12 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
     public async Task ProducerInterceptor_WithConsumerInterceptor_EndToEndTracing()
     {
         // Full tracing scenario: producer adds trace ID, consumer reads it
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var producerInterceptor = new TracingProducerInterceptor();
         var consumerInterceptor = new TracingConsumerInterceptor();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .AddInterceptor(producerInterceptor)
             .Build();
 
@@ -228,7 +228,7 @@ public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegratio
         });
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"e2e-trace-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .AddInterceptor(consumerInterceptor)

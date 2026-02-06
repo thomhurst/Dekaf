@@ -6,18 +6,18 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for OffsetCommitMode behavior.
 /// </summary>
-public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationTest
+public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task OffsetCommitMode_Manual_CommitAsync_CommitsAllConsumedOffsets()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Produce messages
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -33,7 +33,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
 
         // Act - consume with manual commit mode
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -67,12 +67,12 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
     public async Task OffsetCommitMode_Manual_CommitAsyncWithOffsets_CommitsSpecificOffsets()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Produce messages
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -88,7 +88,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
 
         // Act - consume with manual commit mode
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -122,12 +122,12 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
     public async Task OffsetCommitMode_Manual_CommittedOffsetsArePersisted_NewConsumerStartsFromCommittedOffset()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Produce messages
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -143,7 +143,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
 
         // First consumer: consume 3 messages and commit
         await using (var consumer1 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -168,7 +168,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
 
         // Second consumer: should start from offset 3
         await using var consumer2 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -191,12 +191,12 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
     public async Task OffsetCommitMode_Manual_WithoutCommit_OffsetsNotPersisted()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Produce messages
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -212,7 +212,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
 
         // First consumer: consume but don't commit
         await using (var consumer1 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -236,7 +236,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
 
         // Second consumer: should start from beginning (no committed offset)
         await using var consumer2 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -258,12 +258,12 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
     public async Task OffsetCommitMode_Manual_MultipleCommits_CommitsLatestConsumedPosition()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Produce messages
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -278,7 +278,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -325,12 +325,12 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
     public async Task OffsetCommitMode_Auto_CommitsAutomatically()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync().ConfigureAwait(false);
+        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Produce messages
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -346,7 +346,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
 
         // First consumer: consume with auto commit
         await using (var consumer1 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -372,7 +372,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
 
         // Second consumer: should start after the auto-committed offset
         await using var consumer2 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)

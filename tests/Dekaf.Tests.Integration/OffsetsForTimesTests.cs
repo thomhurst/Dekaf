@@ -7,16 +7,16 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for GetOffsetsForTimesAsync functionality.
 /// Tests the ability to look up offsets by timestamp using the ListOffsets API.
 /// </summary>
-public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTest
+public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task GetOffsetsForTimesAsync_WithValidTimestamp_ReturnsCorrectOffset()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -54,7 +54,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
 
         // Act
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
 
@@ -81,10 +81,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     public async Task GetOffsetsForTimesAsync_WithLatestTimestamp_ReturnsHighWatermark()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -101,7 +101,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
 
         // Act
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
 
@@ -125,10 +125,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     public async Task GetOffsetsForTimesAsync_WithEarliestTimestamp_ReturnsFirstOffset()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -145,7 +145,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
 
         // Act
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
 
@@ -169,10 +169,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     public async Task GetOffsetsForTimesAsync_WithEmptyCollection_ReturnsEmptyDictionary()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
 
@@ -190,10 +190,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     public async Task GetOffsetsForTimesAsync_WithMultiplePartitions_ReturnsAllOffsets()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -214,7 +214,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
 
         // Act
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
 
@@ -253,13 +253,13 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     public async Task GetOffsetsForTimesAsync_WithEmptyPartition_ReturnsCorrectOffsets()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         // Don't produce any messages - partition is empty
 
         // Act
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
 
@@ -290,10 +290,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     public async Task GetOffsetsForTimesAsync_SeekToReturnedOffset_ConsumesCorrectMessage()
     {
         // Arrange - this tests the common use case of seeking to a timestamp
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -325,7 +325,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
 
         // Act
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
 
@@ -358,10 +358,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     public async Task GetOffsetsForTimesAsync_WithFutureTimestamp_ReturnsHighWatermark()
     {
         // Arrange
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .Build();
 
@@ -378,7 +378,7 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
 
         // Act
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .Build();
 

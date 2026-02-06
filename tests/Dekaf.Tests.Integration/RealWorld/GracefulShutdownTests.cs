@@ -8,17 +8,17 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies that consumers can stop cleanly and resume from the correct position,
 /// which is critical for at-least-once and exactly-once processing guarantees.
 /// </summary>
-public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaIntegrationTest
+public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task GracefulShutdown_CloseAndRestart_ResumesFromCommittedOffset()
     {
         // Simulate: service processes some messages, shuts down, new instance resumes
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"restart-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Produce 10 messages
@@ -34,7 +34,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
 
         // First instance: process 5 messages, commit, shut down
         await using (var consumer1 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -62,7 +62,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
 
         // Second instance: should resume from offset 5
         await using var consumer2 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -83,11 +83,11 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
     public async Task GracefulShutdown_AtLeastOnceProcessing_NoMessageLoss()
     {
         // Simulate at-least-once: commit only after successful processing
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"at-least-once-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         for (var i = 0; i < 10; i++)
@@ -104,7 +104,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
 
         // First consumer: process 3 messages, commit after each
         await using (var consumer1 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -128,7 +128,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
 
         // Second consumer: should get messages starting from offset 3
         await using var consumer2 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -157,11 +157,11 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
     public async Task GracefulShutdown_UncommittedMessages_RedeliveredOnRestart()
     {
         // If consumer closes without committing, messages are redelivered
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"uncommitted-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         for (var i = 0; i < 5; i++)
@@ -176,7 +176,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
 
         // First consumer: read 3 messages but DON'T commit (simulating incomplete processing)
         await using (var consumer1 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -200,7 +200,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
 
         // Second consumer: should get ALL messages since nothing was committed
         await using var consumer2 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -228,11 +228,11 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
     public async Task GracefulShutdown_DisposeCommitsAutoOffsets()
     {
         // Auto-commit mode should commit on graceful dispose
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"auto-dispose-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         for (var i = 0; i < 5; i++)
@@ -247,7 +247,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
 
         // First consumer with auto-commit: consume all 5, then dispose
         await using (var consumer1 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -271,7 +271,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
 
         // Second consumer should not re-read already committed messages
         await using var consumer2 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -295,11 +295,11 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
     public async Task GracefulShutdown_ManualCommitPerMessage_PreciseResumePoint()
     {
         // Commit after each message for precise resume control
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"per-msg-commit-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         for (var i = 0; i < 10; i++)
@@ -314,7 +314,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
 
         // Process exactly 7 messages with per-message commits
         await using (var consumer1 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -343,7 +343,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
 
         // Resume should start exactly at offset 7
         await using var consumer2 = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -364,11 +364,11 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
     public async Task GracefulShutdown_SeekAndReprocess_FullReplayFromBeginning()
     {
         // Simulate reprocessing: consumer seeks back to beginning to replay all events
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"reprocess-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         for (var i = 0; i < 5; i++)
@@ -382,7 +382,7 @@ public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaInteg
         }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)

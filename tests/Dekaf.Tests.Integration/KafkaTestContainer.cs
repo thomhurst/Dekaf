@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.Sockets;
+using Dekaf.Admin;
 using Testcontainers.Kafka;
 using TUnit.Core.Interfaces;
 
@@ -110,7 +111,7 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 
         Console.WriteLine($"[KafkaTestContainer] Creating topic '{topicName}' with {partitions} partition(s)...");
 
-        await CreateTopicViaTestcontainersAsync(topicName, partitions, replicationFactor).ConfigureAwait(false);
+        await CreateTopicViaAdminClientAsync(topicName, partitions, replicationFactor).ConfigureAwait(false);
 
         // Wait for topic metadata to propagate
         // In containerized environments, metadata propagation can be slow
@@ -118,22 +119,20 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
         Console.WriteLine($"[KafkaTestContainer] Topic '{topicName}' created");
     }
 
-    private async Task CreateTopicViaTestcontainersAsync(string topicName, int partitions, int replicationFactor)
+    private async Task CreateTopicViaAdminClientAsync(string topicName, int partitions, int replicationFactor)
     {
-        var result = await Container.ExecAsync([
-            "kafka-topics.sh",
-            "--bootstrap-server", $"localhost:{KafkaBuilder.KafkaPort}",
-            "--create",
-            "--topic", topicName,
-            "--partitions", partitions.ToString(),
-            "--replication-factor", replicationFactor.ToString(),
-            "--if-not-exists"
-        ]).ConfigureAwait(false);
+        await using var adminClient = Kafka.CreateAdminClient()
+            .WithBootstrapServers(BootstrapServers)
+            .Build();
 
-        if (result.ExitCode != 0)
-        {
-            Console.WriteLine($"[KafkaTestContainer] Warning: Failed to create topic (exit code {result.ExitCode}): {result.Stderr} {result.Stdout}");
-        }
+        await adminClient.CreateTopicsAsync([
+            new NewTopic
+            {
+                Name = topicName,
+                NumPartitions = partitions,
+                ReplicationFactor = (short)replicationFactor
+            }
+        ]).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()

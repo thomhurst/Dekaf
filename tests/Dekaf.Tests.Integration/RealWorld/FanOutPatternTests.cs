@@ -8,17 +8,17 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// each receive a full copy of all messages from the same topic.
 /// Common in event-driven architectures where different services need the same data.
 /// </summary>
-public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrationTest
+public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task FanOut_MultipleConsumerGroups_EachReceivesAllMessages()
     {
         // Simulate: order-events consumed by billing, shipping, and notification services
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 10;
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         for (var i = 0; i < messageCount; i++)
@@ -58,11 +58,11 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
     public async Task FanOut_ConsumerGroupsAtDifferentSpeeds_IndependentProgress()
     {
         // Fast consumer reads all, slow consumer reads partial - they don't affect each other
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 10;
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         for (var i = 0; i < messageCount; i++)
@@ -78,7 +78,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
         // Fast consumer reads all 10
         var fastGroup = $"fast-{Guid.NewGuid():N}";
         await using var fastConsumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(fastGroup)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
@@ -99,7 +99,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
         // Slow consumer reads only 3 and commits
         var slowGroup = $"slow-{Guid.NewGuid():N}";
         await using var slowConsumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(slowGroup)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
@@ -133,10 +133,10 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
     public async Task FanOut_NewConsumerGroupJoinsLate_GetsAllHistoricalMessages()
     {
         // A new service joins after events have already been produced
-        var topic = await kafka.CreateTestTopicAsync();
+        var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         // Produce messages before any consumer exists
@@ -179,11 +179,11 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
     public async Task FanOut_ConcurrentConsumerGroups_AllConsumeSimultaneously()
     {
         // Multiple consumer groups consuming the same topic at the same time
-        var topic = await kafka.CreateTestTopicAsync(partitions: 3);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         const int messageCount = 30;
 
         await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .Build();
 
         for (var i = 0; i < messageCount; i++)
@@ -204,7 +204,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
         var consumeTasks = groups.Select(group => Task.Run(async () =>
         {
             await using var consumer = Kafka.CreateConsumer<string, string>()
-                .WithBootstrapServers(kafka.BootstrapServers)
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(group)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .Build();
@@ -236,7 +236,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
         string topic, string groupId, int expectedCount)
     {
         await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(kafka.BootstrapServers)
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
