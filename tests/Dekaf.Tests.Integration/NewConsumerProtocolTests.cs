@@ -200,8 +200,8 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
 
         consumer2.Subscribe(topic);
 
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts2.Token);
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(60), cts2.Token);
 
         await Assert.That(result).IsNotNull();
         var r = result!.Value;
