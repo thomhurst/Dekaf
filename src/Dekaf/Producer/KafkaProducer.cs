@@ -3186,6 +3186,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _allSendsCompleted.Dispose();
         _transactionLock.Dispose();
 
+        foreach (var gate in _partitionSendGates.Values)
+        {
+            gate.Dispose();
+        }
+        _partitionSendGates.Clear();
+
         // Dispose statistics emitter
         if (_statisticsEmitter is not null)
         {
