@@ -58,7 +58,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly int _workerCount;
 
     private int _produceApiVersion = -1;
-    private volatile bool _disposed;
+    internal volatile bool _disposed;
 
     // Transaction state
     private long _producerId = -1;
@@ -2842,6 +2842,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _lingerTimer.Dispose();
         _sendConcurrencySemaphore.Dispose();
         _allSendsCompleted.Dispose();
+        _transactionLock.Dispose();
 
         // Dispose statistics emitter
         if (_statisticsEmitter is not null)
@@ -2895,6 +2896,12 @@ internal sealed class ProduceWorkItem<TKey, TValue>
 /// <summary>
 /// Transaction implementation.
 /// </summary>
+/// <remarks>
+/// Transactions are designed for single-threaded sequential use: only one transaction
+/// can be active at a time per producer. State transitions use volatile semantics
+/// rather than locks because the Kafka transaction API guarantees sequential access
+/// (BeginTransaction → Produce/Commit/Abort → BeginTransaction).
+/// </remarks>
 internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 {
     private readonly KafkaProducer<TKey, TValue> _producer;
@@ -2906,10 +2913,18 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         _producer = producer;
     }
 
+    private void ThrowIfProducerDisposed()
+    {
+        if (_producer._disposed)
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+    }
+
     public async ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken = default)
     {
+        ThrowIfProducerDisposed();
+
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
@@ -2961,6 +2976,8 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
+        ThrowIfProducerDisposed();
+
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
@@ -2986,6 +3003,8 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 
     public async ValueTask AbortAsync(CancellationToken cancellationToken = default)
     {
+        ThrowIfProducerDisposed();
+
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
@@ -3011,6 +3030,8 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         string consumerGroupId,
         CancellationToken cancellationToken = default)
     {
+        ThrowIfProducerDisposed();
+
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
@@ -3020,7 +3041,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
 
     public async ValueTask DisposeAsync()
     {
-        if (!_committed && !_aborted)
+        if (!_committed && !_aborted && !_producer._disposed)
         {
             // Abort on dispose if not completed
             await AbortAsync().ConfigureAwait(false);
