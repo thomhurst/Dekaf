@@ -317,20 +317,22 @@ public class AvroSerializerTests
         await Assert.That(warmedSchema).IsNotNull();
         await Assert.That(warmedSchema.Fullname).IsEqualTo("test.SimpleRecord");
 
-        // Create a properly serialized message using the serializer (avoiding manual wire format construction)
-        await using var serializer = new AvroSchemaRegistrySerializer<GenericRecord>(schemaRegistry);
+        // Construct wire format manually using the known schemaId to avoid
+        // non-determinism from a second serializer interacting with the mock registry
         var avroSchema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
         var originalRecord = new GenericRecord(avroSchema!);
         originalRecord.Add("id", 42);
         originalRecord.Add("name", "warmup-test");
 
-        var buffer = new ArrayBufferWriter<byte>();
-        var serContext = CreateContext("test-topic");
-        serializer.Serialize(originalRecord, ref buffer, serContext);
+        var avroPayload = SerializeAvroRecord(originalRecord, avroSchema!);
+        var wireFormat = new byte[1 + 4 + avroPayload.Length];
+        wireFormat[0] = 0x00; // Magic byte
+        BinaryPrimitives.WriteInt32BigEndian(wireFormat.AsSpan(1, 4), schemaId);
+        avroPayload.CopyTo(wireFormat.AsSpan(5));
 
         // Deserialize using the warmed-up cache
         var desContext = CreateContext();
-        var result = deserializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), desContext);
+        var result = deserializer.Deserialize(new ReadOnlySequence<byte>(wireFormat), desContext);
 
         // Verify deserialization worked correctly
         await Assert.That((int)result["id"]!).IsEqualTo(42);
