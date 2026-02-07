@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Runtime.CompilerServices;
 using Dekaf;
 using Dekaf.Compression;
 using Dekaf.Protocol.Records;
@@ -110,6 +111,16 @@ public sealed class ZstdCompressionCodec : ICompressionCodec
                 // NeedMoreData or DestinationTooSmall: continue with next iteration
             }
         }
+    }
+}
+
+internal static class ZstdModuleInit
+{
+    [ModuleInitializer]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2255:The 'ModuleInitializer' attribute should not be used in libraries")]
+    internal static void Register()
+    {
+        CompressionCodecRegistry.Default.AddZstd();
     }
 }
 

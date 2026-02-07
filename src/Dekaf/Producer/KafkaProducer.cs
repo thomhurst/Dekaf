@@ -243,7 +243,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     private static CompressionCodecRegistry CreateCompressionCodecRegistry(ProducerOptions options)
     {
-        var registry = new CompressionCodecRegistry();
+        // Start from the global Default registry which includes codecs auto-registered
+        // by compression packages (e.g. Dekaf.Compression.Lz4) via [ModuleInitializer].
+        var registry = CompressionCodecRegistry.Default;
 
         if (options.CompressionLevel.HasValue)
         {

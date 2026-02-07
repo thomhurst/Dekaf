@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package dekaf.tests;
+
+option csharp_namespace = "Dekaf.Tests.Integration.Protos";
+
+message TestPerson {
+  int32 id = 1;
+  string name = 2;
+  string email = 3;
+}
