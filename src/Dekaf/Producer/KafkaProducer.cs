@@ -2577,6 +2577,22 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         var expectedTopic = batch.TopicPartition.Topic;
         var expectedPartition = batch.TopicPartition.Partition;
 
+        // For transactional producers, ensure partition is registered before sending
+        if (_accumulator.IsTransactional)
+        {
+            bool needsRegistration;
+            lock (_partitionsInTransaction)
+            {
+                needsRegistration = _partitionsInTransaction.Add(batch.TopicPartition);
+            }
+
+            if (needsRegistration)
+            {
+                await AddPartitionsToTransactionAsync([batch.TopicPartition], cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+
         var request = new ProduceRequest
         {
             Acks = (short)_options.Acks,
@@ -3012,50 +3028,9 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
-        // Ensure the partition is registered with the transaction coordinator
-        // We need to determine the target partition first, then add it if not already registered
-        var topicPartitions = new List<TopicPartition>();
-        var tp = new TopicPartition(message.Topic, message.Partition ?? -1);
-
-        // If we don't know the exact partition yet, we'll add it after the produce
-        // when we have the metadata. For now, add partitions we know about.
-        if (message.Partition.HasValue)
-        {
-            lock (_producer._partitionsInTransaction)
-            {
-                if (_producer._partitionsInTransaction.Add(tp))
-                {
-                    topicPartitions.Add(tp);
-                }
-            }
-
-            if (topicPartitions.Count > 0)
-            {
-                await _producer.AddPartitionsToTransactionAsync(topicPartitions, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-        }
-
-        var result = await _producer.ProduceAsync(message, cancellationToken).ConfigureAwait(false);
-
-        // If we didn't know the partition before, register it now
-        if (!message.Partition.HasValue)
-        {
-            var actualTp = new TopicPartition(result.Topic, result.Partition);
-            bool needsRegistration;
-            lock (_producer._partitionsInTransaction)
-            {
-                needsRegistration = _producer._partitionsInTransaction.Add(actualTp);
-            }
-
-            if (needsRegistration)
-            {
-                await _producer.AddPartitionsToTransactionAsync([actualTp], cancellationToken)
-                    .ConfigureAwait(false);
-            }
-        }
-
-        return result;
+        // Partition registration with AddPartitionsToTxn is handled automatically
+        // in TrySendBatchCoreAsync before the ProduceRequest is sent to the broker.
+        return await _producer.ProduceAsync(message, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
