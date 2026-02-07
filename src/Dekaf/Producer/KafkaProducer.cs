@@ -66,6 +66,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     internal volatile bool _disposed;
 
     // Idempotent / transaction state
+    // Memory ordering: _idempotentInitialized is volatile (acquire/release semantics).
+    // InitIdempotentProducerAsync sets _producerId, _producerEpoch, _accumulator.ProducerId/Epoch
+    // BEFORE writing _idempotentInitialized = true (volatile write = release fence).
+    // The fast path reads _idempotentInitialized (volatile read = acquire fence) BEFORE
+    // any dependent reads, guaranteeing visibility of all prior writes.
     private long _producerId = -1;
     private short _producerEpoch = -1;
     private volatile bool _idempotentInitialized;
