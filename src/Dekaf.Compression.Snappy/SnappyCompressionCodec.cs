@@ -24,6 +24,10 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
 
     private readonly int _blockSize;
 
+    // Thread-local reusable buffer for compression output (avoids ~77KB allocation per Compress call)
+    [ThreadStatic]
+    private static ArrayBufferWriter<byte>? t_compressedBuffer;
+
     /// <summary>
     /// Creates a new Snappy compression codec.
     /// </summary>
@@ -51,8 +55,8 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
         var position = source.Start;
         var remaining = source.Length;
 
-        // Temporary buffer to capture compressed output (needed to get size for header)
-        var compressedBuffer = new ArrayBufferWriter<byte>(Snappier.Snappy.GetMaxCompressedLength(_blockSize));
+        // Reuse thread-local buffer to capture compressed output (needed to get size for header)
+        var compressedBuffer = t_compressedBuffer ??= new ArrayBufferWriter<byte>();
 
         while (remaining > 0)
         {
@@ -60,7 +64,7 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
             var blockSequence = source.Slice(position, blockLength);
 
             // Compress the block using ReadOnlySequence/IBufferWriter overload
-            compressedBuffer.Clear();
+            compressedBuffer.ResetWrittenCount();
             Snappier.Snappy.Compress(blockSequence, compressedBuffer);
             var compressedLength = compressedBuffer.WrittenCount;
 
