@@ -537,6 +537,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
         catch
         {
+            Interlocked.Decrement(ref _pendingChannelMessages);
             _accumulator.ReleaseMemory(estimatedSize);
             throw;
         }
@@ -1312,6 +1313,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
         catch
         {
+            Interlocked.Decrement(ref _pendingChannelMessages);
             _accumulator.ReleaseMemory(estimatedSize);
             throw;
         }
@@ -2446,6 +2448,25 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             var previousSend = _partitionSendChain.GetValueOrDefault(tp, Task.CompletedTask);
             var currentSend = SendBatchOrderedAsync(batch, previousSend, cancellationToken);
             _partitionSendChain[tp] = currentSend;
+
+            // Auto-cleanup: remove the entry when this task completes, but only if
+            // the dictionary still points to this exact task (a newer batch may have
+            // already replaced it). This prevents holding references to completed tasks.
+            if (!currentSend.IsCompleted)
+            {
+                _ = currentSend.ContinueWith(static (t, state) =>
+                {
+                    var (dict, partition) = ((ConcurrentDictionary<TopicPartition, Task>, TopicPartition))state!;
+                    ((ICollection<KeyValuePair<TopicPartition, Task>>)dict).Remove(KeyValuePair.Create(partition, t));
+                }, (_partitionSendChain, tp),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            }
+            else
+            {
+                ((ICollection<KeyValuePair<TopicPartition, Task>>)_partitionSendChain).Remove(KeyValuePair.Create(tp, currentSend));
+            }
         }
 
         // Channel completed - wait for all in-flight sends to finish before exiting

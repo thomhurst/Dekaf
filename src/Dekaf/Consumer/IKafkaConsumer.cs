@@ -250,6 +250,10 @@ public readonly struct ConsumeResult<TKey, TValue>
         }
         else if (isKeyNull)
         {
+            // Null keys return default (null for reference types, 0 for value types).
+            // Unlike values (where TValue is non-nullable and requires calling the deserializer),
+            // TKey? is nullable so we can return default directly without risking exceptions
+            // from deserializers that don't handle empty data (e.g., Int32Serde, GuidSerde).
             Key = default;
         }
         else
