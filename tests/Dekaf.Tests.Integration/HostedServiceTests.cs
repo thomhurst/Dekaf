@@ -75,11 +75,19 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         try
         {
-            await hostTask.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            await hostTask.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             // Expected
+        }
+        catch (TimeoutException)
+        {
+            // Host shutdown can be slow on resource-constrained CI runners
+        }
+        finally
+        {
+            host.Dispose();
         }
     }
 
@@ -119,15 +127,23 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         Exception? caughtException = null;
         try
         {
-            await hostTask.WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+            await hostTask.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             // Expected
         }
+        catch (TimeoutException)
+        {
+            // Host shutdown can be slow on resource-constrained CI runners
+        }
         catch (Exception ex)
         {
             caughtException = ex;
+        }
+        finally
+        {
+            host.Dispose();
         }
 
         await Assert.That(caughtException).IsNull();

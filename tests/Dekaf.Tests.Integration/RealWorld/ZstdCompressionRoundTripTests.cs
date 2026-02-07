@@ -91,10 +91,12 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
 
+        var messagesByKey = messages.ToDictionary(m => m.Key!, m => m.Value);
         for (var i = 0; i < messageCount; i++)
         {
-            var msg = messages.First(m => m.Key == $"batch-key-{i}");
-            await Assert.That(msg.Value).StartsWith($"batch-compressed-value-{i}-");
+            var key = $"batch-key-{i}";
+            await Assert.That(messagesByKey.ContainsKey(key)).IsTrue();
+            await Assert.That(messagesByKey[key]).StartsWith($"batch-compressed-value-{i}-");
         }
     }
 

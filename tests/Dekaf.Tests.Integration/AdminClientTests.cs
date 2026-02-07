@@ -218,11 +218,20 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
-        // First set a custom value
+        // Set a custom value that is clearly NOT the default (default is 604800000 = 7 days)
         await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
         {
-            [ConfigResource.Topic(topic)] = [ConfigAlter.Set("retention.ms", "1800000")]
+            [ConfigResource.Topic(topic)] = [ConfigAlter.Set("retention.ms", "3600000")]
         }).ConfigureAwait(false);
+
+        // Wait for the custom value to be visible
+        await WaitForConditionAsync(
+            async () =>
+            {
+                var c = await admin.DescribeConfigsAsync([ConfigResource.Topic(topic)]).ConfigureAwait(false);
+                return c[ConfigResource.Topic(topic)].First(e => e.Name == "retention.ms").Value;
+            },
+            value => value == "3600000").ConfigureAwait(false);
 
         // Act - delete the config to reset to default
         await admin.IncrementalAlterConfigsAsync(new Dictionary<ConfigResource, IReadOnlyList<ConfigAlter>>
@@ -230,16 +239,16 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             [ConfigResource.Topic(topic)] = [ConfigAlter.Delete("retention.ms")]
         }).ConfigureAwait(false);
 
-        // Assert
-        var configs = await admin.DescribeConfigsAsync(
-            [ConfigResource.Topic(topic)]).ConfigureAwait(false);
-        var retention = configs[ConfigResource.Topic(topic)]
-            .First(c => c.Name == "retention.ms");
+        // Assert - wait for the value to revert from our custom value
+        var retention = await WaitForConditionAsync(
+            async () =>
+            {
+                var c = await admin.DescribeConfigsAsync([ConfigResource.Topic(topic)]).ConfigureAwait(false);
+                return c[ConfigResource.Topic(topic)].First(e => e.Name == "retention.ms");
+            },
+            entry => entry.Value != "3600000").ConfigureAwait(false);
 
-        // After deletion, it should be back to default (different from our custom value of 1800000)
-        // The IsDefault flag may not be reliably set by all Kafka versions after deletion,
-        // so we check the value changed back instead
-        await Assert.That(retention.Value).IsNotEqualTo("1800000");
+        await Assert.That(retention.Value).IsNotEqualTo("3600000");
     }
 
     #endregion

@@ -243,6 +243,13 @@ internal sealed class PendingFetchData : IDisposable
 /// <typeparam name="TValue">Value type.</typeparam>
 public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 {
+    /// <summary>
+    /// Delay in milliseconds when all assigned partitions are paused, to prevent
+    /// a tight spin loop that would starve CPU while still allowing responsive
+    /// cancellation and timeout handling (~10 checks per second).
+    /// </summary>
+    private const int AllPartitionsPausedDelayMs = 100;
+
     private readonly ConsumerOptions _options;
     private readonly IDeserializer<TKey> _keyDeserializer;
     private readonly IDeserializer<TValue> _valueDeserializer;
@@ -828,9 +835,17 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
 
+            // If all partitions are paused, delay to prevent tight spin loop
+            // that would starve timeout/cancellation mechanisms of CPU time
+            var brokerCount = partitionsByBroker.Count;
+            if (brokerCount == 0)
+            {
+                await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
             // Fetch from all brokers in parallel for maximum throughput
             // Use pooled array to avoid allocation per fetch cycle
-            var brokerCount = partitionsByBroker.Count;
             var fetchTasks = ArrayPool<Task>.Shared.Rent(brokerCount);
             try
             {
@@ -1884,9 +1899,17 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
 
+            // If all partitions are paused, delay to prevent tight spin loop
+            // that would starve timeout/cancellation mechanisms of CPU time
+            var brokerCount = partitionsByBroker.Count;
+            if (brokerCount == 0)
+            {
+                await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
             // Fetch from all brokers in parallel for maximum throughput
             // Use pooled array to avoid allocation per fetch cycle
-            var brokerCount = partitionsByBroker.Count;
             var fetchTasks = ArrayPool<Task<List<PendingFetchData>?>>.Shared.Rent(brokerCount);
             try
             {

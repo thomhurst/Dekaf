@@ -2813,7 +2813,7 @@ internal sealed class PartitionBatch
             Key = key.Memory,
             IsKeyNull = key.IsNull,
             Value = value.Memory,
-            IsValueNull = false,
+            IsValueNull = value.IsNull,
             Headers = headers
         };
 
@@ -3024,7 +3024,7 @@ internal sealed class PartitionBatch
             Key = key.Memory,
             IsKeyNull = key.IsNull,
             Value = value.Memory,
-            IsValueNull = false,
+            IsValueNull = value.IsNull,
             Headers = headers
         };
 
@@ -3146,7 +3146,7 @@ internal sealed class PartitionBatch
             Key = key.Memory,
             IsKeyNull = key.IsNull,
             Value = value.Memory,
-            IsValueNull = false,
+            IsValueNull = value.IsNull,
             Headers = headers
         };
 
@@ -3166,6 +3166,7 @@ internal sealed class PartitionBatch
         ArenaSlice keySlice,
         bool isKeyNull,
         ArenaSlice valueSlice,
+        bool isValueNull,
         IReadOnlyList<Header>? headers,
         Header[]? pooledHeaderArray)
     {
@@ -3176,7 +3177,7 @@ internal sealed class PartitionBatch
         {
             try
             {
-                return TryAppendFromArenaCore(timestamp, keySlice, isKeyNull, valueSlice, headers, pooledHeaderArray, recordSize);
+                return TryAppendFromArenaCore(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, recordSize);
             }
             finally
             {
@@ -3185,7 +3186,7 @@ internal sealed class PartitionBatch
         }
 
         // SLOW PATH: Spin until we can claim access.
-        return TryAppendFromArenaWithSpinWait(timestamp, keySlice, isKeyNull, valueSlice, headers, pooledHeaderArray, recordSize);
+        return TryAppendFromArenaWithSpinWait(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, recordSize);
     }
 
     /// <summary>
@@ -3197,6 +3198,7 @@ internal sealed class PartitionBatch
         ArenaSlice keySlice,
         bool isKeyNull,
         ArenaSlice valueSlice,
+        bool isValueNull,
         IReadOnlyList<Header>? headers,
         Header[]? pooledHeaderArray,
         int recordSize)
@@ -3242,8 +3244,8 @@ internal sealed class PartitionBatch
             OffsetDelta = _recordCount,
             Key = isKeyNull ? ReadOnlyMemory<byte>.Empty : arena.Buffer.AsMemory(keySlice.Offset, keySlice.Length),
             IsKeyNull = isKeyNull,
-            Value = arena.Buffer.AsMemory(valueSlice.Offset, valueSlice.Length),
-            IsValueNull = false,
+            Value = isValueNull ? ReadOnlyMemory<byte>.Empty : arena.Buffer.AsMemory(valueSlice.Offset, valueSlice.Length),
+            IsValueNull = isValueNull,
             Headers = headers
         };
 
@@ -3259,6 +3261,7 @@ internal sealed class PartitionBatch
         ArenaSlice keySlice,
         bool isKeyNull,
         ArenaSlice valueSlice,
+        bool isValueNull,
         IReadOnlyList<Header>? headers,
         Header[]? pooledHeaderArray,
         int recordSize)
@@ -3274,7 +3277,7 @@ internal sealed class PartitionBatch
             {
                 try
                 {
-                    return TryAppendFromArenaCore(timestamp, keySlice, isKeyNull, valueSlice, headers, pooledHeaderArray, recordSize);
+                    return TryAppendFromArenaCore(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, recordSize);
                 }
                 finally
                 {
@@ -3296,6 +3299,7 @@ internal sealed class PartitionBatch
         ArenaSlice keySlice,
         bool isKeyNull,
         ArenaSlice valueSlice,
+        bool isValueNull,
         IReadOnlyList<Header>? headers,
         Header[]? pooledHeaderArray,
         Action<RecordMetadata, Exception?> callback)
@@ -3307,7 +3311,7 @@ internal sealed class PartitionBatch
         {
             try
             {
-                return TryAppendFromArenaWithCallbackCore(timestamp, keySlice, isKeyNull, valueSlice, headers, pooledHeaderArray, callback, recordSize);
+                return TryAppendFromArenaWithCallbackCore(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, callback, recordSize);
             }
             finally
             {
@@ -3316,7 +3320,7 @@ internal sealed class PartitionBatch
         }
 
         // SLOW PATH: Spin until we can claim access.
-        return TryAppendFromArenaWithCallbackSpinWait(timestamp, keySlice, isKeyNull, valueSlice, headers, pooledHeaderArray, callback, recordSize);
+        return TryAppendFromArenaWithCallbackSpinWait(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, callback, recordSize);
     }
 
     /// <summary>
@@ -3328,6 +3332,7 @@ internal sealed class PartitionBatch
         ArenaSlice keySlice,
         bool isKeyNull,
         ArenaSlice valueSlice,
+        bool isValueNull,
         IReadOnlyList<Header>? headers,
         Header[]? pooledHeaderArray,
         Action<RecordMetadata, Exception?> callback,
@@ -3380,8 +3385,8 @@ internal sealed class PartitionBatch
             OffsetDelta = _recordCount,
             Key = isKeyNull ? ReadOnlyMemory<byte>.Empty : arena.Buffer.AsMemory(keySlice.Offset, keySlice.Length),
             IsKeyNull = isKeyNull,
-            Value = arena.Buffer.AsMemory(valueSlice.Offset, valueSlice.Length),
-            IsValueNull = false,
+            Value = isValueNull ? ReadOnlyMemory<byte>.Empty : arena.Buffer.AsMemory(valueSlice.Offset, valueSlice.Length),
+            IsValueNull = isValueNull,
             Headers = headers
         };
 
@@ -3399,6 +3404,7 @@ internal sealed class PartitionBatch
         ArenaSlice keySlice,
         bool isKeyNull,
         ArenaSlice valueSlice,
+        bool isValueNull,
         IReadOnlyList<Header>? headers,
         Header[]? pooledHeaderArray,
         Action<RecordMetadata, Exception?> callback,
@@ -3414,7 +3420,7 @@ internal sealed class PartitionBatch
             {
                 try
                 {
-                    return TryAppendFromArenaWithCallbackCore(timestamp, keySlice, isKeyNull, valueSlice, headers, pooledHeaderArray, callback, recordSize);
+                    return TryAppendFromArenaWithCallbackCore(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, callback, recordSize);
                 }
                 finally
                 {
