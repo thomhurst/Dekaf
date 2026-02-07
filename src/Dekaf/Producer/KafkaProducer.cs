@@ -39,14 +39,20 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly PeriodicTimer _lingerTimer;
 
     // Pipelining: allow multiple batches to be sent concurrently (up to MaxInFlightRequestsPerConnection)
-    // This dramatically improves throughput by overlapping network round-trips
+    // This dramatically improves throughput by overlapping network round-trips for DIFFERENT partitions.
+    //
+    // Per-partition ordering: a per-partition semaphore ensures only one batch per partition is in-flight
+    // at a time. The broker requires strictly ascending sequence numbers per partition for idempotent
+    // producers; sending batches out-of-order causes OutOfOrderSequenceNumber rejections.
     //
     // Thread-safety model:
     // - _sendConcurrencySemaphore: SemaphoreSlim is internally thread-safe; limits concurrent sends
+    // - _partitionSendGates: ConcurrentDictionary is thread-safe; per-partition semaphores ensure ordering
     // - _inFlightSendCount: Modified only via Interlocked operations, read via Volatile.Read
     // - _allSendsCompleted: Signaling coordinated with _inFlightSendCount via _sendCompletionLock
     // - _sendCompletionLock: Protects the atomicity of count transition + event signal pairs
     private readonly SemaphoreSlim _sendConcurrencySemaphore;
+    private readonly ConcurrentDictionary<TopicPartition, SemaphoreSlim> _partitionSendGates = new();
     private long _inFlightSendCount;
     private readonly ManualResetEventSlim _allSendsCompleted = new(true); // Initially signaled (no sends in flight)
     private readonly object _sendCompletionLock = new(); // Prevents race between Reset() and Set()
@@ -2410,16 +2416,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private async Task SenderLoopAsync(CancellationToken cancellationToken)
     {
         // PIPELINED ARCHITECTURE: Send multiple batches concurrently (up to MaxInFlightRequestsPerConnection)
-        // This overlaps network round-trips, dramatically improving throughput.
+        // This overlaps network round-trips for DIFFERENT partitions, dramatically improving throughput.
         // Without pipelining: throughput = 1 / network_latency (e.g., 30 batches/sec at 33ms latency)
         // With pipelining (5 in-flight): throughput = 5 / network_latency (e.g., 150 batches/sec)
         //
-        // ORDERING: Within-partition ordering is guaranteed by the idempotent producer protocol.
-        // The broker uses producer ID + per-partition sequence numbers to enforce ordering:
-        // - If a batch arrives out-of-order, the broker returns OutOfOrderSequenceNumber (retriable)
-        // - If a batch is a duplicate (retransmit), the broker returns DuplicateSequenceNumber (treated as success)
-        // This allows the client to safely pipeline multiple batches for the same partition without
-        // client-side ordering chains, matching the Confluent/Java producer behavior since Kafka 3.0.
+        // ORDERING: Within-partition ordering is guaranteed by per-partition semaphores.
+        // Only one batch per partition is in-flight at a time, ensuring the broker receives
+        // batches with strictly ascending sequence numbers. Cross-partition batches are pipelined
+        // freely. If the idempotent producer is enabled, DuplicateSequenceNumber is treated as success
+        // (safe retransmit detection).
 
         await foreach (var batch in _accumulator.ReadyBatches.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -2459,6 +2464,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendBatchWithCleanupAsync(ReadyBatch batch, CancellationToken cancellationToken)
     {
+        // Acquire per-partition gate to ensure within-partition ordering.
+        // Only one batch per partition can be in-flight at a time to avoid OutOfOrderSequenceNumber.
+        var partitionGate = _partitionSendGates.GetOrAdd(batch.TopicPartition, _ => new SemaphoreSlim(1, 1));
+        await partitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
         try
         {
             await SendBatchAsync(batch, cancellationToken).ConfigureAwait(false);
@@ -2492,10 +2502,13 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
         finally
         {
+            // Release per-partition gate first - allows next batch for this partition to proceed
+            partitionGate.Release();
+
             // Return the ReadyBatch to the pool for reuse
             _accumulator.ReturnReadyBatch(batch);
 
-            // Release semaphore slot - allows next batch to be sent
+            // Release global semaphore slot - allows next batch to be sent
             _sendConcurrencySemaphore.Release();
 
             // Decrement in-flight count and signal if all sends complete
