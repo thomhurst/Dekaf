@@ -602,7 +602,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private PartitionBatch RentBatch(TopicPartition topicPartition)
     {
-        var batch = RentBatch(topicPartition);
+        var batch = _batchPool.Rent(topicPartition);
         batch.SetTransactionState(ProducerId, ProducerEpoch, IsTransactional);
         return batch;
     }
