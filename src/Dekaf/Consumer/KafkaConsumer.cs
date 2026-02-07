@@ -828,9 +828,17 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
 
+            // If all partitions are paused, delay to prevent tight spin loop
+            // that would starve timeout/cancellation mechanisms of CPU time
+            var brokerCount = partitionsByBroker.Count;
+            if (brokerCount == 0)
+            {
+                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
             // Fetch from all brokers in parallel for maximum throughput
             // Use pooled array to avoid allocation per fetch cycle
-            var brokerCount = partitionsByBroker.Count;
             var fetchTasks = ArrayPool<Task>.Shared.Rent(brokerCount);
             try
             {
@@ -1884,9 +1892,17 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             var partitionsByBroker = await GroupPartitionsByBrokerAsync(cancellationToken).ConfigureAwait(false);
 
+            // If all partitions are paused, delay to prevent tight spin loop
+            // that would starve timeout/cancellation mechanisms of CPU time
+            var brokerCount = partitionsByBroker.Count;
+            if (brokerCount == 0)
+            {
+                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
             // Fetch from all brokers in parallel for maximum throughput
             // Use pooled array to avoid allocation per fetch cycle
-            var brokerCount = partitionsByBroker.Count;
             var fetchTasks = ArrayPool<Task<List<PendingFetchData>?>>.Shared.Rent(brokerCount);
             try
             {

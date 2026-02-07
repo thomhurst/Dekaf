@@ -705,13 +705,19 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             keyLength = keyWriter.WrittenCount;
         }
 
-        var valueWriter = new ReusableBufferWriter(ref t_valueSerializationBuffer, DefaultValueBufferSize);
-        t_serializationContext.Topic = topic;
-        t_serializationContext.Component = SerializationComponent.Value;
-        t_serializationContext.Headers = headers;
-        _valueSerializer.Serialize(value, ref valueWriter, t_serializationContext);
-        valueWriter.UpdateBufferRef(ref t_valueSerializationBuffer);
-        var valueLength = valueWriter.WrittenCount;
+        var valueIsNull = value is null;
+        int valueLength = 0;
+
+        if (!valueIsNull)
+        {
+            var valueWriter = new ReusableBufferWriter(ref t_valueSerializationBuffer, DefaultValueBufferSize);
+            t_serializationContext.Topic = topic;
+            t_serializationContext.Component = SerializationComponent.Value;
+            t_serializationContext.Headers = headers;
+            _valueSerializer.Serialize(value!, ref valueWriter, t_serializationContext);
+            valueWriter.UpdateBufferRef(ref t_valueSerializationBuffer);
+            valueLength = valueWriter.WrittenCount;
+        }
 
         // Step 2: Compute partition using serialized key bytes
         var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : t_keySerializationBuffer.AsSpan(0, keyLength);
@@ -731,7 +737,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         // Step 5: FAST PATH - Try to append to cached batch with arena (no side effects)
         // This succeeds when: same partition as recent message AND batch has space
-        if (TryAppendToArenaFast(topic, partition, timestampMs, keyIsNull, keyLength, valueLength, recordHeaders, ref pooledHeaderArray))
+        if (TryAppendToArenaFast(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, ref pooledHeaderArray))
         {
             _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
             return;
@@ -753,6 +759,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         long timestampMs,
         bool keyIsNull,
         int keyLength,
+        bool valueIsNull,
         int valueLength,
         IReadOnlyList<Header>? recordHeaders,
         ref Header[]? pooledHeaderArray)
@@ -797,7 +804,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             // Split the combined allocation into key and value slices
             ArenaSlice keySlice = default;
-            ArenaSlice valueSlice;
+            ArenaSlice valueSlice = default;
 
             if (!keyIsNull && keyLength > 0)
             {
@@ -805,11 +812,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(combinedSpan.Slice(0, keyLength));
                 keySlice = new ArenaSlice(combinedOffset, keyLength);
 
-                // Copy value to second part
-                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan.Slice(keyLength, valueLength));
-                valueSlice = new ArenaSlice(combinedOffset + keyLength, valueLength);
+                if (!valueIsNull)
+                {
+                    // Copy value to second part
+                    t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan.Slice(keyLength, valueLength));
+                    valueSlice = new ArenaSlice(combinedOffset + keyLength, valueLength);
+                }
             }
-            else
+            else if (!valueIsNull)
             {
                 // No key - value uses entire allocation
                 t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan);
@@ -817,7 +827,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             }
 
             // Append using arena-based method
-            var result = cachedBatch.TryAppendFromArena(timestampMs, keySlice, keyIsNull, valueSlice, recordHeaders, pooledHeaderArray);
+            var result = cachedBatch.TryAppendFromArena(timestampMs, keySlice, keyIsNull, valueSlice, valueIsNull, recordHeaders, pooledHeaderArray);
 
             if (!result.Success)
             {
@@ -1054,7 +1064,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // Serialize key and value
             var keyIsNull = message.Key is null;
             key = keyIsNull ? PooledMemory.Null : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
-            value = SerializeValueToPooled(message.Value, message.Topic, message.Headers);
+            var valueIsNull = message.Value is null;
+            value = valueIsNull ? PooledMemory.Null : SerializeValueToPooled(message.Value!, message.Topic, message.Headers);
 
             // Determine partition
             var partition = message.Partition
@@ -1361,13 +1372,19 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             keyLength = keyWriter.WrittenCount;
         }
 
-        var valueWriter = new ReusableBufferWriter(ref t_valueSerializationBuffer, DefaultValueBufferSize);
-        t_serializationContext.Topic = topic;
-        t_serializationContext.Component = SerializationComponent.Value;
-        t_serializationContext.Headers = headers;
-        _valueSerializer.Serialize(value, ref valueWriter, t_serializationContext);
-        valueWriter.UpdateBufferRef(ref t_valueSerializationBuffer);
-        var valueLength = valueWriter.WrittenCount;
+        var valueIsNull = value is null;
+        int valueLength = 0;
+
+        if (!valueIsNull)
+        {
+            var valueWriter = new ReusableBufferWriter(ref t_valueSerializationBuffer, DefaultValueBufferSize);
+            t_serializationContext.Topic = topic;
+            t_serializationContext.Component = SerializationComponent.Value;
+            t_serializationContext.Headers = headers;
+            _valueSerializer.Serialize(value!, ref valueWriter, t_serializationContext);
+            valueWriter.UpdateBufferRef(ref t_valueSerializationBuffer);
+            valueLength = valueWriter.WrittenCount;
+        }
 
         // Step 2: Compute partition using serialized key bytes
         var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : t_keySerializationBuffer.AsSpan(0, keyLength);
@@ -1386,7 +1403,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
 
         // Step 5: FAST PATH - Try to append to cached batch with arena and callback
-        if (TryAppendToArenaFastWithCallback(topic, partition, timestampMs, keyIsNull, keyLength, valueLength, recordHeaders, ref pooledHeaderArray, callback))
+        if (TryAppendToArenaFastWithCallback(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, ref pooledHeaderArray, callback))
         {
             _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
             return;
@@ -1408,6 +1425,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         long timestampMs,
         bool keyIsNull,
         int keyLength,
+        bool valueIsNull,
         int valueLength,
         IReadOnlyList<Header>? recordHeaders,
         ref Header[]? pooledHeaderArray,
@@ -1453,7 +1471,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             // Split the combined allocation into key and value slices
             ArenaSlice keySlice = default;
-            ArenaSlice valueSlice;
+            ArenaSlice valueSlice = default;
 
             if (!keyIsNull && keyLength > 0)
             {
@@ -1461,11 +1479,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(combinedSpan.Slice(0, keyLength));
                 keySlice = new ArenaSlice(combinedOffset, keyLength);
 
-                // Copy value to second part
-                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan.Slice(keyLength, valueLength));
-                valueSlice = new ArenaSlice(combinedOffset + keyLength, valueLength);
+                if (!valueIsNull)
+                {
+                    // Copy value to second part
+                    t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan.Slice(keyLength, valueLength));
+                    valueSlice = new ArenaSlice(combinedOffset + keyLength, valueLength);
+                }
             }
-            else
+            else if (!valueIsNull)
             {
                 // No key - value uses entire allocation
                 t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan);
@@ -1473,7 +1494,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             }
 
             // Append using arena-based method with callback
-            var result = cachedBatch.TryAppendFromArenaWithCallback(timestampMs, keySlice, keyIsNull, valueSlice, recordHeaders, pooledHeaderArray, callback);
+            var result = cachedBatch.TryAppendFromArenaWithCallback(timestampMs, keySlice, keyIsNull, valueSlice, valueIsNull, recordHeaders, pooledHeaderArray, callback);
 
             if (!result.Success)
             {
@@ -1629,7 +1650,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Serialize key and value to pooled memory (returned to pool when batch completes)
         var keyIsNull = message.Key is null;
         var key = keyIsNull ? PooledMemory.Null : SerializeKeyToPooled(message.Key!, message.Topic, message.Headers);
-        var value = SerializeValueToPooled(message.Value, message.Topic, message.Headers);
+        var valueIsNull = message.Value is null;
+        var value = valueIsNull ? PooledMemory.Null : SerializeValueToPooled(message.Value!, message.Topic, message.Headers);
 
         // Determine partition
         var partition = message.Partition

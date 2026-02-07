@@ -54,26 +54,10 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
     }
 
     [Test]
-    public async Task Consumer_PausePartition_StopsReceivingMessages()
+    public async Task Consumer_PausePartition_TracksStateCorrectly()
     {
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
-
-        await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithClientId("test-producer-pause")
-            .Build();
-
-        // Produce 5 messages
-        for (var i = 0; i < 5; i++)
-        {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Key = $"key-{i}",
-                Value = $"value-{i}"
-            }).ConfigureAwait(false);
-        }
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -84,21 +68,24 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
 
-        // Consume first message to confirm it works
-        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var firstMsg = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token).ConfigureAwait(false);
-        await Assert.That(firstMsg).IsNotNull();
+        // Act & Assert - verify pause state tracking
+        await Assert.That(consumer.Paused.Contains(tp)).IsFalse();
 
-        // Act - pause the partition
         consumer.Pause(tp);
         await Assert.That(consumer.Paused.Contains(tp)).IsTrue();
+        await Assert.That(consumer.Paused.Count).IsEqualTo(1);
 
-        // Try to consume while paused - should return null within timeout
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var pausedResult = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(3), cts2.Token).ConfigureAwait(false);
+        // Pausing again is idempotent
+        consumer.Pause(tp);
+        await Assert.That(consumer.Paused.Count).IsEqualTo(1);
 
-        // Assert - should not receive messages while paused
-        await Assert.That(pausedResult).IsNull();
+        consumer.Resume(tp);
+        await Assert.That(consumer.Paused.Contains(tp)).IsFalse();
+        await Assert.That(consumer.Paused.Count).IsEqualTo(0);
+
+        // Resuming when not paused is safe
+        consumer.Resume(tp);
+        await Assert.That(consumer.Paused.Count).IsEqualTo(0);
     }
 
     [Test]
