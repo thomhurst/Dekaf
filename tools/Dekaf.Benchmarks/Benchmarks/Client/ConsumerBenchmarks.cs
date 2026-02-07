@@ -24,6 +24,10 @@ public class ConsumerBenchmarks
     private string _topic = null!;
     private int _topicCounter;
 
+    // Pre-created consumers for PollSingle benchmarks (created in IterationSetup, disposed in IterationCleanup)
+    private Confluent.Kafka.IConsumer<string, string>? _confluentPollConsumer;
+    private DekafConsumer.IKafkaConsumer<string, string>? _dekafPollConsumer;
+
     [Params(100, 1000)]
     public int MessageCount { get; set; }
 
@@ -43,8 +47,7 @@ public class ConsumerBenchmarks
         _confluentProducer = new Confluent.Kafka.ProducerBuilder<string, string>(confluentConfig).Build();
     }
 
-    [IterationSetup]
-    public void IterationSetup()
+    private void SeedTopic()
     {
         _topic = $"{TopicPrefix}{++_topicCounter}-{MessageCount}-{MessageSize}";
         _kafka.CreateTopicAsync(_topic, 1).GetAwaiter().GetResult();
@@ -59,6 +62,45 @@ public class ConsumerBenchmarks
             });
         }
         _confluentProducer.Flush(TimeSpan.FromSeconds(30));
+    }
+
+    [IterationSetup(Targets = [nameof(Confluent_ConsumeAll), nameof(Dekaf_ConsumeAll)])]
+    public void ConsumeAllIterationSetup() => SeedTopic();
+
+    [IterationSetup(Targets = [nameof(Confluent_PollSingle), nameof(Dekaf_PollSingle)])]
+    public void PollSingleIterationSetup()
+    {
+        SeedTopic();
+
+        // Pre-create consumers so PollSingle benchmarks only measure the actual poll
+        _confluentPollConsumer = new Confluent.Kafka.ConsumerBuilder<string, string>(
+            new Confluent.Kafka.ConsumerConfig
+            {
+                BootstrapServers = _kafka.BootstrapServers,
+                ClientId = "confluent-poll-benchmark",
+                GroupId = $"confluent-poll-{Guid.NewGuid():N}",
+                AutoOffsetReset = Confluent.Kafka.AutoOffsetReset.Earliest
+            }).Build();
+        _confluentPollConsumer.Subscribe(_topic);
+
+        _dekafPollConsumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(_kafka.BootstrapServers)
+            .WithClientId("dekaf-poll-benchmark")
+            .WithGroupId($"dekaf-poll-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(DekafConsumer.AutoOffsetReset.Earliest)
+            .Build();
+        _dekafPollConsumer.Subscribe(_topic);
+    }
+
+    [IterationCleanup(Targets = [nameof(Confluent_PollSingle), nameof(Dekaf_PollSingle)])]
+    public void PollSingleIterationCleanup()
+    {
+        _confluentPollConsumer?.Close();
+        _confluentPollConsumer?.Dispose();
+        _confluentPollConsumer = null;
+
+        _dekafPollConsumer?.DisposeAsync().GetAwaiter().GetResult();
+        _dekafPollConsumer = null;
     }
 
     [GlobalCleanup]
@@ -135,36 +177,13 @@ public class ConsumerBenchmarks
     [Benchmark(Baseline = true)]
     public Confluent.Kafka.ConsumeResult<string, string>? Confluent_PollSingle()
     {
-        var config = new Confluent.Kafka.ConsumerConfig
-        {
-            BootstrapServers = _kafka.BootstrapServers,
-            ClientId = "confluent-poll-benchmark",
-            GroupId = $"confluent-poll-{Guid.NewGuid():N}",
-            AutoOffsetReset = Confluent.Kafka.AutoOffsetReset.Earliest
-        };
-
-        using var consumer = new Confluent.Kafka.ConsumerBuilder<string, string>(config).Build();
-        consumer.Subscribe(_topic);
-
-        var result = consumer.Consume(TimeSpan.FromSeconds(10));
-        consumer.Close();
-
-        return result;
+        return _confluentPollConsumer!.Consume(TimeSpan.FromSeconds(10));
     }
 
     [BenchmarkCategory("PollSingle")]
     [Benchmark]
     public async Task<DekafConsumer.ConsumeResult<string, string>?> Dekaf_PollSingle()
     {
-        await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(_kafka.BootstrapServers)
-            .WithClientId("dekaf-poll-benchmark")
-            .WithGroupId($"dekaf-poll-{Guid.NewGuid():N}")
-            .WithAutoOffsetReset(DekafConsumer.AutoOffsetReset.Earliest)
-            .Build();
-
-        consumer.Subscribe(_topic);
-
-        return await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        return await _dekafPollConsumer!.ConsumeOneAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
     }
 }
