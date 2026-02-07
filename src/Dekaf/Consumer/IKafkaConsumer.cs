@@ -258,6 +258,7 @@ public readonly struct ConsumeResult<TKey, TValue>
             t_serializationContext.Topic = topic;
             t_serializationContext.Component = SerializationComponent.Key;
             t_serializationContext.Headers = null;
+            t_serializationContext.IsNull = false;
             Key = keyDeserializer.Deserialize(new System.Buffers.ReadOnlySequence<byte>(keyData), t_serializationContext);
         }
 
@@ -272,6 +273,7 @@ public readonly struct ConsumeResult<TKey, TValue>
             t_serializationContext.Topic = topic;
             t_serializationContext.Component = SerializationComponent.Value;
             t_serializationContext.Headers = null;
+            t_serializationContext.IsNull = isValueNull;
 
             if (isValueNull)
             {

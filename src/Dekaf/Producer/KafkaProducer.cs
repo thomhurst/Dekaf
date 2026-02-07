@@ -47,6 +47,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     // - _allSendsCompleted: Signaling coordinated with _inFlightSendCount via _sendCompletionLock
     // - _sendCompletionLock: Protects the atomicity of count transition + event signal pairs
     private readonly SemaphoreSlim _sendConcurrencySemaphore;
+    // Tracks the last send task per partition to ensure within-partition ordering
+    // when the sender loop pipelines multiple concurrent sends.
+    private readonly ConcurrentDictionary<TopicPartition, Task> _partitionSendChain = new();
     private long _inFlightSendCount;
     private readonly ManualResetEventSlim _allSendsCompleted = new(true); // Initially signaled (no sends in flight)
     private readonly object _sendCompletionLock = new(); // Prevents race between Reset() and Set()
@@ -56,6 +59,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly Channel<ProduceWorkItem<TKey, TValue>> _workChannel;
     private readonly Task[] _workerTasks;
     private readonly int _workerCount;
+
+    // Tracks pending messages in the work channel to prevent ordering issues.
+    // When > 0, the fire-and-forget fast path must be disabled to ensure messages
+    // appended via the slow path (worker thread) are not overtaken by fast-path messages.
+    private int _pendingChannelMessages;
 
     private int _produceApiVersion = -1;
     internal volatile bool _disposed;
@@ -210,24 +218,23 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _senderTask = SenderLoopAsync(_senderCts.Token);
         _lingerTask = LingerLoopAsync(_senderCts.Token);
 
-        // Set up worker pool for thread-safe produce operations
-        // Use unbounded channel to avoid artificial backpressure that can cause deadlocks
-        // Natural backpressure happens when Kafka can't keep up (TCP flow control, slow responses)
-        // This matches Confluent.Kafka's approach (queue.buffering.max.messages = 100,000)
-        _workerCount = Environment.ProcessorCount;
+        // Set up worker for channel-based produce operations (slow path).
+        // Use a SINGLE worker to preserve message ordering within the channel.
+        // The channel is only used during startup (before metadata is cached) and when
+        // the fast path is unavailable. After metadata is cached, Send() uses the
+        // zero-allocation fast path that bypasses the channel entirely.
+        // Multiple workers would break FIFO ordering by processing messages concurrently.
+        _workerCount = 1;
         _workChannel = Channel.CreateUnbounded<ProduceWorkItem<TKey, TValue>>(
             new UnboundedChannelOptions
             {
-                SingleReader = false,   // Multiple workers read
+                SingleReader = true,    // Single worker for ordering guarantee
                 SingleWriter = false    // Multiple callers write
             });
 
-        // Start worker tasks
+        // Start single worker task
         _workerTasks = new Task[_workerCount];
-        for (var i = 0; i < _workerCount; i++)
-        {
-            _workerTasks[i] = ProcessWorkAsync(_senderCts.Token);
-        }
+        _workerTasks[0] = ProcessWorkAsync(_senderCts.Token);
 
         // Start statistics emitter if configured
         if (options.StatisticsInterval.HasValue &&
@@ -484,9 +491,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
-        // Fast path: Try synchronous fire-and-forget produce if metadata is cached
-        // This bypasses PooledValueTaskSource rental entirely for fire-and-forget operations
-        if (TryProduceSyncFireAndForget(message))
+        // Fast path: Try synchronous fire-and-forget produce if metadata is cached.
+        // ORDERING: Only use fast path when no messages are pending in the work channel.
+        // Without this check, fast-path messages can overtake slow-path messages that
+        // are still being processed by the worker thread, breaking within-partition ordering.
+        if (Volatile.Read(ref _pendingChannelMessages) == 0 && TryProduceSyncFireAndForget(message))
         {
             return;
         }
@@ -500,6 +509,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         var estimatedSize = EstimateMessageSizeForBackpressure(message);
         _accumulator.ReserveMemorySyncForBackpressure(estimatedSize);
 
+        // Increment BEFORE writing to channel to prevent race with fast-path check.
+        // The worker decrements AFTER appending, ensuring all slow-path messages are
+        // visible before the fast path can resume.
+        Interlocked.Increment(ref _pendingChannelMessages);
+
         PooledValueTaskSource<RecordMetadata>? completion = null;
         try
         {
@@ -512,6 +526,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             if (!_workChannel.Writer.TryWrite(workItem))
             {
+                Interlocked.Decrement(ref _pendingChannelMessages);
                 completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
                 // Don't release here - let the catch block handle it to avoid double release
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -540,9 +555,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             return;
         }
 
-        // Fast path: Try synchronous fire-and-forget produce if metadata is cached
-        // This bypasses both ProducerMessage allocation and PooledValueTaskSource rental
-        if (TryProduceSyncFireAndForgetDirect(topic, key, value, partition: null, timestamp: null, headers: null))
+        // Fast path: Try synchronous fire-and-forget produce if metadata is cached.
+        // ORDERING: Only use fast path when no messages are pending in the work channel.
+        if (Volatile.Read(ref _pendingChannelMessages) == 0 &&
+            TryProduceSyncFireAndForgetDirect(topic, key, value, partition: null, timestamp: null, headers: null))
         {
             return;
         }
@@ -1256,8 +1272,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
-        // Fast path: Try synchronous produce if metadata is initialized and cached
-        if (TryProduceSyncWithHandler(message, deliveryHandler))
+        // Fast path: Try synchronous produce if metadata is initialized and cached.
+        // ORDERING: Only use fast path when no messages are pending in the work channel.
+        if (Volatile.Read(ref _pendingChannelMessages) == 0 && TryProduceSyncWithHandler(message, deliveryHandler))
         {
             return;
         }
@@ -1267,6 +1284,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // BACKPRESSURE: Reserve memory before queueing to prevent unbounded channel growth.
         var estimatedSize = EstimateMessageSizeForBackpressure(message);
         _accumulator.ReserveMemorySyncForBackpressure(estimatedSize);
+
+        // Increment BEFORE writing to channel to prevent race with fast-path check.
+        Interlocked.Increment(ref _pendingChannelMessages);
 
         PooledValueTaskSource<RecordMetadata>? completion = null;
         try
@@ -1281,6 +1301,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             if (!_workChannel.Writer.TryWrite(workItem))
             {
+                Interlocked.Decrement(ref _pendingChannelMessages);
                 completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
                 // Don't release here - let the catch block handle it to avoid double release
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -1603,6 +1624,13 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             catch (Exception ex)
             {
                 work.Completion.TrySetException(ex);
+            }
+            finally
+            {
+                // Decrement AFTER appending to ensure the message is visible in the batch
+                // before the fast path in Send() can resume. This prevents ordering violations
+                // between slow-path (channel) and fast-path (inline) messages.
+                Interlocked.Decrement(ref _pendingChannelMessages);
             }
         }
     }
@@ -2380,6 +2408,13 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // This overlaps network round-trips, dramatically improving throughput.
         // Without pipelining: throughput = 1 / network_latency (e.g., 30 batches/sec at 33ms latency)
         // With pipelining (5 in-flight): throughput = 5 / network_latency (e.g., 150 batches/sec)
+        //
+        // ORDERING NOTE: Within-partition ordering is guaranteed because:
+        // 1. The RecordAccumulator produces batches per-partition in FIFO order
+        // 2. Send() prevents fast-path/slow-path message interleaving via _pendingChannelMessages
+        // 3. Kafka broker stores messages in the order they arrive per partition
+        // 4. With MaxInFlightRequestsPerConnection=1 (idempotent default), only one request
+        //    is in-flight per connection, so the broker receives them in order
 
         await foreach (var batch in _accumulator.ReadyBatches.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -2404,13 +2439,36 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 }
             }
 
-            // Fire-and-forget: don't await the send, allowing next batch to be processed immediately
-            // Error handling, cleanup, and semaphore release happen in the continuation
-            _ = SendBatchWithCleanupAsync(batch, cancellationToken);
+            // Chain sends per-partition to maintain within-partition ordering.
+            // The sender loop is single-threaded (async foreach), so no race on dictionary updates.
+            // Different partitions still pipeline concurrently for throughput.
+            var tp = batch.TopicPartition;
+            var previousSend = _partitionSendChain.GetValueOrDefault(tp, Task.CompletedTask);
+            var currentSend = SendBatchOrderedAsync(batch, previousSend, cancellationToken);
+            _partitionSendChain[tp] = currentSend;
         }
 
         // Channel completed - wait for all in-flight sends to finish before exiting
         await WaitForInFlightSendsAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Waits for the previous batch on the same partition to complete before sending this one.
+    /// This ensures within-partition ordering while allowing different partitions to pipeline.
+    /// </summary>
+    private async Task SendBatchOrderedAsync(ReadyBatch batch, Task previousPartitionSend, CancellationToken cancellationToken)
+    {
+        // Wait for previous batch on same partition to finish its network I/O
+        try
+        {
+            await previousPartitionSend.ConfigureAwait(false);
+        }
+        catch
+        {
+            // Previous send failed - still proceed with this batch
+        }
+
+        await SendBatchWithCleanupAsync(batch, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
