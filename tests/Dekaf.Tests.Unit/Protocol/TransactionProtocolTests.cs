@@ -269,6 +269,100 @@ public sealed class TransactionProtocolTests
         await Assert.That(response.Results[0].Partitions[1].ErrorCode).IsEqualTo(ErrorCode.InvalidTxnState);
     }
 
+    [Test]
+    public async Task AddPartitionsToTxnRequest_V4_WritesTransactionsArray()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        var request = new AddPartitionsToTxnRequest
+        {
+            TransactionalId = "txn-v4",
+            ProducerId = 200,
+            ProducerEpoch = 5,
+            VerifyOnly = false,
+            Topics =
+            [
+                new AddPartitionsToTxnTopic
+                {
+                    Name = "topic-x",
+                    Partitions = [3]
+                }
+            ]
+        };
+        request.Write(ref writer, version: 4);
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+
+        // v4: Transactions compact array (length + 1 = 2 for 1 element)
+        var txnArrayLen = reader.ReadUnsignedVarInt();
+        // TransactionalId (compact string)
+        var txnId = reader.ReadCompactNonNullableString();
+        var producerId = reader.ReadInt64();
+        var producerEpoch = reader.ReadInt16();
+        var verifyOnly = reader.ReadUInt8();
+        // Topics compact array (length + 1 = 2 for 1 element)
+        var topicsArrayLen = reader.ReadUnsignedVarInt();
+        var topicName = reader.ReadCompactNonNullableString();
+        // Partitions compact array (length + 1 = 2 for 1 element)
+        var partitionsArrayLen = reader.ReadUnsignedVarInt();
+        var partition = reader.ReadInt32();
+
+        await Assert.That(txnArrayLen).IsEqualTo(2); // 1 element + 1
+        await Assert.That(txnId).IsEqualTo("txn-v4");
+        await Assert.That(producerId).IsEqualTo(200L);
+        await Assert.That(producerEpoch).IsEqualTo((short)5);
+        await Assert.That(verifyOnly).IsEqualTo((byte)0);
+        await Assert.That(topicsArrayLen).IsEqualTo(2); // 1 element + 1
+        await Assert.That(topicName).IsEqualTo("topic-x");
+        await Assert.That(partitionsArrayLen).IsEqualTo(2); // 1 element + 1
+        await Assert.That(partition).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task AddPartitionsToTxnResponse_V4_ReadsCorrectly()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new KafkaProtocolWriter(buffer);
+
+        // ThrottleTimeMs
+        writer.WriteInt32(50);
+        // ErrorCode (top-level, new in v4)
+        writer.WriteInt16(0);
+        // ResultsByTransaction compact array (1 element → length + 1 = 2)
+        writer.WriteUnsignedVarInt(2);
+        // TransactionalId
+        writer.WriteCompactString("txn-v4");
+        // TopicResults compact array (1 element → length + 1 = 2)
+        writer.WriteUnsignedVarInt(2);
+        // Topic name
+        writer.WriteCompactString("topic-x");
+        // ResultsByPartition compact array (1 element → length + 1 = 2)
+        writer.WriteUnsignedVarInt(2);
+        // Partition 3, no error
+        writer.WriteInt32(3);
+        writer.WriteInt16(0);
+        // Partition-level tagged fields
+        writer.WriteEmptyTaggedFields();
+        // Topic-level tagged fields
+        writer.WriteEmptyTaggedFields();
+        // Transaction-level tagged fields
+        writer.WriteEmptyTaggedFields();
+        // Response-level tagged fields
+        writer.WriteEmptyTaggedFields();
+
+        var reader = new KafkaProtocolReader(buffer.WrittenMemory);
+        var response = (AddPartitionsToTxnResponse)AddPartitionsToTxnResponse.Read(ref reader, version: 4);
+
+        await Assert.That(response.ThrottleTimeMs).IsEqualTo(50);
+        await Assert.That(response.ErrorCode).IsEqualTo(ErrorCode.None);
+        await Assert.That(response.Results.Count).IsEqualTo(1);
+        await Assert.That(response.Results[0].Name).IsEqualTo("topic-x");
+        await Assert.That(response.Results[0].Partitions.Count).IsEqualTo(1);
+        await Assert.That(response.Results[0].Partitions[0].PartitionIndex).IsEqualTo(3);
+        await Assert.That(response.Results[0].Partitions[0].ErrorCode).IsEqualTo(ErrorCode.None);
+    }
+
     #endregion
 
     #region AddOffsetsToTxn Tests
