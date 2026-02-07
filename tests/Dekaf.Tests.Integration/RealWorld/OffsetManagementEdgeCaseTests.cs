@@ -384,7 +384,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             .WithClientId("test-producer-seek-end")
             .Build();
 
-        // Produce initial messages
+        // Produce initial messages that should NOT be seen by a Latest consumer
         for (var i = 0; i < 5; i++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -395,19 +395,33 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             });
         }
 
+        // Consumer with AutoOffsetReset.Latest — skips existing messages
         await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-seek-end")
-            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithGroupId($"test-group-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Latest)
             .Build();
 
-        var tp = new TopicPartition(topic, 0);
-        consumer.Assign(tp);
+        consumer.Subscribe(topic);
 
-        // Seek to end — skip existing messages
-        consumer.SeekToEnd(tp);
+        // Start consuming in background — this triggers group join and waits for new messages
+        ConsumeResult<string, string>? received = null;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        // Produce new message after seeking
+        var consumeTask = Task.Run(async () =>
+        {
+            await foreach (var msg in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
+            {
+                received = msg;
+                return;
+            }
+        });
+
+        // Give consumer time to join the group and be assigned partitions at Latest offset
+        await Task.Delay(5000).ConfigureAwait(false);
+
+        // Produce a new message after consumer has joined at Latest
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
@@ -415,13 +429,12 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             Value = "value-new"
         });
 
-        // Act
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts.Token);
+        // Wait for the consumer to receive the message
+        await consumeTask.ConfigureAwait(false);
 
-        // Assert - should only see the new message
-        await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Value.Key).IsEqualTo("key-new");
-        await Assert.That(result.Value.Value).IsEqualTo("value-new");
+        // Assert - should only see the new message (old messages were before consumer joined)
+        await Assert.That(received).IsNotNull();
+        await Assert.That(received!.Value.Key).IsEqualTo("key-new");
+        await Assert.That(received.Value.Value).IsEqualTo("value-new");
     }
 }

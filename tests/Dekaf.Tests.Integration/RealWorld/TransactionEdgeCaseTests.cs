@@ -491,18 +491,26 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
 
         consumer.Subscribe(topic);
 
+        // Collect messages until timeout — don't break at a specific count
+        // because transaction markers affect offset positions
         var messages = new List<ConsumeResult<string, string>>();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        try
         {
-            messages.Add(msg);
-            if (messages.Count >= 3) break;
+            await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+            {
+                messages.Add(msg);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected — consume until timeout
         }
 
+        // Should only have even-indexed messages (committed: 0, 2, 4)
         await Assert.That(messages.Count).IsEqualTo(3);
 
-        // Should only have even-indexed messages
         var keys = messages.Select(m => m.Key!).OrderBy(k => k).ToList();
         string[] expectedKeys = ["key-0", "key-2", "key-4"];
         await Assert.That(keys).IsEquivalentTo(expectedKeys);

@@ -178,14 +178,18 @@ internal sealed class PendingFetchData : IDisposable
         var attrs = batch.Attributes;
 
         // Control batches (commit/abort markers): never yield to consumer.
-        // When encountering a control batch for an aborted producer, advance
-        // the tracking state so subsequent committed batches from the same
-        // producer are correctly included.
+        // When encountering an abort control batch for an aborted producer,
+        // advance the tracking state so subsequent committed batches from the
+        // same producer are correctly included. Only dequeue when the control
+        // batch offset is at or past the tracked first offset — this ensures
+        // commit markers (which precede the aborted range) don't prematurely
+        // consume queue entries.
         if ((attrs & RecordBatchAttributes.IsControlBatch) != 0)
         {
             if (_abortedProducers is not null &&
                 _abortedProducers.TryGetValue(batch.ProducerId, out var queue) &&
-                queue.Count > 0)
+                queue.Count > 0 &&
+                batch.BaseOffset >= queue.Peek())
             {
                 queue.Dequeue();
                 if (queue.Count == 0)

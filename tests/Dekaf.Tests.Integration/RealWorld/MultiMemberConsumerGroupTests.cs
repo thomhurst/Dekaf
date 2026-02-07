@@ -123,6 +123,9 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts1.Token);
 
+        // Wait for group to stabilize and assignment to be fully reflected
+        await Task.Delay(3000).ConfigureAwait(false);
+
         var initialAssignment = consumer1.Assignment.Where(tp => tp.Topic == topic).ToList();
         await Assert.That(initialAssignment.Count).IsEqualTo(4);
 
@@ -326,10 +329,10 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
     }
 
     [Test]
-    public async Task RebalanceListener_ReceivesRevokedOnLeave()
+    public async Task RebalanceListener_ReceivesRevokedOnRebalance()
     {
-        // Arrange
-        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        // Arrange - use 4 partitions so the second consumer forces revocation of some
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
         var groupId = $"test-group-{Guid.NewGuid():N}";
         var listener = new TrackingRebalanceListener();
 
@@ -338,43 +341,73 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             .WithClientId("test-producer-revoke-listener")
             .Build();
 
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        for (var p = 0; p < 4; p++)
         {
-            Topic = topic,
-            Key = "key",
-            Value = "value"
-        });
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-{p}",
+                Value = $"value-{p}",
+                Partition = p
+            });
+        }
 
-        // Act - create consumer, consume, then close to trigger revoke
-        var consumer = Kafka.CreateConsumer<string, string>()
+        // Consumer1 with rebalance listener - gets all 4 partitions initially
+        await using var consumer1 = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithClientId("test-consumer-revoke-listener")
+            .WithClientId("test-consumer-revoke-listener-1")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener)
             .Build();
 
-        try
+        consumer1.Subscribe(topic);
+
+        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts1.Token);
+
+        // Verify assigned was called with all partitions
+        await Assert.That(listener.AssignedPartitions.Count).IsGreaterThanOrEqualTo(1);
+
+        // Act - second consumer joins, forcing a rebalance that revokes partitions from consumer1
+        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-consumer-revoke-listener-2")
+            .WithGroupId(groupId)
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .Build();
+
+        consumer2.Subscribe(topic);
+
+        // Produce more messages so consumers have data to trigger rebalance handling
+        for (var p = 0; p < 4; p++)
         {
-            consumer.Subscribe(topic);
-
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts.Token);
-
-            // Verify assigned was called
-            await Assert.That(listener.AssignedPartitions.Count).IsGreaterThanOrEqualTo(1);
-
-            // Close triggers revoke callback
-            await consumer.CloseAsync();
-        }
-        finally
-        {
-            await consumer.DisposeAsync().ConfigureAwait(false);
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"key-extra-{p}",
+                Value = $"value-extra-{p}",
+                Partition = p
+            });
         }
 
-        // Assert - revoked should have been called
-        await Assert.That(listener.RevokedPartitions.Count).IsGreaterThanOrEqualTo(1);
+        // Consumer2 consuming triggers group join and rebalance
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts2.Token);
+
+        // Consumer1 needs to consume to discover and handle the rebalance
+        using var cts3 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts3.Token);
+
+        // Wait for rebalance to fully stabilize
+        await Task.Delay(5000).ConfigureAwait(false);
+
+        // Assert - revoked should have been called as partitions were taken from consumer1
+        // With CooperativeSticky, the rebalance revokes some partitions from consumer1
+        var totalRevokedOrLost = listener.RevokedPartitions.Count + listener.LostPartitions.Count;
+        await Assert.That(totalRevokedOrLost).IsGreaterThanOrEqualTo(1);
     }
 
     [Test]

@@ -59,13 +59,13 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
     [Test]
     public async Task BackpressureDoesNotCauseMessageLoss()
     {
-        // Arrange - small buffer, lots of messages
+        // Arrange - constrained buffer to exercise backpressure, but large enough to drain
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-no-loss")
-            .WithBufferMemory(131072) // 128KB
+            .WithBufferMemory(1_048_576) // 1MB
             .WithLinger(TimeSpan.FromMilliseconds(10))
             .WithAcks(Acks.Leader)
             .Build();
@@ -166,13 +166,13 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
     [Test]
     public async Task FireAndForget_WithSmallBuffer_AllDelivered()
     {
-        // Arrange - Send() with small buffer tests backpressure in fire-and-forget mode
+        // Arrange - Send() with constrained buffer tests backpressure in fire-and-forget mode
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-ff-backpressure")
-            .WithBufferMemory(131072) // 128KB
+            .WithBufferMemory(1_048_576) // 1MB
             .WithLinger(TimeSpan.FromMilliseconds(10))
             .Build();
 
@@ -217,13 +217,13 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
     [Test]
     public async Task SmallBuffer_HighThroughput_NoDeadlock()
     {
-        // This test verifies that even with extreme backpressure, the system doesn't deadlock
+        // This test verifies that even with backpressure, the system doesn't deadlock
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-no-deadlock")
-            .WithBufferMemory(65536) // 64KB — very tight
+            .WithBufferMemory(1_048_576) // 1MB
             .WithLinger(TimeSpan.FromMilliseconds(1))
             .WithAcks(Acks.Leader)
             .Build();

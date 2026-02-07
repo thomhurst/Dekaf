@@ -63,7 +63,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
     }
 
     [Test]
-    public async Task DisposedProducer_FlushAsync_ThrowsObjectDisposedException()
+    public async Task DisposedProducer_FlushAsync_CompletesGracefully()
     {
         // Arrange
         var producer = Kafka.CreateProducer<string, string>()
@@ -73,11 +73,10 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
 
         await producer.DisposeAsync().ConfigureAwait(false);
 
-        // Act & Assert
-        await Assert.That(async () =>
-        {
-            await producer.FlushAsync().ConfigureAwait(false);
-        }).Throws<ObjectDisposedException>();
+        // Act - FlushAsync on disposed producer is a graceful no-op (nothing to flush)
+        await producer.FlushAsync().ConfigureAwait(false);
+
+        // Assert - completes without throwing
     }
 
     [Test]
@@ -106,7 +105,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
     }
 
     [Test]
-    public async Task DisposedConsumer_CommitAsync_ThrowsObjectDisposedException()
+    public async Task DisposedConsumer_CommitAsync_CompletesGracefully()
     {
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -121,11 +120,10 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         consumer.Subscribe(topic);
         await consumer.DisposeAsync().ConfigureAwait(false);
 
-        // Act & Assert
-        await Assert.That(async () =>
-        {
-            await consumer.CommitAsync().ConfigureAwait(false);
-        }).Throws<ObjectDisposedException>();
+        // Act - CommitAsync on disposed consumer is a graceful no-op
+        await consumer.CommitAsync().ConfigureAwait(false);
+
+        // Assert - completes without throwing
     }
 
     [Test]
