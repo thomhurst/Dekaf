@@ -2417,6 +2417,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // 3. Kafka broker stores messages in the order they arrive per partition
         // 4. With MaxInFlightRequestsPerConnection=1 (idempotent default), only one request
         //    is in-flight per connection, so the broker receives them in order
+        //
+        // SEMAPHORE PLACEMENT: The concurrency semaphore is acquired INSIDE SendBatchOrderedAsync,
+        // AFTER the per-partition chain wait. This prevents semaphore starvation where slots are
+        // held by tasks merely waiting in a partition chain rather than doing actual network I/O.
+        // Without this, a burst of batches for the same partition would fill all semaphore slots
+        // with queued chain waits, blocking batches for OTHER partitions from sending.
 
         await foreach (var batch in _accumulator.ReadyBatches.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -2426,10 +2432,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             // Decrement in-flight counter to unblock FlushAsync
             _accumulator.OnBatchExitsPipeline();
-
-            // Acquire semaphore slot - limits concurrent sends to MaxInFlightRequestsPerConnection
-            // This is the only await that blocks the loop - once acquired, we fire-and-forget the send
-            await _sendConcurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
 
             // Track in-flight send count for disposal coordination
             // Lock ensures atomicity of (increment + Reset) to prevent race with (decrement + Set)
@@ -2474,8 +2476,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <summary>
-    /// Waits for the previous batch on the same partition to complete before sending this one.
-    /// This ensures within-partition ordering while allowing different partitions to pipeline.
+    /// Waits for the previous batch on the same partition to complete before sending this one,
+    /// then acquires a concurrency semaphore slot before the actual network send.
+    /// The semaphore is acquired AFTER the chain wait (not before) to prevent starvation:
+    /// otherwise, batches queued behind a partition chain would hold semaphore slots while
+    /// just waiting, blocking other partitions from sending.
     /// </summary>
     private async Task SendBatchOrderedAsync(ReadyBatch batch, Task previousPartitionSend, CancellationToken cancellationToken)
     {
@@ -2489,7 +2494,37 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // Previous send failed - still proceed with this batch
         }
 
-        await SendBatchWithCleanupAsync(batch, cancellationToken).ConfigureAwait(false);
+        // Acquire semaphore slot AFTER chain wait - limits actual concurrent network I/O
+        // to MaxInFlightRequestsPerConnection without wasting slots on queued chain waits.
+        // If this throws (e.g., cancellation during disposal), we must clean up the batch
+        // since SendBatchWithCleanupAsync won't run.
+        var semaphoreAcquired = false;
+        try
+        {
+            await _sendConcurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            semaphoreAcquired = true;
+
+            await SendBatchWithCleanupAsync(batch, cancellationToken).ConfigureAwait(false);
+        }
+        catch when (!semaphoreAcquired)
+        {
+            // Semaphore was never acquired, so SendBatchWithCleanupAsync never ran.
+            // We must clean up the batch ourselves: fail completions, release memory,
+            // return to pool, and decrement in-flight count.
+            try { batch.Fail(new OperationCanceledException(cancellationToken)); }
+            catch { /* Protect against batch.Fail() throwing */ }
+
+            _accumulator.ReleaseMemory(batch.DataSize);
+            _accumulator.ReturnReadyBatch(batch);
+
+            lock (_sendCompletionLock)
+            {
+                if (Interlocked.Decrement(ref _inFlightSendCount) == 0)
+                {
+                    _allSendsCompleted.Set();
+                }
+            }
+        }
     }
 
     /// <summary>
