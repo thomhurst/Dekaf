@@ -28,6 +28,7 @@ namespace Dekaf.Consumer;
 internal sealed class PendingFetchData : IDisposable
 {
     private readonly IReadOnlyList<RecordBatch> _batches;
+    private readonly Dictionary<long, Queue<long>>? _abortedProducers;
     private Protocol.IPooledMemory? _memoryOwner;
     private int _batchIndex = -1;
     private int _recordIndex = -1;
@@ -63,13 +64,30 @@ internal sealed class PendingFetchData : IDisposable
     /// </summary>
     public long MessageCount { get; private set; }
 
-    public PendingFetchData(string topic, int partitionIndex, IReadOnlyList<RecordBatch> batches, Protocol.IPooledMemory? memoryOwner = null)
+    public PendingFetchData(string topic, int partitionIndex, IReadOnlyList<RecordBatch> batches,
+        IReadOnlyList<AbortedTransaction>? abortedTransactions = null,
+        Protocol.IPooledMemory? memoryOwner = null)
     {
         Topic = topic;
         PartitionIndex = partitionIndex;
         TopicPartition = new TopicPartition(topic, partitionIndex);
         _batches = batches;
         _memoryOwner = memoryOwner;
+
+        if (abortedTransactions is { Count: > 0 })
+        {
+            _abortedProducers = new Dictionary<long, Queue<long>>();
+            // AbortedTransactions is sorted by FirstOffset per the Kafka protocol
+            foreach (var at in abortedTransactions)
+            {
+                if (!_abortedProducers.TryGetValue(at.ProducerId, out var queue))
+                {
+                    queue = new Queue<long>();
+                    _abortedProducers[at.ProducerId] = queue;
+                }
+                queue.Enqueue(at.FirstOffset);
+            }
+        }
     }
 
     /// <summary>
@@ -132,12 +150,60 @@ internal sealed class PendingFetchData : IDisposable
     {
         while (_batchIndex < _batches.Count)
         {
+            // Skip aborted transaction data batches and control batches (commit/abort markers).
+            // Control batches also advance the aborted transaction tracking state.
+            if (ShouldSkipBatch(_batches[_batchIndex]))
+            {
+                _batchIndex++;
+                _recordIndex = 0;
+                continue;
+            }
+
             if (_recordIndex < _batches[_batchIndex].Records.Count)
                 return true;
             // Empty batch, try next
             _batchIndex++;
             _recordIndex = 0;
         }
+        return false;
+    }
+
+    /// <summary>
+    /// Determines whether a batch should be skipped based on aborted transaction state.
+    /// Control batches (commit/abort markers) are always skipped.
+    /// Transactional data batches from aborted producers are skipped.
+    /// </summary>
+    private bool ShouldSkipBatch(RecordBatch batch)
+    {
+        var attrs = batch.Attributes;
+
+        // Control batches (commit/abort markers): never yield to consumer.
+        // When encountering a control batch for an aborted producer, advance
+        // the tracking state so subsequent committed batches from the same
+        // producer are correctly included.
+        if ((attrs & RecordBatchAttributes.IsControlBatch) != 0)
+        {
+            if (_abortedProducers is not null &&
+                _abortedProducers.TryGetValue(batch.ProducerId, out var queue) &&
+                queue.Count > 0)
+            {
+                queue.Dequeue();
+                if (queue.Count == 0)
+                    _abortedProducers.Remove(batch.ProducerId);
+            }
+            return true;
+        }
+
+        // Transactional data batches: skip if from an aborted transaction.
+        if ((attrs & RecordBatchAttributes.IsTransactional) != 0 &&
+            _abortedProducers is not null &&
+            _abortedProducers.TryGetValue(batch.ProducerId, out var q) &&
+            q.Count > 0 &&
+            batch.BaseOffset >= q.Peek())
+        {
+            return true;
+        }
+
         return false;
     }
 
@@ -942,7 +1008,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     var pending = new PendingFetchData(
                         topic,
                         partitionResponse.PartitionIndex,
-                        partitionResponse.Records!);
+                        partitionResponse.Records!,
+                        partitionResponse.AbortedTransactions);
 
                     // Track memory before adding to channel
                     TrackPrefetchedBytes(pending, release: false);
@@ -2080,7 +2147,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     pendingItems.Add(new PendingFetchData(
                         topic,
                         partitionResponse.PartitionIndex,
-                        partitionResponse.Records!));
+                        partitionResponse.Records!,
+                        partitionResponse.AbortedTransactions));
                 }
                 else if (_options.EnablePartitionEof)
                 {

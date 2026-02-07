@@ -2007,9 +2007,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             });
         }
 
-        var connection = await _connectionPool.GetConnectionAsync(_transactionCoordinatorId, cancellationToken)
-            .ConfigureAwait(false);
-
         var apiVersion = _metadataManager.GetNegotiatedApiVersion(
             ApiKey.AddPartitionsToTxn,
             AddPartitionsToTxnRequest.LowestSupportedVersion,
@@ -2023,26 +2020,78 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             Topics = topics
         };
 
-        var response = (AddPartitionsToTxnResponse)await connection
-            .SendAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
-                request, apiVersion, cancellationToken)
-            .ConfigureAwait(false);
+        const int maxRetries = 5;
+        var retryDelayMs = 100;
 
-        // Check for errors in the response
-        foreach (var topicResult in response.Results)
+        for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            foreach (var partitionResult in topicResult.Partitions)
+            var connection = await _connectionPool.GetConnectionAsync(_transactionCoordinatorId, cancellationToken)
+                .ConfigureAwait(false);
+
+            var response = (AddPartitionsToTxnResponse)await connection
+                .SendAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
+                    request, apiVersion, cancellationToken)
+                .ConfigureAwait(false);
+
+            // Check for retriable errors in the response
+            var hasRetriableError = false;
+            ErrorCode? firstNonRetriableError = null;
+            string? errorContext = null;
+
+            foreach (var topicResult in response.Results)
             {
-                if (partitionResult.ErrorCode != ErrorCode.None)
+                foreach (var partitionResult in topicResult.Partitions)
                 {
-                    throw new TransactionException(partitionResult.ErrorCode,
-                        $"AddPartitionsToTxn failed for {topicResult.Name}-{partitionResult.PartitionIndex}: {partitionResult.ErrorCode}")
+                    if (partitionResult.ErrorCode == ErrorCode.None)
+                        continue;
+
+                    if (partitionResult.ErrorCode is ErrorCode.ConcurrentTransactions
+                        or ErrorCode.CoordinatorLoadInProgress
+                        or ErrorCode.CoordinatorNotAvailable)
                     {
-                        TransactionalId = _options.TransactionalId
-                    };
+                        hasRetriableError = true;
+                    }
+                    else if (partitionResult.ErrorCode == ErrorCode.NotCoordinator)
+                    {
+                        hasRetriableError = true;
+                        // Re-discover coordinator on next retry
+                        await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        firstNonRetriableError = partitionResult.ErrorCode;
+                        errorContext = $"{topicResult.Name}-{partitionResult.PartitionIndex}";
+                    }
                 }
             }
+
+            if (firstNonRetriableError.HasValue)
+            {
+                throw new TransactionException(firstNonRetriableError.Value,
+                    $"AddPartitionsToTxn failed for {errorContext}: {firstNonRetriableError.Value}")
+                {
+                    TransactionalId = _options.TransactionalId
+                };
+            }
+
+            if (!hasRetriableError)
+            {
+                return; // Success
+            }
+
+            _logger?.LogDebug(
+                "AddPartitionsToTxn retriable error (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
+                attempt + 1, maxRetries, retryDelayMs);
+
+            await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+            retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
         }
+
+        throw new TransactionException(ErrorCode.ConcurrentTransactions,
+            $"AddPartitionsToTxn failed after {maxRetries} retries")
+        {
+            TransactionalId = _options.TransactionalId
+        };
     }
 
     internal async ValueTask EndTransactionAsync(bool committed, CancellationToken cancellationToken)
