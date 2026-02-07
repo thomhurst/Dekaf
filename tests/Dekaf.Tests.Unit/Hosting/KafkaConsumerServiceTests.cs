@@ -21,10 +21,23 @@ public sealed class KafkaConsumerServiceTests
         var service = new TestConsumerService(consumer, ["topic-a", "topic-b"]);
 
         await service.StartAsync(CancellationToken.None);
-        await Task.Delay(100);
-        await service.StopAsync(CancellationToken.None);
 
-        consumer.Received(1).Subscribe(Arg.Is<string[]>(t => t.Length == 2 && t[0] == "topic-a" && t[1] == "topic-b"));
+        // Poll until Subscribe is called rather than using a fixed delay
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (!timeout.IsCancellationRequested)
+        {
+            try
+            {
+                consumer.Received(1).Subscribe(Arg.Is<string[]>(t => t.Length == 2 && t[0] == "topic-a" && t[1] == "topic-b"));
+                break;
+            }
+            catch (NSubstitute.Exceptions.ReceivedCallsException)
+            {
+                await Task.Delay(50).ConfigureAwait(false);
+            }
+        }
+
+        await service.StopAsync(CancellationToken.None);
     }
 
     [Test]
@@ -37,7 +50,14 @@ public sealed class KafkaConsumerServiceTests
         var service = new TestConsumerService(consumer, ["topic-a"]);
 
         await service.StartAsync(CancellationToken.None);
-        await Task.Delay(200);
+
+        // Poll until messages are processed rather than using a fixed delay
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (service.ProcessedMessages.Count < 2 && !timeout.IsCancellationRequested)
+        {
+            await Task.Delay(50).ConfigureAwait(false);
+        }
+
         await service.StopAsync(CancellationToken.None);
 
         await Assert.That(service.ProcessedMessages).Count().IsEqualTo(2);
