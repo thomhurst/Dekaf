@@ -2425,6 +2425,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // batches with strictly ascending sequence numbers. Cross-partition batches are pipelined
         // freely. If the idempotent producer is enabled, DuplicateSequenceNumber is treated as success
         // (safe retransmit detection).
+        //
+        // SEMAPHORE ORDERING: The global send concurrency semaphore is acquired INSIDE
+        // SendBatchWithCleanupAsync, AFTER the per-partition gate. This prevents batches
+        // waiting on their partition gate from consuming global semaphore slots, which would
+        // starve other partitions and collapse effective throughput to 1 batch per partition.
 
         await foreach (var batch in _accumulator.ReadyBatches.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -2434,10 +2439,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             // Decrement in-flight counter to unblock FlushAsync
             _accumulator.OnBatchExitsPipeline();
-
-            // Acquire semaphore slot - limits concurrent sends to MaxInFlightRequestsPerConnection
-            // This is the only await that blocks the loop - once acquired, we fire-and-forget the send
-            await _sendConcurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
 
             // Track in-flight send count for disposal coordination
             // Lock ensures atomicity of (increment + Reset) to prevent race with (decrement + Set)
@@ -2449,7 +2450,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 }
             }
 
-            // Fire-and-forget: SendBatchWithCleanupAsync releases the semaphore in its finally block
+            // Fire-and-forget: SendBatchWithCleanupAsync acquires partition gate then global semaphore
             _ = SendBatchWithCleanupAsync(batch, cancellationToken);
         }
 
@@ -2464,10 +2465,18 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendBatchWithCleanupAsync(ReadyBatch batch, CancellationToken cancellationToken)
     {
-        // Acquire per-partition gate to ensure within-partition ordering.
+        // Acquire per-partition gate FIRST to ensure within-partition ordering.
         // Only one batch per partition can be in-flight at a time to avoid OutOfOrderSequenceNumber.
+        // IMPORTANT: This must be acquired BEFORE the global semaphore. If the global semaphore
+        // were acquired first, batches waiting on their partition gate would consume global slots,
+        // starving other partitions and collapsing throughput (head-of-line blocking).
         var partitionGate = _partitionSendGates.GetOrAdd(batch.TopicPartition, _ => new SemaphoreSlim(1, 1));
         await partitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        // Then acquire global concurrency slot - limits total concurrent network sends
+        // to MaxInFlightRequestsPerConnection. Only counted when partition gate is held,
+        // so only actual sends consume slots (not batches waiting for their partition).
+        await _sendConcurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -2502,14 +2511,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
         finally
         {
-            // Release per-partition gate first - allows next batch for this partition to proceed
+            // Release global semaphore slot first - allows other partitions to send immediately
+            _sendConcurrencySemaphore.Release();
+
+            // Release per-partition gate - allows next batch for this partition to proceed
             partitionGate.Release();
 
             // Return the ReadyBatch to the pool for reuse
             _accumulator.ReturnReadyBatch(batch);
-
-            // Release global semaphore slot - allows next batch to be sent
-            _sendConcurrencySemaphore.Release();
 
             // Decrement in-flight count and signal if all sends complete
             // Lock ensures atomicity of (decrement + Set) to prevent race with (increment + Reset)
