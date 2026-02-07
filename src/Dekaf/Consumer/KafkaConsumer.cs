@@ -28,6 +28,7 @@ namespace Dekaf.Consumer;
 internal sealed class PendingFetchData : IDisposable
 {
     private readonly IReadOnlyList<RecordBatch> _batches;
+    private readonly Dictionary<long, Queue<long>>? _abortedProducers;
     private Protocol.IPooledMemory? _memoryOwner;
     private int _batchIndex = -1;
     private int _recordIndex = -1;
@@ -63,13 +64,30 @@ internal sealed class PendingFetchData : IDisposable
     /// </summary>
     public long MessageCount { get; private set; }
 
-    public PendingFetchData(string topic, int partitionIndex, IReadOnlyList<RecordBatch> batches, Protocol.IPooledMemory? memoryOwner = null)
+    public PendingFetchData(string topic, int partitionIndex, IReadOnlyList<RecordBatch> batches,
+        IReadOnlyList<AbortedTransaction>? abortedTransactions = null,
+        Protocol.IPooledMemory? memoryOwner = null)
     {
         Topic = topic;
         PartitionIndex = partitionIndex;
         TopicPartition = new TopicPartition(topic, partitionIndex);
         _batches = batches;
         _memoryOwner = memoryOwner;
+
+        if (abortedTransactions is { Count: > 0 })
+        {
+            _abortedProducers = new Dictionary<long, Queue<long>>();
+            // AbortedTransactions is sorted by FirstOffset per the Kafka protocol
+            foreach (var at in abortedTransactions)
+            {
+                if (!_abortedProducers.TryGetValue(at.ProducerId, out var queue))
+                {
+                    queue = new Queue<long>();
+                    _abortedProducers[at.ProducerId] = queue;
+                }
+                queue.Enqueue(at.FirstOffset);
+            }
+        }
     }
 
     /// <summary>
@@ -132,12 +150,60 @@ internal sealed class PendingFetchData : IDisposable
     {
         while (_batchIndex < _batches.Count)
         {
+            // Skip aborted transaction data batches and control batches (commit/abort markers).
+            // Control batches also advance the aborted transaction tracking state.
+            if (ShouldSkipBatch(_batches[_batchIndex]))
+            {
+                _batchIndex++;
+                _recordIndex = 0;
+                continue;
+            }
+
             if (_recordIndex < _batches[_batchIndex].Records.Count)
                 return true;
             // Empty batch, try next
             _batchIndex++;
             _recordIndex = 0;
         }
+        return false;
+    }
+
+    /// <summary>
+    /// Determines whether a batch should be skipped based on aborted transaction state.
+    /// Control batches (commit/abort markers) are always skipped.
+    /// Transactional data batches from aborted producers are skipped.
+    /// </summary>
+    private bool ShouldSkipBatch(RecordBatch batch)
+    {
+        var attrs = batch.Attributes;
+
+        // Control batches (commit/abort markers): never yield to consumer.
+        // When encountering a control batch for an aborted producer, advance
+        // the tracking state so subsequent committed batches from the same
+        // producer are correctly included.
+        if ((attrs & RecordBatchAttributes.IsControlBatch) != 0)
+        {
+            if (_abortedProducers is not null &&
+                _abortedProducers.TryGetValue(batch.ProducerId, out var queue) &&
+                queue.Count > 0)
+            {
+                queue.Dequeue();
+                if (queue.Count == 0)
+                    _abortedProducers.Remove(batch.ProducerId);
+            }
+            return true;
+        }
+
+        // Transactional data batches: skip if from an aborted transaction.
+        if ((attrs & RecordBatchAttributes.IsTransactional) != 0 &&
+            _abortedProducers is not null &&
+            _abortedProducers.TryGetValue(batch.ProducerId, out var q) &&
+            q.Count > 0 &&
+            batch.BaseOffset >= q.Peek())
+        {
+            return true;
+        }
+
         return false;
     }
 
@@ -189,6 +255,10 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly HashSet<string> _subscription = [];
     private readonly HashSet<TopicPartition> _assignment = [];
     private readonly HashSet<TopicPartition> _paused = [];
+
+    // Pattern subscription support
+    private Func<string, bool>? _topicFilter;
+    private long _lastFilterRefreshTicks;
 
     // Thread-safety notes:
     // - _positions and _fetchPositions use ConcurrentDictionary for thread-safe reads/writes
@@ -419,6 +489,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     public IKafkaConsumer<TKey, TValue> Subscribe(params string[] topics)
     {
+        _topicFilter = null;
         _subscription.Clear();
         foreach (var topic in topics)
         {
@@ -431,12 +502,20 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     public IKafkaConsumer<TKey, TValue> Subscribe(Func<string, bool> topicFilter)
     {
-        // TODO: Implement pattern subscription
-        throw new NotImplementedException("Pattern subscription not yet implemented");
+        ArgumentNullException.ThrowIfNull(topicFilter);
+
+        _topicFilter = topicFilter;
+        _subscription.Clear();
+        _assignment.Clear();
+        _lastFilterRefreshTicks = 0; // Force immediate refresh on next EnsureAssignment
+        InvalidatePartitionCache();
+        InvalidateFetchRequestCache();
+        return this;
     }
 
     public IKafkaConsumer<TKey, TValue> Unsubscribe()
     {
+        _topicFilter = null;
         _subscription.Clear();
         _assignment.Clear();
         InvalidatePartitionCache();
@@ -929,7 +1008,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     var pending = new PendingFetchData(
                         topic,
                         partitionResponse.PartitionIndex,
-                        partitionResponse.Records!);
+                        partitionResponse.Records!,
+                        partitionResponse.AbortedTransactions);
 
                     // Track memory before adding to channel
                     TrackPrefetchedBytes(pending, release: false);
@@ -1439,6 +1519,66 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
     }
 
+    /// <summary>
+    /// Refreshes the subscription topics based on the current topic filter.
+    /// Rate-limited to avoid excessive metadata requests (30 second interval).
+    /// </summary>
+    /// <returns>True if the subscription changed.</returns>
+    private async ValueTask<bool> RefreshFilteredTopicsAsync(CancellationToken cancellationToken)
+    {
+        const long refreshIntervalTicks = 30 * TimeSpan.TicksPerSecond;
+
+        var now = Environment.TickCount64;
+        var lastRefresh = Volatile.Read(ref _lastFilterRefreshTicks);
+
+        // Rate-limit: skip if we refreshed recently (unless this is the first call)
+        if (lastRefresh != 0 && (now - lastRefresh) < (refreshIntervalTicks / TimeSpan.TicksPerMillisecond))
+        {
+            return false;
+        }
+
+        Volatile.Write(ref _lastFilterRefreshTicks, now);
+
+        // Refresh metadata to get all topics (null = all topics)
+        await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+
+        var allTopics = _metadataManager.Metadata.GetTopics();
+        var filter = _topicFilter!;
+        var changed = false;
+
+        // Build new subscription from matching topics
+        var newTopics = new HashSet<string>();
+        foreach (var topic in allTopics)
+        {
+            // Skip internal topics (e.g., __consumer_offsets, __transaction_state)
+            if (topic.IsInternal)
+            {
+                continue;
+            }
+
+            if (filter(topic.Name))
+            {
+                newTopics.Add(topic.Name);
+            }
+        }
+
+        // Check if subscription changed
+        if (newTopics.Count != _subscription.Count || !newTopics.SetEquals(_subscription))
+        {
+            _subscription.Clear();
+            foreach (var topic in newTopics)
+            {
+                _subscription.Add(topic);
+            }
+            changed = true;
+
+            _logger?.LogDebug("Pattern subscription matched {Count} topics: {Topics}",
+                _subscription.Count, string.Join(", ", _subscription));
+        }
+
+        return changed;
+    }
+
     private async ValueTask EnsureAssignmentAsync(CancellationToken cancellationToken)
     {
         // Serialize access: both ConsumeAsync and PrefetchLoopAsync call this method
@@ -1447,6 +1587,12 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         await _assignmentLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // If a pattern filter is active, refresh the subscription from metadata
+            if (_topicFilter is not null)
+            {
+                await RefreshFilteredTopicsAsync(cancellationToken).ConfigureAwait(false);
+            }
+
             if (_subscription.Count > 0 && _coordinator is not null)
             {
                 await _coordinator.EnsureActiveGroupAsync(_subscription, cancellationToken).ConfigureAwait(false);
@@ -2001,7 +2147,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     pendingItems.Add(new PendingFetchData(
                         topic,
                         partitionResponse.PartitionIndex,
-                        partitionResponse.Records!));
+                        partitionResponse.Records!,
+                        partitionResponse.AbortedTransactions));
                 }
                 else if (_options.EnablePartitionEof)
                 {

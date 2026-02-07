@@ -487,6 +487,43 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private volatile bool _disposed;
     private volatile bool _closed;
 
+    // Transaction support: ProducerId, ProducerEpoch, and transactional flag
+    // Set by KafkaProducer.InitTransactionsAsync after successful InitProducerId
+    internal long ProducerId { get; set; } = -1;
+    internal short ProducerEpoch { get; set; } = -1;
+    internal bool IsTransactional { get; set; }
+
+    // Per-partition sequence numbers for idempotent/transactional producing.
+    // The broker requires monotonically increasing BaseSequence per partition.
+    private readonly ConcurrentDictionary<TopicPartition, int> _sequenceNumbers = new();
+
+    /// <summary>
+    /// Gets the next base sequence number for a partition and increments by the record count.
+    /// Thread-safe: uses ConcurrentDictionary.AddOrUpdate. Batch completion is sequential
+    /// per partition so contention is minimal.
+    /// </summary>
+    internal int GetAndIncrementSequence(TopicPartition topicPartition, int recordCount)
+    {
+        var baseSequence = 0;
+        _sequenceNumbers.AddOrUpdate(
+            topicPartition,
+            recordCount, // Add: base was 0, next starts at recordCount
+            (_, current) =>
+            {
+                baseSequence = current;
+                return current + recordCount;
+            });
+        return baseSequence;
+    }
+
+    /// <summary>
+    /// Resets all sequence numbers. Called after InitTransactionsAsync when epoch changes.
+    /// </summary>
+    internal void ResetSequenceNumbers()
+    {
+        _sequenceNumbers.Clear();
+    }
+
     // Buffer memory tracking for backpressure
     private readonly ulong _maxBufferMemory;
     private long _bufferedBytes;
@@ -588,6 +625,17 @@ public sealed class RecordAccumulator : IAsyncDisposable
     internal void ReturnReadyBatch(ReadyBatch batch)
     {
         _readyBatchPool.Return(batch);
+    }
+
+    /// <summary>
+    /// Rents a new PartitionBatch from the pool and configures it with current transaction state.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private PartitionBatch RentBatch(TopicPartition topicPartition)
+    {
+        var batch = _batchPool.Rent(topicPartition);
+        batch.SetTransactionState(ProducerId, ProducerEpoch, IsTransactional, IsTransactional ? this : null);
+        return batch;
     }
 
     /// <summary>
@@ -992,7 +1040,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
             if (!_batches.TryGetValue(topicPartition, out var batch))
             {
                 // Cold path: Rent from pool
-                var newBatch = _batchPool.Rent(topicPartition);
+                var newBatch = RentBatch(topicPartition);
                 if (!_batches.TryAdd(topicPartition, newBatch))
                 {
                     // Another thread added a batch, return ours to pool
@@ -1148,7 +1196,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
             if (!_batches.TryGetValue(topicPartition, out var batch))
             {
                 // Rent from pool
-                var newBatch = _batchPool.Rent(topicPartition);
+                var newBatch = RentBatch(topicPartition);
                 if (!_batches.TryAdd(topicPartition, newBatch))
                 {
                     // Another thread added a batch, return ours to pool
@@ -1372,7 +1420,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
         }
 
         // Rent a new batch from the pool
-        var newBatch = _batchPool.Rent(topicPartition);
+        var newBatch = RentBatch(topicPartition);
 
         // Try to add the new batch - another thread might have added one already
         if (!_batches.TryAdd(topicPartition, newBatch))
@@ -1471,7 +1519,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
             if (!_batches.TryGetValue(topicPartition, out var batch))
             {
                 // Rent from pool
-                var newBatch = _batchPool.Rent(topicPartition);
+                var newBatch = RentBatch(topicPartition);
                 if (!_batches.TryAdd(topicPartition, newBatch))
                 {
                     // Another thread added a batch, return ours to pool
@@ -1600,7 +1648,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
             if (!_batches.TryGetValue(topicPartition, out var batch))
             {
-                var newBatch = _batchPool.Rent(topicPartition);
+                var newBatch = RentBatch(topicPartition);
                 if (!_batches.TryAdd(topicPartition, newBatch))
                 {
                     _batchPool.Return(newBatch);
@@ -1706,7 +1754,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 if (!_batches.TryGetValue(topicPartition, out var batch))
                 {
                     // Rent from pool
-                    var newBatch = _batchPool.Rent(topicPartition);
+                    var newBatch = RentBatch(topicPartition);
                     if (!_batches.TryAdd(topicPartition, newBatch))
                     {
                         // Another thread added a batch, return ours to pool
@@ -2464,6 +2512,12 @@ internal sealed class PartitionBatch
     private int _isCompleted; // 0 = not completed, 1 = completed (Interlocked guard for idempotent Complete)
     private ReadyBatch? _completedBatch; // Cached result to ensure Complete() is idempotent
 
+    // Transaction support: set by RecordAccumulator when batch is rented
+    private long _producerId = -1;
+    private short _producerEpoch = -1;
+    private bool _isTransactional;
+    private RecordAccumulator? _accumulator;
+
     public PartitionBatch(TopicPartition topicPartition, ProducerOptions options)
     {
         _topicPartition = topicPartition;
@@ -2499,6 +2553,17 @@ internal sealed class PartitionBatch
     internal void SetReadyBatchPool(ReadyBatchPool? pool)
     {
         _readyBatchPool = pool;
+    }
+
+    /// <summary>
+    /// Sets the transaction state for this batch. Called by RecordAccumulator after renting.
+    /// </summary>
+    internal void SetTransactionState(long producerId, short producerEpoch, bool isTransactional, RecordAccumulator? accumulator)
+    {
+        _producerId = producerId;
+        _producerEpoch = producerEpoch;
+        _isTransactional = isTransactional;
+        _accumulator = accumulator;
     }
 
     /// <summary>
@@ -3533,12 +3598,27 @@ internal sealed class PartitionBatch
             // Use pooled records array directly with wrapper to avoid allocation
             // ReadyBatch will return the array to pool in Cleanup()
             var pooledRecordsArray = _records;
+            var attributes = RecordBatchAttributes.None;
+            if (_isTransactional)
+            {
+                attributes |= RecordBatchAttributes.IsTransactional;
+            }
+
+            // For transactional/idempotent records, assign a monotonically increasing base sequence
+            var baseSequence = _isTransactional && _accumulator is not null
+                ? _accumulator.GetAndIncrementSequence(_topicPartition, _recordCount)
+                : -1;
+
             var batch = new RecordBatch
             {
                 BaseOffset = 0,
                 BaseTimestamp = _baseTimestamp,
                 MaxTimestamp = _baseTimestamp + (_recordCount > 0 ? pooledRecordsArray[_recordCount - 1].TimestampDelta : 0),
                 LastOffsetDelta = _recordCount - 1,
+                ProducerId = _producerId,
+                ProducerEpoch = _producerEpoch,
+                BaseSequence = baseSequence,
+                Attributes = attributes,
                 Records = new RecordListWrapper(pooledRecordsArray, _recordCount)
             };
             _records = null!;

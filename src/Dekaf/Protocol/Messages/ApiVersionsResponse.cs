@@ -54,9 +54,32 @@ public sealed class ApiVersionsResponse : IKafkaResponse
 
         if (isFlexible)
         {
-            // Skip tagged fields for now - we don't need these fields for basic operation
-            // TODO: Parse tagged fields properly if we need SupportedFeatures, etc.
-            reader.SkipTaggedFields();
+            var numTaggedFields = reader.ReadUnsignedVarInt();
+            for (var i = 0; i < numTaggedFields; i++)
+            {
+                var tag = reader.ReadUnsignedVarInt();
+                var size = reader.ReadUnsignedVarInt();
+                switch (tag)
+                {
+                    case 0:
+                        supportedFeatures = reader.ReadCompactArray(
+                            (ref KafkaProtocolReader r) => ReadSupportedFeature(ref r));
+                        break;
+                    case 1:
+                        finalizedFeaturesEpoch = reader.ReadInt64();
+                        break;
+                    case 2:
+                        finalizedFeatures = reader.ReadCompactArray(
+                            (ref KafkaProtocolReader r) => ReadFinalizedFeature(ref r));
+                        break;
+                    case 3:
+                        zkMigrationReady = reader.ReadUInt8() != 0;
+                        break;
+                    default:
+                        reader.Skip(size);
+                        break;
+                }
+            }
         }
 
         return new ApiVersionsResponse
