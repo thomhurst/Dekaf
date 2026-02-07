@@ -42,7 +42,6 @@ public class DeleteRecordsTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 
     /// <summary>
     /// Produces the specified number of messages to a single-partition topic.
-    /// Returns the topic name.
     /// </summary>
     private async Task ProduceMessagesAsync(string topic, int count, int partition = 0)
     {
