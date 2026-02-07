@@ -2524,6 +2524,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     _allSendsCompleted.Set();
                 }
             }
+
+            throw;
         }
     }
 
