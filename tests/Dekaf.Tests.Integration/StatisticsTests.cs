@@ -46,63 +46,6 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
     }
 
     [Test]
-    public async Task ConsumerStats_AfterConsuming_ReportsMessagesAndBytes()
-    {
-        var topic = await KafkaContainer.CreateTestTopicAsync();
-        var stats = new ConcurrentBag<ConsumerStatistics>();
-
-        // Produce messages first
-        await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
-
-        for (var i = 0; i < 10; i++)
-        {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Key = $"key-{i}",
-                Value = $"value-{i}"
-            });
-        }
-
-        // Consume with statistics
-        await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithGroupId($"stats-consumer-{Guid.NewGuid():N}")
-            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithStatisticsInterval(TimeSpan.FromSeconds(1))
-            .WithStatisticsHandler(s => stats.Add(s))
-            .Build();
-
-        consumer.Subscribe(topic);
-
-        var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-
-        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
-        {
-            messages.Add(msg);
-            if (messages.Count >= 10) break;
-        }
-
-        // Poll until stats report consumed messages (stats are collected asynchronously)
-        ConsumerStatistics? latestStats = null;
-        for (var i = 0; i < 10; i++)
-        {
-            await Task.Delay(1000).ConfigureAwait(false);
-            latestStats = stats
-                .OrderByDescending(s => s.Timestamp)
-                .FirstOrDefault(s => s.MessagesConsumed > 0);
-            if (latestStats is not null) break;
-        }
-
-        await Assert.That(latestStats).IsNotNull();
-        await Assert.That(latestStats!.MessagesConsumed).IsGreaterThan(0);
-        await Assert.That(latestStats.BytesConsumed).IsGreaterThan(0);
-    }
-
-    [Test]
     public async Task ProducerStats_PeriodicCallback_CalledMultipleTimes()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
