@@ -190,6 +190,10 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly HashSet<TopicPartition> _assignment = [];
     private readonly HashSet<TopicPartition> _paused = [];
 
+    // Pattern subscription support
+    private Func<string, bool>? _topicFilter;
+    private long _lastFilterRefreshTicks;
+
     // Thread-safety notes:
     // - _positions and _fetchPositions use ConcurrentDictionary for thread-safe reads/writes
     // - Individual operations (e.g., dict[key] = value) are atomic, but sequences like:
@@ -419,6 +423,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     public IKafkaConsumer<TKey, TValue> Subscribe(params string[] topics)
     {
+        _topicFilter = null;
         _subscription.Clear();
         foreach (var topic in topics)
         {
@@ -431,12 +436,20 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     public IKafkaConsumer<TKey, TValue> Subscribe(Func<string, bool> topicFilter)
     {
-        // TODO: Implement pattern subscription
-        throw new NotImplementedException("Pattern subscription not yet implemented");
+        ArgumentNullException.ThrowIfNull(topicFilter);
+
+        _topicFilter = topicFilter;
+        _subscription.Clear();
+        _assignment.Clear();
+        _lastFilterRefreshTicks = 0; // Force immediate refresh on next EnsureAssignment
+        InvalidatePartitionCache();
+        InvalidateFetchRequestCache();
+        return this;
     }
 
     public IKafkaConsumer<TKey, TValue> Unsubscribe()
     {
+        _topicFilter = null;
         _subscription.Clear();
         _assignment.Clear();
         InvalidatePartitionCache();
@@ -1439,6 +1452,66 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
     }
 
+    /// <summary>
+    /// Refreshes the subscription topics based on the current topic filter.
+    /// Rate-limited to avoid excessive metadata requests (30 second interval).
+    /// </summary>
+    /// <returns>True if the subscription changed.</returns>
+    private async ValueTask<bool> RefreshFilteredTopicsAsync(CancellationToken cancellationToken)
+    {
+        const long refreshIntervalTicks = 30 * TimeSpan.TicksPerSecond;
+
+        var now = Environment.TickCount64;
+        var lastRefresh = Volatile.Read(ref _lastFilterRefreshTicks);
+
+        // Rate-limit: skip if we refreshed recently (unless this is the first call)
+        if (lastRefresh != 0 && (now - lastRefresh) < (refreshIntervalTicks / TimeSpan.TicksPerMillisecond))
+        {
+            return false;
+        }
+
+        Volatile.Write(ref _lastFilterRefreshTicks, now);
+
+        // Refresh metadata to get all topics (null = all topics)
+        await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+
+        var allTopics = _metadataManager.Metadata.GetTopics();
+        var filter = _topicFilter!;
+        var changed = false;
+
+        // Build new subscription from matching topics
+        var newTopics = new HashSet<string>();
+        foreach (var topic in allTopics)
+        {
+            // Skip internal topics (e.g., __consumer_offsets, __transaction_state)
+            if (topic.IsInternal)
+            {
+                continue;
+            }
+
+            if (filter(topic.Name))
+            {
+                newTopics.Add(topic.Name);
+            }
+        }
+
+        // Check if subscription changed
+        if (newTopics.Count != _subscription.Count || !newTopics.SetEquals(_subscription))
+        {
+            _subscription.Clear();
+            foreach (var topic in newTopics)
+            {
+                _subscription.Add(topic);
+            }
+            changed = true;
+
+            _logger?.LogDebug("Pattern subscription matched {Count} topics: {Topics}",
+                _subscription.Count, string.Join(", ", _subscription));
+        }
+
+        return changed;
+    }
+
     private async ValueTask EnsureAssignmentAsync(CancellationToken cancellationToken)
     {
         // Serialize access: both ConsumeAsync and PrefetchLoopAsync call this method
@@ -1447,6 +1520,12 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         await _assignmentLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // If a pattern filter is active, refresh the subscription from metadata
+            if (_topicFilter is not null)
+            {
+                await RefreshFilteredTopicsAsync(cancellationToken).ConfigureAwait(false);
+            }
+
             if (_subscription.Count > 0 && _coordinator is not null)
             {
                 await _coordinator.EnsureActiveGroupAsync(_subscription, cancellationToken).ConfigureAwait(false);

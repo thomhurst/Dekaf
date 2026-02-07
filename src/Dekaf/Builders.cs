@@ -4,6 +4,7 @@ using Dekaf.Metadata;
 using Dekaf.Producer;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
+using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 
 namespace Dekaf;
@@ -564,6 +565,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private readonly List<string> _topicsToSubscribe = [];
     private TimeSpan? _metadataMaxAge;
+    private IsolationLevel _isolationLevel = IsolationLevel.ReadUncommitted;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -680,6 +682,22 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithAutoOffsetReset(AutoOffsetReset autoOffsetReset)
     {
         _autoOffsetReset = autoOffsetReset;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the isolation level for transactional reads.
+    /// </summary>
+    /// <param name="isolationLevel">The isolation level to use.</param>
+    /// <remarks>
+    /// <list type="bullet">
+    /// <item><description><see cref="IsolationLevel.ReadUncommitted"/>: Read all records including uncommitted transactions (default)</description></item>
+    /// <item><description><see cref="IsolationLevel.ReadCommitted"/>: Only read committed records, filtering out aborted transactional messages</description></item>
+    /// </list>
+    /// </remarks>
+    public ConsumerBuilder<TKey, TValue> WithIsolationLevel(IsolationLevel isolationLevel)
+    {
+        _isolationLevel = isolationLevel;
         return this;
     }
 
@@ -1027,6 +1045,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             StatisticsInterval = _statisticsInterval,
             StatisticsHandler = _statisticsHandler,
             QueuedMinMessages = _queuedMinMessages,
+            IsolationLevel = _isolationLevel,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null

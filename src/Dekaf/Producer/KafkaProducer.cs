@@ -1,8 +1,10 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Dekaf.Compression;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -57,6 +59,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     private int _produceApiVersion = -1;
     private volatile bool _disposed;
+
+    // Transaction state
+    private long _producerId = -1;
+    private short _producerEpoch = -1;
+    private int _transactionCoordinatorId = -1;
+    internal volatile TransactionState _transactionState = TransactionState.Uninitialized;
+    private readonly SemaphoreSlim _transactionLock = new(1, 1);
+    internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
+    private readonly ConcurrentDictionary<TopicPartition, int> _sequenceNumbers = new();
 
     // Statistics collection
     private readonly ProducerStatisticsCollector _statisticsCollector = new();
@@ -1733,13 +1744,458 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             throw new InvalidOperationException("Producer is not transactional. Set TransactionalId in options.");
         }
 
+        if (_transactionState == TransactionState.Uninitialized)
+        {
+            throw new InvalidOperationException(
+                "Transactions not initialized. Call InitTransactionsAsync() before BeginTransaction().");
+        }
+
+        if (_transactionState == TransactionState.FatalError)
+        {
+            throw new InvalidOperationException(
+                "Producer is in a fatal error state and cannot begin new transactions.");
+        }
+
+        if (_transactionState == TransactionState.InTransaction)
+        {
+            throw new InvalidOperationException(
+                "A transaction is already in progress. Commit or abort it before starting a new one.");
+        }
+
+        if (_transactionState != TransactionState.Ready)
+        {
+            throw new InvalidOperationException(
+                $"Cannot begin transaction in state: {_transactionState}");
+        }
+
+        _transactionState = TransactionState.InTransaction;
+        _partitionsInTransaction.Clear();
+
         return new Transaction<TKey, TValue>(this);
     }
 
-    public ValueTask InitTransactionsAsync(CancellationToken cancellationToken = default)
+    public async ValueTask InitTransactionsAsync(CancellationToken cancellationToken = default)
     {
-        // TODO: Implement transaction initialization
-        throw new NotImplementedException();
+        if (string.IsNullOrEmpty(_options.TransactionalId))
+        {
+            throw new InvalidOperationException(
+                "Cannot initialize transactions: TransactionalId is not set in producer options.");
+        }
+
+        await _transactionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Ensure metadata is initialized
+            await EnsureInitializedWithTimeoutAsync(cancellationToken).ConfigureAwait(false);
+
+            // Step 1: Find the transaction coordinator
+            await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+
+            // Step 2: Initialize the producer ID via the coordinator
+            var connection = await _connectionPool.GetConnectionAsync(_transactionCoordinatorId, cancellationToken)
+                .ConfigureAwait(false);
+
+            var initProducerIdVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.InitProducerId,
+                InitProducerIdRequest.LowestSupportedVersion,
+                InitProducerIdRequest.HighestSupportedVersion);
+
+            var request = new InitProducerIdRequest
+            {
+                TransactionalId = _options.TransactionalId,
+                TransactionTimeoutMs = _options.TransactionTimeoutMs,
+                ProducerId = _producerId,
+                ProducerEpoch = _producerEpoch
+            };
+
+            var response = (InitProducerIdResponse)await connection
+                .SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                    request, initProducerIdVersion, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (response.ErrorCode == ErrorCode.ProducerFenced ||
+                response.ErrorCode == ErrorCode.TransactionalIdAuthorizationFailed)
+            {
+                _transactionState = TransactionState.FatalError;
+                throw new TransactionException(response.ErrorCode,
+                    $"InitProducerId failed with fatal error: {response.ErrorCode}")
+                {
+                    TransactionalId = _options.TransactionalId
+                };
+            }
+
+            if (response.ErrorCode != ErrorCode.None)
+            {
+                throw new TransactionException(response.ErrorCode,
+                    $"InitProducerId failed: {response.ErrorCode}")
+                {
+                    TransactionalId = _options.TransactionalId
+                };
+            }
+
+            _producerId = response.ProducerId;
+            _producerEpoch = response.ProducerEpoch;
+
+            // Wire the producer ID/epoch into the accumulator for RecordBatch headers
+            _accumulator.ProducerId = _producerId;
+            _accumulator.ProducerEpoch = _producerEpoch;
+            _accumulator.IsTransactional = true;
+
+            // Reset sequence numbers for new epoch
+            _sequenceNumbers.Clear();
+
+            _transactionState = TransactionState.Ready;
+
+            _logger?.LogDebug(
+                "Initialized transactions: ProducerId={ProducerId}, Epoch={Epoch}",
+                _producerId, _producerEpoch);
+        }
+        finally
+        {
+            _transactionLock.Release();
+        }
+    }
+
+    private async ValueTask FindTransactionCoordinatorAsync(CancellationToken cancellationToken)
+    {
+        var brokers = _metadataManager.Metadata.GetBrokers();
+        if (brokers.Count == 0)
+        {
+            throw new InvalidOperationException("No brokers available");
+        }
+
+        var request = new FindCoordinatorRequest
+        {
+            Key = _options.TransactionalId!,
+            KeyType = CoordinatorType.Transaction
+        };
+
+        const int maxRetries = 5;
+        var retryDelayMs = 100;
+
+        for (var attempt = 0; attempt < maxRetries; attempt++)
+        {
+            var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
+                .ConfigureAwait(false);
+
+            var findCoordinatorVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.FindCoordinator,
+                FindCoordinatorRequest.LowestSupportedVersion,
+                FindCoordinatorRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                request, findCoordinatorVersion, cancellationToken).ConfigureAwait(false);
+
+            int nodeId;
+            string host;
+            int port;
+            ErrorCode errorCode;
+
+            if (response.Coordinators is { Count: > 0 })
+            {
+                var coordinator = response.Coordinators[0];
+                errorCode = coordinator.ErrorCode;
+                nodeId = coordinator.NodeId;
+                host = coordinator.Host;
+                port = coordinator.Port;
+            }
+            else
+            {
+                errorCode = response.ErrorCode;
+                nodeId = response.NodeId;
+                host = response.Host ?? throw new InvalidOperationException("Coordinator host is null");
+                port = response.Port;
+            }
+
+            if (errorCode == ErrorCode.CoordinatorNotAvailable)
+            {
+                _logger?.LogDebug(
+                    "Transaction coordinator not available (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
+                    attempt + 1, maxRetries, retryDelayMs);
+
+                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                retryDelayMs = Math.Min(retryDelayMs * 2, 1000);
+                continue;
+            }
+
+            if (errorCode != ErrorCode.None)
+            {
+                throw new TransactionException(errorCode,
+                    $"FindCoordinator for transaction failed: {errorCode}")
+                {
+                    TransactionalId = _options.TransactionalId
+                };
+            }
+
+            _transactionCoordinatorId = nodeId;
+            _connectionPool.RegisterBroker(nodeId, host, port);
+
+            _logger?.LogDebug("Found transaction coordinator {NodeId} for {TransactionalId}",
+                _transactionCoordinatorId, _options.TransactionalId);
+            return;
+        }
+
+        throw new TransactionException(ErrorCode.CoordinatorNotAvailable,
+            $"FindCoordinator for transaction failed after {maxRetries} retries")
+        {
+            TransactionalId = _options.TransactionalId
+        };
+    }
+
+    internal async ValueTask AddPartitionsToTransactionAsync(
+        IReadOnlyList<TopicPartition> partitions,
+        CancellationToken cancellationToken)
+    {
+        // Group partitions by topic
+        var topicPartitions = new Dictionary<string, List<int>>();
+        foreach (var tp in partitions)
+        {
+            if (!topicPartitions.TryGetValue(tp.Topic, out var list))
+            {
+                list = [];
+                topicPartitions[tp.Topic] = list;
+            }
+            list.Add(tp.Partition);
+        }
+
+        var topics = new List<AddPartitionsToTxnTopic>(topicPartitions.Count);
+        foreach (var kvp in topicPartitions)
+        {
+            topics.Add(new AddPartitionsToTxnTopic
+            {
+                Name = kvp.Key,
+                Partitions = kvp.Value
+            });
+        }
+
+        var connection = await _connectionPool.GetConnectionAsync(_transactionCoordinatorId, cancellationToken)
+            .ConfigureAwait(false);
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.AddPartitionsToTxn,
+            AddPartitionsToTxnRequest.LowestSupportedVersion,
+            AddPartitionsToTxnRequest.HighestSupportedVersion);
+
+        var request = new AddPartitionsToTxnRequest
+        {
+            TransactionalId = _options.TransactionalId!,
+            ProducerId = _producerId,
+            ProducerEpoch = _producerEpoch,
+            Topics = topics
+        };
+
+        var response = (AddPartitionsToTxnResponse)await connection
+            .SendAsync<AddPartitionsToTxnRequest, AddPartitionsToTxnResponse>(
+                request, apiVersion, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Check for errors in the response
+        foreach (var topicResult in response.Results)
+        {
+            foreach (var partitionResult in topicResult.Partitions)
+            {
+                if (partitionResult.ErrorCode != ErrorCode.None)
+                {
+                    throw new TransactionException(partitionResult.ErrorCode,
+                        $"AddPartitionsToTxn failed for {topicResult.Name}-{partitionResult.PartitionIndex}: {partitionResult.ErrorCode}")
+                    {
+                        TransactionalId = _options.TransactionalId
+                    };
+                }
+            }
+        }
+    }
+
+    internal async ValueTask EndTransactionAsync(bool committed, CancellationToken cancellationToken)
+    {
+        var connection = await _connectionPool.GetConnectionAsync(_transactionCoordinatorId, cancellationToken)
+            .ConfigureAwait(false);
+
+        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.EndTxn,
+            EndTxnRequest.LowestSupportedVersion,
+            EndTxnRequest.HighestSupportedVersion);
+
+        var request = new EndTxnRequest
+        {
+            TransactionalId = _options.TransactionalId!,
+            ProducerId = _producerId,
+            ProducerEpoch = _producerEpoch,
+            Committed = committed
+        };
+
+        var response = (EndTxnResponse)await connection
+            .SendAsync<EndTxnRequest, EndTxnResponse>(
+                request, apiVersion, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (response.ErrorCode != ErrorCode.None)
+        {
+            if (response.ErrorCode == ErrorCode.ProducerFenced ||
+                response.ErrorCode == ErrorCode.TransactionalIdAuthorizationFailed)
+            {
+                _transactionState = TransactionState.FatalError;
+            }
+
+            throw new TransactionException(response.ErrorCode,
+                $"EndTxn ({(committed ? "commit" : "abort")}) failed: {response.ErrorCode}")
+            {
+                TransactionalId = _options.TransactionalId
+            };
+        }
+    }
+
+    internal async ValueTask SendOffsetsToTransactionInternalAsync(
+        IEnumerable<TopicPartitionOffset> offsets,
+        string consumerGroupId,
+        CancellationToken cancellationToken)
+    {
+        // Step 1: Add offsets to the transaction via the transaction coordinator
+        var connection = await _connectionPool.GetConnectionAsync(_transactionCoordinatorId, cancellationToken)
+            .ConfigureAwait(false);
+
+        var addOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.AddOffsetsToTxn,
+            AddOffsetsToTxnRequest.LowestSupportedVersion,
+            AddOffsetsToTxnRequest.HighestSupportedVersion);
+
+        var addOffsetsRequest = new AddOffsetsToTxnRequest
+        {
+            TransactionalId = _options.TransactionalId!,
+            ProducerId = _producerId,
+            ProducerEpoch = _producerEpoch,
+            GroupId = consumerGroupId
+        };
+
+        var addOffsetsResponse = (AddOffsetsToTxnResponse)await connection
+            .SendAsync<AddOffsetsToTxnRequest, AddOffsetsToTxnResponse>(
+                addOffsetsRequest, addOffsetsVersion, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (addOffsetsResponse.ErrorCode != ErrorCode.None)
+        {
+            throw new TransactionException(addOffsetsResponse.ErrorCode,
+                $"AddOffsetsToTxn failed: {addOffsetsResponse.ErrorCode}")
+            {
+                TransactionalId = _options.TransactionalId
+            };
+        }
+
+        // Step 2: Find the group coordinator
+        var brokers = _metadataManager.Metadata.GetBrokers();
+        var brokerConnection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
+            .ConfigureAwait(false);
+
+        var findCoordVersion = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.FindCoordinator,
+            FindCoordinatorRequest.LowestSupportedVersion,
+            FindCoordinatorRequest.HighestSupportedVersion);
+
+        var findCoordRequest = new FindCoordinatorRequest
+        {
+            Key = consumerGroupId,
+            KeyType = CoordinatorType.Group
+        };
+
+        var findCoordResponse = await brokerConnection
+            .SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                findCoordRequest, findCoordVersion, cancellationToken)
+            .ConfigureAwait(false);
+
+        int groupCoordinatorId;
+        ErrorCode findError;
+
+        if (findCoordResponse.Coordinators is { Count: > 0 })
+        {
+            var coord = findCoordResponse.Coordinators[0];
+            findError = coord.ErrorCode;
+            groupCoordinatorId = coord.NodeId;
+            _connectionPool.RegisterBroker(coord.NodeId, coord.Host, coord.Port);
+        }
+        else
+        {
+            findError = findCoordResponse.ErrorCode;
+            groupCoordinatorId = findCoordResponse.NodeId;
+            if (findCoordResponse.Host is not null)
+            {
+                _connectionPool.RegisterBroker(findCoordResponse.NodeId,
+                    findCoordResponse.Host, findCoordResponse.Port);
+            }
+        }
+
+        if (findError != ErrorCode.None)
+        {
+            throw new TransactionException(findError,
+                $"FindCoordinator for consumer group '{consumerGroupId}' failed: {findError}")
+            {
+                TransactionalId = _options.TransactionalId
+            };
+        }
+
+        // Step 3: Send TxnOffsetCommit to the group coordinator
+        var groupConnection = await _connectionPool.GetConnectionAsync(groupCoordinatorId, cancellationToken)
+            .ConfigureAwait(false);
+
+        var txnOffsetCommitVersion = _metadataManager.GetNegotiatedApiVersion(
+            ApiKey.TxnOffsetCommit,
+            TxnOffsetCommitRequest.LowestSupportedVersion,
+            TxnOffsetCommitRequest.HighestSupportedVersion);
+
+        // Group offsets by topic
+        var topicOffsets = new Dictionary<string, List<TxnOffsetCommitRequestPartition>>();
+        foreach (var offset in offsets)
+        {
+            if (!topicOffsets.TryGetValue(offset.Topic, out var list))
+            {
+                list = [];
+                topicOffsets[offset.Topic] = list;
+            }
+            list.Add(new TxnOffsetCommitRequestPartition
+            {
+                PartitionIndex = offset.Partition,
+                CommittedOffset = offset.Offset
+            });
+        }
+
+        var txnTopics = new List<TxnOffsetCommitRequestTopic>(topicOffsets.Count);
+        foreach (var kvp in topicOffsets)
+        {
+            txnTopics.Add(new TxnOffsetCommitRequestTopic
+            {
+                Name = kvp.Key,
+                Partitions = kvp.Value
+            });
+        }
+
+        var txnOffsetCommitRequest = new TxnOffsetCommitRequest
+        {
+            TransactionalId = _options.TransactionalId!,
+            GroupId = consumerGroupId,
+            ProducerId = _producerId,
+            ProducerEpoch = _producerEpoch,
+            Topics = txnTopics
+        };
+
+        var txnOffsetCommitResponse = (TxnOffsetCommitResponse)await groupConnection
+            .SendAsync<TxnOffsetCommitRequest, TxnOffsetCommitResponse>(
+                txnOffsetCommitRequest, txnOffsetCommitVersion, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Check for errors
+        foreach (var topicResult in txnOffsetCommitResponse.Topics)
+        {
+            foreach (var partitionResult in topicResult.Partitions)
+            {
+                if (partitionResult.ErrorCode != ErrorCode.None)
+                {
+                    throw new TransactionException(partitionResult.ErrorCode,
+                        $"TxnOffsetCommit failed for {topicResult.Name}-{partitionResult.PartitionIndex}: {partitionResult.ErrorCode}")
+                    {
+                        TransactionalId = _options.TransactionalId
+                    };
+                }
+            }
+        }
     }
 
     /// <inheritdoc />
@@ -2450,53 +2906,125 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         _producer = producer;
     }
 
-    public ValueTask<RecordMetadata> ProduceAsync(
+    public async ValueTask<RecordMetadata> ProduceAsync(
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken = default)
     {
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
-        return _producer.ProduceAsync(message, cancellationToken);
+        // Ensure the partition is registered with the transaction coordinator
+        // We need to determine the target partition first, then add it if not already registered
+        var topicPartitions = new List<TopicPartition>();
+        var tp = new TopicPartition(message.Topic, message.Partition ?? -1);
+
+        // If we don't know the exact partition yet, we'll add it after the produce
+        // when we have the metadata. For now, add partitions we know about.
+        if (message.Partition.HasValue)
+        {
+            lock (_producer._partitionsInTransaction)
+            {
+                if (_producer._partitionsInTransaction.Add(tp))
+                {
+                    topicPartitions.Add(tp);
+                }
+            }
+
+            if (topicPartitions.Count > 0)
+            {
+                await _producer.AddPartitionsToTransactionAsync(topicPartitions, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        var result = await _producer.ProduceAsync(message, cancellationToken).ConfigureAwait(false);
+
+        // If we didn't know the partition before, register it now
+        if (!message.Partition.HasValue)
+        {
+            var actualTp = new TopicPartition(result.Topic, result.Partition);
+            bool needsRegistration;
+            lock (_producer._partitionsInTransaction)
+            {
+                needsRegistration = _producer._partitionsInTransaction.Add(actualTp);
+            }
+
+            if (needsRegistration)
+            {
+                await _producer.AddPartitionsToTransactionAsync([actualTp], cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        return result;
     }
 
-    public ValueTask CommitAsync(CancellationToken cancellationToken = default)
+    public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
-        _committed = true;
-        // TODO: Implement EndTxn
-        return ValueTask.CompletedTask;
+        _producer._transactionState = TransactionState.CommittingTransaction;
+
+        try
+        {
+            // Flush all pending messages before committing
+            await _producer.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+            await _producer.EndTransactionAsync(committed: true, cancellationToken).ConfigureAwait(false);
+            _committed = true;
+        }
+        finally
+        {
+            lock (_producer._partitionsInTransaction)
+            {
+                _producer._partitionsInTransaction.Clear();
+            }
+            _producer._transactionState = TransactionState.Ready;
+        }
     }
 
-    public ValueTask AbortAsync(CancellationToken cancellationToken = default)
+    public async ValueTask AbortAsync(CancellationToken cancellationToken = default)
     {
         if (_committed || _aborted)
             throw new InvalidOperationException("Transaction is already completed");
 
-        _aborted = true;
-        // TODO: Implement EndTxn
-        return ValueTask.CompletedTask;
+        _producer._transactionState = TransactionState.AbortingTransaction;
+
+        try
+        {
+            await _producer.EndTransactionAsync(committed: false, cancellationToken).ConfigureAwait(false);
+            _aborted = true;
+        }
+        finally
+        {
+            lock (_producer._partitionsInTransaction)
+            {
+                _producer._partitionsInTransaction.Clear();
+            }
+            _producer._transactionState = TransactionState.Ready;
+        }
     }
 
-    public ValueTask SendOffsetsToTransactionAsync(
+    public async ValueTask SendOffsetsToTransactionAsync(
         IEnumerable<TopicPartitionOffset> offsets,
         string consumerGroupId,
         CancellationToken cancellationToken = default)
     {
-        // TODO: Implement TxnOffsetCommit
-        throw new NotImplementedException();
+        if (_committed || _aborted)
+            throw new InvalidOperationException("Transaction is already completed");
+
+        await _producer.SendOffsetsToTransactionInternalAsync(offsets, consumerGroupId, cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (!_committed && !_aborted)
         {
             // Abort on dispose if not completed
-            return AbortAsync();
+            await AbortAsync().ConfigureAwait(false);
         }
-        return ValueTask.CompletedTask;
     }
 }
 
