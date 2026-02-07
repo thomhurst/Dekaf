@@ -683,7 +683,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private PartitionBatch RentBatch(TopicPartition topicPartition)
     {
         var batch = _batchPool.Rent(topicPartition);
-        batch.SetTransactionState(ProducerId, ProducerEpoch, IsTransactional, IsTransactional ? this : null);
+        batch.SetTransactionState(ProducerId, ProducerEpoch, IsTransactional, ProducerId >= 0 ? this : null);
         return batch;
     }
 
@@ -3659,8 +3659,9 @@ internal sealed class PartitionBatch
                 attributes |= RecordBatchAttributes.IsTransactional;
             }
 
-            // For transactional/idempotent records, assign a monotonically increasing base sequence
-            var baseSequence = _isTransactional && _accumulator is not null
+            // For idempotent/transactional records, assign a monotonically increasing base sequence.
+            // Sequence numbers are used by the broker to detect duplicates and enforce ordering.
+            var baseSequence = _producerId >= 0 && _accumulator is not null
                 ? _accumulator.GetAndIncrementSequence(_topicPartition, _recordCount)
                 : -1;
 

@@ -21,7 +21,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private Acks _acks = Acks.All;
     private int _lingerMs;
     private int _batchSize = 1048576;
-    private bool _enableIdempotence;
+    private bool _enableIdempotence = true;
     private string? _transactionalId;
     private Protocol.Records.CompressionType _compressionType = Protocol.Records.CompressionType.None;
     private int? _compressionLevel;

@@ -160,6 +160,7 @@ public static class ErrorCodeExtensions
         ErrorCode.PreferredLeaderNotAvailable => true,
         ErrorCode.EligibleLeadersNotAvailable => true,
         ErrorCode.UnstableOffsetCommit => true,
+        ErrorCode.OutOfOrderSequenceNumber => true,
         ErrorCode.ThrottlingQuotaExceeded => true,
         _ => false
     };

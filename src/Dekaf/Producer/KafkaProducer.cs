@@ -47,9 +47,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     // - _allSendsCompleted: Signaling coordinated with _inFlightSendCount via _sendCompletionLock
     // - _sendCompletionLock: Protects the atomicity of count transition + event signal pairs
     private readonly SemaphoreSlim _sendConcurrencySemaphore;
-    // Tracks the last send task per partition to ensure within-partition ordering
-    // when the sender loop pipelines multiple concurrent sends.
-    private readonly ConcurrentDictionary<TopicPartition, Task> _partitionSendChain = new();
     private long _inFlightSendCount;
     private readonly ManualResetEventSlim _allSendsCompleted = new(true); // Initially signaled (no sends in flight)
     private readonly object _sendCompletionLock = new(); // Prevents race between Reset() and Set()
@@ -68,9 +65,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private int _produceApiVersion = -1;
     internal volatile bool _disposed;
 
-    // Transaction state
+    // Idempotent / transaction state
     private long _producerId = -1;
     private short _producerEpoch = -1;
+    private volatile bool _idempotentInitialized;
     private int _transactionCoordinatorId = -1;
     internal volatile TransactionState _transactionState = TransactionState.Uninitialized;
     private readonly SemaphoreSlim _transactionLock = new(1, 1);
@@ -2411,18 +2409,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Without pipelining: throughput = 1 / network_latency (e.g., 30 batches/sec at 33ms latency)
         // With pipelining (5 in-flight): throughput = 5 / network_latency (e.g., 150 batches/sec)
         //
-        // ORDERING NOTE: Within-partition ordering is guaranteed because:
-        // 1. The RecordAccumulator produces batches per-partition in FIFO order
-        // 2. Send() prevents fast-path/slow-path message interleaving via _pendingChannelMessages
-        // 3. Kafka broker stores messages in the order they arrive per partition
-        // 4. With MaxInFlightRequestsPerConnection=1 (idempotent default), only one request
-        //    is in-flight per connection, so the broker receives them in order
-        //
-        // SEMAPHORE PLACEMENT: The concurrency semaphore is acquired INSIDE SendBatchOrderedAsync,
-        // AFTER the per-partition chain wait. This prevents semaphore starvation where slots are
-        // held by tasks merely waiting in a partition chain rather than doing actual network I/O.
-        // Without this, a burst of batches for the same partition would fill all semaphore slots
-        // with queued chain waits, blocking batches for OTHER partitions from sending.
+        // ORDERING: Within-partition ordering is guaranteed by the idempotent producer protocol.
+        // The broker uses producer ID + per-partition sequence numbers to enforce ordering:
+        // - If a batch arrives out-of-order, the broker returns OutOfOrderSequenceNumber (retriable)
+        // - If a batch is a duplicate (retransmit), the broker returns DuplicateSequenceNumber (treated as success)
+        // This allows the client to safely pipeline multiple batches for the same partition without
+        // client-side ordering chains, matching the Confluent/Java producer behavior since Kafka 3.0.
 
         await foreach (var batch in _accumulator.ReadyBatches.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -2432,6 +2424,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             // Decrement in-flight counter to unblock FlushAsync
             _accumulator.OnBatchExitsPipeline();
+
+            // Acquire semaphore slot - limits concurrent sends to MaxInFlightRequestsPerConnection
+            // This is the only await that blocks the loop - once acquired, we fire-and-forget the send
+            await _sendConcurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
 
             // Track in-flight send count for disposal coordination
             // Lock ensures atomicity of (increment + Reset) to prevent race with (decrement + Set)
@@ -2443,90 +2439,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 }
             }
 
-            // Chain sends per-partition to maintain within-partition ordering.
-            // The sender loop is single-threaded (async foreach), so no race on dictionary updates.
-            // Different partitions still pipeline concurrently for throughput.
-            var tp = batch.TopicPartition;
-            var previousSend = _partitionSendChain.GetValueOrDefault(tp, Task.CompletedTask);
-            var currentSend = SendBatchOrderedAsync(batch, previousSend, cancellationToken);
-            _partitionSendChain[tp] = currentSend;
-
-            // Auto-cleanup: remove the entry when this task completes, but only if
-            // the dictionary still points to this exact task (a newer batch may have
-            // already replaced it). This prevents holding references to completed tasks.
-            if (!currentSend.IsCompleted)
-            {
-                _ = currentSend.ContinueWith(static (t, state) =>
-                {
-                    var (dict, partition) = ((ConcurrentDictionary<TopicPartition, Task>, TopicPartition))state!;
-                    ((ICollection<KeyValuePair<TopicPartition, Task>>)dict).Remove(KeyValuePair.Create(partition, t));
-                }, (_partitionSendChain, tp),
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
-            }
-            else
-            {
-                ((ICollection<KeyValuePair<TopicPartition, Task>>)_partitionSendChain).Remove(KeyValuePair.Create(tp, currentSend));
-            }
+            // Fire-and-forget: SendBatchWithCleanupAsync releases the semaphore in its finally block
+            _ = SendBatchWithCleanupAsync(batch, cancellationToken);
         }
 
         // Channel completed - wait for all in-flight sends to finish before exiting
         await WaitForInFlightSendsAsync(CancellationToken.None).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Waits for the previous batch on the same partition to complete before sending this one,
-    /// then acquires a concurrency semaphore slot before the actual network send.
-    /// The semaphore is acquired AFTER the chain wait (not before) to prevent starvation:
-    /// otherwise, batches queued behind a partition chain would hold semaphore slots while
-    /// just waiting, blocking other partitions from sending.
-    /// </summary>
-    private async Task SendBatchOrderedAsync(ReadyBatch batch, Task previousPartitionSend, CancellationToken cancellationToken)
-    {
-        // Wait for previous batch on same partition to finish its network I/O
-        try
-        {
-            await previousPartitionSend.ConfigureAwait(false);
-        }
-        catch
-        {
-            // Previous send failed - still proceed with this batch
-        }
-
-        // Acquire semaphore slot AFTER chain wait - limits actual concurrent network I/O
-        // to MaxInFlightRequestsPerConnection without wasting slots on queued chain waits.
-        // If this throws (e.g., cancellation during disposal), we must clean up the batch
-        // since SendBatchWithCleanupAsync won't run.
-        var semaphoreAcquired = false;
-        try
-        {
-            await _sendConcurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-            semaphoreAcquired = true;
-
-            await SendBatchWithCleanupAsync(batch, cancellationToken).ConfigureAwait(false);
-        }
-        catch when (!semaphoreAcquired)
-        {
-            // Semaphore was never acquired, so SendBatchWithCleanupAsync never ran.
-            // We must clean up the batch ourselves: fail completions, release memory,
-            // return to pool, and decrement in-flight count.
-            try { batch.Fail(new OperationCanceledException(cancellationToken)); }
-            catch { /* Protect against batch.Fail() throwing */ }
-
-            _accumulator.ReleaseMemory(batch.DataSize);
-            _accumulator.ReturnReadyBatch(batch);
-
-            lock (_sendCompletionLock)
-            {
-                if (Interlocked.Decrement(ref _inFlightSendCount) == 0)
-                {
-                    _allSendsCompleted.Set();
-                }
-            }
-
-            throw;
-        }
     }
 
     /// <summary>
@@ -2903,7 +2821,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             return ErrorCode.NetworkException;
         }
 
-        if (partitionResponse.ErrorCode != ErrorCode.None)
+        if (partitionResponse.ErrorCode == ErrorCode.DuplicateSequenceNumber)
+        {
+            // DuplicateSequenceNumber means the batch was already written (a previous attempt
+            // succeeded but its response was lost). Treat as success with the broker's offset.
+            _logger?.LogDebug("[SendBatch] DuplicateSequenceNumber for {Topic}-{Partition} - batch already written at offset {Offset}",
+                batch.TopicPartition.Topic, batch.TopicPartition.Partition, partitionResponse.BaseOffset);
+        }
+        else if (partitionResponse.ErrorCode != ErrorCode.None)
         {
             // Return error code - caller decides if retriable
             return partitionResponse.ErrorCode;
@@ -2936,13 +2861,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private ValueTask EnsureInitializedAsync(CancellationToken cancellationToken)
     {
-        // Fast path: metadata already initialized - return completed ValueTask (no allocation)
-        if (_metadataManager.Metadata.LastRefreshed != default)
+        // Fast path: metadata already initialized and idempotent producer ready (no allocation)
+        if (_metadataManager.Metadata.LastRefreshed != default &&
+            (!_options.EnableIdempotence || _options.TransactionalId is not null || _idempotentInitialized))
         {
             return ValueTask.CompletedTask;
         }
 
-        // Slow path: need to initialize metadata with MaxBlockMs timeout
+        // Slow path: need to initialize metadata and/or idempotent producer
         return EnsureInitializedWithTimeoutAsync(cancellationToken);
     }
 
@@ -2961,6 +2887,80 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             throw new TimeoutException(
                 $"Failed to fetch initial metadata within max.block.ms ({_options.MaxBlockMs}ms). " +
                 $"Ensure the Kafka cluster is reachable and the bootstrap servers are correct.");
+        }
+
+        // Initialize idempotent producer after metadata is available (non-transactional only)
+        if (_options.EnableIdempotence && _options.TransactionalId is null && !_idempotentInitialized)
+        {
+            await InitIdempotentProducerAsync(timeoutCts.Token).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Initializes the idempotent producer by obtaining a producer ID from any broker.
+    /// This enables sequence number assignment for duplicate detection without full transactions.
+    /// </summary>
+    private async ValueTask InitIdempotentProducerAsync(CancellationToken cancellationToken)
+    {
+        // Double-check under lock to prevent concurrent initialization
+        await _transactionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_idempotentInitialized)
+            {
+                return;
+            }
+
+            var initProducerIdVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.InitProducerId,
+                InitProducerIdRequest.LowestSupportedVersion,
+                InitProducerIdRequest.HighestSupportedVersion);
+
+            // For non-transactional idempotent producers, send to any broker (no coordinator needed)
+            var brokers = _metadataManager.Metadata.GetBrokers();
+            if (brokers.Count == 0)
+            {
+                throw new InvalidOperationException("No brokers available for idempotent producer initialization");
+            }
+
+            var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
+                .ConfigureAwait(false);
+
+            var request = new InitProducerIdRequest
+            {
+                TransactionalId = null,
+                TransactionTimeoutMs = -1,
+                ProducerId = _producerId,
+                ProducerEpoch = _producerEpoch
+            };
+
+            var response = (InitProducerIdResponse)await connection
+                .SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                    request, initProducerIdVersion, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (response.ErrorCode != ErrorCode.None)
+            {
+                throw new KafkaException(response.ErrorCode,
+                    $"Failed to initialize idempotent producer: {response.ErrorCode}");
+            }
+
+            _producerId = response.ProducerId;
+            _producerEpoch = response.ProducerEpoch;
+
+            // Wire the producer ID/epoch into the accumulator for RecordBatch headers
+            _accumulator.ProducerId = _producerId;
+            _accumulator.ProducerEpoch = _producerEpoch;
+
+            _idempotentInitialized = true;
+
+            _logger?.LogDebug(
+                "Initialized idempotent producer: ProducerId={ProducerId}, Epoch={Epoch}",
+                _producerId, _producerEpoch);
+        }
+        finally
+        {
+            _transactionLock.Release();
         }
     }
 
