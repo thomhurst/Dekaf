@@ -1,4 +1,3 @@
-using Dekaf.Compression;
 using Dekaf.Compression.Snappy;
 using Dekaf.Consumer;
 using Dekaf.Producer;
@@ -8,15 +7,10 @@ namespace Dekaf.Tests.Integration.RealWorld;
 
 /// <summary>
 /// Tests for producing with Snappy compression and consuming, verifying data integrity.
+/// Codec registration is handled by <see cref="GlobalTestSetup"/>.
 /// </summary>
 public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
-    [Before(Class)]
-    public static void RegisterCodec()
-    {
-        CompressionCodecRegistry.Default.AddSnappy();
-    }
-
     [Test]
     public async Task Snappy_SingleMessage_RoundTripPreservesData()
     {

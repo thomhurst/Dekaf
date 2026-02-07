@@ -1,4 +1,3 @@
-using Dekaf.Compression;
 using Dekaf.Compression.Zstd;
 using Dekaf.Consumer;
 using Dekaf.Producer;
@@ -8,15 +7,10 @@ namespace Dekaf.Tests.Integration.RealWorld;
 
 /// <summary>
 /// Tests for producing with Zstd compression and consuming, verifying data integrity.
+/// Codec registration is handled by <see cref="GlobalTestSetup"/>.
 /// </summary>
 public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
-    [Before(Class)]
-    public static void RegisterCodec()
-    {
-        CompressionCodecRegistry.Default.AddZstd();
-    }
-
     [Test]
     public async Task Zstd_SingleMessage_RoundTripPreservesData()
     {

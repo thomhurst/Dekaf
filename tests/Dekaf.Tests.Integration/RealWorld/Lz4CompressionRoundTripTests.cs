@@ -1,4 +1,3 @@
-using Dekaf.Compression;
 using Dekaf.Compression.Lz4;
 using Dekaf.Consumer;
 using Dekaf.Producer;
@@ -8,15 +7,10 @@ namespace Dekaf.Tests.Integration.RealWorld;
 
 /// <summary>
 /// Tests for producing with LZ4 compression and consuming, verifying data integrity.
+/// Codec registration is handled by <see cref="GlobalTestSetup"/>.
 /// </summary>
 public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
-    [Before(Class)]
-    public static void RegisterCodec()
-    {
-        CompressionCodecRegistry.Default.AddLz4();
-    }
-
     [Test]
     public async Task Lz4_SingleMessage_RoundTripPreservesData()
     {
