@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Threading.Channels;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 
@@ -522,13 +523,14 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .Build();
 
+        Task task1 = Task.CompletedTask, task2 = Task.CompletedTask;
         try
         {
             consumer1.Subscribe(topic);
             consumer2.Subscribe(topic);
 
-            var task1 = ConsumeUntilCountReached(consumer1, allMessages, messageCount, cts.Token);
-            var task2 = ConsumeUntilCountReached(consumer2, allMessages, messageCount, cts.Token);
+            task1 = ConsumeUntilCountReached(consumer1, allMessages, messageCount, cts.Token);
+            task2 = ConsumeUntilCountReached(consumer2, allMessages, messageCount, cts.Token);
 
             await Task.WhenAny(
                 Task.WhenAll(task1, task2),
@@ -537,8 +539,15 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         }
         finally
         {
+            // Cancel first to signal consume loops to stop before disposing
+            await cts.CancelAsync();
+
             await consumer1.DisposeAsync().ConfigureAwait(false);
             await consumer2.DisposeAsync().ConfigureAwait(false);
+
+            // Observe any exceptions from the consume tasks to prevent unobserved task exceptions
+            try { await Task.WhenAll(task1, task2); }
+            catch { /* Already handled within ConsumeUntilCountReached */ }
         }
 
         // Assert - all messages should be consumed (no loss, no duplicates within same partition)
@@ -565,6 +574,10 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         catch (OperationCanceledException)
         {
             // Expected when target reached by other consumer
+        }
+        catch (ChannelClosedException)
+        {
+            // Expected when consumer is disposed while still iterating
         }
     }
 
