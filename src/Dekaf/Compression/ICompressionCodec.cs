@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using Dekaf.Protocol.Records;
 
 namespace Dekaf.Compression;
@@ -29,7 +30,7 @@ public interface ICompressionCodec
 /// </summary>
 public sealed class CompressionCodecRegistry
 {
-    private readonly Dictionary<CompressionType, ICompressionCodec> _codecs = [];
+    private readonly ConcurrentDictionary<CompressionType, ICompressionCodec> _codecs = [];
 
     /// <summary>
     /// Default global registry with built-in codecs.
