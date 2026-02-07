@@ -10,7 +10,7 @@ Dekaf is a high-performance, pure C# Apache Kafka client library for .NET 10+. T
 
 3. **Comprehensive Testing**: All features require unit tests (TUnit). Integration tests with Testcontainers.Kafka are required for client behavior changes. Performance-critical code requires benchmark tests.
 
-4. **ConfigureAwait(false) Everywhere**: This is a library. All `await` calls must use `ConfigureAwait(false)` to avoid deadlocks in consumer applications.
+4. **ConfigureAwait(false) in Library Code**: This is a library. All `await` calls in `src/` must use `ConfigureAwait(false)` to avoid deadlocks in consumer applications. Test projects (`tests/`) do **not** need `ConfigureAwait(false)` since they are not library code.
 
 5. **Interface-First Design**: Public APIs expose interfaces (`IKafkaProducer<TKey, TValue>`, `IKafkaConsumer<TKey, TValue>`). Implementations are internal or sealed.
 

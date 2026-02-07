@@ -102,7 +102,7 @@ public sealed class ProducerOptions
     /// <summary>
     /// Enable idempotent producer.
     /// </summary>
-    public bool EnableIdempotence { get; init; }
+    public bool EnableIdempotence { get; init; } = true;
 
     /// <summary>
     /// Transactional ID for exactly-once semantics.

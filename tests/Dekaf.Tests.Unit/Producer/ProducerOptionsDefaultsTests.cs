@@ -97,10 +97,10 @@ public class ProducerOptionsDefaultsTests
     }
 
     [Test]
-    public async Task EnableIdempotence_DefaultsTo_False()
+    public async Task EnableIdempotence_DefaultsTo_True()
     {
         var options = CreateOptions();
-        await Assert.That(options.EnableIdempotence).IsFalse();
+        await Assert.That(options.EnableIdempotence).IsTrue();
     }
 
     [Test]

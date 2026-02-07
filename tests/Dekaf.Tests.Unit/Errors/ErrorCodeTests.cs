@@ -93,10 +93,10 @@ public class ErrorCodeTests
     }
 
     [Test]
-    public async Task IsRetriable_ExactlyTwentyTwoRetriableCodes()
+    public async Task IsRetriable_ExactlyTwentyThreeRetriableCodes()
     {
         var retriableCount = Enum.GetValues<ErrorCode>().Count(e => e.IsRetriable());
-        await Assert.That(retriableCount).IsEqualTo(22);
+        await Assert.That(retriableCount).IsEqualTo(23);
     }
 
     #endregion
