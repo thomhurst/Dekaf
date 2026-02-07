@@ -493,6 +493,37 @@ public sealed class RecordAccumulator : IAsyncDisposable
     internal short ProducerEpoch { get; set; } = -1;
     internal bool IsTransactional { get; set; }
 
+    // Per-partition sequence numbers for idempotent/transactional producing.
+    // The broker requires monotonically increasing BaseSequence per partition.
+    private readonly ConcurrentDictionary<TopicPartition, int> _sequenceNumbers = new();
+
+    /// <summary>
+    /// Gets the next base sequence number for a partition and increments by the record count.
+    /// Thread-safe: uses ConcurrentDictionary.AddOrUpdate. Batch completion is sequential
+    /// per partition so contention is minimal.
+    /// </summary>
+    internal int GetAndIncrementSequence(TopicPartition topicPartition, int recordCount)
+    {
+        var baseSequence = 0;
+        _sequenceNumbers.AddOrUpdate(
+            topicPartition,
+            recordCount, // Add: base was 0, next starts at recordCount
+            (_, current) =>
+            {
+                baseSequence = current;
+                return current + recordCount;
+            });
+        return baseSequence;
+    }
+
+    /// <summary>
+    /// Resets all sequence numbers. Called after InitTransactionsAsync when epoch changes.
+    /// </summary>
+    internal void ResetSequenceNumbers()
+    {
+        _sequenceNumbers.Clear();
+    }
+
     // Buffer memory tracking for backpressure
     private readonly ulong _maxBufferMemory;
     private long _bufferedBytes;
@@ -603,7 +634,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     private PartitionBatch RentBatch(TopicPartition topicPartition)
     {
         var batch = _batchPool.Rent(topicPartition);
-        batch.SetTransactionState(ProducerId, ProducerEpoch, IsTransactional);
+        batch.SetTransactionState(ProducerId, ProducerEpoch, IsTransactional, IsTransactional ? this : null);
         return batch;
     }
 
@@ -2485,6 +2516,7 @@ internal sealed class PartitionBatch
     private long _producerId = -1;
     private short _producerEpoch = -1;
     private bool _isTransactional;
+    private RecordAccumulator? _accumulator;
 
     public PartitionBatch(TopicPartition topicPartition, ProducerOptions options)
     {
@@ -2526,11 +2558,12 @@ internal sealed class PartitionBatch
     /// <summary>
     /// Sets the transaction state for this batch. Called by RecordAccumulator after renting.
     /// </summary>
-    internal void SetTransactionState(long producerId, short producerEpoch, bool isTransactional)
+    internal void SetTransactionState(long producerId, short producerEpoch, bool isTransactional, RecordAccumulator? accumulator)
     {
         _producerId = producerId;
         _producerEpoch = producerEpoch;
         _isTransactional = isTransactional;
+        _accumulator = accumulator;
     }
 
     /// <summary>
@@ -3571,6 +3604,11 @@ internal sealed class PartitionBatch
                 attributes |= RecordBatchAttributes.IsTransactional;
             }
 
+            // For transactional/idempotent records, assign a monotonically increasing base sequence
+            var baseSequence = _isTransactional && _accumulator is not null
+                ? _accumulator.GetAndIncrementSequence(_topicPartition, _recordCount)
+                : -1;
+
             var batch = new RecordBatch
             {
                 BaseOffset = 0,
@@ -3579,6 +3617,7 @@ internal sealed class PartitionBatch
                 LastOffsetDelta = _recordCount - 1,
                 ProducerId = _producerId,
                 ProducerEpoch = _producerEpoch,
+                BaseSequence = baseSequence,
                 Attributes = attributes,
                 Records = new RecordListWrapper(pooledRecordsArray, _recordCount)
             };

@@ -67,7 +67,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     internal volatile TransactionState _transactionState = TransactionState.Uninitialized;
     private readonly SemaphoreSlim _transactionLock = new(1, 1);
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
-    private readonly ConcurrentDictionary<TopicPartition, int> _sequenceNumbers = new();
 
     // Statistics collection
     private readonly ProducerStatisticsCollector _statisticsCollector = new();
@@ -1874,7 +1873,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 _accumulator.IsTransactional = true;
 
                 // Reset sequence numbers for new epoch
-                _sequenceNumbers.Clear();
+                _accumulator.ResetSequenceNumbers();
 
                 _transactionState = TransactionState.Ready;
 
