@@ -243,6 +243,13 @@ internal sealed class PendingFetchData : IDisposable
 /// <typeparam name="TValue">Value type.</typeparam>
 public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 {
+    /// <summary>
+    /// Delay in milliseconds when all assigned partitions are paused, to prevent
+    /// a tight spin loop that would starve CPU while still allowing responsive
+    /// cancellation and timeout handling (~10 checks per second).
+    /// </summary>
+    private const int AllPartitionsPausedDelayMs = 100;
+
     private readonly ConsumerOptions _options;
     private readonly IDeserializer<TKey> _keyDeserializer;
     private readonly IDeserializer<TValue> _valueDeserializer;
@@ -833,7 +840,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             var brokerCount = partitionsByBroker.Count;
             if (brokerCount == 0)
             {
-                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
                 return;
             }
 
@@ -1897,7 +1904,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             var brokerCount = partitionsByBroker.Count;
             if (brokerCount == 0)
             {
-                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(AllPartitionsPausedDelayMs, cancellationToken).ConfigureAwait(false);
                 return;
             }
 
