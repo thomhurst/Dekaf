@@ -378,7 +378,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 loggerFactory?.CreateLogger<ConsumerCoordinator>());
         }
 
-        _compressionCodecs = new CompressionCodecRegistry();
+        _compressionCodecs = CompressionCodecRegistry.Default;
 
         // Initialize prefetch channel - bounded by QueuedMinMessages batches
         var prefetchCapacity = Math.Max(options.QueuedMinMessages, 1);
