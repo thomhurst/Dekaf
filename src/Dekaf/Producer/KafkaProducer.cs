@@ -2921,47 +2921,66 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 InitProducerIdRequest.LowestSupportedVersion,
                 InitProducerIdRequest.HighestSupportedVersion);
 
-            // For non-transactional idempotent producers, send to any broker (no coordinator needed)
-            var brokers = _metadataManager.Metadata.GetBrokers();
-            if (brokers.Count == 0)
+            // Retry with backoff for retriable errors (e.g. CoordinatorLoadInProgress during broker startup)
+            var retryDelayMs = _options.RetryBackoffMs;
+
+            while (true)
             {
-                throw new InvalidOperationException("No brokers available for idempotent producer initialization");
+                cancellationToken.ThrowIfCancellationRequested();
+
+                // For non-transactional idempotent producers, send to any broker (no coordinator needed)
+                var brokers = _metadataManager.Metadata.GetBrokers();
+                if (brokers.Count == 0)
+                {
+                    throw new InvalidOperationException("No brokers available for idempotent producer initialization");
+                }
+
+                var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
+                    .ConfigureAwait(false);
+
+                var request = new InitProducerIdRequest
+                {
+                    TransactionalId = null,
+                    TransactionTimeoutMs = -1,
+                    ProducerId = _producerId,
+                    ProducerEpoch = _producerEpoch
+                };
+
+                var response = (InitProducerIdResponse)await connection
+                    .SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                        request, initProducerIdVersion, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (response.ErrorCode == ErrorCode.None)
+                {
+                    _producerId = response.ProducerId;
+                    _producerEpoch = response.ProducerEpoch;
+
+                    // Wire the producer ID/epoch into the accumulator for RecordBatch headers
+                    _accumulator.ProducerId = _producerId;
+                    _accumulator.ProducerEpoch = _producerEpoch;
+
+                    _idempotentInitialized = true;
+
+                    _logger?.LogDebug(
+                        "Initialized idempotent producer: ProducerId={ProducerId}, Epoch={Epoch}",
+                        _producerId, _producerEpoch);
+                    return;
+                }
+
+                if (!response.ErrorCode.IsRetriable())
+                {
+                    throw new KafkaException(response.ErrorCode,
+                        $"Failed to initialize idempotent producer: {response.ErrorCode}");
+                }
+
+                _logger?.LogDebug(
+                    "InitProducerId returned retriable error {ErrorCode}, retrying in {DelayMs}ms",
+                    response.ErrorCode, retryDelayMs);
+
+                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                retryDelayMs = Math.Min(retryDelayMs * 2, _options.RetryBackoffMaxMs);
             }
-
-            var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
-                .ConfigureAwait(false);
-
-            var request = new InitProducerIdRequest
-            {
-                TransactionalId = null,
-                TransactionTimeoutMs = -1,
-                ProducerId = _producerId,
-                ProducerEpoch = _producerEpoch
-            };
-
-            var response = (InitProducerIdResponse)await connection
-                .SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
-                    request, initProducerIdVersion, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (response.ErrorCode != ErrorCode.None)
-            {
-                throw new KafkaException(response.ErrorCode,
-                    $"Failed to initialize idempotent producer: {response.ErrorCode}");
-            }
-
-            _producerId = response.ProducerId;
-            _producerEpoch = response.ProducerEpoch;
-
-            // Wire the producer ID/epoch into the accumulator for RecordBatch headers
-            _accumulator.ProducerId = _producerId;
-            _accumulator.ProducerEpoch = _producerEpoch;
-
-            _idempotentInitialized = true;
-
-            _logger?.LogDebug(
-                "Initialized idempotent producer: ProducerId={ProducerId}, Epoch={Epoch}",
-                _producerId, _producerEpoch);
         }
         finally
         {

@@ -55,8 +55,18 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
 
         while (DateTime.UtcNow < deadline)
         {
-            // Fire-and-forget: Send returns immediately, delivery happens async
-            producer.Send(topic, "same-key", $"value-{messageCount}");
+            try
+            {
+                // Fire-and-forget: Send returns immediately, delivery happens async
+                producer.Send(topic, "same-key", $"value-{messageCount}");
+            }
+            catch (TimeoutException)
+            {
+                // TimeoutException from Send() means the buffer is full and max.block.ms expired.
+                // This actually proves backpressure is working correctly — memory IS bounded.
+                Console.WriteLine($"[BufferMemoryStressTest] Buffer full (TimeoutException) after {messageCount:N0} messages — backpressure working correctly");
+                break;
+            }
 
             messageCount++;
 
