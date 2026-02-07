@@ -250,6 +250,10 @@ public readonly struct ConsumeResult<TKey, TValue>
         }
         else if (isKeyNull)
         {
+            // Null keys return default (null for reference types, 0 for value types).
+            // Unlike values (where TValue is non-nullable and requires calling the deserializer),
+            // TKey? is nullable so we can return default directly without risking exceptions
+            // from deserializers that don't handle empty data (e.g., Int32Serde, GuidSerde).
             Key = default;
         }
         else
@@ -258,6 +262,7 @@ public readonly struct ConsumeResult<TKey, TValue>
             t_serializationContext.Topic = topic;
             t_serializationContext.Component = SerializationComponent.Key;
             t_serializationContext.Headers = null;
+            t_serializationContext.IsNull = false;
             Key = keyDeserializer.Deserialize(new System.Buffers.ReadOnlySequence<byte>(keyData), t_serializationContext);
         }
 
@@ -272,6 +277,7 @@ public readonly struct ConsumeResult<TKey, TValue>
             t_serializationContext.Topic = topic;
             t_serializationContext.Component = SerializationComponent.Value;
             t_serializationContext.Headers = null;
+            t_serializationContext.IsNull = isValueNull;
 
             if (isValueNull)
             {

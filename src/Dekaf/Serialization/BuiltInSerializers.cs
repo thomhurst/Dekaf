@@ -150,8 +150,11 @@ internal sealed class NullableStringSerde : ISerde<string?>
 
     public string? Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
     {
-        if (data.Length == 0)
+        if (context.IsNull)
             return null;
+
+        if (data.Length == 0)
+            return string.Empty;
 
         if (data.IsSingleSegment)
         {

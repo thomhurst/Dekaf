@@ -93,6 +93,12 @@ public struct SerializationContext
     /// Headers associated with the record.
     /// </summary>
     public Headers? Headers { get; set; }
+
+    /// <summary>
+    /// Whether the original data was null (as opposed to empty).
+    /// This allows deserializers to distinguish between null values and empty byte arrays.
+    /// </summary>
+    public bool IsNull { get; set; }
 }
 
 /// <summary>
