@@ -8,7 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// <summary>
 /// Integration tests for producer error handling and edge cases.
 /// Verifies behavior with null values (tombstones), empty strings, large messages,
-/// invalid partitions, use-after-dispose, and fire-and-forget callbacks.
+/// use-after-dispose, and fire-and-forget callbacks.
 /// </summary>
 public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
@@ -16,20 +16,22 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
     public async Task Producer_NullValue_ProducesSuccessfully()
     {
         // Null values represent tombstones in Kafka (used for log compaction deletion)
-        // String serializer doesn't support null, so use byte[] which does
+        // Use Serializers.Null<string>() which handles null values as a no-op
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
+        var nullSerde = Serializers.Null<string>();
 
-        await using var producer = Kafka.CreateProducer<string, byte[]?>()
+        await using var producer = Kafka.CreateProducer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-null-value")
+            .WithValueSerializer(nullSerde)
             .Build();
 
         // Act
-        var metadata = await producer.ProduceAsync(new ProducerMessage<string, byte[]?>
+        var metadata = await producer.ProduceAsync(new ProducerMessage<string, string?>
         {
             Topic = topic,
             Key = "tombstone-key",
-            Value = null!
+            Value = null
         }).ConfigureAwait(false);
 
         // Assert
@@ -37,11 +39,12 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Verify by consuming
-        await using var consumer = Kafka.CreateConsumer<string, byte[]?>()
+        await using var consumer = Kafka.CreateConsumer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-null-value")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithValueDeserializer(nullSerde)
             .Build();
 
         consumer.Subscribe(topic);

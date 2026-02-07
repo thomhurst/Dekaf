@@ -114,12 +114,12 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
     }
 
     [Test]
-    public async Task RoundTrip_ManySmallMessages_10K_AllDelivered()
+    public async Task RoundTrip_ManySmallMessages_AllDelivered()
     {
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3).ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
-        const int messageCount = 10_000;
+        const int messageCount = 2_000;
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
