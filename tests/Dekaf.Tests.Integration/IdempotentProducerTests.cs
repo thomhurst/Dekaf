@@ -121,11 +121,13 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             results.Add(await task.ConfigureAwait(false));
         }
 
-        // Assert - offsets should be monotonically increasing (single partition)
-        await Assert.That(results).Count().IsEqualTo(messageCount);
-        for (var i = 1; i < results.Count; i++)
+        // Assert - all offsets should be unique and contiguous on the single partition
+        // Sort by offset since task completion order doesn't match produce order
+        var sortedOffsets = results.Select(r => r.Offset).OrderBy(o => o).ToList();
+        await Assert.That(sortedOffsets).Count().IsEqualTo(messageCount);
+        for (var i = 1; i < sortedOffsets.Count; i++)
         {
-            await Assert.That(results[i].Offset).IsGreaterThan(results[i - 1].Offset);
+            await Assert.That(sortedOffsets[i]).IsEqualTo(sortedOffsets[i - 1] + 1);
         }
     }
 

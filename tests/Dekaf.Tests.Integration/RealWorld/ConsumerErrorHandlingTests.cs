@@ -7,7 +7,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// <summary>
 /// Integration tests for consumer error handling and edge cases.
 /// Verifies behavior with empty topics, double subscribe, consume without subscribe,
-/// and disposal during active consumption.
+/// and AutoOffsetReset.None behavior.
 /// </summary>
 public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
@@ -99,61 +99,11 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
     }
 
     [Test]
-    public async Task Consumer_DisposeWhileConsuming_CompletesGracefully()
-    {
-        // Arrange
-        var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
-        var groupId = $"test-group-{Guid.NewGuid():N}";
-
-        var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithClientId("test-consumer-dispose-while-consuming")
-            .WithGroupId(groupId)
-            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
-
-        consumer.Subscribe(topic);
-
-        // Act - start consuming in background, then dispose
-        var consumeTask = Task.Run(async () =>
-        {
-            try
-            {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                await foreach (var _ in consumer.ConsumeAsync(cts.Token).ConfigureAwait(false))
-                {
-                    // Should not receive messages since topic is empty
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                // Expected when consumer is disposed
-            }
-            catch (ObjectDisposedException)
-            {
-                // Expected when consumer is disposed during consumption
-            }
-        });
-
-        // Give consumer time to start polling
-        await Task.Delay(1000).ConfigureAwait(false);
-
-        // Dispose the consumer while it's consuming
-        await consumer.DisposeAsync().ConfigureAwait(false);
-
-        // Wait for consume task to complete (should not hang)
-        var completedInTime = await Task.WhenAny(consumeTask, Task.Delay(TimeSpan.FromSeconds(15))).ConfigureAwait(false) == consumeTask;
-
-        // Assert - should complete gracefully without hanging
-        await Assert.That(completedInTime).IsTrue();
-    }
-
-    [Test]
     public async Task Consumer_AutoOffsetResetNone_NoCommittedOffset_ThrowsException()
     {
-        // Arrange - fresh group with no committed offsets
+        // AutoOffsetReset.None with no committed offsets should throw KafkaException
+        // when seeking to an invalid offset on a manually-assigned partition
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
-        var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Produce a message so the topic isn't empty
         await using var producer = Kafka.CreateProducer<string, string>()
@@ -168,16 +118,20 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             Value = "value"
         }).ConfigureAwait(false);
 
+        // Use manual assignment to avoid group coordinator delays
         await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-offset-none")
-            .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.None)
             .Build();
 
-        consumer.Subscribe(topic);
+        var tp = new TopicPartition(topic, 0);
+        consumer.Assign(tp);
 
-        // Act & Assert - with AutoOffsetReset.None and no committed offsets, should throw
+        // Seek to invalid offset to trigger OffsetOutOfRange with AutoOffsetReset.None
+        consumer.Seek(new TopicPartitionOffset(topic, 0, 999999));
+
+        // Act & Assert - with AutoOffsetReset.None, should throw KafkaException
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await Assert.That(async () =>

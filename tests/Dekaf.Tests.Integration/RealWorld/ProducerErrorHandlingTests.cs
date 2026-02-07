@@ -16,15 +16,16 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
     public async Task Producer_NullValue_ProducesSuccessfully()
     {
         // Null values represent tombstones in Kafka (used for log compaction deletion)
+        // String serializer doesn't support null, so use byte[] which does
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string?>()
+        await using var producer = Kafka.CreateProducer<string, byte[]?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-null-value")
             .Build();
 
         // Act
-        var metadata = await producer.ProduceAsync(new ProducerMessage<string, string?>
+        var metadata = await producer.ProduceAsync(new ProducerMessage<string, byte[]?>
         {
             Topic = topic,
             Key = "tombstone-key",
@@ -36,7 +37,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Verify by consuming
-        await using var consumer = Kafka.CreateConsumer<string, string?>()
+        await using var consumer = Kafka.CreateConsumer<string, byte[]?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-null-value")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
