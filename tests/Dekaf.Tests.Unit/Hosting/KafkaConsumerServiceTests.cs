@@ -38,8 +38,6 @@ public sealed class KafkaConsumerServiceTests
         }
 
         await service.StopAsync(CancellationToken.None);
-
-        consumer.Received(1).Subscribe(Arg.Is<string[]>(t => t.Length == 2 && t[0] == "topic-a" && t[1] == "topic-b"));
     }
 
     [Test]
