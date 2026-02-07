@@ -313,6 +313,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     // Access to _cachedPartitionsByBroker must be synchronized via _partitionCacheLock
     private Dictionary<int, List<TopicPartition>>? _cachedPartitionsByBroker;
     private readonly object _partitionCacheLock = new();
+    private int _assignmentVersion;
 
     // Fetch request cache - reduces allocations when partition assignment is stable
     // Cache is invalidated when assignment or paused partitions change
@@ -1951,6 +1952,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void InvalidatePartitionCache()
     {
+        Interlocked.Increment(ref _assignmentVersion);
         lock (_partitionCacheLock)
         {
             _cachedPartitionsByBroker = null;
@@ -1959,9 +1961,10 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     private async ValueTask<Dictionary<int, List<TopicPartition>>> GroupPartitionsByBrokerAsync(CancellationToken cancellationToken)
     {
-        // Check cache and take snapshot of assignment/paused while holding lock
-        HashSet<TopicPartition> assignmentSnapshot;
-        HashSet<TopicPartition> pausedSnapshot;
+        // Check cache and capture version to detect concurrent invalidation
+        int capturedVersion;
+        TopicPartition[] assignmentArray;
+        int assignmentCount;
 
         lock (_partitionCacheLock)
         {
@@ -1970,46 +1973,42 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 return _cachedPartitionsByBroker;
             }
 
-            // Take snapshot of assignment and paused sets to avoid race conditions
-            // during iteration (these are regular HashSets, not thread-safe)
-            assignmentSnapshot = new HashSet<TopicPartition>(_assignment);
-            pausedSnapshot = new HashSet<TopicPartition>(_paused);
+            // Capture version and copy assignment/paused data under lock
+            // Uses pooled arrays instead of HashSet allocations
+            capturedVersion = Volatile.Read(ref _assignmentVersion);
+            var maxPartitions = _assignment.Count;
+            assignmentArray = ArrayPool<TopicPartition>.Shared.Rent(maxPartitions);
+            assignmentCount = 0;
+
+            foreach (var partition in _assignment)
+            {
+                if (!_paused.Contains(partition))
+                {
+                    assignmentArray[assignmentCount++] = partition;
+                }
+            }
         }
 
         // Build the cache outside the lock - allocate once per assignment change
         // Resolve all partition leaders in parallel for maximum throughput
-        // Use pooled arrays to avoid allocation per fetch cycle
-        var maxPartitions = assignmentSnapshot.Count;
-        var partitionsToResolve = ArrayPool<TopicPartition>.Shared.Rent(maxPartitions);
-        var partitionCount = 0;
-
-        foreach (var partition in assignmentSnapshot)
-        {
-            if (!pausedSnapshot.Contains(partition))
-            {
-                partitionsToResolve[partitionCount++] = partition;
-            }
-        }
-
-        var leaderTasks = ArrayPool<Task<(TopicPartition Partition, BrokerNode? Leader)>>.Shared.Rent(partitionCount);
+        var leaderTasks = ArrayPool<Task<(TopicPartition Partition, BrokerNode? Leader)>>.Shared.Rent(assignmentCount);
         try
         {
-            for (var i = 0; i < partitionCount; i++)
+            for (var i = 0; i < assignmentCount; i++)
             {
-                var partition = partitionsToResolve[i];
-                leaderTasks[i] = ResolvePartitionLeaderAsync(partition, cancellationToken);
+                leaderTasks[i] = ResolvePartitionLeaderAsync(assignmentArray[i], cancellationToken);
             }
 
-            await Task.WhenAll(new ArraySegment<Task<(TopicPartition Partition, BrokerNode? Leader)>>(leaderTasks, 0, partitionCount)).ConfigureAwait(false);
+            await Task.WhenAll(new ArraySegment<Task<(TopicPartition Partition, BrokerNode? Leader)>>(leaderTasks, 0, assignmentCount)).ConfigureAwait(false);
         }
         finally
         {
-            ArrayPool<TopicPartition>.Shared.Return(partitionsToResolve, clearArray: true);
+            ArrayPool<TopicPartition>.Shared.Return(assignmentArray, clearArray: true);
         }
 
         // Build result dictionary from resolved partitions (tasks already completed)
         var result = new Dictionary<int, List<TopicPartition>>();
-        for (var i = 0; i < partitionCount; i++)
+        for (var i = 0; i < assignmentCount; i++)
         {
             var (partition, leader) = leaderTasks[i].Result;
             if (leader is null)
@@ -2027,16 +2026,15 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         // Return pooled array after extracting results
         ArrayPool<Task<(TopicPartition Partition, BrokerNode? Leader)>>.Shared.Return(leaderTasks, clearArray: true);
 
-        // Cache the result - will be reused until assignment/paused changes (synchronized write)
-        // Use double-checked locking: another thread may have populated cache while we were building.
-        // First writer wins (has fresher metadata from earlier point in time).
+        // Cache the result - will be reused until assignment/paused changes
+        // Check version to ensure assignment didn't change while we were building
         lock (_partitionCacheLock)
         {
-            if (_cachedPartitionsByBroker is null)
+            if (_cachedPartitionsByBroker is null && Volatile.Read(ref _assignmentVersion) == capturedVersion)
             {
                 _cachedPartitionsByBroker = result;
             }
-            return _cachedPartitionsByBroker;
+            return _cachedPartitionsByBroker ?? result;
         }
     }
 

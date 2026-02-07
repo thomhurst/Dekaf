@@ -37,13 +37,15 @@ public sealed class DescribeConfigsRequest : IKafkaRequest<DescribeConfigsRespon
         {
             writer.WriteCompactArray(
                 Resources,
-                (ref KafkaProtocolWriter w, DescribeConfigsResource r) => r.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, DescribeConfigsResource r, short v) => r.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 Resources,
-                (ref KafkaProtocolWriter w, DescribeConfigsResource r) => r.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, DescribeConfigsResource r, short v) => r.Write(ref w, v),
+                version);
         }
 
         if (version >= 1)

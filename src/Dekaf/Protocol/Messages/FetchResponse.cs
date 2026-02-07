@@ -49,8 +49,8 @@ public sealed class FetchResponse : IKafkaResponse
         var sessionId = version >= 7 ? reader.ReadInt32() : 0;
 
         var responses = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => FetchResponseTopic.Read(ref r, version))
-            : reader.ReadArray((ref KafkaProtocolReader r) => FetchResponseTopic.Read(ref r, version));
+            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => FetchResponseTopic.Read(ref r, v), version)
+            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => FetchResponseTopic.Read(ref r, v), version);
 
         if (isFlexible)
         {
@@ -104,8 +104,8 @@ public sealed class FetchResponseTopic
         }
 
         var partitions = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => FetchResponsePartition.Read(ref r, version))
-            : reader.ReadArray((ref KafkaProtocolReader r) => FetchResponsePartition.Read(ref r, version));
+            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => FetchResponsePartition.Read(ref r, v), version)
+            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => FetchResponsePartition.Read(ref r, v), version);
 
         if (isFlexible)
         {
@@ -226,8 +226,8 @@ public sealed class FetchResponsePartition
         if (version >= 4)
         {
             abortedTransactions = isFlexible
-                ? reader.ReadCompactArray((ref KafkaProtocolReader r) => AbortedTransaction.Read(ref r, version))
-                : reader.ReadArray((ref KafkaProtocolReader r) => AbortedTransaction.Read(ref r, version));
+                ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => AbortedTransaction.Read(ref r, v), version)
+                : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => AbortedTransaction.Read(ref r, v), version);
         }
 
         var preferredReadReplica = version >= 11 ? reader.ReadInt32() : -1;

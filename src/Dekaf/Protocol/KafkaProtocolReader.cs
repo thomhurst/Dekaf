@@ -751,7 +751,7 @@ public ref struct KafkaProtocolReader
     public T[] ReadArray<T>(ReadFunc<T> readItem)
     {
         var length = ReadInt32();
-        if (length < 0)
+        if (length <= 0)
             return [];
 
         var result = new T[length];
@@ -768,7 +768,7 @@ public ref struct KafkaProtocolReader
     public T[] ReadCompactArray<T>(ReadFunc<T> readItem)
     {
         var length = ReadUnsignedVarInt() - 1;
-        if (length < 0)
+        if (length <= 0)
             return [];
 
         var result = new T[length];
@@ -835,9 +835,50 @@ public ref struct KafkaProtocolReader
     }
 
     /// <summary>
+    /// Reads an array with 4-byte length prefix (legacy format).
+    /// State-passing overload to avoid closure allocations.
+    /// </summary>
+    public T[] ReadArray<T, TState>(ReadFunc<T, TState> readItem, TState state)
+    {
+        var length = ReadInt32();
+        if (length <= 0)
+            return [];
+
+        var result = new T[length];
+        for (var i = 0; i < length; i++)
+        {
+            result[i] = readItem(ref this, state);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Reads a compact array with unsigned varint length prefix (flexible format).
+    /// State-passing overload to avoid closure allocations.
+    /// </summary>
+    public T[] ReadCompactArray<T, TState>(ReadFunc<T, TState> readItem, TState state)
+    {
+        var length = ReadUnsignedVarInt() - 1;
+        if (length <= 0)
+            return [];
+
+        var result = new T[length];
+        for (var i = 0; i < length; i++)
+        {
+            result[i] = readItem(ref this, state);
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Delegate for reading a single item in an array.
     /// </summary>
     public delegate T ReadFunc<out T>(ref KafkaProtocolReader reader);
+
+    /// <summary>
+    /// Delegate for reading a single item in an array with state to avoid closure allocations.
+    /// </summary>
+    public delegate T ReadFunc<out T, in TState>(ref KafkaProtocolReader reader, TState state);
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowInsufficientData()

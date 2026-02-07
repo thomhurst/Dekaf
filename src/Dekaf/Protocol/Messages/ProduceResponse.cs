@@ -25,8 +25,8 @@ public sealed class ProduceResponse : IKafkaResponse
         var isFlexible = version >= 9;
 
         var responses = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => ProduceResponseTopicData.Read(ref r, version))
-            : reader.ReadArray((ref KafkaProtocolReader r) => ProduceResponseTopicData.Read(ref r, version));
+            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => ProduceResponseTopicData.Read(ref r, v), version)
+            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => ProduceResponseTopicData.Read(ref r, v), version);
 
         var throttleTimeMs = version >= 1 ? reader.ReadInt32() : 0;
 
@@ -65,8 +65,8 @@ public sealed class ProduceResponseTopicData
         var name = isFlexible ? reader.ReadCompactNonNullableString() : reader.ReadString() ?? string.Empty;
 
         var partitionResponses = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => ProduceResponsePartitionData.Read(ref r, version))
-            : reader.ReadArray((ref KafkaProtocolReader r) => ProduceResponsePartitionData.Read(ref r, version));
+            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => ProduceResponsePartitionData.Read(ref r, v), version)
+            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => ProduceResponsePartitionData.Read(ref r, v), version);
 
         if (isFlexible)
         {
@@ -138,8 +138,8 @@ public sealed class ProduceResponsePartitionData
         if (version >= 8)
         {
             recordErrors = isFlexible
-                ? reader.ReadCompactArray((ref KafkaProtocolReader r) => BatchIndexAndErrorMessage.Read(ref r, version))
-                : reader.ReadArray((ref KafkaProtocolReader r) => BatchIndexAndErrorMessage.Read(ref r, version));
+                ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => BatchIndexAndErrorMessage.Read(ref r, v), version)
+                : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => BatchIndexAndErrorMessage.Read(ref r, v), version);
 
             errorMessage = isFlexible ? reader.ReadCompactString() : reader.ReadString();
         }

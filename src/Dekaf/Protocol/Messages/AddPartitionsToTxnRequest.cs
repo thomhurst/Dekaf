@@ -57,7 +57,8 @@ public sealed class AddPartitionsToTxnRequest : IKafkaRequest<AddPartitionsToTxn
             // Topics compact array
             writer.WriteCompactArray(
                 Topics,
-                (ref KafkaProtocolWriter w, AddPartitionsToTxnTopic t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, AddPartitionsToTxnTopic t, short v) => t.Write(ref w, v),
+                version);
 
             // Transaction element tagged fields
             writer.WriteEmptyTaggedFields();
@@ -81,13 +82,15 @@ public sealed class AddPartitionsToTxnRequest : IKafkaRequest<AddPartitionsToTxn
             {
                 writer.WriteCompactArray(
                     Topics,
-                    (ref KafkaProtocolWriter w, AddPartitionsToTxnTopic t) => t.Write(ref w, version));
+                    static (ref KafkaProtocolWriter w, AddPartitionsToTxnTopic t, short v) => t.Write(ref w, v),
+                    version);
             }
             else
             {
                 writer.WriteArray(
                     Topics,
-                    (ref KafkaProtocolWriter w, AddPartitionsToTxnTopic t) => t.Write(ref w, version));
+                    static (ref KafkaProtocolWriter w, AddPartitionsToTxnTopic t, short v) => t.Write(ref w, v),
+                    version);
             }
 
             if (isFlexible)

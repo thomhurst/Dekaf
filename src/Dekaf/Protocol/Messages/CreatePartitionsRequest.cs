@@ -37,13 +37,15 @@ public sealed class CreatePartitionsRequest : IKafkaRequest<CreatePartitionsResp
         {
             writer.WriteCompactArray(
                 Topics,
-                (ref KafkaProtocolWriter w, CreatePartitionsTopic t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, CreatePartitionsTopic t, short v) => t.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 Topics,
-                (ref KafkaProtocolWriter w, CreatePartitionsTopic t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, CreatePartitionsTopic t, short v) => t.Write(ref w, v),
+                version);
         }
 
         writer.WriteInt32(TimeoutMs);
@@ -91,13 +93,15 @@ public sealed class CreatePartitionsTopic
         {
             writer.WriteCompactNullableArray(
                 Assignments,
-                (ref KafkaProtocolWriter w, CreatePartitionsAssignment a) => a.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, CreatePartitionsAssignment a, short v) => a.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteNullableArray(
                 Assignments,
-                (ref KafkaProtocolWriter w, CreatePartitionsAssignment a) => a.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, CreatePartitionsAssignment a, short v) => a.Write(ref w, v),
+                version);
         }
 
         if (isFlexible)

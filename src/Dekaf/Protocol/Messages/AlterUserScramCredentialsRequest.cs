@@ -30,13 +30,15 @@ public sealed class AlterUserScramCredentialsRequest : IKafkaRequest<AlterUserSc
         var deletions = Deletions ?? [];
         writer.WriteCompactArray(
             deletions,
-            (ref KafkaProtocolWriter w, ScramCredentialDeletion d) => d.Write(ref w, version));
+            static (ref KafkaProtocolWriter w, ScramCredentialDeletion d, short v) => d.Write(ref w, v),
+            version);
 
         // Upsertions: COMPACT_ARRAY
         var upsertions = Upsertions ?? [];
         writer.WriteCompactArray(
             upsertions,
-            (ref KafkaProtocolWriter w, ScramCredentialUpsertion u) => u.Write(ref w, version));
+            static (ref KafkaProtocolWriter w, ScramCredentialUpsertion u, short v) => u.Write(ref w, v),
+            version);
 
         writer.WriteEmptyTaggedFields();
     }

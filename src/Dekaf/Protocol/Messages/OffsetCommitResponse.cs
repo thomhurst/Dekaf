@@ -26,8 +26,8 @@ public sealed class OffsetCommitResponse : IKafkaResponse
         var throttleTimeMs = version >= 3 ? reader.ReadInt32() : 0;
 
         var topics = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => OffsetCommitResponseTopic.Read(ref r, version))
-            : reader.ReadArray((ref KafkaProtocolReader r) => OffsetCommitResponseTopic.Read(ref r, version));
+            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetCommitResponseTopic.Read(ref r, v), version)
+            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => OffsetCommitResponseTopic.Read(ref r, v), version);
 
         if (isFlexible)
         {
@@ -57,8 +57,8 @@ public sealed class OffsetCommitResponseTopic
         var name = isFlexible ? reader.ReadCompactNonNullableString() : reader.ReadString() ?? string.Empty;
 
         var partitions = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => OffsetCommitResponsePartition.Read(ref r, version))
-            : reader.ReadArray((ref KafkaProtocolReader r) => OffsetCommitResponsePartition.Read(ref r, version));
+            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetCommitResponsePartition.Read(ref r, v), version)
+            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => OffsetCommitResponsePartition.Read(ref r, v), version);
 
         if (isFlexible)
         {

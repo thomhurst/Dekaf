@@ -24,7 +24,8 @@ public sealed class DescribeUserScramCredentialsRequest : IKafkaRequest<Describe
         // Users: COMPACT_NULLABLE_ARRAY
         writer.WriteCompactNullableArray(
             Users,
-            (ref KafkaProtocolWriter w, UserName u) => u.Write(ref w, version));
+            static (ref KafkaProtocolWriter w, UserName u, short v) => u.Write(ref w, v),
+            version);
 
         writer.WriteEmptyTaggedFields();
     }

@@ -80,8 +80,8 @@ public sealed class AddPartitionsToTxnResponse : IKafkaResponse
         var isFlexible = version >= 3;
 
         var results = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => AddPartitionsToTxnTopicResult.Read(ref r, version))
-            : reader.ReadArray((ref KafkaProtocolReader r) => AddPartitionsToTxnTopicResult.Read(ref r, version));
+            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnTopicResult.Read(ref r, v), version)
+            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnTopicResult.Read(ref r, v), version);
 
         if (isFlexible)
         {
@@ -111,8 +111,8 @@ public sealed class AddPartitionsToTxnTopicResult
         var name = isFlexible ? reader.ReadCompactNonNullableString() : reader.ReadString() ?? string.Empty;
 
         var partitions = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => AddPartitionsToTxnPartitionResult.Read(ref r, version))
-            : reader.ReadArray((ref KafkaProtocolReader r) => AddPartitionsToTxnPartitionResult.Read(ref r, version));
+            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnPartitionResult.Read(ref r, v), version)
+            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => AddPartitionsToTxnPartitionResult.Read(ref r, v), version);
 
         if (isFlexible)
         {

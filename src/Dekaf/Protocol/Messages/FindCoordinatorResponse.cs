@@ -73,7 +73,7 @@ public sealed class FindCoordinatorResponse : IKafkaResponse
         }
         else
         {
-            coordinators = reader.ReadCompactArray((ref KafkaProtocolReader r) => Coordinator.Read(ref r, version));
+            coordinators = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => Coordinator.Read(ref r, v), version);
         }
 
         if (isFlexible)

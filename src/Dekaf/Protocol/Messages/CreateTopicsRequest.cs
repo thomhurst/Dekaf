@@ -37,13 +37,15 @@ public sealed class CreateTopicsRequest : IKafkaRequest<CreateTopicsResponse>
         {
             writer.WriteCompactArray(
                 Topics,
-                (ref KafkaProtocolWriter w, CreateTopicData t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, CreateTopicData t, short v) => t.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 Topics,
-                (ref KafkaProtocolWriter w, CreateTopicData t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, CreateTopicData t, short v) => t.Write(ref w, v),
+                version);
         }
 
         writer.WriteInt32(TimeoutMs);
@@ -108,13 +110,15 @@ public sealed class CreateTopicData
         {
             writer.WriteCompactArray(
                 assignments,
-                (ref KafkaProtocolWriter w, CreateTopicAssignment a) => a.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, CreateTopicAssignment a, short v) => a.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 assignments,
-                (ref KafkaProtocolWriter w, CreateTopicAssignment a) => a.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, CreateTopicAssignment a, short v) => a.Write(ref w, v),
+                version);
         }
 
         // Configs
@@ -123,13 +127,15 @@ public sealed class CreateTopicData
         {
             writer.WriteCompactArray(
                 configs,
-                (ref KafkaProtocolWriter w, CreateTopicConfig c) => c.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, CreateTopicConfig c, short v) => c.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 configs,
-                (ref KafkaProtocolWriter w, CreateTopicConfig c) => c.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, CreateTopicConfig c, short v) => c.Write(ref w, v),
+                version);
         }
 
         if (isFlexible)

@@ -24,8 +24,8 @@ public sealed class MetadataResponse : IKafkaResponse
         var throttleTimeMs = version >= 3 ? reader.ReadInt32() : 0;
 
         var brokers = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => BrokerMetadata.Read(ref r, version))
-            : reader.ReadArray((ref KafkaProtocolReader r) => BrokerMetadata.Read(ref r, version));
+            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => BrokerMetadata.Read(ref r, v), version)
+            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => BrokerMetadata.Read(ref r, v), version);
 
         string? clusterId = null;
         if (version >= 2)
@@ -36,8 +36,8 @@ public sealed class MetadataResponse : IKafkaResponse
         var controllerId = version >= 1 ? reader.ReadInt32() : -1;
 
         var topics = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => TopicMetadata.Read(ref r, version))
-            : reader.ReadArray((ref KafkaProtocolReader r) => TopicMetadata.Read(ref r, version));
+            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => TopicMetadata.Read(ref r, v), version)
+            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => TopicMetadata.Read(ref r, v), version);
 
         var clusterAuthorizedOperations = int.MinValue;
         if (version >= 8 && version <= 10)
@@ -129,8 +129,8 @@ public sealed class TopicMetadata
         var isInternal = version >= 1 && reader.ReadBoolean();
 
         var partitions = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => PartitionMetadata.Read(ref r, version))
-            : reader.ReadArray((ref KafkaProtocolReader r) => PartitionMetadata.Read(ref r, version));
+            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => PartitionMetadata.Read(ref r, v), version)
+            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => PartitionMetadata.Read(ref r, v), version);
 
         var topicAuthorizedOperations = int.MinValue;
         if (version >= 8)

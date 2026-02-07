@@ -126,6 +126,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private const int DefaultKeyBufferSize = 512;
     private const int DefaultValueBufferSize = 2048;
 
+    // Thread-local reusable single-element arrays for ProduceRequest construction.
+    // Avoids per-batch array allocations. Safe because async methods don't run
+    // concurrently on the same thread, and elements are overwritten before each use.
+    [ThreadStatic]
+    private static ProduceRequestTopicData[]? t_topicDataArray;
+    [ThreadStatic]
+    private static ProduceRequestPartitionData[]? t_partitionDataArray;
+    [ThreadStatic]
+    private static RecordBatch[]? t_recordBatchArray;
+
     public KafkaProducer(
         ProducerOptions options,
         ISerializer<TKey> keySerializer,
@@ -2383,7 +2393,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// Sends a batch and handles all cleanup (error handling, semaphore release, pool return).
     /// This method is fire-and-forget from SenderLoopAsync to enable pipelining.
     /// </summary>
-    private async Task SendBatchWithCleanupAsync(ReadyBatch batch, CancellationToken cancellationToken)
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask SendBatchWithCleanupAsync(ReadyBatch batch, CancellationToken cancellationToken)
     {
         try
         {
@@ -2497,7 +2508,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
     }
 
-    private async Task SendBatchAsync(ReadyBatch batch, CancellationToken cancellationToken)
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask SendBatchAsync(ReadyBatch batch, CancellationToken cancellationToken)
     {
         // DIAGNOSTIC: Track batch entry
         _logger?.LogDebug("[SendBatch] START {Topic}-{Partition} with {Count} messages",
@@ -2591,7 +2603,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// This separation allows the retry loop to avoid exception allocation overhead
     /// for retriable errors (exceptions are only thrown for non-retriable failures).
     /// </summary>
-    private async Task<ErrorCode> TrySendBatchCoreAsync(ReadyBatch batch, CancellationToken cancellationToken)
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    private async ValueTask<ErrorCode> TrySendBatchCoreAsync(ReadyBatch batch, CancellationToken cancellationToken)
     {
         var leader = await _metadataManager.GetPartitionLeaderAsync(
             batch.TopicPartition.Topic,
@@ -2641,28 +2654,32 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             }
         }
 
+        // Reuse thread-local single-element arrays to avoid per-batch array allocations
+        var recordBatchArray = t_recordBatchArray ??= new RecordBatch[1];
+        recordBatchArray[0] = batch.RecordBatch;
+
+        var partitionDataArray = t_partitionDataArray ??= new ProduceRequestPartitionData[1];
+        partitionDataArray[0] = new ProduceRequestPartitionData
+        {
+            Index = expectedPartition,
+            Records = recordBatchArray,
+            Compression = _options.CompressionType,
+            CompressionCodecs = _compressionCodecs
+        };
+
+        var topicDataArray = t_topicDataArray ??= new ProduceRequestTopicData[1];
+        topicDataArray[0] = new ProduceRequestTopicData
+        {
+            Name = expectedTopic,
+            PartitionData = partitionDataArray
+        };
+
         var request = new ProduceRequest
         {
             Acks = (short)_options.Acks,
             TimeoutMs = _options.RequestTimeoutMs,
             TransactionalId = _options.TransactionalId,
-            TopicData =
-            [
-                new ProduceRequestTopicData
-                {
-                    Name = expectedTopic,
-                    PartitionData =
-                    [
-                        new ProduceRequestPartitionData
-                        {
-                            Index = expectedPartition,
-                            Records = [batch.RecordBatch],
-                            Compression = _options.CompressionType,
-                            CompressionCodecs = _compressionCodecs
-                        }
-                    ]
-                }
-            ]
+            TopicData = topicDataArray
         };
 
         // Sanity check: verify the request was built correctly

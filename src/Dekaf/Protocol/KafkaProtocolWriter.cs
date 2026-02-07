@@ -552,9 +552,68 @@ public ref struct KafkaProtocolWriter
     }
 
     /// <summary>
+    /// Writes an array with 4-byte length prefix (legacy format).
+    /// State-passing overload to avoid closure allocations.
+    /// </summary>
+    public void WriteArray<T, TState>(IReadOnlyList<T> items, WriteAction<T, TState> writeItem, TState state)
+    {
+        WriteInt32(items.Count);
+        for (var i = 0; i < items.Count; i++)
+        {
+            writeItem(ref this, items[i], state);
+        }
+    }
+
+    /// <summary>
+    /// Writes a nullable array with 4-byte length prefix.
+    /// State-passing overload to avoid closure allocations.
+    /// </summary>
+    public void WriteNullableArray<T, TState>(IReadOnlyList<T>? items, WriteAction<T, TState> writeItem, TState state)
+    {
+        if (items is null)
+        {
+            WriteInt32(-1);
+            return;
+        }
+        WriteArray(items, writeItem, state);
+    }
+
+    /// <summary>
+    /// Writes a compact array with unsigned varint length prefix (flexible format).
+    /// State-passing overload to avoid closure allocations.
+    /// </summary>
+    public void WriteCompactArray<T, TState>(IReadOnlyList<T> items, WriteAction<T, TState> writeItem, TState state)
+    {
+        WriteUnsignedVarInt(items.Count + 1);
+        for (var i = 0; i < items.Count; i++)
+        {
+            writeItem(ref this, items[i], state);
+        }
+    }
+
+    /// <summary>
+    /// Writes a compact nullable array.
+    /// State-passing overload to avoid closure allocations.
+    /// </summary>
+    public void WriteCompactNullableArray<T, TState>(IReadOnlyList<T>? items, WriteAction<T, TState> writeItem, TState state)
+    {
+        if (items is null)
+        {
+            WriteUnsignedVarInt(0);
+            return;
+        }
+        WriteCompactArray(items, writeItem, state);
+    }
+
+    /// <summary>
     /// Delegate for writing a single item in an array.
     /// </summary>
     public delegate void WriteAction<T>(ref KafkaProtocolWriter writer, T item);
+
+    /// <summary>
+    /// Delegate for writing a single item in an array with state to avoid closure allocations.
+    /// </summary>
+    public delegate void WriteAction<T, TState>(ref KafkaProtocolWriter writer, T item, TState state);
 }
 
 /// <summary>

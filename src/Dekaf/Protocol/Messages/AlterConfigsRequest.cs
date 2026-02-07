@@ -33,13 +33,15 @@ public sealed class AlterConfigsRequest : IKafkaRequest<AlterConfigsResponse>
         {
             writer.WriteCompactArray(
                 Resources,
-                (ref KafkaProtocolWriter w, AlterConfigsResource r) => r.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, AlterConfigsResource r, short v) => r.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 Resources,
-                (ref KafkaProtocolWriter w, AlterConfigsResource r) => r.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, AlterConfigsResource r, short v) => r.Write(ref w, v),
+                version);
         }
 
         writer.WriteBoolean(ValidateOnly);
@@ -82,14 +84,16 @@ public sealed class AlterConfigsResource
             writer.WriteCompactString(ResourceName);
             writer.WriteCompactArray(
                 Configs,
-                (ref KafkaProtocolWriter w, AlterableConfig c) => c.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, AlterableConfig c, short v) => c.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteString(ResourceName);
             writer.WriteArray(
                 Configs,
-                (ref KafkaProtocolWriter w, AlterableConfig c) => c.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, AlterableConfig c, short v) => c.Write(ref w, v),
+                version);
         }
 
         if (isFlexible)

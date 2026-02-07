@@ -59,13 +59,15 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>
         {
             writer.WriteCompactArray(
                 TopicData,
-                (ref KafkaProtocolWriter w, ProduceRequestTopicData t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, ProduceRequestTopicData t, short v) => t.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 TopicData,
-                (ref KafkaProtocolWriter w, ProduceRequestTopicData t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, ProduceRequestTopicData t, short v) => t.Write(ref w, v),
+                version);
         }
 
         if (isFlexible)
@@ -103,13 +105,15 @@ public sealed class ProduceRequestTopicData
         {
             writer.WriteCompactArray(
                 PartitionData,
-                (ref KafkaProtocolWriter w, ProduceRequestPartitionData p) => p.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 PartitionData,
-                (ref KafkaProtocolWriter w, ProduceRequestPartitionData p) => p.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, ProduceRequestPartitionData p, short v) => p.Write(ref w, v),
+                version);
         }
 
         if (isFlexible)
