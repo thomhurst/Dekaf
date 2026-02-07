@@ -26,12 +26,12 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
             Value = "original-value"
         });
 
-        // Produce a tombstone (null value) for the same key
+        // Produce a tombstone (null value) for the same key - used for log compaction deletion
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "tombstone-key",
-            Value = null!
+            Value = null! // Intentional: tombstone record requires null value
         });
 
         // Consume both messages
