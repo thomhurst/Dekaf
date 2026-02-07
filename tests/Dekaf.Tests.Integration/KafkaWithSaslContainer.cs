@@ -43,21 +43,25 @@ public sealed class KafkaWithSaslContainer : IAsyncInitializer, IAsyncDisposable
             };
             """;
 
+        // Use a pre-selected port so we can set KAFKA_ADVERTISED_LISTENERS before startup.
+        // ContainerBuilder doesn't support port placeholder substitution like KafkaBuilder does.
+        var hostPort = Random.Shared.Next(20000, 40000);
+
         _kafkaContainer = new ContainerBuilder("confluentinc/cp-kafka:7.5.0")
             .WithNetwork(_network)
             .WithNetworkAliases("kafka-sasl")
-            .WithPortBinding(9092, true)
+            .WithPortBinding(hostPort, 9092)
             .WithEnvironment("KAFKA_NODE_ID", "1")
             .WithEnvironment("KAFKA_PROCESS_ROLES", "broker,controller")
             .WithEnvironment("KAFKA_CONTROLLER_QUORUM_VOTERS", "1@kafka-sasl:9093")
             .WithEnvironment("KAFKA_LISTENERS", "SASL_PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093")
-            .WithEnvironment("KAFKA_ADVERTISED_LISTENERS", "SASL_PLAINTEXT://localhost:{0}")
+            .WithEnvironment("KAFKA_ADVERTISED_LISTENERS", $"SASL_PLAINTEXT://localhost:{hostPort}")
             .WithEnvironment("KAFKA_LISTENER_SECURITY_PROTOCOL_MAP", "SASL_PLAINTEXT:SASL_PLAINTEXT,CONTROLLER:PLAINTEXT")
             .WithEnvironment("KAFKA_CONTROLLER_LISTENER_NAMES", "CONTROLLER")
             .WithEnvironment("KAFKA_INTER_BROKER_LISTENER_NAME", "SASL_PLAINTEXT")
             .WithEnvironment("KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL", "PLAIN")
             .WithEnvironment("KAFKA_SASL_ENABLED_MECHANISMS", "PLAIN,SCRAM-SHA-256")
-            .WithEnvironment("KAFKA_OPTS", $"-Djava.security.auth.login.config=/etc/kafka/kafka_server_jaas.conf")
+            .WithEnvironment("KAFKA_OPTS", "-Djava.security.auth.login.config=/etc/kafka/kafka_server_jaas.conf")
             .WithEnvironment("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", "1")
             .WithEnvironment("KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS", "0")
             .WithEnvironment("CLUSTER_ID", "MkU3OEVBNTcwNTJENDM2Qk")
@@ -69,8 +73,7 @@ public sealed class KafkaWithSaslContainer : IAsyncInitializer, IAsyncDisposable
 
         await _kafkaContainer.StartAsync().ConfigureAwait(false);
 
-        var port = _kafkaContainer.GetMappedPublicPort(9092);
-        _bootstrapServers = $"localhost:{port}";
+        _bootstrapServers = $"localhost:{hostPort}";
 
         Console.WriteLine($"[KafkaWithSasl] Kafka with SASL started at {_bootstrapServers}");
 

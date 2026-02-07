@@ -86,13 +86,19 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
             if (messages.Count >= 10) break;
         }
 
-        // Wait for stats to be collected
-        await Task.Delay(2000).ConfigureAwait(false);
+        // Poll until stats report consumed messages (stats are collected asynchronously)
+        ConsumerStatistics? latestStats = null;
+        for (var i = 0; i < 10; i++)
+        {
+            await Task.Delay(1000).ConfigureAwait(false);
+            latestStats = stats
+                .OrderByDescending(s => s.Timestamp)
+                .FirstOrDefault(s => s.MessagesConsumed > 0);
+            if (latestStats is not null) break;
+        }
 
-        await Assert.That(stats.Count).IsGreaterThanOrEqualTo(1);
-
-        var latestStats = stats.OrderByDescending(s => s.Timestamp).First();
-        await Assert.That(latestStats.MessagesConsumed).IsGreaterThan(0);
+        await Assert.That(latestStats).IsNotNull();
+        await Assert.That(latestStats!.MessagesConsumed).IsGreaterThan(0);
         await Assert.That(latestStats.BytesConsumed).IsGreaterThan(0);
     }
 

@@ -171,26 +171,30 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var txnId = $"eo-fence-{Guid.NewGuid():N}";
 
-        // First producer with transactional ID
-        await using var producer1 = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithTransactionalId(txnId)
-            .WithAcks(Acks.All)
-            .Build();
-
-        await producer1.InitTransactionsAsync();
-
-        // Produce a committed message with producer1
-        await using (var txn = producer1.BeginTransaction())
+        // First producer with transactional ID — produce and dispose before creating second
         {
-            await txn.ProduceAsync(new ProducerMessage<string, string>
+            await using var producer1 = Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithTransactionalId(txnId)
+                .WithAcks(Acks.All)
+                .Build();
+
+            await producer1.InitTransactionsAsync();
+
+            await using (var txn = producer1.BeginTransaction())
             {
-                Topic = topic,
-                Key = "p1-key",
-                Value = "p1-value"
-            });
-            await txn.CommitAsync();
+                await txn.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = "p1-key",
+                    Value = "p1-value"
+                });
+                await txn.CommitAsync();
+            }
         }
+
+        // Brief delay to allow Kafka to release the transactional ID
+        await Task.Delay(1000).ConfigureAwait(false);
 
         // Second producer with same transactional ID - fences first
         await using var producer2 = Kafka.CreateProducer<string, string>()

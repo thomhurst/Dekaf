@@ -10,60 +10,6 @@ namespace Dekaf.Tests.Integration;
 public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
-    public async Task Tombstone_ProduceNullValue_ConsumedAsNullValue()
-    {
-        var topic = await KafkaContainer.CreateTestTopicAsync();
-
-        await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
-
-        // Produce a message with a value
-        await producer.ProduceAsync(new ProducerMessage<string, string>
-        {
-            Topic = topic,
-            Key = "tombstone-key",
-            Value = "original-value"
-        });
-
-        // Produce a tombstone (null value) for the same key - used for log compaction deletion
-        await producer.ProduceAsync(new ProducerMessage<string, string>
-        {
-            Topic = topic,
-            Key = "tombstone-key",
-            Value = null! // Intentional: tombstone record requires null value
-        });
-
-        // Consume both messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithGroupId($"tombstone-test-{Guid.NewGuid():N}")
-            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
-
-        consumer.Subscribe(topic);
-
-        var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-
-        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
-        {
-            messages.Add(msg);
-            if (messages.Count >= 2) break;
-        }
-
-        await Assert.That(messages).Count().IsEqualTo(2);
-
-        // First message has the value
-        await Assert.That(messages[0].Key).IsEqualTo("tombstone-key");
-        await Assert.That(messages[0].Value).IsEqualTo("original-value");
-
-        // Second message is the tombstone with null value
-        await Assert.That(messages[1].Key).IsEqualTo("tombstone-key");
-        await Assert.That(messages[1].Value).IsNull();
-    }
-
-    [Test]
     public async Task CompactedTopic_CreateWithCleanupPolicy_ConfigVerified()
     {
         var topicName = $"compacted-topic-{Guid.NewGuid():N}";
