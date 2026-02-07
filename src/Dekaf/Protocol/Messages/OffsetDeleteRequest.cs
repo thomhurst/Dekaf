@@ -29,7 +29,8 @@ public sealed class OffsetDeleteRequest : IKafkaRequest<OffsetDeleteResponse>
         writer.WriteString(GroupId);
         writer.WriteArray(
             Topics,
-            (ref KafkaProtocolWriter w, OffsetDeleteRequestTopic t) => t.Write(ref w, version));
+            static (ref KafkaProtocolWriter w, OffsetDeleteRequestTopic t, short v) => t.Write(ref w, v),
+            version);
     }
 }
 
@@ -53,7 +54,8 @@ public sealed class OffsetDeleteRequestTopic
         writer.WriteString(Name);
         writer.WriteArray(
             Partitions,
-            (ref KafkaProtocolWriter w, OffsetDeleteRequestPartition p) => p.Write(ref w, version));
+            static (ref KafkaProtocolWriter w, OffsetDeleteRequestPartition p, short v) => p.Write(ref w, v),
+            version);
     }
 }
 

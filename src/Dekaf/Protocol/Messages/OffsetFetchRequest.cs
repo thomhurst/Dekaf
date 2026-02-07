@@ -58,13 +58,15 @@ public sealed class OffsetFetchRequest : IKafkaRequest<OffsetFetchResponse>
             {
                 writer.WriteCompactArray(
                     Topics,
-                    (ref KafkaProtocolWriter w, OffsetFetchRequestTopic t) => t.Write(ref w, version));
+                    static (ref KafkaProtocolWriter w, OffsetFetchRequestTopic t, short v) => t.Write(ref w, v),
+                    version);
             }
             else
             {
                 writer.WriteArray(
                     Topics,
-                    (ref KafkaProtocolWriter w, OffsetFetchRequestTopic t) => t.Write(ref w, version));
+                    static (ref KafkaProtocolWriter w, OffsetFetchRequestTopic t, short v) => t.Write(ref w, v),
+                    version);
             }
 
             if (version >= 7)
@@ -85,7 +87,8 @@ public sealed class OffsetFetchRequest : IKafkaRequest<OffsetFetchResponse>
 
             writer.WriteCompactArray(
                 groups,
-                (ref KafkaProtocolWriter w, OffsetFetchRequestGroup g) => g.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, OffsetFetchRequestGroup g, short v) => g.Write(ref w, v),
+                version);
 
             writer.WriteBoolean(RequireStable);
         }
@@ -162,7 +165,8 @@ public sealed class OffsetFetchRequestGroup
         {
             writer.WriteCompactArray(
                 Topics,
-                (ref KafkaProtocolWriter w, OffsetFetchRequestTopic t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, OffsetFetchRequestTopic t, short v) => t.Write(ref w, v),
+                version);
         }
 
         writer.WriteEmptyTaggedFields();

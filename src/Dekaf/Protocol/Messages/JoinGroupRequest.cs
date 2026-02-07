@@ -92,13 +92,15 @@ public sealed class JoinGroupRequest : IKafkaRequest<JoinGroupResponse>
         {
             writer.WriteCompactArray(
                 Protocols,
-                (ref KafkaProtocolWriter w, JoinGroupRequestProtocol p) => p.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, JoinGroupRequestProtocol p, short v) => p.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 Protocols,
-                (ref KafkaProtocolWriter w, JoinGroupRequestProtocol p) => p.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, JoinGroupRequestProtocol p, short v) => p.Write(ref w, v),
+                version);
         }
 
         if (version >= 8)

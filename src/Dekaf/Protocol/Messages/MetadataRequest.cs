@@ -52,13 +52,15 @@ public sealed class MetadataRequest : IKafkaRequest<MetadataResponse>
         {
             writer.WriteCompactArray(
                 Topics,
-                (ref KafkaProtocolWriter w, MetadataRequestTopic t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, MetadataRequestTopic t, short v) => t.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 Topics,
-                (ref KafkaProtocolWriter w, MetadataRequestTopic t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, MetadataRequestTopic t, short v) => t.Write(ref w, v),
+                version);
         }
 
         if (version >= 4)

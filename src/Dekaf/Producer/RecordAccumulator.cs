@@ -262,6 +262,10 @@ public readonly struct ProducerRecordData
 /// </remarks>
 internal sealed class BatchArena
 {
+    private static readonly ConcurrentQueue<BatchArena> s_pool = new();
+    private const int MaxPoolSize = 64;
+    private static int s_poolCount;
+
     private byte[] _buffer;
     private int _position;
 
@@ -271,6 +275,51 @@ internal sealed class BatchArena
     /// </summary>
     /// <param name="capacity">Buffer size (will be rented from ArrayPool).</param>
     public BatchArena(int capacity)
+    {
+        _buffer = ArrayPool<byte>.Shared.Rent(capacity);
+        _position = 0;
+    }
+
+    /// <summary>
+    /// Rents an arena from the pool or creates a new one.
+    /// </summary>
+    public static BatchArena RentOrCreate(int capacity)
+    {
+        if (s_pool.TryDequeue(out var arena))
+        {
+            Interlocked.Decrement(ref s_poolCount);
+            arena.Reset(capacity);
+            return arena;
+        }
+        return new BatchArena(capacity);
+    }
+
+    /// <summary>
+    /// Returns an arena to the pool for reuse, or disposes it if the pool is full.
+    /// </summary>
+    public static void ReturnToPool(BatchArena arena)
+    {
+        // Return the underlying buffer first
+        var buffer = Interlocked.Exchange(ref arena._buffer, null!);
+        if (buffer is not null)
+        {
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+        }
+
+        if (Interlocked.Increment(ref s_poolCount) <= MaxPoolSize)
+        {
+            s_pool.Enqueue(arena);
+        }
+        else
+        {
+            Interlocked.Decrement(ref s_poolCount);
+        }
+    }
+
+    /// <summary>
+    /// Resets the arena for reuse with a new buffer.
+    /// </summary>
+    private void Reset(int capacity)
     {
         _buffer = ArrayPool<byte>.Shared.Rent(capacity);
         _position = 0;
@@ -2606,9 +2655,9 @@ internal sealed class PartitionBatch
         // This is a no-op but kept for safety.
         _arena?.Return();
 
-        // Allocate new arena for the pooled batch
+        // Rent or create arena for the pooled batch
         var arenaCapacity = options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize;
-        _arena = new BatchArena(arenaCapacity);
+        _arena = BatchArena.RentOrCreate(arenaCapacity);
 
         // Arrays were transferred to ReadyBatch by Complete() and are now null.
         // Allocate fresh arrays for the pooled batch.
@@ -4155,9 +4204,12 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             ArrayPool<Record>.Shared.Return(_pooledRecordsArray, clearArray: false);
         }
 
-        // Return arena buffer if present (arena-based path)
-        // This is a single pool return instead of N individual array returns
-        _arena?.Return();
+        // Return arena to pool for reuse (arena-based path)
+        // This avoids allocating a new BatchArena object on each batch recycle
+        if (_arena is not null)
+        {
+            BatchArena.ReturnToPool(_arena);
+        }
 
         // Return callback array to pool if present
         if (_callbacks is not null)

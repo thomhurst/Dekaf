@@ -27,13 +27,15 @@ public sealed class DeleteAclsRequest : IKafkaRequest<DeleteAclsResponse>
         {
             writer.WriteCompactArray(
                 Filters,
-                (ref KafkaProtocolWriter w, DeleteAclsFilter f) => f.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, DeleteAclsFilter f, short v) => f.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 Filters,
-                (ref KafkaProtocolWriter w, DeleteAclsFilter f) => f.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, DeleteAclsFilter f, short v) => f.Write(ref w, v),
+                version);
         }
 
         if (isFlexible)

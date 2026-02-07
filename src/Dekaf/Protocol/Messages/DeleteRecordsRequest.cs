@@ -32,13 +32,15 @@ public sealed class DeleteRecordsRequest : IKafkaRequest<DeleteRecordsResponse>
         {
             writer.WriteCompactArray(
                 Topics,
-                (ref KafkaProtocolWriter w, DeleteRecordsRequestTopic t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, DeleteRecordsRequestTopic t, short v) => t.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 Topics,
-                (ref KafkaProtocolWriter w, DeleteRecordsRequestTopic t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, DeleteRecordsRequestTopic t, short v) => t.Write(ref w, v),
+                version);
         }
 
         writer.WriteInt32(TimeoutMs);
@@ -78,13 +80,15 @@ public sealed class DeleteRecordsRequestTopic
         {
             writer.WriteCompactArray(
                 Partitions,
-                (ref KafkaProtocolWriter w, DeleteRecordsRequestPartition p) => p.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, DeleteRecordsRequestPartition p, short v) => p.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 Partitions,
-                (ref KafkaProtocolWriter w, DeleteRecordsRequestPartition p) => p.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, DeleteRecordsRequestPartition p, short v) => p.Write(ref w, v),
+                version);
         }
 
         if (isFlexible)

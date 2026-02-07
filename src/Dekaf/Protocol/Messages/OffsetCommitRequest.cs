@@ -80,13 +80,15 @@ public sealed class OffsetCommitRequest : IKafkaRequest<OffsetCommitResponse>
         {
             writer.WriteCompactArray(
                 Topics,
-                (ref KafkaProtocolWriter w, OffsetCommitRequestTopic t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, OffsetCommitRequestTopic t, short v) => t.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 Topics,
-                (ref KafkaProtocolWriter w, OffsetCommitRequestTopic t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, OffsetCommitRequestTopic t, short v) => t.Write(ref w, v),
+                version);
         }
 
         if (isFlexible)
@@ -117,13 +119,15 @@ public sealed class OffsetCommitRequestTopic
         {
             writer.WriteCompactArray(
                 Partitions,
-                (ref KafkaProtocolWriter w, OffsetCommitRequestPartition p) => p.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, OffsetCommitRequestPartition p, short v) => p.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 Partitions,
-                (ref KafkaProtocolWriter w, OffsetCommitRequestPartition p) => p.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, OffsetCommitRequestPartition p, short v) => p.Write(ref w, v),
+                version);
         }
 
         if (isFlexible)

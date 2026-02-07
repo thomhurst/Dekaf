@@ -112,13 +112,15 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
         {
             writer.WriteCompactArray(
                 Topics,
-                (ref KafkaProtocolWriter w, FetchRequestTopic t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, FetchRequestTopic t, short v) => t.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 Topics,
-                (ref KafkaProtocolWriter w, FetchRequestTopic t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, FetchRequestTopic t, short v) => t.Write(ref w, v),
+                version);
         }
 
         if (version >= 7)
@@ -128,13 +130,15 @@ public sealed class FetchRequest : IKafkaRequest<FetchResponse>
             {
                 writer.WriteCompactArray(
                     forgottenTopics,
-                    (ref KafkaProtocolWriter w, ForgottenTopic t) => t.Write(ref w, version));
+                    static (ref KafkaProtocolWriter w, ForgottenTopic t, short v) => t.Write(ref w, v),
+                    version);
             }
             else
             {
                 writer.WriteArray(
                     forgottenTopics,
-                    (ref KafkaProtocolWriter w, ForgottenTopic t) => t.Write(ref w, version));
+                    static (ref KafkaProtocolWriter w, ForgottenTopic t, short v) => t.Write(ref w, v),
+                    version);
             }
         }
 
@@ -193,13 +197,15 @@ public sealed class FetchRequestTopic
         {
             writer.WriteCompactArray(
                 Partitions,
-                (ref KafkaProtocolWriter w, FetchRequestPartition p) => p.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, FetchRequestPartition p, short v) => p.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 Partitions,
-                (ref KafkaProtocolWriter w, FetchRequestPartition p) => p.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, FetchRequestPartition p, short v) => p.Write(ref w, v),
+                version);
         }
 
         if (isFlexible)

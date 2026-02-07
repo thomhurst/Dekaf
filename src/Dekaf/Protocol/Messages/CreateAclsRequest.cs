@@ -27,13 +27,15 @@ public sealed class CreateAclsRequest : IKafkaRequest<CreateAclsResponse>
         {
             writer.WriteCompactArray(
                 Creations,
-                (ref KafkaProtocolWriter w, AclCreation c) => c.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, AclCreation c, short v) => c.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 Creations,
-                (ref KafkaProtocolWriter w, AclCreation c) => c.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, AclCreation c, short v) => c.Write(ref w, v),
+                version);
         }
 
         if (isFlexible)

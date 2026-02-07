@@ -55,13 +55,15 @@ public sealed class ElectLeadersRequest : IKafkaRequest<ElectLeadersResponse>
             {
                 writer.WriteCompactArray(
                     TopicPartitions,
-                    (ref KafkaProtocolWriter w, ElectLeadersRequestTopic t) => t.Write(ref w, version));
+                    static (ref KafkaProtocolWriter w, ElectLeadersRequestTopic t, short v) => t.Write(ref w, v),
+                    version);
             }
             else
             {
                 writer.WriteArray(
                     TopicPartitions,
-                    (ref KafkaProtocolWriter w, ElectLeadersRequestTopic t) => t.Write(ref w, version));
+                    static (ref KafkaProtocolWriter w, ElectLeadersRequestTopic t, short v) => t.Write(ref w, v),
+                    version);
             }
         }
 

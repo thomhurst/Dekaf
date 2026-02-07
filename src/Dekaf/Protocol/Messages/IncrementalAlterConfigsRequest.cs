@@ -32,13 +32,15 @@ public sealed class IncrementalAlterConfigsRequest : IKafkaRequest<IncrementalAl
         {
             writer.WriteCompactArray(
                 Resources,
-                (ref KafkaProtocolWriter w, IncrementalAlterConfigsResource r) => r.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, IncrementalAlterConfigsResource r, short v) => r.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteArray(
                 Resources,
-                (ref KafkaProtocolWriter w, IncrementalAlterConfigsResource r) => r.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, IncrementalAlterConfigsResource r, short v) => r.Write(ref w, v),
+                version);
         }
 
         writer.WriteBoolean(ValidateOnly);
@@ -81,14 +83,16 @@ public sealed class IncrementalAlterConfigsResource
             writer.WriteCompactString(ResourceName);
             writer.WriteCompactArray(
                 Configs,
-                (ref KafkaProtocolWriter w, IncrementalAlterableConfig c) => c.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, IncrementalAlterableConfig c, short v) => c.Write(ref w, v),
+                version);
         }
         else
         {
             writer.WriteString(ResourceName);
             writer.WriteArray(
                 Configs,
-                (ref KafkaProtocolWriter w, IncrementalAlterableConfig c) => c.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, IncrementalAlterableConfig c, short v) => c.Write(ref w, v),
+                version);
         }
 
         if (isFlexible)

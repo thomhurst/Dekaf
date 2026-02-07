@@ -37,11 +37,11 @@ public sealed class LeaveGroupResponse : IKafkaResponse
         {
             if (isFlexible)
             {
-                members = reader.ReadCompactArray((ref KafkaProtocolReader r) => LeaveGroupResponseMember.Read(ref r, version));
+                members = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => LeaveGroupResponseMember.Read(ref r, v), version);
             }
             else
             {
-                members = reader.ReadArray((ref KafkaProtocolReader r) => LeaveGroupResponseMember.Read(ref r, version));
+                members = reader.ReadArray(static (ref KafkaProtocolReader r, short v) => LeaveGroupResponseMember.Read(ref r, v), version);
             }
         }
 

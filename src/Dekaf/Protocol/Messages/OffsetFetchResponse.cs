@@ -42,8 +42,8 @@ public sealed class OffsetFetchResponse : IKafkaResponse
         if (version < 8)
         {
             topics = isFlexible
-                ? reader.ReadCompactArray((ref KafkaProtocolReader r) => OffsetFetchResponseTopic.Read(ref r, version))
-                : reader.ReadArray((ref KafkaProtocolReader r) => OffsetFetchResponseTopic.Read(ref r, version));
+                ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseTopic.Read(ref r, v), version)
+                : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseTopic.Read(ref r, v), version);
 
             if (version >= 2)
             {
@@ -52,7 +52,7 @@ public sealed class OffsetFetchResponse : IKafkaResponse
         }
         else
         {
-            groups = reader.ReadCompactArray((ref KafkaProtocolReader r) => OffsetFetchResponseGroup.Read(ref r, version));
+            groups = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseGroup.Read(ref r, v), version);
         }
 
         if (isFlexible)
@@ -85,8 +85,8 @@ public sealed class OffsetFetchResponseTopic
         var name = isFlexible ? reader.ReadCompactNonNullableString() : reader.ReadString() ?? string.Empty;
 
         var partitions = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => OffsetFetchResponsePartition.Read(ref r, version))
-            : reader.ReadArray((ref KafkaProtocolReader r) => OffsetFetchResponsePartition.Read(ref r, version));
+            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponsePartition.Read(ref r, v), version)
+            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponsePartition.Read(ref r, v), version);
 
         if (isFlexible)
         {
@@ -153,7 +153,7 @@ public sealed class OffsetFetchResponseGroup
     {
         var groupId = reader.ReadCompactNonNullableString();
 
-        var topics = reader.ReadCompactArray((ref KafkaProtocolReader r) => OffsetFetchResponseTopic.Read(ref r, version));
+        var topics = reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => OffsetFetchResponseTopic.Read(ref r, v), version);
 
         var errorCode = (ErrorCode)reader.ReadInt16();
 

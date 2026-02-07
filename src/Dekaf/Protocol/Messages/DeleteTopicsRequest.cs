@@ -40,7 +40,8 @@ public sealed class DeleteTopicsRequest : IKafkaRequest<DeleteTopicsResponse>
             var topics = Topics ?? [];
             writer.WriteCompactArray(
                 topics,
-                (ref KafkaProtocolWriter w, DeleteTopicState t) => t.Write(ref w, version));
+                static (ref KafkaProtocolWriter w, DeleteTopicState t, short v) => t.Write(ref w, v),
+                version);
         }
         else
         {

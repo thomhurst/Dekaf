@@ -86,8 +86,8 @@ public sealed class JoinGroupResponse : IKafkaResponse
         var memberId = isFlexible ? reader.ReadCompactNonNullableString() : reader.ReadString() ?? string.Empty;
 
         var members = isFlexible
-            ? reader.ReadCompactArray((ref KafkaProtocolReader r) => JoinGroupResponseMember.Read(ref r, version))
-            : reader.ReadArray((ref KafkaProtocolReader r) => JoinGroupResponseMember.Read(ref r, version));
+            ? reader.ReadCompactArray(static (ref KafkaProtocolReader r, short v) => JoinGroupResponseMember.Read(ref r, v), version)
+            : reader.ReadArray(static (ref KafkaProtocolReader r, short v) => JoinGroupResponseMember.Read(ref r, v), version);
 
         if (isFlexible)
         {

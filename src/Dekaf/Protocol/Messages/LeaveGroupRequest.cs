@@ -53,13 +53,15 @@ public sealed class LeaveGroupRequest : IKafkaRequest<LeaveGroupResponse>
             {
                 writer.WriteCompactArray(
                     Members ?? [],
-                    (ref KafkaProtocolWriter w, LeaveGroupRequestMember m) => m.Write(ref w, version));
+                    static (ref KafkaProtocolWriter w, LeaveGroupRequestMember m, short v) => m.Write(ref w, v),
+                    version);
             }
             else
             {
                 writer.WriteArray(
                     Members ?? [],
-                    (ref KafkaProtocolWriter w, LeaveGroupRequestMember m) => m.Write(ref w, version));
+                    static (ref KafkaProtocolWriter w, LeaveGroupRequestMember m, short v) => m.Write(ref w, v),
+                    version);
             }
         }
 
