@@ -65,7 +65,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
             var allAssignedPartitions = new HashSet<int>();
             foreach (var consumer in consumers)
             {
-                var assignment = consumer.Assignment.Where(tp => tp.Topic == topic).ToList();
+                var assignment = consumer.Assignment.ToArray().Where(tp => tp.Topic == topic).ToList();
                 // Each consumer should have exactly 2 partitions
                 await Assert.That(assignment.Count).IsEqualTo(2);
 
@@ -127,7 +127,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         // Wait for group to stabilize and assignment to be fully reflected
         await Task.Delay(3000).ConfigureAwait(false);
 
-        var initialAssignment = consumer1.Assignment.Where(tp => tp.Topic == topic).ToList();
+        var initialAssignment = consumer1.Assignment.ToArray().Where(tp => tp.Topic == topic).ToList();
         await Assert.That(initialAssignment.Count).IsEqualTo(4);
 
         // Act - start second consumer, triggering rebalance
@@ -161,8 +161,8 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         await Task.Delay(5000).ConfigureAwait(false);
 
         // Assert - partitions should be redistributed
-        var c1Assignment = consumer1.Assignment.Where(tp => tp.Topic == topic).ToList();
-        var c2Assignment = consumer2.Assignment.Where(tp => tp.Topic == topic).ToList();
+        var c1Assignment = consumer1.Assignment.ToArray().Where(tp => tp.Topic == topic).ToList();
+        var c2Assignment = consumer2.Assignment.ToArray().Where(tp => tp.Topic == topic).ToList();
 
         // Both consumers should have partitions (2 each for even distribution)
         await Assert.That(c1Assignment.Count).IsEqualTo(2);
@@ -241,8 +241,8 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         await Task.Delay(3000).ConfigureAwait(false);
 
         // Both should have 2 partitions each
-        var c1Before = consumer1.Assignment.Where(tp => tp.Topic == topic).Count();
-        var c2Before = consumer2.Assignment.Where(tp => tp.Topic == topic).Count();
+        var c1Before = consumer1.Assignment.ToArray().Where(tp => tp.Topic == topic).Count();
+        var c2Before = consumer2.Assignment.ToArray().Where(tp => tp.Topic == topic).Count();
         await Assert.That(c1Before).IsEqualTo(2);
         await Assert.That(c2Before).IsEqualTo(2);
 
@@ -271,7 +271,7 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         await Task.Delay(3000).ConfigureAwait(false);
 
         // Assert - consumer1 should now have all 4 partitions
-        var c1After = consumer1.Assignment.Where(tp => tp.Topic == topic).Count();
+        var c1After = consumer1.Assignment.ToArray().Where(tp => tp.Topic == topic).Count();
         await Assert.That(c1After).IsEqualTo(4);
     }
 
