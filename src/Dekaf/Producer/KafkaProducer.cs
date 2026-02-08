@@ -519,7 +519,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
         catch (Exception ex)
         {
-            _logger?.LogDebug(ex, "Fire-and-forget produce failed for topic {Topic} (topic metadata fetch)", message.Topic);
+            _logger?.LogWarning(ex, "Fire-and-forget produce failed for topic {Topic} (topic metadata fetch)", message.Topic);
         }
     }
 
