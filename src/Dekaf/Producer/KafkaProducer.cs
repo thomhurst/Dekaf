@@ -2363,7 +2363,31 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     }
                     catch
                     {
+                        // Current batch: pipeline semaphore NOT acquired, so only clean up in-flight + batch resources
+                        try { batch.Fail(new OperationCanceledException(cancellationToken)); }
+                        catch { /* Observe exception */ }
+
+                        _accumulator.ReturnReadyBatch(batch);
+                        _accumulator.OnBatchExitsPipeline();
                         DecrementInFlightSendCount();
+
+                        // Previously drained batches (0..drainCount-1) have pipeline semaphore acquired
+                        // but were never dispatched — clean them up
+                        for (var c = 0; c < drainCount; c++)
+                        {
+                            var abandonedBatch = drainBuffer[c];
+
+                            try { abandonedBatch.Fail(new OperationCanceledException(cancellationToken)); }
+                            catch { /* Observe exception */ }
+
+                            _accumulator.ReturnReadyBatch(abandonedBatch);
+                            _accumulator.OnBatchExitsPipeline();
+                            DecrementInFlightSendCount();
+
+                            try { _senderPipelineSemaphore.Release(); }
+                            catch (ObjectDisposedException) { /* Disposal race */ }
+                        }
+
                         throw;
                     }
 
@@ -2387,11 +2411,20 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
         finally
         {
+            // Wait for in-flight fire-and-forget send tasks before exiting.
+            // Use a bounded timeout to prevent hanging if a task is stuck.
+            using var waitCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            try
+            {
+                await WaitForInFlightSendsAsync(waitCts.Token).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Timeout or cancellation — DisposeAsync will handle remaining cleanup
+            }
+
             ArrayPool<ReadyBatch>.Shared.Return(drainBuffer, clearArray: true);
         }
-
-        // Channel completed - wait for all in-flight sends to finish before exiting
-        await WaitForInFlightSendsAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -2426,7 +2459,13 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             await SendBatchAsync(batch, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException ex)
+        {
+            // Cancellation during gate/semaphore/send — fail completion sources so ProduceAsync callers don't hang
+            try { batch.Fail(ex); }
+            catch { /* Observe exception */ }
+        }
+        catch (Exception ex)
         {
             _logger?.LogError(ex, "Failed to send batch to {Topic}-{Partition}",
                 batch.TopicPartition.Topic, batch.TopicPartition.Partition);
@@ -2453,15 +2492,19 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
         finally
         {
-            // Release only the semaphores that were actually acquired
+            // Release only the semaphores that were actually acquired.
+            // Guard against ObjectDisposedException — during shutdown, semaphores may be
+            // disposed while fire-and-forget tasks are still completing.
             if (sendSemaphoreAcquired)
             {
-                _sendConcurrencySemaphore.Release();
+                try { _sendConcurrencySemaphore.Release(); }
+                catch (ObjectDisposedException) { /* Disposal race — safe to ignore */ }
             }
 
             if (partitionGateAcquired)
             {
-                partitionGate.Release();
+                try { partitionGate.Release(); }
+                catch (ObjectDisposedException) { /* Disposal race — safe to ignore */ }
             }
 
             // Return the ReadyBatch to the pool for reuse
@@ -2478,7 +2521,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             DecrementInFlightSendCount();
 
             // Release pipeline depth slot last - allows SenderLoopAsync to dispatch another batch
-            _senderPipelineSemaphore.Release();
+            try { _senderPipelineSemaphore.Release(); }
+            catch (ObjectDisposedException) { /* Disposal race — safe to ignore */ }
         }
     }
 
@@ -2755,7 +2799,24 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
                     await SendBatchAsync(batch, cancellationToken).ConfigureAwait(false);
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                catch (OperationCanceledException ex)
+                {
+                    // Cancellation during semaphore/send — fail current + remaining chain batches
+                    try { batch.Fail(ex); }
+                    catch { /* Observe exception */ }
+
+                    for (var j = i + 1; j < batches.Count; j++)
+                    {
+                        lastProcessedIndex = j;
+                        var remaining = batches[j];
+
+                        try { remaining.Fail(ex); }
+                        catch { /* Observe exception */ }
+                    }
+
+                    break; // Exit the chain
+                }
+                catch (Exception ex)
                 {
                     _logger?.LogError(ex, "Deferred chain: failed to send batch to {Topic}-{Partition}",
                         batch.TopicPartition.Topic, batch.TopicPartition.Partition);
@@ -2803,14 +2864,17 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 {
                     if (sendSemaphoreAcquired)
                     {
-                        _sendConcurrencySemaphore.Release();
+                        try { _sendConcurrencySemaphore.Release(); }
+                        catch (ObjectDisposedException) { /* Disposal race — safe to ignore */ }
                     }
 
                     // Per-batch cleanup (NOT gate release — gate held for entire chain)
                     _accumulator.ReturnReadyBatch(batch);
                     _accumulator.OnBatchExitsPipeline();
                     DecrementInFlightSendCount();
-                    _senderPipelineSemaphore.Release();
+
+                    try { _senderPipelineSemaphore.Release(); }
+                    catch (ObjectDisposedException) { /* Disposal race — safe to ignore */ }
                 }
             }
         }
@@ -2827,14 +2891,17 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 _accumulator.ReturnReadyBatch(batch);
                 _accumulator.OnBatchExitsPipeline();
                 DecrementInFlightSendCount();
-                _senderPipelineSemaphore.Release();
+
+                try { _senderPipelineSemaphore.Release(); }
+                catch (ObjectDisposedException) { /* Disposal race — safe to ignore */ }
             }
         }
         finally
         {
             if (gateAcquired)
             {
-                partitionGate.Release();
+                try { partitionGate.Release(); }
+                catch (ObjectDisposedException) { /* Disposal race — safe to ignore */ }
             }
         }
     }
@@ -2861,7 +2928,13 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             await SendBatchAsync(batch, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException ex)
+        {
+            // Cancellation during semaphore/send — fail completion sources so ProduceAsync callers don't hang
+            try { batch.Fail(ex); }
+            catch { /* Observe exception */ }
+        }
+        catch (Exception ex)
         {
             _logger?.LogError(ex, "Failed to send batch to {Topic}-{Partition}",
                 batch.TopicPartition.Topic, batch.TopicPartition.Partition);
@@ -2887,16 +2960,20 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             if (sendSemaphoreAcquired)
             {
-                _sendConcurrencySemaphore.Release();
+                try { _sendConcurrencySemaphore.Release(); }
+                catch (ObjectDisposedException) { /* Disposal race — safe to ignore */ }
             }
 
             // Release the pre-acquired partition gate
-            partitionGate.Release();
+            try { partitionGate.Release(); }
+            catch (ObjectDisposedException) { /* Disposal race — safe to ignore */ }
 
             _accumulator.ReturnReadyBatch(batch);
             _accumulator.OnBatchExitsPipeline();
             DecrementInFlightSendCount();
-            _senderPipelineSemaphore.Release();
+
+            try { _senderPipelineSemaphore.Release(); }
+            catch (ObjectDisposedException) { /* Disposal race — safe to ignore */ }
         }
     }
 
@@ -2935,7 +3012,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             }
             finally
             {
-                _sendConcurrencySemaphore.Release();
+                try { _sendConcurrencySemaphore.Release(); }
+                catch (ObjectDisposedException) { /* Disposal race — safe to ignore */ }
             }
 
             // Handle per-partition failures
@@ -2982,7 +3060,19 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 }
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException ex)
+        {
+            // Cancellation — fail all non-retried batches so ProduceAsync callers don't hang
+            for (var i = 0; i < batchCount; i++)
+            {
+                if ((retriedMask & (1 << i)) != 0)
+                    continue;
+
+                try { batches[i].Fail(ex); }
+                catch { /* Observe exception */ }
+            }
+        }
+        catch (Exception ex)
         {
             // Entire coalesced send failed — fail all batches that weren't already retried
             _logger?.LogError(ex, "Coalesced send to broker {BrokerId} failed", brokerId);
@@ -3020,12 +3110,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 if ((retriedMask & (1 << i)) != 0)
                     continue;
 
-                gates[i].Release();
+                try { gates[i].Release(); }
+                catch (ObjectDisposedException) { /* Disposal race — safe to ignore */ }
 
                 _accumulator.ReturnReadyBatch(batches[i]);
                 _accumulator.OnBatchExitsPipeline();
                 DecrementInFlightSendCount();
-                _senderPipelineSemaphore.Release();
+
+                try { _senderPipelineSemaphore.Release(); }
+                catch (ObjectDisposedException) { /* Disposal race — safe to ignore */ }
             }
 
             // Return pooled arrays
@@ -3942,6 +4035,19 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         catch
         {
             // Ignore
+        }
+
+        // Wait for any remaining in-flight fire-and-forget tasks before disposing semaphores.
+        // The sender loop's finally already waits with a 10s timeout, but forceful shutdown
+        // may have cancelled before that completed.
+        using var inflightCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            await WaitForInFlightSendsAsync(inflightCts.Token).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Best-effort — proceed with disposal
         }
 
         _senderCts.Dispose();
