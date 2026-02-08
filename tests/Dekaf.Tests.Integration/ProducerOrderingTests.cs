@@ -361,4 +361,86 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             }
         }
     }
+
+    [Test]
+    public async Task MultiPartition_CoalescedSend_OrderingPreserved()
+    {
+        // 8 partitions with small batch size and short linger to force many simultaneous batches.
+        // Under load, the sender loop drains multiple batches at once and coalesces them into
+        // fewer ProduceRequests per broker. Verify per-partition ordering is preserved.
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 8);
+        const int messagesPerPartition = 500;
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-coalesced-ordering")
+            .WithAcks(Acks.All)
+            .EnableIdempotence()
+            .WithBatchSize(1024) // Small to force many batches
+            .WithLinger(TimeSpan.FromMilliseconds(1))
+            .Build();
+
+        // Produce to all 8 partitions concurrently to stress the coalescing path
+        var produceTasks = new List<ValueTask<RecordMetadata>>();
+        for (var p = 0; p < 8; p++)
+        {
+            for (var i = 0; i < messagesPerPartition; i++)
+            {
+                produceTasks.Add(producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = $"p{p}-msg-{i}",
+                    Value = $"p{p}-seq-{i:D4}",
+                    Partition = p
+                }));
+            }
+        }
+
+        foreach (var task in produceTasks)
+        {
+            await task;
+        }
+
+        // Consume from all partitions
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId($"coalesced-ordering-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .Build();
+
+        consumer.Subscribe(topic);
+
+        var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
+        for (var p = 0; p < 8; p++) messagesByPartition[p] = [];
+
+        var totalExpected = 8 * messagesPerPartition;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            messagesByPartition[msg.Partition].Add(msg);
+            var total = messagesByPartition.Values.Sum(l => l.Count);
+            if (total >= totalExpected) break;
+        }
+
+        // Verify per-partition ordering
+        for (var p = 0; p < 8; p++)
+        {
+            var partitionMessages = messagesByPartition[p];
+            await Assert.That(partitionMessages).Count().IsEqualTo(messagesPerPartition);
+
+            // Values within each partition must be in sequence order
+            for (var i = 0; i < messagesPerPartition; i++)
+            {
+                await Assert.That(partitionMessages[i].Value).IsEqualTo($"p{p}-seq-{i:D4}");
+            }
+
+            // Offsets within each partition must be monotonically increasing
+            for (var i = 1; i < partitionMessages.Count; i++)
+            {
+                await Assert.That(partitionMessages[i].Offset)
+                    .IsGreaterThan(partitionMessages[i - 1].Offset);
+            }
+        }
+    }
 }
