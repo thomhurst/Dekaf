@@ -19,11 +19,47 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             .Build();
     }
 
+    /// <summary>
+    /// Waits for a condition to become true with exponential backoff.
+    /// Kafka operations have eventual consistency - changes may not be immediately visible.
+    /// </summary>
+    private static async Task<T> WaitForConditionAsync<T>(
+        Func<Task<T>> check,
+        Func<T, bool> condition,
+        int maxRetries = 5,
+        int initialDelayMs = 500)
+    {
+        T result = default!;
+        for (var i = 0; i < maxRetries; i++)
+        {
+            await Task.Delay(initialDelayMs * (i + 1)).ConfigureAwait(false);
+            result = await check().ConfigureAwait(false);
+            if (condition(result))
+                return result;
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Waits for metadata propagation after partition expansion by polling DescribeTopicsAsync
+    /// until the expected partition count is visible.
+    /// </summary>
+    private static async Task WaitForPartitionCountAsync(IAdminClient admin, string topic, int expectedPartitionCount)
+    {
+        await WaitForConditionAsync(
+            async () =>
+            {
+                var descriptions = await admin.DescribeTopicsAsync([topic]).ConfigureAwait(false);
+                return descriptions.TryGetValue(topic, out var desc) ? desc.Partitions.Count : 0;
+            },
+            count => count >= expectedPartitionCount).ConfigureAwait(false);
+    }
+
     [Test]
     public async Task ConsumerGroup_DetectsNewPartitions_AfterExpansion()
     {
         // Arrange - create topic with 2 partitions
-        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
         var listener = new PartitionTrackingRebalanceListener();
 
@@ -41,7 +77,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }).ConfigureAwait(false);
         }
 
         // First consumer: subscribe, consume, commit, then dispose with short session
@@ -58,26 +94,23 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             consumer1.Subscribe(topic);
 
             using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            var msg1 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token);
+            var msg1 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token).ConfigureAwait(false);
             await Assert.That(msg1).IsNotNull();
-            var msg2 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token);
+            var msg2 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token).ConfigureAwait(false);
             await Assert.That(msg2).IsNotNull();
 
             await consumer1.CommitAsync([
                 new TopicPartitionOffset(topic, 0, 1),
                 new TopicPartitionOffset(topic, 1, 1)
-            ]);
+            ]).ConfigureAwait(false);
         }
-
-        // Wait for consumer group to become empty after first consumer leaves
-        await Task.Delay(5000);
 
         // Act - expand from 2 to 4 partitions
         await using var admin = CreateAdminClient();
-        await admin.CreatePartitionsAsync(new Dictionary<string, int> { [topic] = 4 });
+        await admin.CreatePartitionsAsync(new Dictionary<string, int> { [topic] = 4 }).ConfigureAwait(false);
 
-        // Wait for metadata propagation
-        await Task.Delay(5000);
+        // Wait for metadata propagation by polling until partition count is visible
+        await WaitForPartitionCountAsync(admin, topic, 4).ConfigureAwait(false);
 
         // Produce to a new partition
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -86,7 +119,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             Key = "key-new-2",
             Value = "value-new-2",
             Partition = 2
-        });
+        }).ConfigureAwait(false);
 
         // Create a new consumer in the same group - it should discover the expanded partitions
         var listener2 = new PartitionTrackingRebalanceListener();
@@ -102,8 +135,8 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         consumer2.Subscribe(topic);
 
         // Consume - the new consumer should get assigned all partitions including new ones
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(60), cts2.Token);
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts2.Token).ConfigureAwait(false);
         await Assert.That(result).IsNotNull();
 
         // Assert - consumer should have detected the new partitions
@@ -116,7 +149,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
     public async Task NewPartitions_AreAssigned_ToConsumersInGroup()
     {
         // Arrange - create topic with 2 partitions
-        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
@@ -133,7 +166,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }).ConfigureAwait(false);
         }
 
         // First consumer establishes the group and commits
@@ -149,24 +182,21 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             consumer1.Subscribe(topic);
 
             using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            var msg1 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token);
+            var msg1 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token).ConfigureAwait(false);
             await Assert.That(msg1).IsNotNull();
-            var msg2 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token);
+            var msg2 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token).ConfigureAwait(false);
             await Assert.That(msg2).IsNotNull();
 
             // Verify initial assignment was 2 partitions
             await Assert.That(consumer1.Assignment.Count).IsEqualTo(2);
         }
 
-        // Wait for consumer group to stabilize after first consumer leaves
-        await Task.Delay(5000);
-
         // Act - expand from 2 to 4 partitions
         await using var admin = CreateAdminClient();
-        await admin.CreatePartitionsAsync(new Dictionary<string, int> { [topic] = 4 });
+        await admin.CreatePartitionsAsync(new Dictionary<string, int> { [topic] = 4 }).ConfigureAwait(false);
 
-        // Wait for metadata propagation
-        await Task.Delay(5000);
+        // Wait for metadata propagation by polling until partition count is visible
+        await WaitForPartitionCountAsync(admin, topic, 4).ConfigureAwait(false);
 
         // Produce to new partitions
         for (var p = 2; p < 4; p++)
@@ -177,7 +207,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-new-{p}",
                 Value = $"value-new-{p}",
                 Partition = p
-            });
+            }).ConfigureAwait(false);
         }
 
         // New consumer joining the same group should get all 4 partitions
@@ -194,14 +224,14 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         consumer2.Subscribe(topic);
 
         // Consume messages - should get messages from new partitions
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var newPartitionMessages = new List<ConsumeResult<string, string>>();
 
         try
         {
             while (!cts2.Token.IsCancellationRequested)
             {
-                var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts2.Token);
+                var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts2.Token).ConfigureAwait(false);
                 if (result is { } r)
                 {
                     if (r.Partition >= 2)
@@ -227,7 +257,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
     public async Task MessagesToNewPartitions_AreConsumed_AfterRebalance()
     {
         // Arrange - create topic with 2 partitions
-        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         await using var producer = Kafka.CreateProducer<string, string>()
@@ -244,7 +274,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-{p}",
                 Value = $"value-original-{p}",
                 Partition = p
-            });
+            }).ConfigureAwait(false);
         }
 
         // First consumer consumes and commits original messages
@@ -260,26 +290,23 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             consumer1.Subscribe(topic);
 
             using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            var msg1 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token);
+            var msg1 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token).ConfigureAwait(false);
             await Assert.That(msg1).IsNotNull();
-            var msg2 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token);
+            var msg2 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token).ConfigureAwait(false);
             await Assert.That(msg2).IsNotNull();
 
             await consumer1.CommitAsync([
                 new TopicPartitionOffset(topic, 0, 1),
                 new TopicPartitionOffset(topic, 1, 1)
-            ]);
+            ]).ConfigureAwait(false);
         }
-
-        // Wait for consumer group to stabilize
-        await Task.Delay(5000);
 
         // Act - expand from 2 to 4 partitions
         await using var admin = CreateAdminClient();
-        await admin.CreatePartitionsAsync(new Dictionary<string, int> { [topic] = 4 });
+        await admin.CreatePartitionsAsync(new Dictionary<string, int> { [topic] = 4 }).ConfigureAwait(false);
 
-        // Wait for metadata propagation
-        await Task.Delay(5000);
+        // Wait for metadata propagation by polling until partition count is visible
+        await WaitForPartitionCountAsync(admin, topic, 4).ConfigureAwait(false);
 
         // Produce messages to new partitions with distinct values
         var expectedNewValues = new HashSet<string>();
@@ -293,7 +320,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-expanded-{p}",
                 Value = value,
                 Partition = p
-            });
+            }).ConfigureAwait(false);
         }
 
         // New consumer should consume messages from new partitions
@@ -308,13 +335,13 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         consumer2.Subscribe(topic);
 
         var newPartitionValues = new HashSet<string>();
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         try
         {
             while (!cts2.Token.IsCancellationRequested)
             {
-                var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts2.Token);
+                var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts2.Token).ConfigureAwait(false);
                 if (result is { } r && r.Partition >= 2)
                 {
                     newPartitionValues.Add(r.Value);
@@ -340,7 +367,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
     public async Task ManualAssignment_DoesNotAutoDetect_NewPartitions()
     {
         // Arrange - create topic with 2 partitions
-        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -356,7 +383,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }).ConfigureAwait(false);
         }
 
         // Manually assign only partition 0 and 1 (no group ID, no subscription)
@@ -372,17 +399,17 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
 
         // Consume initial messages
         using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var msg1 = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token);
+        var msg1 = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token).ConfigureAwait(false);
         await Assert.That(msg1).IsNotNull();
-        var msg2 = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token);
+        var msg2 = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token).ConfigureAwait(false);
         await Assert.That(msg2).IsNotNull();
 
         // Act - expand from 2 to 4 partitions
         await using var admin = CreateAdminClient();
-        await admin.CreatePartitionsAsync(new Dictionary<string, int> { [topic] = 4 });
+        await admin.CreatePartitionsAsync(new Dictionary<string, int> { [topic] = 4 }).ConfigureAwait(false);
 
-        // Wait for metadata propagation
-        await Task.Delay(5000);
+        // Wait for metadata propagation by polling until partition count is visible
+        await WaitForPartitionCountAsync(admin, topic, 4).ConfigureAwait(false);
 
         // Produce to the new partition
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -391,10 +418,14 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             Key = "key-new",
             Value = "value-new",
             Partition = 2
-        });
+        }).ConfigureAwait(false);
 
-        // Wait a bit for any potential auto-detection
-        await Task.Delay(5000);
+        // Wait briefly for any potential auto-detection
+        await WaitForConditionAsync(
+            () => Task.FromResult(consumer.Assignment.Count),
+            count => count > 2,
+            maxRetries: 3,
+            initialDelayMs: 500).ConfigureAwait(false);
 
         // Assert - manual assignment should NOT auto-detect new partitions
         // The consumer should still only be assigned partitions 0 and 1
@@ -411,7 +442,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         {
             while (!cts2.Token.IsCancellationRequested)
             {
-                var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(3), cts2.Token);
+                var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(3), cts2.Token).ConfigureAwait(false);
                 if (result is { } r && r.Partition == 2)
                 {
                     partition2Messages.Add(r);
@@ -432,7 +463,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         // Arrange - create topic with a unique prefix and 2 partitions
         var topicPrefix = $"pattern-expand-{Guid.NewGuid():N}";
         var topic = $"{topicPrefix}-main";
-        await KafkaContainer.CreateTopicAsync(topic, partitions: 2);
+        await KafkaContainer.CreateTopicAsync(topic, partitions: 2).ConfigureAwait(false);
 
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -448,7 +479,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }).ConfigureAwait(false);
         }
 
         var groupId = $"test-group-{Guid.NewGuid():N}";
@@ -466,26 +497,23 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             consumer1.Subscribe(t => t.StartsWith(topicPrefix, StringComparison.Ordinal));
 
             using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            var msg1 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token);
+            var msg1 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token).ConfigureAwait(false);
             await Assert.That(msg1).IsNotNull();
-            var msg2 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token);
+            var msg2 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token).ConfigureAwait(false);
             await Assert.That(msg2).IsNotNull();
 
             await consumer1.CommitAsync([
                 new TopicPartitionOffset(topic, 0, 1),
                 new TopicPartitionOffset(topic, 1, 1)
-            ]);
+            ]).ConfigureAwait(false);
         }
-
-        // Wait for consumer group to stabilize
-        await Task.Delay(5000);
 
         // Act - expand the topic from 2 to 4 partitions
         await using var admin = CreateAdminClient();
-        await admin.CreatePartitionsAsync(new Dictionary<string, int> { [topic] = 4 });
+        await admin.CreatePartitionsAsync(new Dictionary<string, int> { [topic] = 4 }).ConfigureAwait(false);
 
-        // Wait for metadata propagation
-        await Task.Delay(5000);
+        // Wait for metadata propagation by polling until partition count is visible
+        await WaitForPartitionCountAsync(admin, topic, 4).ConfigureAwait(false);
 
         // Produce to new partitions
         for (var p = 2; p < 4; p++)
@@ -496,7 +524,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
                 Key = $"key-expanded-{p}",
                 Value = $"value-expanded-{p}",
                 Partition = p
-            });
+            }).ConfigureAwait(false);
         }
 
         // New consumer with pattern subscription should discover new partitions
@@ -511,13 +539,13 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         consumer2.Subscribe(t => t.StartsWith(topicPrefix, StringComparison.Ordinal));
 
         var newPartitionMessages = new List<ConsumeResult<string, string>>();
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         try
         {
             while (!cts2.Token.IsCancellationRequested)
             {
-                var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts2.Token);
+                var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts2.Token).ConfigureAwait(false);
                 if (result is { } r && r.Partition >= 2)
                 {
                     newPartitionMessages.Add(r);
