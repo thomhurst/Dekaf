@@ -182,7 +182,7 @@ public static class Program
             }
 
             // Flush every batch to avoid overwhelming the buffer with backpressure
-            // Each batch is 10K messages × 1KB = 10MB, buffer is 32MB
+            // Each batch is 10K messages × 1KB = 10MB, buffer is 1GB
             await producer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
 
             if (batch % 10 == 0)

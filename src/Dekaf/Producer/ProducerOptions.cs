@@ -47,9 +47,9 @@ public sealed class ProducerOptions
     /// <summary>
     /// Total memory buffer size in bytes for pending messages.
     /// When the buffer is full, Send() and ProduceAsync() will block until space is available.
-    /// Default is 256MB, which handles bursty workloads without excessive memory usage.
+    /// Default is 1GB, matching librdkafka's default (queue.buffering.max.kbytes).
     /// </summary>
-    public ulong BufferMemory { get; init; } = 268435456;
+    public ulong BufferMemory { get; init; } = 1073741824;
 
     /// <summary>
     /// Compression type.

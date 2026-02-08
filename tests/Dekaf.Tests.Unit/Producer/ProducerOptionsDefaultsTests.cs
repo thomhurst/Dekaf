@@ -48,10 +48,10 @@ public class ProducerOptionsDefaultsTests
     }
 
     [Test]
-    public async Task BufferMemory_DefaultsTo_256MB()
+    public async Task BufferMemory_DefaultsTo_1GB()
     {
         var options = CreateOptions();
-        await Assert.That(options.BufferMemory).IsEqualTo(268435456UL);
+        await Assert.That(options.BufferMemory).IsEqualTo(1073741824UL);
     }
 
     [Test]
