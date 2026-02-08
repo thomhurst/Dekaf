@@ -64,6 +64,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly ManualResetEventSlim _allSendsCompleted = new(true); // Initially signaled (no sends in flight)
     private readonly object _sendCompletionLock = new(); // Prevents race between Reset() and Set()
 
+    // Reused by DispatchCoalescedBatches (sender loop is single-threaded, so no contention).
+    // Inner arrays are rented from ArrayPool and returned by the fire-and-forget send tasks.
+    private readonly Dictionary<int, (int Count, ReadyBatch[] Batches, SemaphoreSlim[] Gates)> _brokerGroups = new();
 
     // Channel-based worker pool for thread-safe produce operations
     private readonly Channel<ProduceWorkItem<TKey, TValue>> _workChannel;
@@ -2680,8 +2683,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         int drainCount,
         CancellationToken cancellationToken)
     {
-        // broker ID → (batches, partition gates)
-        Dictionary<int, (List<ReadyBatch> Batches, List<SemaphoreSlim> Gates)>? brokerGroups = null;
+        // Reuse instance dictionary (sender loop is single-threaded, so no contention).
+        // Inner arrays are rented from ArrayPool and ownership is transferred to fire-and-forget tasks.
+        _brokerGroups.Clear();
 
         for (var i = 0; i < drainCount; i++)
         {
@@ -2708,32 +2712,35 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 continue;
             }
 
-            // Gate acquired — add to broker group
-            brokerGroups ??= new Dictionary<int, (List<ReadyBatch>, List<SemaphoreSlim>)>();
-            if (!brokerGroups.TryGetValue(leader.NodeId, out var group))
+            // Gate acquired — add to broker group using pooled arrays
+            if (!_brokerGroups.TryGetValue(leader.NodeId, out var group))
             {
-                group = ([], []);
-                brokerGroups[leader.NodeId] = group;
+                group = (0, ArrayPool<ReadyBatch>.Shared.Rent(drainCount), ArrayPool<SemaphoreSlim>.Shared.Rent(drainCount));
+                _brokerGroups[leader.NodeId] = group;
             }
-            group.Batches.Add(batch);
-            group.Gates.Add(partitionGate);
+
+            group.Batches[group.Count] = batch;
+            group.Gates[group.Count] = partitionGate;
+            _brokerGroups[leader.NodeId] = (group.Count + 1, group.Batches, group.Gates);
         }
 
-        if (brokerGroups is null)
-            return;
-
         // Dispatch each broker group
-        foreach (var (brokerId, (batches, gates)) in brokerGroups)
+        foreach (var (brokerId, (count, batches, gates)) in _brokerGroups)
         {
-            if (batches.Count == 1)
+            if (count == 1)
             {
                 // Single batch for this broker — use optimized single-batch path
                 _ = SendBatchWithGateAlreadyAcquiredAsync(batches[0], gates[0], cancellationToken);
+
+                // Return arrays immediately — single-batch path doesn't need them
+                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+                ArrayPool<SemaphoreSlim>.Shared.Return(gates, clearArray: true);
             }
             else
             {
-                // Multiple batches for this broker — coalesce into one request
-                _ = SendCoalescedBatchesAsync(batches, brokerId, gates, cancellationToken);
+                // Multiple batches for this broker — coalesce into one request.
+                // Array ownership transferred; SendCoalescedBatchesAsync returns them in finally.
+                _ = SendCoalescedBatchesAsync(batches, count, gates, brokerId, cancellationToken);
             }
         }
     }
@@ -2804,29 +2811,32 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// Acquires one _sendConcurrencySemaphore slot for the group, sends all batches in a single
     /// ProduceRequest, then handles per-partition failures by falling back to individual retry paths.
     /// </summary>
-    /// <param name="batches">Batches in this group (all destined for the same broker). Ownership is transferred.</param>
+    /// <param name="batches">Pooled array of batches (from ArrayPool). Returned in finally.</param>
+    /// <param name="batchCount">Number of valid entries in batches/gates arrays.</param>
+    /// <param name="gates">Pooled array of pre-acquired partition gates (from ArrayPool). Returned in finally.</param>
     /// <param name="brokerId">Target broker ID.</param>
-    /// <param name="partitionGates">Pre-acquired partition gates, one per batch (same indices as batches).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendCoalescedBatchesAsync(
-        List<ReadyBatch> batches,
+        ReadyBatch[] batches,
+        int batchCount,
+        SemaphoreSlim[] gates,
         int brokerId,
-        List<SemaphoreSlim> partitionGates,
         CancellationToken cancellationToken)
     {
-        // Track which batches have been handed off to retry (they handle their own cleanup)
-        HashSet<ReadyBatch>? retriedBatches = null;
+        // Bitmask tracks which batches were handed off to retry (they handle their own cleanup).
+        // maxDrain ≤ 20, so int (32 bits) is always sufficient.
+        var retriedMask = 0;
 
         try
         {
             // Acquire ONE global concurrency slot for the entire group
             await _sendConcurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-            List<(ReadyBatch Batch, ErrorCode Error)>? failures;
+            List<(int BatchIndex, ErrorCode Error)>? failures;
             try
             {
-                failures = await TrySendCoalescedCoreAsync(batches, brokerId, cancellationToken)
+                failures = await TrySendCoalescedCoreAsync(batches, batchCount, brokerId, cancellationToken)
                     .ConfigureAwait(false);
             }
             finally
@@ -2837,20 +2847,18 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // Handle per-partition failures
             if (failures is not null)
             {
-                foreach (var (batch, errorCode) in failures)
+                foreach (var (batchIndex, errorCode) in failures)
                 {
+                    var batch = batches[batchIndex];
+
                     if (errorCode.IsRetriable())
                     {
                         // Hand off to existing single-batch retry path.
                         // That path acquires its own concurrency slot, partition gate, and handles cleanup.
-                        // We must release THIS batch's partition gate before handing off, since
-                        // SendBatchWithCleanupAsync acquires it again.
-                        retriedBatches ??= [];
-                        retriedBatches.Add(batch);
+                        retriedMask |= 1 << batchIndex;
 
                         // Release this batch's partition gate now — the retry path will re-acquire it
-                        var gateIndex = batches.IndexOf(batch);
-                        partitionGates[gateIndex].Release();
+                        gates[batchIndex].Release();
 
                         // Fire-and-forget into the existing retry path (it handles all cleanup)
                         _ = SendBatchWithCleanupAsync(batch, cancellationToken);
@@ -2884,10 +2892,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // Entire coalesced send failed — fail all batches that weren't already retried
             _logger?.LogError(ex, "Coalesced send to broker {BrokerId} failed", brokerId);
 
-            foreach (var batch in batches)
+            for (var i = 0; i < batchCount; i++)
             {
-                if (retriedBatches?.Contains(batch) == true)
+                if ((retriedMask & (1 << i)) != 0)
                     continue;
+
+                var batch = batches[i];
 
                 _statisticsCollector.RecordBatchFailed(
                     batch.TopicPartition.Topic,
@@ -2910,20 +2920,22 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         finally
         {
             // Clean up all batches NOT handed off to retry
-            for (var i = 0; i < batches.Count; i++)
+            for (var i = 0; i < batchCount; i++)
             {
-                var batch = batches[i];
-                if (retriedBatches?.Contains(batch) == true)
+                if ((retriedMask & (1 << i)) != 0)
                     continue;
 
-                // Release partition gate (if not already released for retry)
-                partitionGates[i].Release();
+                gates[i].Release();
 
-                _accumulator.ReturnReadyBatch(batch);
+                _accumulator.ReturnReadyBatch(batches[i]);
                 _accumulator.OnBatchExitsPipeline();
                 DecrementInFlightSendCount();
                 _senderPipelineSemaphore.Release();
             }
+
+            // Return pooled arrays
+            ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+            ArrayPool<SemaphoreSlim>.Shared.Return(gates, clearArray: true);
         }
     }
 
@@ -3246,11 +3258,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// <summary>
     /// Core send logic for a coalesced group of batches destined for the same broker.
     /// Builds a multi-topic/partition ProduceRequest, sends it, and processes the response.
-    /// Returns a list of (batch, errorCode) pairs for partitions that failed with retriable errors.
+    /// Returns a list of (batchIndex, errorCode) pairs for partitions that failed.
     /// Successfully sent batches are completed inline.
     /// </summary>
-    private async ValueTask<List<(ReadyBatch Batch, ErrorCode Error)>?> TrySendCoalescedCoreAsync(
-        List<ReadyBatch> batches,
+    private async ValueTask<List<(int BatchIndex, ErrorCode Error)>?> TrySendCoalescedCoreAsync(
+        ReadyBatch[] batches,
+        int batchCount,
         int brokerId,
         CancellationToken cancellationToken)
     {
@@ -3275,12 +3288,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             List<TopicPartition>? newPartitions = null;
             lock (_partitionsInTransaction)
             {
-                foreach (var batch in batches)
+                for (var i = 0; i < batchCount; i++)
                 {
-                    if (_partitionsInTransaction.Add(batch.TopicPartition))
+                    if (_partitionsInTransaction.Add(batches[i].TopicPartition))
                     {
                         newPartitions ??= [];
-                        newPartitions.Add(batch.TopicPartition);
+                        newPartitions.Add(batches[i].TopicPartition);
                     }
                 }
             }
@@ -3292,38 +3305,68 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             }
         }
 
-        // Group batches by topic to build the multi-partition request
-        // Use a dictionary keyed by topic name → list of (batch, partitionData)
-        var topicGroups = new Dictionary<string, List<(ReadyBatch Batch, int Partition)>>();
-        foreach (var batch in batches)
+        // Group batches by topic without dictionary allocation.
+        // O(n²) grouping for small n (≤ 20) is faster than dictionary hashing overhead.
+
+        // Count distinct topics
+        var topicCount = 0;
+        for (var i = 0; i < batchCount; i++)
         {
-            var topic = batch.TopicPartition.Topic;
-            if (!topicGroups.TryGetValue(topic, out var group))
+            var isFirstOccurrence = true;
+            for (var j = 0; j < i; j++)
             {
-                group = [];
-                topicGroups[topic] = group;
+                if (batches[j].TopicPartition.Topic == batches[i].TopicPartition.Topic)
+                {
+                    isFirstOccurrence = false;
+                    break;
+                }
             }
-            group.Add((batch, batch.TopicPartition.Partition));
+            if (isFirstOccurrence) topicCount++;
         }
 
         // Build ProduceRequestTopicData[] / ProduceRequestPartitionData[]
-        var topicDataArray = new ProduceRequestTopicData[topicGroups.Count];
-        var topicIndex = 0;
-        foreach (var (topicName, group) in topicGroups)
+        var topicDataArray = new ProduceRequestTopicData[topicCount];
+        var topicIdx = 0;
+
+        for (var i = 0; i < batchCount; i++)
         {
-            var partitionDataArray = new ProduceRequestPartitionData[group.Count];
-            for (var i = 0; i < group.Count; i++)
+            // Skip if this topic was already processed by an earlier batch
+            var alreadyProcessed = false;
+            for (var j = 0; j < i; j++)
             {
-                partitionDataArray[i] = new ProduceRequestPartitionData
+                if (batches[j].TopicPartition.Topic == batches[i].TopicPartition.Topic)
                 {
-                    Index = group[i].Partition,
-                    Records = [group[i].Batch.RecordBatch],
+                    alreadyProcessed = true;
+                    break;
+                }
+            }
+            if (alreadyProcessed) continue;
+
+            var topicName = batches[i].TopicPartition.Topic;
+
+            // Count partitions for this topic
+            var partCount = 0;
+            for (var j = i; j < batchCount; j++)
+            {
+                if (batches[j].TopicPartition.Topic == topicName) partCount++;
+            }
+
+            // Build partition data
+            var partitionDataArray = new ProduceRequestPartitionData[partCount];
+            var partIdx = 0;
+            for (var j = i; j < batchCount; j++)
+            {
+                if (batches[j].TopicPartition.Topic != topicName) continue;
+                partitionDataArray[partIdx++] = new ProduceRequestPartitionData
+                {
+                    Index = batches[j].TopicPartition.Partition,
+                    Records = [batches[j].RecordBatch],
                     Compression = _options.CompressionType,
                     CompressionCodecs = _compressionCodecs
                 };
             }
 
-            topicDataArray[topicIndex++] = new ProduceRequestTopicData
+            topicDataArray[topicIdx++] = new ProduceRequestTopicData
             {
                 Name = topicName,
                 PartitionData = partitionDataArray
@@ -3350,8 +3393,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 cancellationToken).ConfigureAwait(false);
 
             var fireAndForgetTimestamp = DateTimeOffset.UtcNow;
-            foreach (var batch in batches)
+            for (var i = 0; i < batchCount; i++)
             {
+                var batch = batches[i];
                 _statisticsCollector.RecordBatchDelivered(
                     batch.TopicPartition.Topic,
                     batch.TopicPartition.Partition,
@@ -3373,10 +3417,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _statisticsCollector.RecordResponseReceived(latencyMs);
 
         // Process response: match each batch to its partition response
-        List<(ReadyBatch Batch, ErrorCode Error)>? failures = null;
+        List<(int BatchIndex, ErrorCode Error)>? failures = null;
 
-        foreach (var batch in batches)
+        for (var i = 0; i < batchCount; i++)
         {
+            var batch = batches[i];
             var expectedTopic = batch.TopicPartition.Topic;
             var expectedPartition = batch.TopicPartition.Partition;
             var messageCount = batch.CompletionSourcesCount;
@@ -3406,7 +3451,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     "[CoalescedSend] No response for partition {Topic}-{Partition}",
                     expectedTopic, expectedPartition);
                 failures ??= [];
-                failures.Add((batch, ErrorCode.NetworkException));
+                failures.Add((i, ErrorCode.NetworkException));
                 continue;
             }
 
@@ -3421,7 +3466,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             {
                 // Error for this partition
                 failures ??= [];
-                failures.Add((batch, partitionResponse.ErrorCode));
+                failures.Add((i, partitionResponse.ErrorCode));
                 continue;
             }
 
