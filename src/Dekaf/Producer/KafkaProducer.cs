@@ -46,11 +46,18 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     // producers; sending batches out-of-order causes OutOfOrderSequenceNumber rejections.
     //
     // Thread-safety model:
-    // - _sendConcurrencySemaphore: SemaphoreSlim is internally thread-safe; limits concurrent sends
+    // - _senderPipelineSemaphore: Acquired in SenderLoopAsync, released in SendBatchWithCleanupAsync.
+    //   Bounds fire-and-forget task count to prevent thread pool saturation when buffer fills.
+    //   Cost: 2 Interlocked ops per batch (~0.002 per message). Must be separate from
+    //   _sendConcurrencySemaphore to avoid head-of-line blocking (see SenderLoopAsync comments).
+    // - _sendConcurrencySemaphore: Acquired AFTER per-partition gate in SendBatchWithCleanupAsync.
+    //   Limits actual concurrent network sends. Acquired after partition gate so that partition
+    //   gate waiters don't consume global send slots (which would starve other partitions).
     // - _partitionSendGates: ConcurrentDictionary is thread-safe; per-partition semaphores ensure ordering
     // - _inFlightSendCount: Modified only via Interlocked operations, read via Volatile.Read
     // - _allSendsCompleted: Signaling coordinated with _inFlightSendCount via _sendCompletionLock
     // - _sendCompletionLock: Protects the atomicity of count transition + event signal pairs
+    private readonly SemaphoreSlim _senderPipelineSemaphore;
     private readonly SemaphoreSlim _sendConcurrencySemaphore;
     private readonly ConcurrentDictionary<TopicPartition, SemaphoreSlim> _partitionSendGates = new();
     private long _inFlightSendCount;
@@ -214,8 +221,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _accumulator = new RecordAccumulator(options);
         _compressionCodecs = CreateCompressionCodecRegistry(options);
 
-        // Initialize pipelining semaphore - allows up to MaxInFlightRequestsPerConnection concurrent batch sends
-        // This enables overlapping network round-trips, dramatically improving throughput
+        // Pipeline depth limiter: bounds fire-and-forget task count to prevent thread pool saturation.
+        // 4x MaxInFlightRequestsPerConnection provides enough depth for concurrent sends plus
+        // partition gate waiters, without allowing hundreds of tasks to pile up.
+        var pipelineDepth = options.MaxInFlightRequestsPerConnection * 4;
+        _senderPipelineSemaphore = new SemaphoreSlim(pipelineDepth, pipelineDepth);
+
+        // Send concurrency limiter: limits actual concurrent network sends.
+        // Acquired AFTER per-partition gate to avoid head-of-line blocking.
         _sendConcurrencySemaphore = new SemaphoreSlim(options.MaxInFlightRequestsPerConnection, options.MaxInFlightRequestsPerConnection);
 
         _senderCts = new CancellationTokenSource();
@@ -2428,10 +2441,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // freely. If the idempotent producer is enabled, DuplicateSequenceNumber is treated as success
         // (safe retransmit detection).
         //
-        // SEMAPHORE ORDERING: The global send concurrency semaphore is acquired INSIDE
-        // SendBatchWithCleanupAsync, AFTER the per-partition gate. This prevents batches
-        // waiting on their partition gate from consuming global semaphore slots, which would
-        // starve other partitions and collapse effective throughput to 1 batch per partition.
+        // SEMAPHORE ORDERING (critical for throughput):
+        // 1. _senderPipelineSemaphore: Acquired HERE before dispatch. Bounds fire-and-forget task
+        //    count to prevent thread pool saturation when hundreds of batches are ready.
+        // 2. Per-partition gate: Acquired FIRST inside SendBatchWithCleanupAsync for ordering.
+        // 3. _sendConcurrencySemaphore: Acquired SECOND inside SendBatchWithCleanupAsync, AFTER
+        //    the partition gate. This is critical: if the global send semaphore were acquired before
+        //    the partition gate, tasks waiting on their partition gate would consume global slots,
+        //    starving other partitions (head-of-line blocking). With partition gate first, only
+        //    tasks ready to send consume global slots.
 
         await foreach (var batch in _accumulator.ReadyBatches.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -2439,8 +2457,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // This is done inline before sending to unblock FlushAsync immediately
             batch.CompleteDelivery();
 
-            // Decrement in-flight counter to unblock FlushAsync
-            _accumulator.OnBatchExitsPipeline();
+            // Release buffer memory as soon as the sender dequeues the batch.
+            // With the pipeline semaphore below, only a bounded number of batches
+            // (MaxInFlightRequestsPerConnection * 4) can have their memory freed early.
+            // Remaining batches in the channel still have their memory tracked, providing backpressure.
+            _accumulator.ReleaseMemory(batch.DataSize);
 
             // Track in-flight send count for disposal coordination
             // Lock ensures atomicity of (increment + Reset) to prevent race with (decrement + Set)
@@ -2450,6 +2471,27 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 {
                     _allSendsCompleted.Reset(); // First send in flight - clear the signal
                 }
+            }
+
+            // Limit pipeline depth to prevent spawning hundreds of concurrent tasks.
+            // Cost: 1 Interlocked op (fast path when count > 0). Only blocks when pipeline is full.
+            // If cancelled, we must decrement the in-flight count we just incremented above,
+            // otherwise WaitForInFlightSendsAsync hangs forever waiting for a send that never started.
+            try
+            {
+                await _senderPipelineSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                lock (_sendCompletionLock)
+                {
+                    if (Interlocked.Decrement(ref _inFlightSendCount) == 0)
+                    {
+                        _allSendsCompleted.Set();
+                    }
+                }
+
+                throw;
             }
 
             // Fire-and-forget: SendBatchWithCleanupAsync acquires partition gate then global semaphore
@@ -2467,24 +2509,32 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendBatchWithCleanupAsync(ReadyBatch batch, CancellationToken cancellationToken)
     {
-        // Acquire per-partition gate FIRST to ensure within-partition ordering.
-        // Only one batch per partition can be in-flight at a time to avoid OutOfOrderSequenceNumber.
-        // IMPORTANT: This must be acquired BEFORE the global semaphore. If the global semaphore
-        // were acquired first, batches waiting on their partition gate would consume global slots,
-        // starving other partitions and collapsing throughput (head-of-line blocking).
+        // All semaphore acquisitions are inside try/finally to guarantee cleanup on cancellation.
+        // Without this, cancellation during partition gate or send semaphore waits would leak
+        // semaphore slots, in-flight counts, and batch resources.
+        var partitionGateAcquired = false;
+        var sendSemaphoreAcquired = false;
         var partitionGate = _partitionSendGates.GetOrAdd(batch.TopicPartition, _ => new SemaphoreSlim(1, 1));
-        await partitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-        // Then acquire global concurrency slot - limits total concurrent network sends
-        // to MaxInFlightRequestsPerConnection. Only counted when partition gate is held,
-        // so only actual sends consume slots (not batches waiting for their partition).
-        await _sendConcurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
+            // Acquire per-partition gate FIRST to ensure within-partition ordering.
+            // Only one batch per partition can be in-flight at a time to avoid OutOfOrderSequenceNumber.
+            // IMPORTANT: This must be acquired BEFORE the global semaphore. If the global semaphore
+            // were acquired first, batches waiting on their partition gate would consume global slots,
+            // starving other partitions and collapsing throughput (head-of-line blocking).
+            await partitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            partitionGateAcquired = true;
+
+            // Then acquire global concurrency slot - limits total concurrent network sends
+            // to MaxInFlightRequestsPerConnection. Only counted when partition gate is held,
+            // so only actual sends consume slots (not batches waiting for their partition).
+            await _sendConcurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            sendSemaphoreAcquired = true;
+
             await SendBatchAsync(batch, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger?.LogError(ex, "Failed to send batch to {Topic}-{Partition}",
                 batch.TopicPartition.Topic, batch.TopicPartition.Partition);
@@ -2508,19 +2558,29 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             // Invoke OnAcknowledgement interceptors for failed batch
             InvokeOnAcknowledgementForBatch(batch.TopicPartition, -1, DateTimeOffset.UtcNow, batch.CompletionSourcesCount, ex);
-
-            // NOTE: BufferMemory is released in SendBatchAsync's finally block
         }
         finally
         {
-            // Release global semaphore slot first - allows other partitions to send immediately
-            _sendConcurrencySemaphore.Release();
+            // Release only the semaphores that were actually acquired
+            if (sendSemaphoreAcquired)
+            {
+                _sendConcurrencySemaphore.Release();
+            }
 
-            // Release per-partition gate - allows next batch for this partition to proceed
-            partitionGate.Release();
+            if (partitionGateAcquired)
+            {
+                partitionGate.Release();
+            }
 
             // Return the ReadyBatch to the pool for reuse
             _accumulator.ReturnReadyBatch(batch);
+
+            // Decrement accumulator in-flight counter to unblock FlushAsync
+            // CRITICAL: Must be in finally (not SenderLoopAsync) so FlushAsync waits
+            // for actual send completion, not just sender loop pickup. Otherwise
+            // FlushAsync returns early and callers can overwhelm the buffer with new
+            // messages before previous sends have released their memory.
+            _accumulator.OnBatchExitsPipeline();
 
             // Decrement in-flight count and signal if all sends complete
             // Lock ensures atomicity of (decrement + Set) to prevent race with (increment + Reset)
@@ -2531,6 +2591,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     _allSendsCompleted.Set(); // All sends complete - signal waiters
                 }
             }
+
+            // Release pipeline depth slot last - allows SenderLoopAsync to dispatch another batch
+            _senderPipelineSemaphore.Release();
         }
     }
 
@@ -2677,10 +2740,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
         finally
         {
-            // CRITICAL: Always release BufferMemory, even on exception
-            // This prevents permanent memory leaks that can deadlock the producer
-            // This replaces the inline ReleaseMemory calls and the catch block in SenderLoopAsync
-            _accumulator.ReleaseMemory(batch.DataSize);
+            // NOTE: BufferMemory is released early in SenderLoopAsync when the batch is dequeued,
+            // not here. This prevents the buffer from staying "full" while batches wait on partition
+            // gates and the global send semaphore. The pipeline depth limiter bounds how many batches
+            // can have their memory freed early, so backpressure is still maintained.
         }
     }
 
@@ -3193,6 +3256,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         _senderCts.Dispose();
         _lingerTimer.Dispose();
+        _senderPipelineSemaphore.Dispose();
         _sendConcurrencySemaphore.Dispose();
         _allSendsCompleted.Dispose();
         _transactionLock.Dispose();
