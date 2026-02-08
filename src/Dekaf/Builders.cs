@@ -23,6 +23,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int _batchSize = 1048576;
     private bool _enableIdempotence = true;
     private string? _transactionalId;
+    private int? _transactionTimeoutMs;
     private Protocol.Records.CompressionType _compressionType = Protocol.Records.CompressionType.None;
     private int? _compressionLevel;
     private PartitionerType _partitionerType = PartitionerType.Default;
@@ -134,6 +135,27 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         _transactionalId = transactionalId;
         _enableIdempotence = true;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the transaction timeout. If a transaction is not committed or aborted
+    /// within this duration, the coordinator will proactively abort it.
+    /// </summary>
+    /// <param name="timeout">The transaction timeout. Must be positive.</param>
+    /// <remarks>
+    /// <para>
+    /// Equivalent to Kafka's <c>transaction.timeout.ms</c> configuration.
+    /// Default is 60 seconds. The value must not exceed the broker's
+    /// <c>transaction.max.timeout.ms</c> setting (default 15 minutes).
+    /// </para>
+    /// </remarks>
+    public ProducerBuilder<TKey, TValue> WithTransactionTimeout(TimeSpan timeout)
+    {
+        if (timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Transaction timeout must be positive");
+
+        _transactionTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
     }
 
@@ -475,6 +497,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             MaxBlockMs = _maxBlockMs ?? 60000, // 60 seconds default
             EnableIdempotence = _enableIdempotence,
             TransactionalId = _transactionalId,
+            TransactionTimeoutMs = _transactionTimeoutMs ?? 60000,
             CompressionType = _compressionType,
             CompressionLevel = _compressionLevel,
             Partitioner = _partitionerType,
@@ -555,6 +578,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _autoCommitIntervalMs = 5000;
     private AutoOffsetReset _autoOffsetReset = AutoOffsetReset.Latest;
     private int _fetchMinBytes = 1;
+    private int _fetchMaxBytes = 52428800;
+    private int _maxPartitionFetchBytes = 1048576;
     private int _fetchMaxWaitMs = 500;
     private int _maxPollRecords = 500;
     private int _sessionTimeoutMs = 45000;
@@ -718,6 +743,68 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithMaxPollRecords(int maxPollRecords)
     {
         _maxPollRecords = maxPollRecords;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the minimum amount of data the server should return for a fetch request.
+    /// If insufficient data is available, the request will wait up to <see cref="WithFetchMaxWait"/>
+    /// before responding. Equivalent to Kafka's <c>fetch.min.bytes</c> configuration.
+    /// Default is 1 byte.
+    /// </summary>
+    /// <param name="minBytes">The minimum number of bytes to return. Must be at least 1.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> WithFetchMinBytes(int minBytes)
+    {
+        if (minBytes < 1)
+            throw new ArgumentOutOfRangeException(nameof(minBytes), "Fetch min bytes must be at least 1");
+        _fetchMinBytes = minBytes;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum amount of data the server should return for a fetch request.
+    /// Equivalent to Kafka's <c>fetch.max.bytes</c> configuration.
+    /// Default is 52428800 (50 MiB).
+    /// </summary>
+    /// <param name="maxBytes">The maximum number of bytes to return. Must be at least 1.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> WithFetchMaxBytes(int maxBytes)
+    {
+        if (maxBytes < 1)
+            throw new ArgumentOutOfRangeException(nameof(maxBytes), "Fetch max bytes must be at least 1");
+        _fetchMaxBytes = maxBytes;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum amount of data per-partition the server should return for a fetch request.
+    /// Equivalent to Kafka's <c>max.partition.fetch.bytes</c> configuration.
+    /// Default is 1048576 (1 MiB).
+    /// </summary>
+    /// <param name="maxBytes">The maximum number of bytes per partition. Must be at least 1.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> WithMaxPartitionFetchBytes(int maxBytes)
+    {
+        if (maxBytes < 1)
+            throw new ArgumentOutOfRangeException(nameof(maxBytes), "Max partition fetch bytes must be at least 1");
+        _maxPartitionFetchBytes = maxBytes;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the maximum time the server will block before responding to a fetch request
+    /// if there isn't sufficient data to satisfy <see cref="WithFetchMinBytes"/>.
+    /// Equivalent to Kafka's <c>fetch.max.wait.ms</c> configuration.
+    /// Default is 500ms.
+    /// </summary>
+    /// <param name="maxWait">The maximum wait duration. Must be positive.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> WithFetchMaxWait(TimeSpan maxWait)
+    {
+        if (maxWait <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(maxWait), "Fetch max wait must be positive");
+        _fetchMaxWaitMs = (int)maxWait.TotalMilliseconds;
         return this;
     }
 
@@ -1043,6 +1130,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             AutoCommitIntervalMs = _autoCommitIntervalMs,
             AutoOffsetReset = _autoOffsetReset,
             FetchMinBytes = _fetchMinBytes,
+            FetchMaxBytes = _fetchMaxBytes,
+            MaxPartitionFetchBytes = _maxPartitionFetchBytes,
             FetchMaxWaitMs = _fetchMaxWaitMs,
             MaxPollRecords = _maxPollRecords,
             SessionTimeoutMs = _sessionTimeoutMs,
