@@ -93,13 +93,14 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
     {
         // Arrange - set a tight producer quota on the broker (1 KB/s)
         var topic = await KafkaContainer.CreateTestTopicAsync();
+        var brokerId = 0;
+
         await using var admin = CreateAdminClient();
-
-        var cluster = await admin.DescribeClusterAsync();
-        var brokerId = cluster.Nodes[0].NodeId;
-
         try
         {
+            var cluster = await admin.DescribeClusterAsync();
+            brokerId = cluster.Nodes[0].NodeId;
+
             await SetDefaultProducerQuotaAsync(admin, brokerId, "1024");
 
             // Allow quota config to propagate
@@ -162,34 +163,35 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
     {
         // Arrange - produce messages first, then set a tight consumer quota
         var topic = await KafkaContainer.CreateTestTopicAsync();
+        var brokerId = 0;
+
         await using var admin = CreateAdminClient();
-
-        var cluster = await admin.DescribeClusterAsync();
-        var brokerId = cluster.Nodes[0].NodeId;
-
-        // Produce messages before setting the quota
-        await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithClientId("test-producer-for-consumer-throttle")
-            .Build();
-
-        const int messageCount = 30;
-        var messageValue = new string('x', 500);
-
-        for (var i = 0; i < messageCount; i++)
-        {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Key = $"key-{i}",
-                Value = messageValue
-            });
-        }
-
-        await producer.FlushAsync();
-
         try
         {
+            var cluster = await admin.DescribeClusterAsync();
+            brokerId = cluster.Nodes[0].NodeId;
+
+            // Produce messages before setting the quota
+            await using var producer = Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithClientId("test-producer-for-consumer-throttle")
+                .Build();
+
+            const int messageCount = 30;
+            var messageValue = new string('x', 500);
+
+            for (var i = 0; i < messageCount; i++)
+            {
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = $"key-{i}",
+                    Value = messageValue
+                });
+            }
+
+            await producer.FlushAsync();
+
             await SetDefaultConsumerQuotaAsync(admin, brokerId, "1024");
 
             // Allow quota config to propagate
@@ -243,39 +245,40 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
     {
         // Arrange - set a moderate producer quota and measure throughput degradation
         var topic = await KafkaContainer.CreateTestTopicAsync();
-        await using var admin = CreateAdminClient();
-
-        var cluster = await admin.DescribeClusterAsync();
-        var brokerId = cluster.Nodes[0].NodeId;
+        var brokerId = 0;
 
         const int messageCount = 50;
         var messageValue = new string('x', 1000); // ~1KB per message
 
-        // First, measure baseline throughput without quota
-        await using var baselineProducer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithClientId("test-producer-baseline")
-            .WithLinger(TimeSpan.FromMilliseconds(5))
-            .WithAcks(Acks.Leader)
-            .Build();
-
-        var baselineSw = Stopwatch.StartNew();
-        for (var i = 0; i < messageCount; i++)
-        {
-            await baselineProducer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Key = $"baseline-key-{i}",
-                Value = messageValue
-            });
-        }
-
-        await baselineProducer.FlushAsync();
-        baselineSw.Stop();
-        var baselineMs = baselineSw.ElapsedMilliseconds;
-
+        await using var admin = CreateAdminClient();
         try
         {
+            var cluster = await admin.DescribeClusterAsync();
+            brokerId = cluster.Nodes[0].NodeId;
+
+            // First, measure baseline throughput without quota
+            await using var baselineProducer = Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithClientId("test-producer-baseline")
+                .WithLinger(TimeSpan.FromMilliseconds(5))
+                .WithAcks(Acks.Leader)
+                .Build();
+
+            var baselineSw = Stopwatch.StartNew();
+            for (var i = 0; i < messageCount; i++)
+            {
+                await baselineProducer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = $"baseline-key-{i}",
+                    Value = messageValue
+                });
+            }
+
+            await baselineProducer.FlushAsync();
+            baselineSw.Stop();
+            var baselineMs = baselineSw.ElapsedMilliseconds;
+
             // Set a quota that allows ~10 KB/s (will throttle our ~1KB/message production)
             await SetDefaultProducerQuotaAsync(admin, brokerId, "10240");
 
@@ -362,7 +365,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
         var messageValue = new string('x', 500);
 
         var sw = Stopwatch.StartNew();
-        var produceTasks = new List<ValueTask<RecordMetadata>>();
+        var produceTasks = new List<Task<RecordMetadata>>();
         for (var i = 0; i < messageCount; i++)
         {
             produceTasks.Add(producer.ProduceAsync(new ProducerMessage<string, string>
@@ -370,7 +373,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = messageValue
-            }));
+            }).AsTask());
         }
 
         var results = new List<RecordMetadata>();
