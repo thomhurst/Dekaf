@@ -501,10 +501,13 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         message = ApplyOnSendInterceptors(message);
 
         // Fast path: Try synchronous fire-and-forget produce if metadata is cached.
-        // ORDERING: Only use fast path when no messages are pending in the work channel.
-        // Without this check, fast-path messages can overtake slow-path messages that
-        // are still being processed by the worker thread, breaking within-partition ordering.
-        if (Volatile.Read(ref _pendingChannelMessages) == 0 && TryProduceSyncFireAndForget(message))
+        // TryProduceSyncFireAndForget returns false when metadata isn't available, naturally
+        // falling through to the channel-based slow path for metadata initialization.
+        // We don't gate on _pendingChannelMessages here because doing so with a single worker
+        // creates a death spiral: initial channel messages prevent the fast path from activating,
+        // forcing ALL subsequent messages through the single-threaded worker, which can never
+        // drain the channel fast enough to re-enable the fast path.
+        if (TryProduceSyncFireAndForget(message))
         {
             return;
         }
@@ -566,9 +569,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
 
         // Fast path: Try synchronous fire-and-forget produce if metadata is cached.
-        // ORDERING: Only use fast path when no messages are pending in the work channel.
-        if (Volatile.Read(ref _pendingChannelMessages) == 0 &&
-            TryProduceSyncFireAndForgetDirect(topic, key, value, partition: null, timestamp: null, headers: null))
+        // See Send(ProducerMessage) for explanation of why we don't gate on _pendingChannelMessages.
+        if (TryProduceSyncFireAndForgetDirect(topic, key, value, partition: null, timestamp: null, headers: null))
         {
             return;
         }
@@ -1283,8 +1285,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         message = ApplyOnSendInterceptors(message);
 
         // Fast path: Try synchronous produce if metadata is initialized and cached.
-        // ORDERING: Only use fast path when no messages are pending in the work channel.
-        if (Volatile.Read(ref _pendingChannelMessages) == 0 && TryProduceSyncWithHandler(message, deliveryHandler))
+        // See Send(ProducerMessage) for explanation of why we don't gate on _pendingChannelMessages.
+        if (TryProduceSyncWithHandler(message, deliveryHandler))
         {
             return;
         }
