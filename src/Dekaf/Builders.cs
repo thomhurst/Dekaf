@@ -23,6 +23,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int _batchSize = 1048576;
     private bool _enableIdempotence = true;
     private string? _transactionalId;
+    private int? _transactionTimeoutMs;
     private Protocol.Records.CompressionType _compressionType = Protocol.Records.CompressionType.None;
     private int? _compressionLevel;
     private PartitionerType _partitionerType = PartitionerType.Default;
@@ -133,6 +134,27 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         _transactionalId = transactionalId;
         _enableIdempotence = true;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the transaction timeout. If a transaction is not committed or aborted
+    /// within this duration, the coordinator will proactively abort it.
+    /// </summary>
+    /// <param name="timeout">The transaction timeout. Must be positive.</param>
+    /// <remarks>
+    /// <para>
+    /// Equivalent to Kafka's <c>transaction.timeout.ms</c> configuration.
+    /// Default is 60 seconds. The value must not exceed the broker's
+    /// <c>transaction.max.timeout.ms</c> setting (default 15 minutes).
+    /// </para>
+    /// </remarks>
+    public ProducerBuilder<TKey, TValue> WithTransactionTimeout(TimeSpan timeout)
+    {
+        if (timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Transaction timeout must be positive");
+
+        _transactionTimeoutMs = (int)timeout.TotalMilliseconds;
         return this;
     }
 
@@ -462,6 +484,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             MaxBlockMs = _maxBlockMs ?? 60000, // 60 seconds default
             EnableIdempotence = _enableIdempotence,
             TransactionalId = _transactionalId,
+            TransactionTimeoutMs = _transactionTimeoutMs ?? 60000,
             CompressionType = _compressionType,
             CompressionLevel = _compressionLevel,
             Partitioner = _partitionerType,
