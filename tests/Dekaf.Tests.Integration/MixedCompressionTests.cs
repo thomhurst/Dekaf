@@ -10,7 +10,7 @@ namespace Dekaf.Tests.Integration;
 /// mixing compressed and uncompressed batches, all-codec interoperability,
 /// and large compressed batch decompression.
 /// </summary>
-public sealed class DecompressionFailureTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
+public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task MixedCompressionTypes_SameTopic_ConsumerHandlesAll()
@@ -269,6 +269,8 @@ public sealed class DecompressionFailureTests(KafkaTestContainer kafka) : KafkaI
         {
             await task;
         }
+
+        await producer.FlushAsync();
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
