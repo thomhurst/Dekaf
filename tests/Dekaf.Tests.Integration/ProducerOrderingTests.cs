@@ -443,4 +443,218 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             }
         }
     }
+
+    [Test]
+    public async Task DeferredChain_ManyBatchesPerPartition_OrderingPreserved()
+    {
+        // Regression test: exercises the deferred chain gate-holding path.
+        // With tiny batch size (256 bytes) and single partition, most batches are deferred
+        // (gate-busy) and must be chained. The gate must be held for the entire chain
+        // to prevent the sender loop's next drain from stealing it via non-blocking Wait(0).
+        var topic = await KafkaContainer.CreateTestTopicAsync();
+        const int messageCount = 1000;
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-deferred-chain")
+            .WithAcks(Acks.All)
+            .EnableIdempotence()
+            .WithBatchSize(256) // Tiny: ~10 messages per batch → ~100 batches for 1000 messages
+            .WithLinger(TimeSpan.FromMilliseconds(1))
+            .Build();
+
+        // Fire all produces concurrently — forces many batches into the same drain
+        var produceTasks = new List<ValueTask<RecordMetadata>>();
+        for (var i = 0; i < messageCount; i++)
+        {
+            produceTasks.Add(producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = "chain-key",
+                Value = $"chain-{i:D4}"
+            }));
+        }
+
+        foreach (var task in produceTasks)
+        {
+            await task;
+        }
+
+        // Consume and verify strict ordering
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .Build();
+
+        consumer.Assign(new TopicPartition(topic, 0));
+
+        var messages = new List<ConsumeResult<string, string>>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            messages.Add(msg);
+            if (messages.Count >= messageCount) break;
+        }
+
+        await Assert.That(messages).Count().IsEqualTo(messageCount);
+
+        for (var i = 0; i < messageCount; i++)
+        {
+            await Assert.That(messages[i].Value).IsEqualTo($"chain-{i:D4}");
+        }
+    }
+
+    [Test]
+    public async Task MultiDrainCycles_OrderingPreservedAcrossDrains()
+    {
+        // Regression test: produces in waves to force multiple drain cycles, each with
+        // deferred batches. Verifies that deferred chains from one drain don't race with
+        // coalesced sends from the next drain on the same partition.
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
+        const int wavesCount = 5;
+        const int messagesPerWave = 200;
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-multi-drain")
+            .WithAcks(Acks.All)
+            .EnableIdempotence()
+            .WithBatchSize(512) // Small to create many batches per wave
+            .WithLinger(TimeSpan.FromMilliseconds(1))
+            .Build();
+
+        // Produce in waves with flushes between to create distinct drain cycles
+        for (var wave = 0; wave < wavesCount; wave++)
+        {
+            var produceTasks = new List<ValueTask<RecordMetadata>>();
+            for (var i = 0; i < messagesPerWave; i++)
+            {
+                var seq = wave * messagesPerWave + i;
+                produceTasks.Add(producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = $"p{i % 4}-key",
+                    Value = $"p{i % 4}-seq-{seq:D4}",
+                    Partition = i % 4
+                }));
+            }
+
+            foreach (var task in produceTasks)
+            {
+                await task;
+            }
+        }
+
+        // Consume and verify per-partition ordering
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId($"multi-drain-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .Build();
+
+        consumer.Subscribe(topic);
+
+        var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
+        for (var p = 0; p < 4; p++) messagesByPartition[p] = [];
+
+        var totalExpected = wavesCount * messagesPerWave;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            messagesByPartition[msg.Partition].Add(msg);
+            var total = messagesByPartition.Values.Sum(l => l.Count);
+            if (total >= totalExpected) break;
+        }
+
+        // Verify per-partition ordering: offsets must be strictly monotonically increasing
+        for (var p = 0; p < 4; p++)
+        {
+            var partitionMessages = messagesByPartition[p];
+            var expectedCount = wavesCount * messagesPerWave / 4;
+            await Assert.That(partitionMessages).Count().IsEqualTo(expectedCount);
+
+            for (var i = 1; i < partitionMessages.Count; i++)
+            {
+                await Assert.That(partitionMessages[i].Offset)
+                    .IsGreaterThan(partitionMessages[i - 1].Offset);
+            }
+
+            // Verify value ordering within each partition
+            for (var i = 0; i < partitionMessages.Count; i++)
+            {
+                var expectedSeq = p + i * 4; // Messages distributed round-robin: p, p+4, p+8, ...
+                await Assert.That(partitionMessages[i].Value).IsEqualTo($"p{p}-seq-{expectedSeq:D4}");
+            }
+        }
+    }
+
+    [Test]
+    public async Task RapidFireAndForget_WithFlush_OrderingPreserved()
+    {
+        // Regression test: rapid Send() (fire-and-forget) followed by FlushAsync().
+        // With tiny batch size, this creates many deferred batches across multiple drain cycles.
+        // Verifies that the flush waits for all deferred chains to complete.
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        const int messageCount = 600;
+
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-rapid-fire-forget")
+            .WithAcks(Acks.All)
+            .EnableIdempotence()
+            .WithBatchSize(512)
+            .WithLinger(TimeSpan.FromMilliseconds(1))
+            .Build();
+
+        // Fire-and-forget to both partitions rapidly
+        for (var i = 0; i < messageCount; i++)
+        {
+            producer.Send(new ProducerMessage<string, string>
+            {
+                Topic = topic,
+                Key = $"p{i % 2}-key",
+                Value = $"p{i % 2}-seq-{i / 2:D4}",
+                Partition = i % 2
+            });
+        }
+
+        // Flush must wait for all deferred chains to complete
+        await producer.FlushAsync();
+
+        // Consume and verify ordering
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId($"rapid-ff-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .Build();
+
+        consumer.Subscribe(topic);
+
+        var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
+        messagesByPartition[0] = [];
+        messagesByPartition[1] = [];
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            messagesByPartition[msg.Partition].Add(msg);
+            var total = messagesByPartition.Values.Sum(l => l.Count);
+            if (total >= messageCount) break;
+        }
+
+        // Each partition should have exactly half the messages, in order
+        for (var p = 0; p < 2; p++)
+        {
+            var partitionMessages = messagesByPartition[p];
+            await Assert.That(partitionMessages).Count().IsEqualTo(messageCount / 2);
+
+            for (var i = 0; i < partitionMessages.Count; i++)
+            {
+                await Assert.That(partitionMessages[i].Value).IsEqualTo($"p{p}-seq-{i:D4}");
+            }
+        }
+    }
 }

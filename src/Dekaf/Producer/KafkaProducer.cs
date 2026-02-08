@@ -2768,14 +2768,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <summary>
-    /// Groups deferred batches by partition and sends each partition's batches sequentially
-    /// to preserve ordering. Different partitions run concurrently.
+    /// Groups deferred batches by partition and sends each partition's batches as a chain
+    /// that holds the partition gate for the entire chain duration.
+    /// Different partitions run concurrently.
     /// </summary>
     /// <remarks>
-    /// This is called when multiple batches for the same partition are drained and the gate
-    /// is already held by another batch (from this drain or a previous one). Sending them
-    /// concurrently via SendBatchWithCleanupAsync would race on the gate, and SemaphoreSlim
-    /// does not guarantee FIFO ordering among waiters.
+    /// CRITICAL: Each partition's chain must hold the gate continuously from first batch to last.
+    /// If the gate were released between batches (e.g., by calling SendBatchWithCleanupAsync per batch),
+    /// the sender loop's next drain could steal the gate via non-blocking Wait(0), causing a later
+    /// batch to be sent before an earlier one → OutOfOrderSequenceNumber from the broker.
     /// </remarks>
     private void DispatchDeferredBatchesInOrder(
         List<ReadyBatch> deferredBatches,
@@ -2804,8 +2805,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         if (allSamePartition)
         {
-            // All deferred batches are for the same partition — chain them directly
-            _ = SendBatchesSequentiallyAsync(deferredBatches, cancellationToken);
+            // All deferred batches are for the same partition — send as one chain
+            _ = SendDeferredChainAsync(deferredBatches, cancellationToken);
             return;
         }
 
@@ -2831,25 +2832,135 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             }
             else
             {
-                // Multiple batches for same partition — chain sequentially
-                _ = SendBatchesSequentiallyAsync(partitionBatches, cancellationToken);
+                // Multiple batches for same partition — send as one chain holding the gate
+                _ = SendDeferredChainAsync(partitionBatches, cancellationToken);
             }
         }
     }
 
     /// <summary>
-    /// Sends a list of batches sequentially (one at a time), awaiting each before starting
-    /// the next. This preserves within-partition ordering when multiple batches for the same
-    /// partition must be sent through the gate.
+    /// Sends a chain of deferred batches for the same partition while holding the partition gate
+    /// for the entire duration. This prevents the sender loop's next drain from stealing the gate
+    /// via non-blocking Wait(0) between batch sends.
     /// </summary>
+    /// <remarks>
+    /// The gate is acquired once at the start and released in the finally block after all batches
+    /// are sent (or failed). Each batch acquires/releases the global send concurrency semaphore
+    /// independently. If any batch fails with a non-retriable error, all remaining batches in
+    /// the chain are also failed (since their sequence numbers would be rejected by the broker).
+    /// </remarks>
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private async ValueTask SendBatchesSequentiallyAsync(
+    private async ValueTask SendDeferredChainAsync(
         List<ReadyBatch> batches,
         CancellationToken cancellationToken)
     {
-        foreach (var batch in batches)
+        var partitionGate = _partitionSendGates.GetOrAdd(
+            batches[0].TopicPartition, _ => new SemaphoreSlim(1, 1));
+        var gateAcquired = false;
+        var lastProcessedIndex = -1;
+
+        try
         {
-            await SendBatchWithCleanupAsync(batch, cancellationToken).ConfigureAwait(false);
+            // Acquire the gate ONCE for the entire chain
+            await partitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            gateAcquired = true;
+
+            // Send each batch sequentially while holding the gate
+            for (var i = 0; i < batches.Count; i++)
+            {
+                lastProcessedIndex = i;
+                var batch = batches[i];
+                var sendSemaphoreAcquired = false;
+
+                try
+                {
+                    // Acquire global send concurrency slot per-batch (released per-batch)
+                    await _sendConcurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    sendSemaphoreAcquired = true;
+
+                    await SendBatchAsync(batch, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger?.LogError(ex, "Deferred chain: failed to send batch to {Topic}-{Partition}",
+                        batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+
+                    _statisticsCollector.RecordBatchFailed(
+                        batch.TopicPartition.Topic,
+                        batch.TopicPartition.Partition,
+                        batch.CompletionSourcesCount);
+
+                    try { batch.Fail(ex); }
+                    catch (Exception failEx)
+                    {
+                        _logger?.LogError(failEx, "batch.Fail() threw unexpectedly for {Topic}-{Partition}",
+                            batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+                    }
+
+                    InvokeOnAcknowledgementForBatch(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
+                        batch.CompletionSourcesCount, ex);
+
+                    // Fail all remaining batches — their sequence numbers would be rejected
+                    for (var j = i + 1; j < batches.Count; j++)
+                    {
+                        lastProcessedIndex = j;
+                        var remaining = batches[j];
+
+                        _statisticsCollector.RecordBatchFailed(
+                            remaining.TopicPartition.Topic,
+                            remaining.TopicPartition.Partition,
+                            remaining.CompletionSourcesCount);
+
+                        try { remaining.Fail(ex); }
+                        catch (Exception failEx)
+                        {
+                            _logger?.LogError(failEx, "batch.Fail() threw unexpectedly for {Topic}-{Partition}",
+                                remaining.TopicPartition.Topic, remaining.TopicPartition.Partition);
+                        }
+
+                        InvokeOnAcknowledgementForBatch(remaining.TopicPartition, -1, DateTimeOffset.UtcNow,
+                            remaining.CompletionSourcesCount, ex);
+                    }
+
+                    break; // Exit the chain
+                }
+                finally
+                {
+                    if (sendSemaphoreAcquired)
+                    {
+                        _sendConcurrencySemaphore.Release();
+                    }
+
+                    // Per-batch cleanup (NOT gate release — gate held for entire chain)
+                    _accumulator.ReturnReadyBatch(batch);
+                    _accumulator.OnBatchExitsPipeline();
+                    DecrementInFlightSendCount();
+                    _senderPipelineSemaphore.Release();
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Cancellation during gate acquisition — fail unprocessed batches
+            for (var i = lastProcessedIndex + 1; i < batches.Count; i++)
+            {
+                var batch = batches[i];
+
+                try { batch.Fail(new OperationCanceledException(cancellationToken)); }
+                catch { /* Observe exception */ }
+
+                _accumulator.ReturnReadyBatch(batch);
+                _accumulator.OnBatchExitsPipeline();
+                DecrementInFlightSendCount();
+                _senderPipelineSemaphore.Release();
+            }
+        }
+        finally
+        {
+            if (gateAcquired)
+            {
+                partitionGate.Release();
+            }
         }
     }
 
