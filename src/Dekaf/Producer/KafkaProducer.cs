@@ -2676,8 +2676,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// Groups drained batches by broker and dispatches them.
     /// For each batch: synchronously looks up the partition leader, tries to non-blocking acquire
     /// the partition gate, and groups by broker ID. Batches that can't be grouped (no leader cached,
-    /// or partition gate is busy) fall back to the existing SendBatchWithCleanupAsync path.
+    /// or partition gate is busy) are deferred and sent sequentially per partition to preserve ordering.
     /// </summary>
+    /// <remarks>
+    /// ORDERING SAFETY: When multiple batches for the same partition are drained, only the first
+    /// acquires the gate. Subsequent batches are deferred and chained sequentially per partition.
+    /// This is critical because SemaphoreSlim.WaitAsync() is NOT FIFO — if multiple tasks wait
+    /// on the same gate concurrently, they can acquire it in arbitrary order, violating
+    /// within-partition ordering guarantees.
+    /// </remarks>
     private void DispatchCoalescedBatches(
         ReadyBatch[] drainedBatches,
         int drainCount,
@@ -2686,6 +2693,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Reuse instance dictionary (sender loop is single-threaded, so no contention).
         // Inner arrays are rented from ArrayPool and ownership is transferred to fire-and-forget tasks.
         _brokerGroups.Clear();
+
+        // Deferred batches: gate-busy or no-leader batches that must be sent sequentially
+        // per partition to preserve ordering. Per-drain allocation (~100 bytes), acceptable.
+        List<ReadyBatch>? deferredBatches = null;
 
         for (var i = 0; i < drainCount; i++)
         {
@@ -2698,8 +2709,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             if (leader is null)
             {
-                // No leader cached — fall back to existing path (it does async metadata refresh + retry)
-                _ = SendBatchWithCleanupAsync(batch, cancellationToken);
+                // No leader cached — defer to preserve per-partition ordering.
+                // The send path does async metadata refresh + retry.
+                deferredBatches ??= [];
+                deferredBatches.Add(batch);
                 continue;
             }
 
@@ -2707,8 +2720,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             var partitionGate = _partitionSendGates.GetOrAdd(batch.TopicPartition, _ => new SemaphoreSlim(1, 1));
             if (!partitionGate.Wait(0, CancellationToken.None))
             {
-                // Gate is busy (another batch for this partition is in-flight) — fall back
-                _ = SendBatchWithCleanupAsync(batch, cancellationToken);
+                // Gate is busy (another batch for this partition is in-flight from this or previous drain).
+                // Defer to send sequentially after the gate-holder completes.
+                deferredBatches ??= [];
+                deferredBatches.Add(batch);
                 continue;
             }
 
@@ -2742,6 +2757,99 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 // Array ownership transferred; SendCoalescedBatchesAsync returns them in finally.
                 _ = SendCoalescedBatchesAsync(batches, count, gates, brokerId, cancellationToken);
             }
+        }
+
+        // Dispatch deferred batches sequentially per partition to preserve ordering.
+        // Different partitions run concurrently; within a partition, batches are chained.
+        if (deferredBatches is not null)
+        {
+            DispatchDeferredBatchesInOrder(deferredBatches, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Groups deferred batches by partition and sends each partition's batches sequentially
+    /// to preserve ordering. Different partitions run concurrently.
+    /// </summary>
+    /// <remarks>
+    /// This is called when multiple batches for the same partition are drained and the gate
+    /// is already held by another batch (from this drain or a previous one). Sending them
+    /// concurrently via SendBatchWithCleanupAsync would race on the gate, and SemaphoreSlim
+    /// does not guarantee FIFO ordering among waiters.
+    /// </remarks>
+    private void DispatchDeferredBatchesInOrder(
+        List<ReadyBatch> deferredBatches,
+        CancellationToken cancellationToken)
+    {
+        if (deferredBatches.Count == 1)
+        {
+            // Single deferred batch — no ordering concern (only one waiter on the gate)
+            _ = SendBatchWithCleanupAsync(deferredBatches[0], cancellationToken);
+            return;
+        }
+
+        // Group by partition to chain sends within each partition.
+        // Per-drain allocation (~100 bytes), acceptable.
+
+        // Fast path: check if all deferred batches are for the same partition
+        var allSamePartition = true;
+        for (var i = 1; i < deferredBatches.Count; i++)
+        {
+            if (deferredBatches[i].TopicPartition != deferredBatches[0].TopicPartition)
+            {
+                allSamePartition = false;
+                break;
+            }
+        }
+
+        if (allSamePartition)
+        {
+            // All deferred batches are for the same partition — chain them directly
+            _ = SendBatchesSequentiallyAsync(deferredBatches, cancellationToken);
+            return;
+        }
+
+        // Multiple partitions — group by partition
+        var byPartition = new Dictionary<TopicPartition, List<ReadyBatch>>();
+        foreach (var batch in deferredBatches)
+        {
+            if (!byPartition.TryGetValue(batch.TopicPartition, out var list))
+            {
+                list = [];
+                byPartition[batch.TopicPartition] = list;
+            }
+
+            list.Add(batch);
+        }
+
+        foreach (var (_, partitionBatches) in byPartition)
+        {
+            if (partitionBatches.Count == 1)
+            {
+                // Single batch for this partition — safe to send directly
+                _ = SendBatchWithCleanupAsync(partitionBatches[0], cancellationToken);
+            }
+            else
+            {
+                // Multiple batches for same partition — chain sequentially
+                _ = SendBatchesSequentiallyAsync(partitionBatches, cancellationToken);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sends a list of batches sequentially (one at a time), awaiting each before starting
+    /// the next. This preserves within-partition ordering when multiple batches for the same
+    /// partition must be sent through the gate.
+    /// </summary>
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask SendBatchesSequentiallyAsync(
+        List<ReadyBatch> batches,
+        CancellationToken cancellationToken)
+    {
+        foreach (var batch in batches)
+        {
+            await SendBatchWithCleanupAsync(batch, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -2853,15 +2961,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
                     if (errorCode.IsRetriable())
                     {
-                        // Hand off to existing single-batch retry path.
-                        // That path acquires its own concurrency slot, partition gate, and handles cleanup.
+                        // Hand off to single-batch retry path with gate already held.
+                        // IMPORTANT: Keep the gate held to preserve within-partition ordering.
+                        // If we released the gate here and called SendBatchWithCleanupAsync,
+                        // a deferred batch for the same partition could acquire the gate first,
+                        // violating ordering (SemaphoreSlim is not FIFO).
                         retriedMask |= 1 << batchIndex;
 
-                        // Release this batch's partition gate now — the retry path will re-acquire it
-                        gates[batchIndex].Release();
-
-                        // Fire-and-forget into the existing retry path (it handles all cleanup)
-                        _ = SendBatchWithCleanupAsync(batch, cancellationToken);
+                        // Fire-and-forget — this path acquires its own concurrency slot and
+                        // releases the gate, pipeline slot, and batch resources in its finally.
+                        _ = SendBatchWithGateAlreadyAcquiredAsync(batch, gates[batchIndex], cancellationToken);
                     }
                     else
                     {
