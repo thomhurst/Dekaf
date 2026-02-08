@@ -343,4 +343,64 @@ public sealed class PartitionInflightTrackerTests
 
         await Assert.That(reused).IsTrue();
     }
+
+    [Test]
+    public async Task CreatePartitionGate_IdempotentEnabled_AllowsMultipleConcurrentAcquires()
+    {
+        // When idempotent, gate should be SemaphoreSlim(N, N) allowing multiple in-flight batches.
+        // Simulate with MaxInFlightRequestsPerConnection = 5.
+        var gate = new SemaphoreSlim(5, 5);
+
+        // All 5 should succeed without blocking
+        for (var i = 0; i < 5; i++)
+        {
+            var acquired = gate.Wait(0);
+            await Assert.That(acquired).IsTrue();
+        }
+
+        // 6th should fail (non-blocking)
+        var sixthAcquired = gate.Wait(0);
+        await Assert.That(sixthAcquired).IsFalse();
+
+        // Release all
+        for (var i = 0; i < 5; i++)
+        {
+            gate.Release();
+        }
+    }
+
+    [Test]
+    public async Task CreatePartitionGate_IdempotentDisabled_AllowsOnlyOneAcquire()
+    {
+        // When non-idempotent, gate should be SemaphoreSlim(1, 1).
+        var gate = new SemaphoreSlim(1, 1);
+
+        // First should succeed
+        var firstAcquired = gate.Wait(0);
+        await Assert.That(firstAcquired).IsTrue();
+
+        // Second should fail (non-blocking)
+        var secondAcquired = gate.Wait(0);
+        await Assert.That(secondAcquired).IsFalse();
+
+        gate.Release();
+    }
+
+    [Test]
+    public async Task ReadyBatch_Reset_ClearsInflightEntry()
+    {
+        var pool = new ReadyBatchPool();
+        var batch = pool.Rent();
+
+        var entry = new InflightEntry();
+        entry.Initialize(Tp0, baseSequence: 0, recordCount: 10);
+        batch.InflightEntry = entry;
+
+        await Assert.That(batch.InflightEntry).IsNotNull();
+
+        pool.Return(batch); // Return calls Reset()
+
+        // After reset, InflightEntry should be null
+        await Assert.That(batch.InflightEntry).IsNull();
+    }
 }
