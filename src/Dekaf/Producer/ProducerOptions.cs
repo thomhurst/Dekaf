@@ -149,6 +149,11 @@ public sealed class ProducerOptions
     public PartitionerType Partitioner { get; init; } = PartitionerType.Default;
 
     /// <summary>
+    /// Custom partitioner instance. When set, this takes precedence over <see cref="Partitioner"/>.
+    /// </summary>
+    public IPartitioner? CustomPartitioner { get; init; }
+
+    /// <summary>
     /// Use TLS.
     /// </summary>
     public bool UseTls { get; init; }
