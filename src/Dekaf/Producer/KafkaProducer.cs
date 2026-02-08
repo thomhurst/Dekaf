@@ -67,6 +67,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     // Reused by DispatchCoalescedBatches (sender loop is single-threaded, so no contention).
     // Inner arrays are rented from ArrayPool and returned by the fire-and-forget send tasks.
     private readonly Dictionary<int, (int Count, ReadyBatch[] Batches, SemaphoreSlim[] Gates)> _brokerGroups = new();
+    private readonly HashSet<TopicPartition> _coalescedPartitions = new();
 
 
     // Eager initialization: started in constructor, awaited/blocked by produce paths.
@@ -2473,18 +2474,13 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// Idempotent producers allow multiple in-flight batches (sequence numbers guarantee ordering at broker).
     /// Non-idempotent producers use single in-flight batch to preserve ordering.
     /// </summary>
-    private SemaphoreSlim CreatePartitionGate()
+    private static SemaphoreSlim CreatePartitionGate()
     {
-        if (_inflightTracker is not null)
-        {
-            // Idempotent: allow multiple in-flight batches per partition.
-            // The broker uses sequence numbers to guarantee ordering.
-            // Coordinated retry via PartitionInflightTracker handles OutOfOrderSequenceNumber.
-            var maxInflight = _options.MaxInFlightRequestsPerConnection;
-            return new SemaphoreSlim(maxInflight, maxInflight);
-        }
-
-        // Non-idempotent: single in-flight batch per partition to preserve ordering.
+        // Single in-flight batch per partition to preserve ordering.
+        // The inflight tracker still provides coordinated retry for edge-case OOSN
+        // (e.g., connection failure + retry on new connection), but we don't increase
+        // concurrency because Dekaf's fire-and-forget send model doesn't guarantee
+        // wire-order within a partition when multiple tasks race.
         return new SemaphoreSlim(1, 1);
     }
 
@@ -2676,6 +2672,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Reuse instance dictionary (sender loop is single-threaded, so no contention).
         // Inner arrays are rented from ArrayPool and ownership is transferred to fire-and-forget tasks.
         _brokerGroups.Clear();
+        _coalescedPartitions.Clear();
 
         // Deferred batches: gate-busy or no-leader batches that must be sent sequentially
         // per partition to preserve ordering. Per-drain allocation (~100 bytes), acceptable.
@@ -2699,12 +2696,23 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 continue;
             }
 
+            // Ensure at most one batch per partition per coalesced request.
+            // A single ProduceRequest can only contain one RecordBatch per partition;
+            // duplicates would cause response deduplication and phantom errors.
+            if (!_coalescedPartitions.Add(batch.TopicPartition))
+            {
+                deferredBatches ??= [];
+                deferredBatches.Add(batch);
+                continue;
+            }
+
             // Try non-blocking acquire of partition gate
             var partitionGate = _partitionSendGates.GetOrAdd(batch.TopicPartition, _ => CreatePartitionGate());
             if (!partitionGate.Wait(0, CancellationToken.None))
             {
                 // Gate is busy (another batch for this partition is in-flight from this or previous drain).
                 // Defer to send sequentially after the gate-holder completes.
+                _coalescedPartitions.Remove(batch.TopicPartition);
                 deferredBatches ??= [];
                 deferredBatches.Add(batch);
                 continue;

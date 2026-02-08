@@ -345,34 +345,12 @@ public sealed class PartitionInflightTrackerTests
     }
 
     [Test]
-    public async Task CreatePartitionGate_IdempotentEnabled_AllowsMultipleConcurrentAcquires()
+    public async Task CreatePartitionGate_AlwaysSingleInflight()
     {
-        // When idempotent, gate should be SemaphoreSlim(N, N) allowing multiple in-flight batches.
-        // Simulate with MaxInFlightRequestsPerConnection = 5.
-        var gate = new SemaphoreSlim(5, 5);
-
-        // All 5 should succeed without blocking
-        for (var i = 0; i < 5; i++)
-        {
-            var acquired = gate.Wait(0);
-            await Assert.That(acquired).IsTrue();
-        }
-
-        // 6th should fail (non-blocking)
-        var sixthAcquired = gate.Wait(0);
-        await Assert.That(sixthAcquired).IsFalse();
-
-        // Release all
-        for (var i = 0; i < 5; i++)
-        {
-            gate.Release();
-        }
-    }
-
-    [Test]
-    public async Task CreatePartitionGate_IdempotentDisabled_AllowsOnlyOneAcquire()
-    {
-        // When non-idempotent, gate should be SemaphoreSlim(1, 1).
+        // Gate is always SemaphoreSlim(1, 1) to preserve per-partition ordering.
+        // The inflight tracker provides coordinated retry for edge-case OOSN,
+        // but the gate stays single-permit because Dekaf's fire-and-forget
+        // send model doesn't guarantee wire-order with concurrent sends.
         var gate = new SemaphoreSlim(1, 1);
 
         // First should succeed
