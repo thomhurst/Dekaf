@@ -3416,6 +3416,19 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         var latencyMs = (long)(elapsedTicks * 1000.0 / Stopwatch.Frequency);
         _statisticsCollector.RecordResponseReceived(latencyMs);
 
+        // Build a lookup from response: (topic, partition) → ProduceResponsePartitionData.
+        // Single pass over the response O(m*k), then O(1) per batch lookup.
+        // Using Dictionary<(string, int), ...> avoids O(n*m*k) nested loops.
+        Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? responseLookup = null;
+        foreach (var topicResp in response.Responses)
+        {
+            foreach (var partResp in topicResp.PartitionResponses)
+            {
+                responseLookup ??= new Dictionary<(string, int), ProduceResponsePartitionData>();
+                responseLookup[(topicResp.Name, partResp.Index)] = partResp;
+            }
+        }
+
         // Process response: match each batch to its partition response
         List<(int BatchIndex, ErrorCode Error)>? failures = null;
 
@@ -3426,23 +3439,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             var expectedPartition = batch.TopicPartition.Partition;
             var messageCount = batch.CompletionSourcesCount;
 
-            // Find topic response
+            // O(1) lookup instead of O(m*k) nested scan
             ProduceResponsePartitionData? partitionResponse = null;
-            foreach (var topicResp in response.Responses)
-            {
-                if (topicResp.Name == expectedTopic)
-                {
-                    foreach (var partResp in topicResp.PartitionResponses)
-                    {
-                        if (partResp.Index == expectedPartition)
-                        {
-                            partitionResponse = partResp;
-                            break;
-                        }
-                    }
-                    break;
-                }
-            }
+            responseLookup?.TryGetValue((expectedTopic, expectedPartition), out partitionResponse);
 
             if (partitionResponse is null)
             {
