@@ -179,7 +179,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Initialize ValueTaskSource pool with configured size
         _valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>(options.ValueTaskSourcePoolSize);
 
-        _partitioner = options.Partitioner switch
+        _partitioner = options.CustomPartitioner ?? options.Partitioner switch
         {
             PartitionerType.Sticky => new StickyPartitioner(),
             PartitionerType.RoundRobin => new RoundRobinPartitioner(),

@@ -26,6 +26,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private Protocol.Records.CompressionType _compressionType = Protocol.Records.CompressionType.None;
     private int? _compressionLevel;
     private PartitionerType _partitionerType = PartitionerType.Default;
+    private IPartitioner? _customPartitioner;
     private bool _useTls;
     private TlsConfig? _tlsConfig;
     private SaslMechanism _saslMechanism = SaslMechanism.None;
@@ -164,6 +165,18 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithPartitioner(PartitionerType partitionerType)
     {
         _partitionerType = partitionerType;
+        _customPartitioner = null;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets a custom partitioner implementation.
+    /// When set, this takes precedence over <see cref="WithPartitioner(PartitionerType)"/>.
+    /// </summary>
+    /// <param name="partitioner">The custom partitioner to use.</param>
+    public ProducerBuilder<TKey, TValue> WithCustomPartitioner(IPartitioner partitioner)
+    {
+        _customPartitioner = partitioner ?? throw new ArgumentNullException(nameof(partitioner));
         return this;
     }
 
@@ -465,6 +478,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             CompressionType = _compressionType,
             CompressionLevel = _compressionLevel,
             Partitioner = _partitionerType,
+            CustomPartitioner = _customPartitioner,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
             SaslMechanism = _saslMechanism,
