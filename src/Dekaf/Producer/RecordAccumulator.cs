@@ -974,14 +974,18 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
             if (entry.Topic == topic && entry.Partition == partition && entry.Batch is not null)
             {
-                // Cache hit - verify batch is still valid (not completed)
+                // Cache hit - verify batch is still valid (not completed) AND still belongs
+                // to the correct partition. The batch object may have been recycled via the pool
+                // and Reset() for a different partition while this thread-local cache entry is stale.
+                // The linger timer (different thread) can complete + pool a batch, then the produce
+                // thread can rent it for another partition, making the stale cache entry dangerous.
                 var cachedBatch = entry.Batch;
-                if (cachedBatch.Arena is not null) // Arena is null when batch is completed
+                if (cachedBatch.Arena is not null && cachedBatch.TopicPartition.Partition == partition)
                 {
                     batch = cachedBatch;
                     return true;
                 }
-                // Batch was completed, clear cache entry
+                // Batch was completed or recycled for a different partition, clear cache entry
                 entry.Batch = null;
             }
         }
@@ -1360,10 +1364,15 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         // FAST PATH 1: Check single-partition cache for consecutive messages to same partition.
         // This is the fastest path for single-partition or sticky-partitioner scenarios.
+        // CRITICAL: Also verify the batch still belongs to the correct partition.
+        // The batch object may have been recycled via the pool and Reset() for a different
+        // partition while this thread-local cache entry is stale (e.g., linger timer completed
+        // and pooled the batch on another thread, then it was rented for a different partition).
         if (t_cachedAccumulator == this &&
             t_cachedTopic == topic &&
             t_cachedPartition == partition &&
-            t_cachedBatch is { } cachedBatch)
+            t_cachedBatch is { } cachedBatch &&
+            cachedBatch.TopicPartition.Partition == partition)
         {
             var result = cachedBatch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
             if (result.Success)
@@ -1396,7 +1405,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         {
             var cacheIndex = partition & (MultiPartitionCacheSize - 1); // Fast modulo for power of 2
             ref var entry = ref cache[cacheIndex];
-            if (entry.Topic == topic && entry.Partition == partition && entry.Batch is { } mpCachedBatch)
+            // CRITICAL: Verify batch still belongs to the correct partition (same recycling concern).
+            if (entry.Topic == topic && entry.Partition == partition && entry.Batch is { } mpCachedBatch &&
+                mpCachedBatch.TopicPartition.Partition == partition)
             {
                 var result = mpCachedBatch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
                 if (result.Success)

@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using System.Threading.Channels;
 using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -68,15 +67,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     // Inner arrays are rented from ArrayPool and returned by the fire-and-forget send tasks.
     private readonly Dictionary<int, (int Count, ReadyBatch[] Batches, SemaphoreSlim[] Gates)> _brokerGroups = new();
 
-    // Channel-based worker pool for thread-safe produce operations
-    private readonly Channel<ProduceWorkItem<TKey, TValue>> _workChannel;
-    private readonly Task[] _workerTasks;
-    private readonly int _workerCount;
 
-    // Tracks pending messages in the work channel to prevent ordering issues.
-    // When > 0, the fire-and-forget fast path must be disabled to ensure messages
-    // appended via the slow path (worker thread) are not overtaken by fast-path messages.
-    private int _pendingChannelMessages;
+    // Eager initialization: started in constructor, awaited/blocked by produce paths.
+    // By the time Send()/ProduceAsync is called, this task is already running or complete,
+    // so blocking on it doesn't require scheduling new work (no thread pool starvation).
+    // Non-readonly: replaced on failure for retry semantics.
+    private Task _initializationTask = null!;
 
     private int _produceApiVersion = -1;
     internal volatile bool _disposed;
@@ -243,23 +239,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _senderTask = SenderLoopAsync(_senderCts.Token);
         _lingerTask = LingerLoopAsync(_senderCts.Token);
 
-        // Set up worker for channel-based produce operations (slow path).
-        // Use a SINGLE worker to preserve message ordering within the channel.
-        // The channel is only used during startup (before metadata is cached) and when
-        // the fast path is unavailable. After metadata is cached, Send() uses the
-        // zero-allocation fast path that bypasses the channel entirely.
-        // Multiple workers would break FIFO ordering by processing messages concurrently.
-        _workerCount = 1;
-        _workChannel = Channel.CreateUnbounded<ProduceWorkItem<TKey, TValue>>(
-            new UnboundedChannelOptions
-            {
-                SingleReader = true,    // Single worker for ordering guarantee
-                SingleWriter = false    // Multiple callers write
-            });
-
-        // Start single worker task
-        _workerTasks = new Task[_workerCount];
-        _workerTasks[0] = ProcessWorkAsync(_senderCts.Token);
+        // Start metadata + idempotent initialization eagerly in the background.
+        // By the time Send()/ProduceAsync is called, this is already running or complete.
+        // Send() blocks on it without needing Task.Run (no thread pool starvation risk).
+        _initializationTask = InitializeEagerlyAsync();
 
         // Start statistics emitter if configured
         if (options.StatisticsInterval.HasValue &&
@@ -415,10 +398,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     {
         completion = null;
 
-        // Check if metadata is initialized (sync check)
+        // Check if metadata is initialized (sync check).
+        // Callers ensure initialization via EnsureInitialized[Async], so this only
+        // returns false on the very first call before init completes.
         if (_metadataManager.Metadata.LastRefreshed == default)
         {
-            return false; // Need async initialization
+            return false;
         }
 
         // FAST PATH: Check thread-local cached topic metadata first.
@@ -465,46 +450,41 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken)
     {
-        // BACKPRESSURE: Reserve memory before queueing to prevent unbounded channel growth.
-        // This ensures backpressure even for ProduceAsync calls that aren't awaited.
-        var estimatedSize = EstimateMessageSizeForBackpressure(message);
+        // Ensure metadata + idempotent init is ready (blocks until done).
+        // This is the one-time startup cost path; subsequent calls skip this via
+        // TryProduceSyncForAsync's fast-path check.
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        // Use async reservation for the async path to avoid blocking threads
-        await _accumulator.ReserveMemoryAsyncForBackpressure(estimatedSize, cancellationToken).ConfigureAwait(false);
-
-        var memoryOwnershipTransferred = false;
-        try
+        // Retry fast path now that metadata is initialized
+        if (TryProduceSyncForAsync(message, out var fastCompletion))
         {
-            // Rent completion source from pool - it will auto-return when awaited
-            var completion = _valueTaskSourcePool.Rent();
-
-            var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, cancellationToken, estimatedSize);
-
-            // PRE-QUEUE: Channel write can be cancelled (throws OperationCanceledException)
-            // If cancelled here, completion source never gets used and returns to pool
-            await _workChannel.Writer.WriteAsync(workItem, cancellationToken).ConfigureAwait(false);
-
-            // POST-QUEUE: Memory ownership transferred to work item.
-            // The worker releases PreReservedBytes immediately when it picks up the item.
-            memoryOwnershipTransferred = true;
-
-            // Message WILL be delivered, but caller can stop waiting via cancellation token.
             if (cancellationToken.CanBeCanceled)
             {
-                return await AwaitWithCancellation(completion, cancellationToken).ConfigureAwait(false);
+                return await AwaitWithCancellation(fastCompletion!, cancellationToken).ConfigureAwait(false);
             }
+            return await fastCompletion!.Task.ConfigureAwait(false);
+        }
 
-            return await completion.Task.ConfigureAwait(false);
-        }
-        catch
+        // Topic cache miss — fetch topic metadata inline and produce
+        var completion = _valueTaskSourcePool.Rent();
+        try
         {
-            // Only release if we still own the memory (WriteAsync failed before queueing)
-            if (!memoryOwnershipTransferred)
-            {
-                _accumulator.ReleaseMemory(estimatedSize);
-            }
-            throw;
+            await ProduceInternalAsync(message, completion, cancellationToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            completion.TrySetCanceled(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            completion.TrySetException(ex);
+        }
+
+        if (cancellationToken.CanBeCanceled)
+        {
+            return await AwaitWithCancellation(completion, cancellationToken).ConfigureAwait(false);
+        }
+        return await completion.Task.ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -516,58 +496,30 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
-        // Fast path: Try synchronous fire-and-forget produce if metadata is cached.
-        // TryProduceSyncFireAndForget returns false when metadata isn't available, naturally
-        // falling through to the channel-based slow path for metadata initialization.
-        // We don't gate on _pendingChannelMessages here because doing so with a single worker
-        // creates a death spiral: initial channel messages prevent the fast path from activating,
-        // forcing ALL subsequent messages through the single-threaded worker, which can never
-        // drain the channel fast enough to re-enable the fast path.
+        // Ensure metadata is initialized (blocks on first call only, zero-cost after).
+        EnsureInitialized();
+
+        // Fast path: synchronous fire-and-forget produce with cached metadata (99%+ of calls).
         if (TryProduceSyncFireAndForget(message))
         {
             return;
         }
 
-        // Slow path: Fall back to channel-based async processing
-        // This handles the case where metadata isn't initialized or cached
-
-        // BACKPRESSURE: Reserve memory before queueing to prevent unbounded channel growth.
-        // The worker releases pre-reserved memory immediately when it picks up the item,
-        // then AppendAsync reserves memory based on actual serialized size.
-        var estimatedSize = EstimateMessageSizeForBackpressure(message);
-        _accumulator.ReserveMemorySyncForBackpressure(estimatedSize);
-
-        // Increment BEFORE writing to channel to prevent race with fast-path check.
-        // The worker decrements AFTER appending, ensuring all slow-path messages are
-        // visible before the fast path can resume.
-        Interlocked.Increment(ref _pendingChannelMessages);
-
-        PooledValueTaskSource<RecordMetadata>? completion = null;
+        // Topic cache miss — fetch topic metadata synchronously and produce.
+        // This is a one-time cost per new topic.
         try
         {
-            completion = _valueTaskSourcePool.Rent();
-            // Fire-and-forget: ensure completion source returns to pool when batch completes
-            // Uses zero-allocation callback instead of async Task to avoid GC pressure
-            completion.ObserveForFireAndForget();
-
-            var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None, estimatedSize);
-
-            if (!_workChannel.Writer.TryWrite(workItem))
-            {
-                Interlocked.Decrement(ref _pendingChannelMessages);
-                completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
-                // Don't release here - let the catch block handle it to avoid double release
-                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-            }
-
-            // Success - memory ownership transferred to work item, don't release
-            return;
+            var topicInfo = FetchTopicMetadataSync(message.Topic);
+            ProduceSyncCoreFireAndForget(message, topicInfo);
         }
-        catch
+        catch (TimeoutException)
         {
-            Interlocked.Decrement(ref _pendingChannelMessages);
-            _accumulator.ReleaseMemory(estimatedSize);
+            // BufferMemory backpressure or metadata timeout must propagate
             throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Fire-and-forget produce failed for topic {Topic} (topic metadata fetch)", message.Topic);
         }
     }
 
@@ -584,15 +536,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             return;
         }
 
-        // Fast path: Try synchronous fire-and-forget produce if metadata is cached.
-        // See Send(ProducerMessage) for explanation of why we don't gate on _pendingChannelMessages.
+        // Ensure metadata is initialized (blocks on first call only, zero-cost after).
+        EnsureInitialized();
+
+        // Fast path: synchronous fire-and-forget produce with cached metadata.
         if (TryProduceSyncFireAndForgetDirect(topic, key, value, partition: null, timestamp: null, headers: null))
         {
             return;
         }
 
-        // Slow path: Fall back to the message-based overload
-        // This allocates a ProducerMessage but handles metadata initialization
+        // Topic cache miss — fall back to the message-based overload which handles sync topic fetch.
         Send(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
     }
 
@@ -993,37 +946,26 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             return true;
         }
 
-        // SLOW PATH: Full metadata check with caching
-        // Check if metadata is initialized (sync check)
-        if (_metadataManager.Metadata.LastRefreshed == default)
-        {
-            return false; // Need async initialization
-        }
-
-        // Try to get topic metadata from cache
+        // Metadata manager cache check (callers guarantee metadata is initialized via EnsureInitialized).
         if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo) || topicInfo is null)
         {
-            return false; // Cache miss, need async refresh
+            return false; // Topic cache miss — caller will fetch inline
         }
 
         if (topicInfo.PartitionCount == 0)
         {
-            return false; // Invalid topic state, let async path handle error
+            return false;
         }
 
         // Update thread-local cache for next call
         UpdateCachedTopicInfo(message.Topic, topicInfo);
 
-        // All checks passed - we can proceed synchronously without completion tracking
         try
         {
             ProduceSyncCoreFireAndForget(message, topicInfo);
         }
         catch (Exception ex)
         {
-            // Fire-and-forget: swallow exception but log for diagnostics
-            // This matches Confluent.Kafka behavior where Produce() doesn't throw
-            // for production errors in fire-and-forget mode
             _logger?.LogDebug(ex, "Fire-and-forget produce failed for topic {Topic}", message.Topic);
         }
         return true;
@@ -1057,21 +999,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryProduceSync(ProducerMessage<TKey, TValue> message)
     {
-        // Check if metadata is initialized (sync check)
-        if (_metadataManager.Metadata.LastRefreshed == default)
-        {
-            return false; // Need async initialization
-        }
-
-        // Try to get topic metadata from cache
+        // Callers guarantee metadata is initialized via EnsureInitialized[Async].
         if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out var topicInfo) || topicInfo is null)
         {
-            return false; // Cache miss, need async refresh
+            return false; // Topic cache miss — caller will fetch inline
         }
 
         if (topicInfo.PartitionCount == 0)
         {
-            return false; // Invalid topic state, let async path handle error
+            return false;
         }
 
         // All checks passed - we can proceed synchronously
@@ -1300,49 +1236,21 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
-        // Fast path: Try synchronous produce if metadata is initialized and cached.
-        // See Send(ProducerMessage) for explanation of why we don't gate on _pendingChannelMessages.
+        // Ensure metadata is initialized (blocks on first call only, zero-cost after).
+        EnsureInitialized();
+
+        // Fast path: synchronous produce with handler using cached metadata (99%+ of calls).
         if (TryProduceSyncWithHandler(message, deliveryHandler))
         {
             return;
         }
 
-        // Slow path: Fall back to channel-based async processing
+        // Topic cache miss — fetch topic metadata synchronously and retry.
+        FetchTopicMetadataSync(message.Topic);
 
-        // BACKPRESSURE: Reserve memory before queueing to prevent unbounded channel growth.
-        var estimatedSize = EstimateMessageSizeForBackpressure(message);
-        _accumulator.ReserveMemorySyncForBackpressure(estimatedSize);
-
-        // Increment BEFORE writing to channel to prevent race with fast-path check.
-        Interlocked.Increment(ref _pendingChannelMessages);
-
-        PooledValueTaskSource<RecordMetadata>? completion = null;
-        try
+        if (!TryProduceSyncWithHandler(message, deliveryHandler))
         {
-            completion = _valueTaskSourcePool.Rent();
-            completion.SetDeliveryHandler(deliveryHandler);
-            // Fire-and-forget: ensure completion source returns to pool when batch completes
-            // Uses zero-allocation callback instead of async Task to avoid GC pressure
-            completion.ObserveForFireAndForget();
-
-            var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None, estimatedSize);
-
-            if (!_workChannel.Writer.TryWrite(workItem))
-            {
-                Interlocked.Decrement(ref _pendingChannelMessages);
-                completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
-                // Don't release here - let the catch block handle it to avoid double release
-                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-            }
-
-            // Success - memory ownership transferred to work item, don't release
-            return;
-        }
-        catch
-        {
-            Interlocked.Decrement(ref _pendingChannelMessages);
-            _accumulator.ReleaseMemory(estimatedSize);
-            throw;
+            throw new InvalidOperationException($"Failed to produce to topic '{message.Topic}'");
         }
     }
 
@@ -1354,16 +1262,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryProduceSyncWithHandler(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
     {
-        // Check if metadata is initialized
-        if (_metadataManager.Metadata.LastRefreshed == default)
-        {
-            return false;
-        }
-
-        // Try to get topic metadata from cache
+        // Callers guarantee metadata is initialized via EnsureInitialized.
         if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out var topicInfo) || topicInfo is null)
         {
-            return false;
+            return false; // Topic cache miss — caller will fetch inline
         }
 
         if (topicInfo.PartitionCount == 0)
@@ -1626,44 +1528,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
     }
 
-    private async Task ProcessWorkAsync(CancellationToken cancellationToken)
-    {
-        await foreach (var work in _workChannel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-        {
-            try
-            {
-                // OPTIMIZATION: Release pre-reserved memory IMMEDIATELY when we pick up the work item.
-                // This minimizes peak memory usage and maximizes throughput by avoiding double-reservation.
-                // The pre-reservation's purpose is backpressure (limiting queue depth), not tracking actual usage.
-                // AppendAsync will reserve the actual memory it needs based on serialized size.
-                if (work.PreReservedBytes > 0)
-                {
-                    _accumulator.ReleaseMemory(work.PreReservedBytes);
-                }
-
-                // ProduceInternalAsync adds the completion to the batch
-                // The batch will complete it when sent - no need to set result here
-                await ProduceInternalAsync(work.Message, work.Completion, work.CancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (work.CancellationToken.IsCancellationRequested)
-            {
-                work.Completion.TrySetCanceled(work.CancellationToken);
-            }
-            catch (Exception ex)
-            {
-                work.Completion.TrySetException(ex);
-            }
-            finally
-            {
-                // Decrement AFTER appending to ensure the message is visible in the batch
-                // before the fast path in Send() can resume. This prevents ordering violations
-                // between slow-path (channel) and fast-path (inline) messages.
-                Interlocked.Decrement(ref _pendingChannelMessages);
-            }
-        }
-    }
-
     private async ValueTask ProduceInternalAsync(
         ProducerMessage<TKey, TValue> message,
         PooledValueTaskSource<RecordMetadata> completion,
@@ -1822,9 +1686,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         return await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
-    public async ValueTask FlushAsync(CancellationToken cancellationToken = default)
+    public ValueTask FlushAsync(CancellationToken cancellationToken = default)
     {
-        await _accumulator.FlushAsync(cancellationToken).ConfigureAwait(false);
+        // No channel to drain — all produce paths append directly to the accumulator.
+        return _accumulator.FlushAsync(cancellationToken);
     }
 
     public ITransaction<TKey, TValue> BeginTransaction()
@@ -1876,7 +1741,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         try
         {
             // Ensure metadata is initialized
-            await EnsureInitializedWithTimeoutAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
             // Step 1: Find the transaction coordinator
             await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
@@ -3704,6 +3569,31 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <summary>
+    /// Eagerly initializes metadata and idempotent producer in the background.
+    /// Started in the constructor so that by the time Send()/ProduceAsync is called,
+    /// the task is already running or complete — avoiding the need for Task.Run
+    /// which can cause thread pool starvation under parallel test load.
+    /// </summary>
+    private async Task InitializeEagerlyAsync()
+    {
+        try
+        {
+            await _metadataManager.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw new TimeoutException(
+                $"Failed to fetch initial metadata within max.block.ms ({_options.MaxBlockMs}ms). " +
+                $"Ensure the Kafka cluster is reachable and the bootstrap servers are correct.");
+        }
+
+        if (_options.EnableIdempotence && _options.TransactionalId is null && !_idempotentInitialized)
+        {
+            await InitIdempotentProducerAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
     /// Ensures metadata is initialized. Uses inline check to avoid async state machine
     /// overhead when metadata is already initialized (which is 99%+ of calls).
     /// </summary>
@@ -3717,32 +3607,77 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             return ValueTask.CompletedTask;
         }
 
-        // Slow path: need to initialize metadata and/or idempotent producer
-        return EnsureInitializedWithTimeoutAsync(cancellationToken);
+        // Await the eagerly-started initialization task
+        return new ValueTask(_initializationTask.WaitAsync(cancellationToken));
     }
 
-    private async ValueTask EnsureInitializedWithTimeoutAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Synchronous version of <see cref="EnsureInitializedAsync"/> for use in <c>Send()</c> methods.
+    /// Uses the double-checked lock pattern: fast check is zero-cost (99%+ of calls), slow path
+    /// blocks on the eagerly-started <see cref="_initializationTask"/> which is already running
+    /// on the thread pool (no Task.Run needed, so no thread pool starvation risk).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void EnsureInitialized()
     {
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(_options.MaxBlockMs);
+        // Fast path: metadata already initialized and idempotent producer ready (zero-cost check)
+        if (_metadataManager.Metadata.LastRefreshed != default &&
+            (!_options.EnableIdempotence || _options.TransactionalId is not null || _idempotentInitialized))
+        {
+            return;
+        }
 
+        // Slow path: block on the eagerly-started init task (one-time startup cost).
+        // The task is already running from the constructor — we just wait for it to complete.
+        // No thread pool starvation risk since we're not scheduling new work.
+        EnsureInitializedBlocking();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void EnsureInitializedBlocking()
+    {
+        // Block on the eagerly-started initialization task.
+        // The task was started in the constructor and uses ConfigureAwait(false) throughout,
+        // so its continuations run on I/O completion threads, not the thread pool.
+        // This means blocking here won't cause thread pool starvation.
+        _initializationTask.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// Fetches topic metadata synchronously for Send() when the topic is not in the cache.
+    /// This is a rare path — only hit on the first produce to a new topic.
+    /// Uses TaskCreationOptions.LongRunning to avoid thread pool starvation.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private TopicInfo FetchTopicMetadataSync(string topic)
+    {
+        using var timeoutCts = new CancellationTokenSource(_options.MaxBlockMs);
+        var token = timeoutCts.Token;
+        TopicInfo topicInfo;
         try
         {
-            await _metadataManager.InitializeAsync(timeoutCts.Token).ConfigureAwait(false);
+            // Use LongRunning to get a dedicated thread — avoids thread pool starvation
+            // when multiple producers fetch topic metadata simultaneously.
+            topicInfo = Task.Factory.StartNew(
+                () => _metadataManager.GetTopicMetadataAsync(topic, token).AsTask(),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default).Unwrap().GetAwaiter().GetResult()!;
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            // The timeout fired, not the caller's token - throw a descriptive TimeoutException
             throw new TimeoutException(
-                $"Failed to fetch initial metadata within max.block.ms ({_options.MaxBlockMs}ms). " +
-                $"Ensure the Kafka cluster is reachable and the bootstrap servers are correct.");
+                $"Failed to fetch metadata for topic '{topic}' within max.block.ms ({_options.MaxBlockMs}ms). " +
+                $"Ensure the topic exists and the Kafka cluster is reachable.");
         }
 
-        // Initialize idempotent producer after metadata is available (non-transactional only)
-        if (_options.EnableIdempotence && _options.TransactionalId is null && !_idempotentInitialized)
+        if (topicInfo is null || topicInfo.PartitionCount == 0)
         {
-            await InitIdempotentProducerAsync(timeoutCts.Token).ConfigureAwait(false);
+            throw new InvalidOperationException($"Topic '{topic}' not found or has no partitions");
         }
+
+        UpdateCachedTopicInfo(topic, topicInfo);
+        return topicInfo;
     }
 
     /// <summary>
@@ -3947,20 +3882,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         try
         {
-            // 1. Complete the work channel (no more writes accepted)
-            _workChannel.Writer.Complete();
-
-            // 2. Wait for workers to drain - they'll process remaining items and exit
-            //    when the channel is empty and completed
-            if (hasTimeout)
-                await Task.WhenAll(_workerTasks).WaitAsync(shutdownCts.Token).ConfigureAwait(false);
-            else
-                await Task.WhenAll(_workerTasks).ConfigureAwait(false);
-
-            // 3. Flush accumulator and complete its channel - sender will process remaining batches
+            // 1. Flush accumulator and complete its channel - sender will process remaining batches
             await _accumulator.CloseAsync(shutdownCts.Token).ConfigureAwait(false);
 
-            // 4. Wait for sender to drain remaining batches
+            // 2. Wait for sender to drain remaining batches
             // CRITICAL: Don't cancel _senderCts yet - sender needs to process flushed batches
             // The sender will exit naturally when the ready batches channel completes (done in CloseAsync)
             if (hasTimeout)
@@ -3968,7 +3893,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             else
                 await _senderTask.ConfigureAwait(false);
 
-            // 5. Now safe to cancel linger loop (it's already exited or will exit soon)
+            // 3. Now safe to cancel linger loop (it's already exited or will exit soon)
             _senderCts.Cancel();
         }
         catch (OperationCanceledException)
@@ -3989,9 +3914,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             try
             {
-                // BUG FIX: Await BOTH workers and sender to ensure in-flight batches complete
-                // This prevents DeliveryTasks from hanging if timeout occurred during FlushAsync
-                await Task.WhenAll(_workerTasks.Append(_senderTask))
+                await _senderTask
                     .WaitAsync(TimeSpan.FromSeconds(5))
                     .ConfigureAwait(false);
             }
@@ -4038,38 +3961,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
-    }
-}
-
-/// <summary>
-/// Work item for the producer worker pool.
-/// Changed from struct to class to avoid multiple copies during channel operations.
-/// As a class, the work item is allocated once and a single reference is passed through the channel,
-/// eliminating struct copy overhead and any potential boxing issues.
-/// </summary>
-internal sealed class ProduceWorkItem<TKey, TValue>
-{
-    public ProducerMessage<TKey, TValue> Message { get; }
-    public PooledValueTaskSource<RecordMetadata> Completion { get; }
-    public CancellationToken CancellationToken { get; }
-
-    /// <summary>
-    /// Memory pre-reserved before queueing to the work channel.
-    /// This provides backpressure for fire-and-forget Send() calls.
-    /// Must be released after AppendAsync completes (which reserves its own memory based on actual size).
-    /// </summary>
-    public int PreReservedBytes { get; }
-
-    public ProduceWorkItem(
-        ProducerMessage<TKey, TValue> message,
-        PooledValueTaskSource<RecordMetadata> completion,
-        CancellationToken cancellationToken,
-        int preReservedBytes = 0)
-    {
-        Message = message;
-        Completion = completion;
-        CancellationToken = cancellationToken;
-        PreReservedBytes = preReservedBytes;
     }
 }
 
