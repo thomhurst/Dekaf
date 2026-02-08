@@ -2439,9 +2439,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // This is done inline before sending to unblock FlushAsync immediately
             batch.CompleteDelivery();
 
-            // Decrement in-flight counter to unblock FlushAsync
-            _accumulator.OnBatchExitsPipeline();
-
             // Track in-flight send count for disposal coordination
             // Lock ensures atomicity of (increment + Reset) to prevent race with (decrement + Set)
             lock (_sendCompletionLock)
@@ -2521,6 +2518,13 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             // Return the ReadyBatch to the pool for reuse
             _accumulator.ReturnReadyBatch(batch);
+
+            // Decrement accumulator in-flight counter to unblock FlushAsync
+            // CRITICAL: Must be in finally (not SenderLoopAsync) so FlushAsync waits
+            // for actual send completion, not just sender loop pickup. Otherwise
+            // FlushAsync returns early and callers can overwhelm the buffer with new
+            // messages before previous sends have released their memory.
+            _accumulator.OnBatchExitsPipeline();
 
             // Decrement in-flight count and signal if all sends complete
             // Lock ensures atomicity of (decrement + Set) to prevent race with (increment + Reset)
