@@ -198,18 +198,13 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
         consumer.Subscribe(topic);
 
         var messages = new List<ConsumeResult<string, string>>();
+        const int expectedCommittedCount = messagesPerTxn + 2; // 5 from batch 1 + 2 from batch 3
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        try
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
-            await foreach (var msg in consumer.ConsumeAsync(cts.Token))
-            {
-                messages.Add(msg);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected -- consume until timeout
+            messages.Add(msg);
+            if (messages.Count >= expectedCommittedCount) break;
         }
 
         // Assert: Should see exactly 7 committed messages (5 from batch 1 + 2 from batch 3)
@@ -314,18 +309,13 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
         consumer.Subscribe(topic);
 
         var messages = new List<ConsumeResult<string, string>>();
+        const int expectedCommittedCount = 5; // 3 from producer1 commit + 2 from producer2 second commit
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        try
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
-            await foreach (var msg in consumer.ConsumeAsync(cts.Token))
-            {
-                messages.Add(msg);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected -- consume until timeout
+            messages.Add(msg);
+            if (messages.Count >= expectedCommittedCount) break;
         }
 
         // Should see 3 from producer1 commit + 2 from producer2 second commit = 5 total
@@ -375,8 +365,11 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
             }
         }
 
-        // Allow Kafka to release the transactional.id
-        await Task.Delay(1000);
+        // Allow Kafka to release the transactional.id. The broker holds a lock on the
+        // transactional.id for a short period after a producer disconnects; without this
+        // delay, InitTransactionsAsync on the next producer can fail with a concurrent
+        // transactions error. 2 seconds provides margin for CI environments under load.
+        await Task.Delay(2000);
 
         // Second producer with same transactional.id -- bumps epoch, fencing first producer
         await using var producer2 = Kafka.CreateProducer<string, string>()
