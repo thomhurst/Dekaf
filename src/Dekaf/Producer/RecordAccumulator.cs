@@ -3907,6 +3907,10 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     private Action<RecordMetadata, Exception?>?[]? _callbacks;
     private int _callbackCount;
 
+    // In-flight tracker entry for coordinated retry with multiple in-flight batches per partition.
+    // Set by KafkaProducer when registering with PartitionInflightTracker, cleared in Reset().
+    internal InflightEntry? InflightEntry { get; set; }
+
     // Batch-level completion tracking using resettable ManualResetValueTaskSourceCore
     // Never faults - uses SetResult(true) for success, SetResult(false) for failure
     private ManualResetValueTaskSourceCore<bool> _doneCore;
@@ -3982,6 +3986,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _arena = null;
         _callbacks = null;
         _callbackCount = 0;
+        InflightEntry = null;
 
         // Reset state flags
         Volatile.Write(ref _cleanedUp, 0);
