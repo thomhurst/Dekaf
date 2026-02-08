@@ -226,10 +226,17 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         var consumed = new List<ConsumeResult<string, string>>();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
-        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        try
         {
-            consumed.Add(msg);
-            if (consumed.Count >= 10) break;
+            await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+            {
+                consumed.Add(msg);
+                if (consumed.Count >= 10) break;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Timeout reached - fall through to assertion
         }
 
         // Assert - all messages should have been flushed on disposal
