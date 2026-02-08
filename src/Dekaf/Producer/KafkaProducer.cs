@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using System.Threading.Channels;
 using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -64,16 +63,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly ManualResetEventSlim _allSendsCompleted = new(true); // Initially signaled (no sends in flight)
     private readonly object _sendCompletionLock = new(); // Prevents race between Reset() and Set()
 
+    // Reused by DispatchCoalescedBatches (sender loop is single-threaded, so no contention).
+    // Inner arrays are rented from ArrayPool and returned by the fire-and-forget send tasks.
+    private readonly Dictionary<int, (int Count, ReadyBatch[] Batches, SemaphoreSlim[] Gates)> _brokerGroups = new();
 
-    // Channel-based worker pool for thread-safe produce operations
-    private readonly Channel<ProduceWorkItem<TKey, TValue>> _workChannel;
-    private readonly Task[] _workerTasks;
-    private readonly int _workerCount;
 
-    // Tracks pending messages in the work channel to prevent ordering issues.
-    // When > 0, the fire-and-forget fast path must be disabled to ensure messages
-    // appended via the slow path (worker thread) are not overtaken by fast-path messages.
-    private int _pendingChannelMessages;
+    // Eager initialization: started in constructor, awaited/blocked by produce paths.
+    // By the time Send()/ProduceAsync is called, this task is already running or complete,
+    // so blocking on it doesn't require scheduling new work (no thread pool starvation).
+    // Non-readonly: replaced on failure for retry semantics.
+    private Task _initializationTask = null!;
 
     private int _produceApiVersion = -1;
     internal volatile bool _disposed;
@@ -240,23 +239,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _senderTask = SenderLoopAsync(_senderCts.Token);
         _lingerTask = LingerLoopAsync(_senderCts.Token);
 
-        // Set up worker for channel-based produce operations (slow path).
-        // Use a SINGLE worker to preserve message ordering within the channel.
-        // The channel is only used during startup (before metadata is cached) and when
-        // the fast path is unavailable. After metadata is cached, Send() uses the
-        // zero-allocation fast path that bypasses the channel entirely.
-        // Multiple workers would break FIFO ordering by processing messages concurrently.
-        _workerCount = 1;
-        _workChannel = Channel.CreateUnbounded<ProduceWorkItem<TKey, TValue>>(
-            new UnboundedChannelOptions
-            {
-                SingleReader = true,    // Single worker for ordering guarantee
-                SingleWriter = false    // Multiple callers write
-            });
-
-        // Start single worker task
-        _workerTasks = new Task[_workerCount];
-        _workerTasks[0] = ProcessWorkAsync(_senderCts.Token);
+        // Start metadata + idempotent initialization eagerly in the background.
+        // By the time Send()/ProduceAsync is called, this is already running or complete.
+        // Send() blocks on it without needing Task.Run (no thread pool starvation risk).
+        _initializationTask = InitializeEagerlyAsync();
 
         // Start statistics emitter if configured
         if (options.StatisticsInterval.HasValue &&
@@ -412,10 +398,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     {
         completion = null;
 
-        // Check if metadata is initialized (sync check)
+        // Check if metadata is initialized (sync check).
+        // Callers ensure initialization via EnsureInitialized[Async], so this only
+        // returns false on the very first call before init completes.
         if (_metadataManager.Metadata.LastRefreshed == default)
         {
-            return false; // Need async initialization
+            return false;
         }
 
         // FAST PATH: Check thread-local cached topic metadata first.
@@ -462,46 +450,41 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken)
     {
-        // BACKPRESSURE: Reserve memory before queueing to prevent unbounded channel growth.
-        // This ensures backpressure even for ProduceAsync calls that aren't awaited.
-        var estimatedSize = EstimateMessageSizeForBackpressure(message);
+        // Ensure metadata + idempotent init is ready (blocks until done).
+        // This is the one-time startup cost path; subsequent calls skip this via
+        // TryProduceSyncForAsync's fast-path check.
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        // Use async reservation for the async path to avoid blocking threads
-        await _accumulator.ReserveMemoryAsyncForBackpressure(estimatedSize, cancellationToken).ConfigureAwait(false);
-
-        var memoryOwnershipTransferred = false;
-        try
+        // Retry fast path now that metadata is initialized
+        if (TryProduceSyncForAsync(message, out var fastCompletion))
         {
-            // Rent completion source from pool - it will auto-return when awaited
-            var completion = _valueTaskSourcePool.Rent();
-
-            var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, cancellationToken, estimatedSize);
-
-            // PRE-QUEUE: Channel write can be cancelled (throws OperationCanceledException)
-            // If cancelled here, completion source never gets used and returns to pool
-            await _workChannel.Writer.WriteAsync(workItem, cancellationToken).ConfigureAwait(false);
-
-            // POST-QUEUE: Memory ownership transferred to work item.
-            // The worker releases PreReservedBytes immediately when it picks up the item.
-            memoryOwnershipTransferred = true;
-
-            // Message WILL be delivered, but caller can stop waiting via cancellation token.
             if (cancellationToken.CanBeCanceled)
             {
-                return await AwaitWithCancellation(completion, cancellationToken).ConfigureAwait(false);
+                return await AwaitWithCancellation(fastCompletion!, cancellationToken).ConfigureAwait(false);
             }
+            return await fastCompletion!.Task.ConfigureAwait(false);
+        }
 
-            return await completion.Task.ConfigureAwait(false);
-        }
-        catch
+        // Topic cache miss — fetch topic metadata inline and produce
+        var completion = _valueTaskSourcePool.Rent();
+        try
         {
-            // Only release if we still own the memory (WriteAsync failed before queueing)
-            if (!memoryOwnershipTransferred)
-            {
-                _accumulator.ReleaseMemory(estimatedSize);
-            }
-            throw;
+            await ProduceInternalAsync(message, completion, cancellationToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            completion.TrySetCanceled(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            completion.TrySetException(ex);
+        }
+
+        if (cancellationToken.CanBeCanceled)
+        {
+            return await AwaitWithCancellation(completion, cancellationToken).ConfigureAwait(false);
+        }
+        return await completion.Task.ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -513,58 +496,30 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
-        // Fast path: Try synchronous fire-and-forget produce if metadata is cached.
-        // TryProduceSyncFireAndForget returns false when metadata isn't available, naturally
-        // falling through to the channel-based slow path for metadata initialization.
-        // We don't gate on _pendingChannelMessages here because doing so with a single worker
-        // creates a death spiral: initial channel messages prevent the fast path from activating,
-        // forcing ALL subsequent messages through the single-threaded worker, which can never
-        // drain the channel fast enough to re-enable the fast path.
+        // Ensure metadata is initialized (blocks on first call only, zero-cost after).
+        EnsureInitialized();
+
+        // Fast path: synchronous fire-and-forget produce with cached metadata (99%+ of calls).
         if (TryProduceSyncFireAndForget(message))
         {
             return;
         }
 
-        // Slow path: Fall back to channel-based async processing
-        // This handles the case where metadata isn't initialized or cached
-
-        // BACKPRESSURE: Reserve memory before queueing to prevent unbounded channel growth.
-        // The worker releases pre-reserved memory immediately when it picks up the item,
-        // then AppendAsync reserves memory based on actual serialized size.
-        var estimatedSize = EstimateMessageSizeForBackpressure(message);
-        _accumulator.ReserveMemorySyncForBackpressure(estimatedSize);
-
-        // Increment BEFORE writing to channel to prevent race with fast-path check.
-        // The worker decrements AFTER appending, ensuring all slow-path messages are
-        // visible before the fast path can resume.
-        Interlocked.Increment(ref _pendingChannelMessages);
-
-        PooledValueTaskSource<RecordMetadata>? completion = null;
+        // Topic cache miss — fetch topic metadata synchronously and produce.
+        // This is a one-time cost per new topic.
         try
         {
-            completion = _valueTaskSourcePool.Rent();
-            // Fire-and-forget: ensure completion source returns to pool when batch completes
-            // Uses zero-allocation callback instead of async Task to avoid GC pressure
-            completion.ObserveForFireAndForget();
-
-            var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None, estimatedSize);
-
-            if (!_workChannel.Writer.TryWrite(workItem))
-            {
-                Interlocked.Decrement(ref _pendingChannelMessages);
-                completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
-                // Don't release here - let the catch block handle it to avoid double release
-                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-            }
-
-            // Success - memory ownership transferred to work item, don't release
-            return;
+            var topicInfo = FetchTopicMetadataSync(message.Topic);
+            ProduceSyncCoreFireAndForget(message, topicInfo);
         }
-        catch
+        catch (TimeoutException)
         {
-            Interlocked.Decrement(ref _pendingChannelMessages);
-            _accumulator.ReleaseMemory(estimatedSize);
+            // BufferMemory backpressure or metadata timeout must propagate
             throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Fire-and-forget produce failed for topic {Topic} (topic metadata fetch)", message.Topic);
         }
     }
 
@@ -581,15 +536,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             return;
         }
 
-        // Fast path: Try synchronous fire-and-forget produce if metadata is cached.
-        // See Send(ProducerMessage) for explanation of why we don't gate on _pendingChannelMessages.
+        // Ensure metadata is initialized (blocks on first call only, zero-cost after).
+        EnsureInitialized();
+
+        // Fast path: synchronous fire-and-forget produce with cached metadata.
         if (TryProduceSyncFireAndForgetDirect(topic, key, value, partition: null, timestamp: null, headers: null))
         {
             return;
         }
 
-        // Slow path: Fall back to the message-based overload
-        // This allocates a ProducerMessage but handles metadata initialization
+        // Topic cache miss — fall back to the message-based overload which handles sync topic fetch.
         Send(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
     }
 
@@ -990,37 +946,26 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             return true;
         }
 
-        // SLOW PATH: Full metadata check with caching
-        // Check if metadata is initialized (sync check)
-        if (_metadataManager.Metadata.LastRefreshed == default)
-        {
-            return false; // Need async initialization
-        }
-
-        // Try to get topic metadata from cache
+        // Metadata manager cache check (callers guarantee metadata is initialized via EnsureInitialized).
         if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo) || topicInfo is null)
         {
-            return false; // Cache miss, need async refresh
+            return false; // Topic cache miss — caller will fetch inline
         }
 
         if (topicInfo.PartitionCount == 0)
         {
-            return false; // Invalid topic state, let async path handle error
+            return false;
         }
 
         // Update thread-local cache for next call
         UpdateCachedTopicInfo(message.Topic, topicInfo);
 
-        // All checks passed - we can proceed synchronously without completion tracking
         try
         {
             ProduceSyncCoreFireAndForget(message, topicInfo);
         }
         catch (Exception ex)
         {
-            // Fire-and-forget: swallow exception but log for diagnostics
-            // This matches Confluent.Kafka behavior where Produce() doesn't throw
-            // for production errors in fire-and-forget mode
             _logger?.LogDebug(ex, "Fire-and-forget produce failed for topic {Topic}", message.Topic);
         }
         return true;
@@ -1054,21 +999,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryProduceSync(ProducerMessage<TKey, TValue> message)
     {
-        // Check if metadata is initialized (sync check)
-        if (_metadataManager.Metadata.LastRefreshed == default)
-        {
-            return false; // Need async initialization
-        }
-
-        // Try to get topic metadata from cache
+        // Callers guarantee metadata is initialized via EnsureInitialized[Async].
         if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out var topicInfo) || topicInfo is null)
         {
-            return false; // Cache miss, need async refresh
+            return false; // Topic cache miss — caller will fetch inline
         }
 
         if (topicInfo.PartitionCount == 0)
         {
-            return false; // Invalid topic state, let async path handle error
+            return false;
         }
 
         // All checks passed - we can proceed synchronously
@@ -1297,49 +1236,21 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
-        // Fast path: Try synchronous produce if metadata is initialized and cached.
-        // See Send(ProducerMessage) for explanation of why we don't gate on _pendingChannelMessages.
+        // Ensure metadata is initialized (blocks on first call only, zero-cost after).
+        EnsureInitialized();
+
+        // Fast path: synchronous produce with handler using cached metadata (99%+ of calls).
         if (TryProduceSyncWithHandler(message, deliveryHandler))
         {
             return;
         }
 
-        // Slow path: Fall back to channel-based async processing
+        // Topic cache miss — fetch topic metadata synchronously and retry.
+        FetchTopicMetadataSync(message.Topic);
 
-        // BACKPRESSURE: Reserve memory before queueing to prevent unbounded channel growth.
-        var estimatedSize = EstimateMessageSizeForBackpressure(message);
-        _accumulator.ReserveMemorySyncForBackpressure(estimatedSize);
-
-        // Increment BEFORE writing to channel to prevent race with fast-path check.
-        Interlocked.Increment(ref _pendingChannelMessages);
-
-        PooledValueTaskSource<RecordMetadata>? completion = null;
-        try
+        if (!TryProduceSyncWithHandler(message, deliveryHandler))
         {
-            completion = _valueTaskSourcePool.Rent();
-            completion.SetDeliveryHandler(deliveryHandler);
-            // Fire-and-forget: ensure completion source returns to pool when batch completes
-            // Uses zero-allocation callback instead of async Task to avoid GC pressure
-            completion.ObserveForFireAndForget();
-
-            var workItem = new ProduceWorkItem<TKey, TValue>(message, completion, CancellationToken.None, estimatedSize);
-
-            if (!_workChannel.Writer.TryWrite(workItem))
-            {
-                Interlocked.Decrement(ref _pendingChannelMessages);
-                completion.TrySetException(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
-                // Don't release here - let the catch block handle it to avoid double release
-                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-            }
-
-            // Success - memory ownership transferred to work item, don't release
-            return;
-        }
-        catch
-        {
-            Interlocked.Decrement(ref _pendingChannelMessages);
-            _accumulator.ReleaseMemory(estimatedSize);
-            throw;
+            throw new InvalidOperationException($"Failed to produce to topic '{message.Topic}'");
         }
     }
 
@@ -1351,16 +1262,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryProduceSyncWithHandler(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
     {
-        // Check if metadata is initialized
-        if (_metadataManager.Metadata.LastRefreshed == default)
-        {
-            return false;
-        }
-
-        // Try to get topic metadata from cache
+        // Callers guarantee metadata is initialized via EnsureInitialized.
         if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out var topicInfo) || topicInfo is null)
         {
-            return false;
+            return false; // Topic cache miss — caller will fetch inline
         }
 
         if (topicInfo.PartitionCount == 0)
@@ -1623,44 +1528,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
     }
 
-    private async Task ProcessWorkAsync(CancellationToken cancellationToken)
-    {
-        await foreach (var work in _workChannel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-        {
-            try
-            {
-                // OPTIMIZATION: Release pre-reserved memory IMMEDIATELY when we pick up the work item.
-                // This minimizes peak memory usage and maximizes throughput by avoiding double-reservation.
-                // The pre-reservation's purpose is backpressure (limiting queue depth), not tracking actual usage.
-                // AppendAsync will reserve the actual memory it needs based on serialized size.
-                if (work.PreReservedBytes > 0)
-                {
-                    _accumulator.ReleaseMemory(work.PreReservedBytes);
-                }
-
-                // ProduceInternalAsync adds the completion to the batch
-                // The batch will complete it when sent - no need to set result here
-                await ProduceInternalAsync(work.Message, work.Completion, work.CancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (work.CancellationToken.IsCancellationRequested)
-            {
-                work.Completion.TrySetCanceled(work.CancellationToken);
-            }
-            catch (Exception ex)
-            {
-                work.Completion.TrySetException(ex);
-            }
-            finally
-            {
-                // Decrement AFTER appending to ensure the message is visible in the batch
-                // before the fast path in Send() can resume. This prevents ordering violations
-                // between slow-path (channel) and fast-path (inline) messages.
-                Interlocked.Decrement(ref _pendingChannelMessages);
-            }
-        }
-    }
-
     private async ValueTask ProduceInternalAsync(
         ProducerMessage<TKey, TValue> message,
         PooledValueTaskSource<RecordMetadata> completion,
@@ -1819,9 +1686,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         return await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
-    public async ValueTask FlushAsync(CancellationToken cancellationToken = default)
+    public ValueTask FlushAsync(CancellationToken cancellationToken = default)
     {
-        await _accumulator.FlushAsync(cancellationToken).ConfigureAwait(false);
+        // No channel to drain — all produce paths append directly to the accumulator.
+        return _accumulator.FlushAsync(cancellationToken);
     }
 
     public ITransaction<TKey, TValue> BeginTransaction()
@@ -1873,7 +1741,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         try
         {
             // Ensure metadata is initialized
-            await EnsureInitializedWithTimeoutAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
             // Step 1: Find the transaction coordinator
             await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
@@ -2441,61 +2309,75 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // freely. If the idempotent producer is enabled, DuplicateSequenceNumber is treated as success
         // (safe retransmit detection).
         //
+        // BATCH COALESCING: When multiple batches are ready simultaneously, they are grouped by
+        // broker and sent as a single ProduceRequest per broker. This reduces network round-trips
+        // proportional to the number of partitions per broker. When only 1 batch is ready, the
+        // existing single-batch path runs with zero overhead.
+        //
         // SEMAPHORE ORDERING (critical for throughput):
         // 1. _senderPipelineSemaphore: Acquired HERE before dispatch. Bounds fire-and-forget task
         //    count to prevent thread pool saturation when hundreds of batches are ready.
         // 2. Per-partition gate: Acquired FIRST inside SendBatchWithCleanupAsync for ordering.
+        //    For coalesced sends, acquired non-blocking in DispatchCoalescedBatches.
         // 3. _sendConcurrencySemaphore: Acquired SECOND inside SendBatchWithCleanupAsync, AFTER
         //    the partition gate. This is critical: if the global send semaphore were acquired before
         //    the partition gate, tasks waiting on their partition gate would consume global slots,
         //    starving other partitions (head-of-line blocking). With partition gate first, only
         //    tasks ready to send consume global slots.
 
-        await foreach (var batch in _accumulator.ReadyBatches.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        var channelReader = _accumulator.ReadyBatches;
+        var maxDrain = _options.MaxInFlightRequestsPerConnection * 4;
+        var drainBuffer = ArrayPool<ReadyBatch>.Shared.Rent(maxDrain);
+
+        try
         {
-            // Complete delivery task (fire-and-forget semantic: batch is "ready")
-            // This is done inline before sending to unblock FlushAsync immediately
-            batch.CompleteDelivery();
-
-            // Release buffer memory as soon as the sender dequeues the batch.
-            // With the pipeline semaphore below, only a bounded number of batches
-            // (MaxInFlightRequestsPerConnection * 4) can have their memory freed early.
-            // Remaining batches in the channel still have their memory tracked, providing backpressure.
-            _accumulator.ReleaseMemory(batch.DataSize);
-
-            // Track in-flight send count for disposal coordination
-            // Lock ensures atomicity of (increment + Reset) to prevent race with (decrement + Set)
-            lock (_sendCompletionLock)
+            while (await channelReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                if (Interlocked.Increment(ref _inFlightSendCount) == 1)
+                // Drain all currently-available batches (up to pipeline depth)
+                var drainCount = 0;
+                while (drainCount < maxDrain && channelReader.TryRead(out var batch))
                 {
-                    _allSendsCompleted.Reset(); // First send in flight - clear the signal
-                }
-            }
+                    // Complete delivery task (fire-and-forget semantic: batch is "ready")
+                    batch.CompleteDelivery();
 
-            // Limit pipeline depth to prevent spawning hundreds of concurrent tasks.
-            // Cost: 1 Interlocked op (fast path when count > 0). Only blocks when pipeline is full.
-            // If cancelled, we must decrement the in-flight count we just incremented above,
-            // otherwise WaitForInFlightSendsAsync hangs forever waiting for a send that never started.
-            try
-            {
-                await _senderPipelineSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                lock (_sendCompletionLock)
-                {
-                    if (Interlocked.Decrement(ref _inFlightSendCount) == 0)
+                    // Release buffer memory as soon as the sender dequeues the batch.
+                    _accumulator.ReleaseMemory(batch.DataSize);
+
+                    // Track in-flight send count for disposal coordination
+                    IncrementInFlightSendCount();
+
+                    // Limit pipeline depth to prevent spawning hundreds of concurrent tasks.
+                    try
                     {
-                        _allSendsCompleted.Set();
+                        await _senderPipelineSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
                     }
+                    catch
+                    {
+                        DecrementInFlightSendCount();
+                        throw;
+                    }
+
+                    drainBuffer[drainCount++] = batch;
                 }
 
-                throw;
-            }
+                if (drainCount == 0)
+                    continue;
 
-            // Fire-and-forget: SendBatchWithCleanupAsync acquires partition gate then global semaphore
-            _ = SendBatchWithCleanupAsync(batch, cancellationToken);
+                if (drainCount == 1)
+                {
+                    // Single batch: existing path (no coalescing overhead)
+                    _ = SendBatchWithCleanupAsync(drainBuffer[0], cancellationToken);
+                }
+                else
+                {
+                    // Multiple batches: group by broker and coalesce into fewer requests
+                    DispatchCoalescedBatches(drainBuffer, drainCount, cancellationToken);
+                }
+            }
+        }
+        finally
+        {
+            ArrayPool<ReadyBatch>.Shared.Return(drainBuffer, clearArray: true);
         }
 
         // Channel completed - wait for all in-flight sends to finish before exiting
@@ -2583,14 +2465,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             _accumulator.OnBatchExitsPipeline();
 
             // Decrement in-flight count and signal if all sends complete
-            // Lock ensures atomicity of (decrement + Set) to prevent race with (increment + Reset)
-            lock (_sendCompletionLock)
-            {
-                if (Interlocked.Decrement(ref _inFlightSendCount) == 0)
-                {
-                    _allSendsCompleted.Set(); // All sends complete - signal waiters
-                }
-            }
+            DecrementInFlightSendCount();
 
             // Release pipeline depth slot last - allows SenderLoopAsync to dispatch another batch
             _senderPipelineSemaphore.Release();
@@ -2601,6 +2476,38 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// Waits for all in-flight batch sends to complete.
     /// Used during disposal to ensure graceful shutdown.
     /// </summary>
+    /// <summary>
+    /// Increments the in-flight send count and resets the completion signal if this is the first in-flight send.
+    /// Lock ensures atomicity of (increment + Reset) to prevent race with (decrement + Set).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void IncrementInFlightSendCount()
+    {
+        lock (_sendCompletionLock)
+        {
+            if (Interlocked.Increment(ref _inFlightSendCount) == 1)
+            {
+                _allSendsCompleted.Reset();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Decrements the in-flight send count and signals completion if all sends are done.
+    /// Lock ensures atomicity of (decrement + Set) to prevent race with (increment + Reset).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void DecrementInFlightSendCount()
+    {
+        lock (_sendCompletionLock)
+        {
+            if (Interlocked.Decrement(ref _inFlightSendCount) == 0)
+            {
+                _allSendsCompleted.Set();
+            }
+        }
+    }
+
     private ValueTask WaitForInFlightSendsAsync(CancellationToken cancellationToken)
     {
         // Fast path: no sends in flight
@@ -2627,6 +2534,493 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             // Short poll interval for responsive shutdown
             await Task.Delay(5, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Groups drained batches by broker and dispatches them.
+    /// For each batch: synchronously looks up the partition leader, tries to non-blocking acquire
+    /// the partition gate, and groups by broker ID. Batches that can't be grouped (no leader cached,
+    /// or partition gate is busy) are deferred and sent sequentially per partition to preserve ordering.
+    /// </summary>
+    /// <remarks>
+    /// ORDERING SAFETY: When multiple batches for the same partition are drained, only the first
+    /// acquires the gate. Subsequent batches are deferred and chained sequentially per partition.
+    /// This is critical because SemaphoreSlim.WaitAsync() is NOT FIFO — if multiple tasks wait
+    /// on the same gate concurrently, they can acquire it in arbitrary order, violating
+    /// within-partition ordering guarantees.
+    /// </remarks>
+    private void DispatchCoalescedBatches(
+        ReadyBatch[] drainedBatches,
+        int drainCount,
+        CancellationToken cancellationToken)
+    {
+        // Reuse instance dictionary (sender loop is single-threaded, so no contention).
+        // Inner arrays are rented from ArrayPool and ownership is transferred to fire-and-forget tasks.
+        _brokerGroups.Clear();
+
+        // Deferred batches: gate-busy or no-leader batches that must be sent sequentially
+        // per partition to preserve ordering. Per-drain allocation (~100 bytes), acceptable.
+        List<ReadyBatch>? deferredBatches = null;
+
+        for (var i = 0; i < drainCount; i++)
+        {
+            var batch = drainedBatches[i];
+
+            // Look up leader synchronously from cached metadata
+            var leader = _metadataManager.Metadata.GetPartitionLeader(
+                batch.TopicPartition.Topic,
+                batch.TopicPartition.Partition);
+
+            if (leader is null)
+            {
+                // No leader cached — defer to preserve per-partition ordering.
+                // The send path does async metadata refresh + retry.
+                deferredBatches ??= [];
+                deferredBatches.Add(batch);
+                continue;
+            }
+
+            // Try non-blocking acquire of partition gate
+            var partitionGate = _partitionSendGates.GetOrAdd(batch.TopicPartition, _ => new SemaphoreSlim(1, 1));
+            if (!partitionGate.Wait(0, CancellationToken.None))
+            {
+                // Gate is busy (another batch for this partition is in-flight from this or previous drain).
+                // Defer to send sequentially after the gate-holder completes.
+                deferredBatches ??= [];
+                deferredBatches.Add(batch);
+                continue;
+            }
+
+            // Gate acquired — add to broker group using pooled arrays
+            if (!_brokerGroups.TryGetValue(leader.NodeId, out var group))
+            {
+                group = (0, ArrayPool<ReadyBatch>.Shared.Rent(drainCount), ArrayPool<SemaphoreSlim>.Shared.Rent(drainCount));
+                _brokerGroups[leader.NodeId] = group;
+            }
+
+            group.Batches[group.Count] = batch;
+            group.Gates[group.Count] = partitionGate;
+            _brokerGroups[leader.NodeId] = (group.Count + 1, group.Batches, group.Gates);
+        }
+
+        // Dispatch each broker group
+        foreach (var (brokerId, (count, batches, gates)) in _brokerGroups)
+        {
+            if (count == 1)
+            {
+                // Single batch for this broker — use optimized single-batch path
+                _ = SendBatchWithGateAlreadyAcquiredAsync(batches[0], gates[0], cancellationToken);
+
+                // Return arrays immediately — single-batch path doesn't need them
+                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+                ArrayPool<SemaphoreSlim>.Shared.Return(gates, clearArray: true);
+            }
+            else
+            {
+                // Multiple batches for this broker — coalesce into one request.
+                // Array ownership transferred; SendCoalescedBatchesAsync returns them in finally.
+                _ = SendCoalescedBatchesAsync(batches, count, gates, brokerId, cancellationToken);
+            }
+        }
+
+        // Dispatch deferred batches sequentially per partition to preserve ordering.
+        // Different partitions run concurrently; within a partition, batches are chained.
+        if (deferredBatches is not null)
+        {
+            DispatchDeferredBatchesInOrder(deferredBatches, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Groups deferred batches by partition and sends each partition's batches as a chain
+    /// that holds the partition gate for the entire chain duration.
+    /// Different partitions run concurrently.
+    /// </summary>
+    /// <remarks>
+    /// CRITICAL: Each partition's chain must hold the gate continuously from first batch to last.
+    /// If the gate were released between batches (e.g., by calling SendBatchWithCleanupAsync per batch),
+    /// the sender loop's next drain could steal the gate via non-blocking Wait(0), causing a later
+    /// batch to be sent before an earlier one → OutOfOrderSequenceNumber from the broker.
+    /// </remarks>
+    private void DispatchDeferredBatchesInOrder(
+        List<ReadyBatch> deferredBatches,
+        CancellationToken cancellationToken)
+    {
+        if (deferredBatches.Count == 1)
+        {
+            // Single deferred batch — no ordering concern (only one waiter on the gate)
+            _ = SendBatchWithCleanupAsync(deferredBatches[0], cancellationToken);
+            return;
+        }
+
+        // Group by partition to chain sends within each partition.
+        // Per-drain allocation (~100 bytes), acceptable.
+
+        // Fast path: check if all deferred batches are for the same partition
+        var allSamePartition = true;
+        for (var i = 1; i < deferredBatches.Count; i++)
+        {
+            if (deferredBatches[i].TopicPartition != deferredBatches[0].TopicPartition)
+            {
+                allSamePartition = false;
+                break;
+            }
+        }
+
+        if (allSamePartition)
+        {
+            // All deferred batches are for the same partition — send as one chain
+            _ = SendDeferredChainAsync(deferredBatches, cancellationToken);
+            return;
+        }
+
+        // Multiple partitions — group by partition
+        var byPartition = new Dictionary<TopicPartition, List<ReadyBatch>>();
+        foreach (var batch in deferredBatches)
+        {
+            if (!byPartition.TryGetValue(batch.TopicPartition, out var list))
+            {
+                list = [];
+                byPartition[batch.TopicPartition] = list;
+            }
+
+            list.Add(batch);
+        }
+
+        foreach (var (_, partitionBatches) in byPartition)
+        {
+            if (partitionBatches.Count == 1)
+            {
+                // Single batch for this partition — safe to send directly
+                _ = SendBatchWithCleanupAsync(partitionBatches[0], cancellationToken);
+            }
+            else
+            {
+                // Multiple batches for same partition — send as one chain holding the gate
+                _ = SendDeferredChainAsync(partitionBatches, cancellationToken);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sends a chain of deferred batches for the same partition while holding the partition gate
+    /// for the entire duration. This prevents the sender loop's next drain from stealing the gate
+    /// via non-blocking Wait(0) between batch sends.
+    /// </summary>
+    /// <remarks>
+    /// The gate is acquired once at the start and released in the finally block after all batches
+    /// are sent (or failed). Each batch acquires/releases the global send concurrency semaphore
+    /// independently. If any batch fails with a non-retriable error, all remaining batches in
+    /// the chain are also failed (since their sequence numbers would be rejected by the broker).
+    /// </remarks>
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask SendDeferredChainAsync(
+        List<ReadyBatch> batches,
+        CancellationToken cancellationToken)
+    {
+        var partitionGate = _partitionSendGates.GetOrAdd(
+            batches[0].TopicPartition, _ => new SemaphoreSlim(1, 1));
+        var gateAcquired = false;
+        var lastProcessedIndex = -1;
+
+        try
+        {
+            // Acquire the gate ONCE for the entire chain
+            await partitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            gateAcquired = true;
+
+            // Send each batch sequentially while holding the gate
+            for (var i = 0; i < batches.Count; i++)
+            {
+                lastProcessedIndex = i;
+                var batch = batches[i];
+                var sendSemaphoreAcquired = false;
+
+                try
+                {
+                    // Acquire global send concurrency slot per-batch (released per-batch)
+                    await _sendConcurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    sendSemaphoreAcquired = true;
+
+                    await SendBatchAsync(batch, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger?.LogError(ex, "Deferred chain: failed to send batch to {Topic}-{Partition}",
+                        batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+
+                    _statisticsCollector.RecordBatchFailed(
+                        batch.TopicPartition.Topic,
+                        batch.TopicPartition.Partition,
+                        batch.CompletionSourcesCount);
+
+                    try { batch.Fail(ex); }
+                    catch (Exception failEx)
+                    {
+                        _logger?.LogError(failEx, "batch.Fail() threw unexpectedly for {Topic}-{Partition}",
+                            batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+                    }
+
+                    InvokeOnAcknowledgementForBatch(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
+                        batch.CompletionSourcesCount, ex);
+
+                    // Fail all remaining batches — their sequence numbers would be rejected
+                    for (var j = i + 1; j < batches.Count; j++)
+                    {
+                        lastProcessedIndex = j;
+                        var remaining = batches[j];
+
+                        _statisticsCollector.RecordBatchFailed(
+                            remaining.TopicPartition.Topic,
+                            remaining.TopicPartition.Partition,
+                            remaining.CompletionSourcesCount);
+
+                        try { remaining.Fail(ex); }
+                        catch (Exception failEx)
+                        {
+                            _logger?.LogError(failEx, "batch.Fail() threw unexpectedly for {Topic}-{Partition}",
+                                remaining.TopicPartition.Topic, remaining.TopicPartition.Partition);
+                        }
+
+                        InvokeOnAcknowledgementForBatch(remaining.TopicPartition, -1, DateTimeOffset.UtcNow,
+                            remaining.CompletionSourcesCount, ex);
+                    }
+
+                    break; // Exit the chain
+                }
+                finally
+                {
+                    if (sendSemaphoreAcquired)
+                    {
+                        _sendConcurrencySemaphore.Release();
+                    }
+
+                    // Per-batch cleanup (NOT gate release — gate held for entire chain)
+                    _accumulator.ReturnReadyBatch(batch);
+                    _accumulator.OnBatchExitsPipeline();
+                    DecrementInFlightSendCount();
+                    _senderPipelineSemaphore.Release();
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Cancellation during gate acquisition — fail unprocessed batches
+            for (var i = lastProcessedIndex + 1; i < batches.Count; i++)
+            {
+                var batch = batches[i];
+
+                try { batch.Fail(new OperationCanceledException(cancellationToken)); }
+                catch { /* Observe exception */ }
+
+                _accumulator.ReturnReadyBatch(batch);
+                _accumulator.OnBatchExitsPipeline();
+                DecrementInFlightSendCount();
+                _senderPipelineSemaphore.Release();
+            }
+        }
+        finally
+        {
+            if (gateAcquired)
+            {
+                partitionGate.Release();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sends a batch where the partition gate has already been acquired by the caller.
+    /// Used by the coalesced dispatch path when a broker group has exactly 1 batch.
+    /// The caller is responsible for having acquired both the pipeline semaphore slot
+    /// and the partition gate; this method releases them in finally.
+    /// </summary>
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask SendBatchWithGateAlreadyAcquiredAsync(
+        ReadyBatch batch,
+        SemaphoreSlim partitionGate,
+        CancellationToken cancellationToken)
+    {
+        var sendSemaphoreAcquired = false;
+
+        try
+        {
+            // Partition gate already held — just acquire global concurrency slot
+            await _sendConcurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            sendSemaphoreAcquired = true;
+
+            await SendBatchAsync(batch, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogError(ex, "Failed to send batch to {Topic}-{Partition}",
+                batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+
+            _statisticsCollector.RecordBatchFailed(
+                batch.TopicPartition.Topic,
+                batch.TopicPartition.Partition,
+                batch.CompletionSourcesCount);
+
+            try
+            {
+                batch.Fail(ex);
+            }
+            catch (Exception failEx)
+            {
+                _logger?.LogError(failEx, "batch.Fail() threw unexpectedly for {Topic}-{Partition}",
+                    batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+            }
+
+            InvokeOnAcknowledgementForBatch(batch.TopicPartition, -1, DateTimeOffset.UtcNow, batch.CompletionSourcesCount, ex);
+        }
+        finally
+        {
+            if (sendSemaphoreAcquired)
+            {
+                _sendConcurrencySemaphore.Release();
+            }
+
+            // Release the pre-acquired partition gate
+            partitionGate.Release();
+
+            _accumulator.ReturnReadyBatch(batch);
+            _accumulator.OnBatchExitsPipeline();
+            DecrementInFlightSendCount();
+            _senderPipelineSemaphore.Release();
+        }
+    }
+
+    /// <summary>
+    /// Lifecycle manager for a coalesced send of multiple batches to the same broker.
+    /// Acquires one _sendConcurrencySemaphore slot for the group, sends all batches in a single
+    /// ProduceRequest, then handles per-partition failures by falling back to individual retry paths.
+    /// </summary>
+    /// <param name="batches">Pooled array of batches (from ArrayPool). Returned in finally.</param>
+    /// <param name="batchCount">Number of valid entries in batches/gates arrays.</param>
+    /// <param name="gates">Pooled array of pre-acquired partition gates (from ArrayPool). Returned in finally.</param>
+    /// <param name="brokerId">Target broker ID.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask SendCoalescedBatchesAsync(
+        ReadyBatch[] batches,
+        int batchCount,
+        SemaphoreSlim[] gates,
+        int brokerId,
+        CancellationToken cancellationToken)
+    {
+        // Bitmask tracks which batches were handed off to retry (they handle their own cleanup).
+        // maxDrain ≤ 20, so int (32 bits) is always sufficient.
+        var retriedMask = 0;
+
+        try
+        {
+            // Acquire ONE global concurrency slot for the entire group
+            await _sendConcurrencySemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            List<(int BatchIndex, ErrorCode Error)>? failures;
+            try
+            {
+                failures = await TrySendCoalescedCoreAsync(batches, batchCount, brokerId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                _sendConcurrencySemaphore.Release();
+            }
+
+            // Handle per-partition failures
+            if (failures is not null)
+            {
+                foreach (var (batchIndex, errorCode) in failures)
+                {
+                    var batch = batches[batchIndex];
+
+                    if (errorCode.IsRetriable())
+                    {
+                        // Hand off to single-batch retry path with gate already held.
+                        // IMPORTANT: Keep the gate held to preserve within-partition ordering.
+                        // If we released the gate here and called SendBatchWithCleanupAsync,
+                        // a deferred batch for the same partition could acquire the gate first,
+                        // violating ordering (SemaphoreSlim is not FIFO).
+                        retriedMask |= 1 << batchIndex;
+
+                        // Fire-and-forget — this path acquires its own concurrency slot and
+                        // releases the gate, pipeline slot, and batch resources in its finally.
+                        _ = SendBatchWithGateAlreadyAcquiredAsync(batch, gates[batchIndex], cancellationToken);
+                    }
+                    else
+                    {
+                        // Non-retriable error — fail the batch
+                        _statisticsCollector.RecordBatchFailed(
+                            batch.TopicPartition.Topic,
+                            batch.TopicPartition.Partition,
+                            batch.CompletionSourcesCount);
+
+                        try
+                        {
+                            batch.Fail(new KafkaException(errorCode, $"Produce failed: {errorCode}"));
+                        }
+                        catch (Exception failEx)
+                        {
+                            _logger?.LogError(failEx, "batch.Fail() threw unexpectedly for {Topic}-{Partition}",
+                                batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+                        }
+
+                        InvokeOnAcknowledgementForBatch(batch.TopicPartition, -1, DateTimeOffset.UtcNow, batch.CompletionSourcesCount,
+                            new KafkaException(errorCode, $"Produce failed: {errorCode}"));
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Entire coalesced send failed — fail all batches that weren't already retried
+            _logger?.LogError(ex, "Coalesced send to broker {BrokerId} failed", brokerId);
+
+            for (var i = 0; i < batchCount; i++)
+            {
+                if ((retriedMask & (1 << i)) != 0)
+                    continue;
+
+                var batch = batches[i];
+
+                _statisticsCollector.RecordBatchFailed(
+                    batch.TopicPartition.Topic,
+                    batch.TopicPartition.Partition,
+                    batch.CompletionSourcesCount);
+
+                try
+                {
+                    batch.Fail(ex);
+                }
+                catch (Exception failEx)
+                {
+                    _logger?.LogError(failEx, "batch.Fail() threw unexpectedly for {Topic}-{Partition}",
+                        batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+                }
+
+                InvokeOnAcknowledgementForBatch(batch.TopicPartition, -1, DateTimeOffset.UtcNow, batch.CompletionSourcesCount, ex);
+            }
+        }
+        finally
+        {
+            // Clean up all batches NOT handed off to retry
+            for (var i = 0; i < batchCount; i++)
+            {
+                if ((retriedMask & (1 << i)) != 0)
+                    continue;
+
+                gates[i].Release();
+
+                _accumulator.ReturnReadyBatch(batches[i]);
+                _accumulator.OnBatchExitsPipeline();
+                DecrementInFlightSendCount();
+                _senderPipelineSemaphore.Release();
+            }
+
+            // Return pooled arrays
+            ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+            ArrayPool<SemaphoreSlim>.Shared.Return(gates, clearArray: true);
         }
     }
 
@@ -2947,6 +3341,259 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <summary>
+    /// Core send logic for a coalesced group of batches destined for the same broker.
+    /// Builds a multi-topic/partition ProduceRequest, sends it, and processes the response.
+    /// Returns a list of (batchIndex, errorCode) pairs for partitions that failed.
+    /// Successfully sent batches are completed inline.
+    /// </summary>
+    private async ValueTask<List<(int BatchIndex, ErrorCode Error)>?> TrySendCoalescedCoreAsync(
+        ReadyBatch[] batches,
+        int batchCount,
+        int brokerId,
+        CancellationToken cancellationToken)
+    {
+        var connection = await _connectionPool.GetConnectionAsync(brokerId, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Ensure API version is negotiated (thread-safe initialization)
+        var apiVersion = _produceApiVersion;
+        if (apiVersion < 0)
+        {
+            apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.Produce,
+                ProduceRequest.LowestSupportedVersion,
+                ProduceRequest.HighestSupportedVersion);
+            Interlocked.CompareExchange(ref _produceApiVersion, apiVersion, -1);
+            apiVersion = _produceApiVersion;
+        }
+
+        // For transactional producers, register all new partitions in one call
+        if (_accumulator.IsTransactional)
+        {
+            List<TopicPartition>? newPartitions = null;
+            lock (_partitionsInTransaction)
+            {
+                for (var i = 0; i < batchCount; i++)
+                {
+                    if (_partitionsInTransaction.Add(batches[i].TopicPartition))
+                    {
+                        newPartitions ??= [];
+                        newPartitions.Add(batches[i].TopicPartition);
+                    }
+                }
+            }
+
+            if (newPartitions is not null)
+            {
+                await AddPartitionsToTransactionAsync(newPartitions, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        // Group batches by topic without dictionary allocation.
+        // O(n²) grouping for small n (≤ 20) is faster than dictionary hashing overhead.
+
+        // Count distinct topics
+        var topicCount = 0;
+        for (var i = 0; i < batchCount; i++)
+        {
+            var isFirstOccurrence = true;
+            for (var j = 0; j < i; j++)
+            {
+                if (batches[j].TopicPartition.Topic == batches[i].TopicPartition.Topic)
+                {
+                    isFirstOccurrence = false;
+                    break;
+                }
+            }
+            if (isFirstOccurrence) topicCount++;
+        }
+
+        // Build ProduceRequestTopicData[] / ProduceRequestPartitionData[]
+        var topicDataArray = new ProduceRequestTopicData[topicCount];
+        var topicIdx = 0;
+
+        for (var i = 0; i < batchCount; i++)
+        {
+            // Skip if this topic was already processed by an earlier batch
+            var alreadyProcessed = false;
+            for (var j = 0; j < i; j++)
+            {
+                if (batches[j].TopicPartition.Topic == batches[i].TopicPartition.Topic)
+                {
+                    alreadyProcessed = true;
+                    break;
+                }
+            }
+            if (alreadyProcessed) continue;
+
+            var topicName = batches[i].TopicPartition.Topic;
+
+            // Count partitions for this topic
+            var partCount = 0;
+            for (var j = i; j < batchCount; j++)
+            {
+                if (batches[j].TopicPartition.Topic == topicName) partCount++;
+            }
+
+            // Build partition data
+            var partitionDataArray = new ProduceRequestPartitionData[partCount];
+            var partIdx = 0;
+            for (var j = i; j < batchCount; j++)
+            {
+                if (batches[j].TopicPartition.Topic != topicName) continue;
+                partitionDataArray[partIdx++] = new ProduceRequestPartitionData
+                {
+                    Index = batches[j].TopicPartition.Partition,
+                    Records = [batches[j].RecordBatch],
+                    Compression = _options.CompressionType,
+                    CompressionCodecs = _compressionCodecs
+                };
+            }
+
+            topicDataArray[topicIdx++] = new ProduceRequestTopicData
+            {
+                Name = topicName,
+                PartitionData = partitionDataArray
+            };
+        }
+
+        var request = new ProduceRequest
+        {
+            Acks = (short)_options.Acks,
+            TimeoutMs = _options.RequestTimeoutMs,
+            TransactionalId = _options.TransactionalId,
+            TopicData = topicDataArray
+        };
+
+        var requestStartTime = Stopwatch.GetTimestamp();
+        _statisticsCollector.RecordRequestSent();
+
+        // Handle Acks.None (fire-and-forget) — complete all batches with offset -1
+        if (_options.Acks == Acks.None)
+        {
+            await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
+                request,
+                (short)apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            var fireAndForgetTimestamp = DateTimeOffset.UtcNow;
+            for (var i = 0; i < batchCount; i++)
+            {
+                var batch = batches[i];
+                _statisticsCollector.RecordBatchDelivered(
+                    batch.TopicPartition.Topic,
+                    batch.TopicPartition.Partition,
+                    batch.CompletionSourcesCount);
+                batch.CompleteSend(-1, fireAndForgetTimestamp);
+                InvokeOnAcknowledgementForBatch(batch.TopicPartition, -1, fireAndForgetTimestamp, batch.CompletionSourcesCount, exception: null);
+            }
+
+            return null; // All succeeded
+        }
+
+        var response = await connection.SendAsync<ProduceRequest, ProduceResponse>(
+            request,
+            (short)apiVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        var elapsedTicks = Stopwatch.GetTimestamp() - requestStartTime;
+        var latencyMs = (long)(elapsedTicks * 1000.0 / Stopwatch.Frequency);
+        _statisticsCollector.RecordResponseReceived(latencyMs);
+
+        // Build a lookup from response: (topic, partition) → ProduceResponsePartitionData.
+        // Single pass over the response O(m*k), then O(1) per batch lookup.
+        // Using Dictionary<(string, int), ...> avoids O(n*m*k) nested loops.
+        Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? responseLookup = null;
+        foreach (var topicResp in response.Responses)
+        {
+            foreach (var partResp in topicResp.PartitionResponses)
+            {
+                responseLookup ??= new Dictionary<(string, int), ProduceResponsePartitionData>();
+                responseLookup[(topicResp.Name, partResp.Index)] = partResp;
+            }
+        }
+
+        // Process response: match each batch to its partition response
+        List<(int BatchIndex, ErrorCode Error)>? failures = null;
+
+        for (var i = 0; i < batchCount; i++)
+        {
+            var batch = batches[i];
+            var expectedTopic = batch.TopicPartition.Topic;
+            var expectedPartition = batch.TopicPartition.Partition;
+            var messageCount = batch.CompletionSourcesCount;
+
+            // O(1) lookup instead of O(m*k) nested scan
+            ProduceResponsePartitionData? partitionResponse = null;
+            responseLookup?.TryGetValue((expectedTopic, expectedPartition), out partitionResponse);
+
+            if (partitionResponse is null)
+            {
+                // No response for this partition — treat as retriable
+                _logger?.LogWarning(
+                    "[CoalescedSend] No response for partition {Topic}-{Partition}",
+                    expectedTopic, expectedPartition);
+                failures ??= [];
+                failures.Add((i, ErrorCode.NetworkException));
+                continue;
+            }
+
+            if (partitionResponse.ErrorCode == ErrorCode.DuplicateSequenceNumber)
+            {
+                // Already written — treat as success
+                _logger?.LogDebug(
+                    "[CoalescedSend] DuplicateSequenceNumber for {Topic}-{Partition} at offset {Offset}",
+                    expectedTopic, expectedPartition, partitionResponse.BaseOffset);
+            }
+            else if (partitionResponse.ErrorCode != ErrorCode.None)
+            {
+                // Error for this partition
+                failures ??= [];
+                failures.Add((i, partitionResponse.ErrorCode));
+                continue;
+            }
+
+            // Success
+            _statisticsCollector.RecordBatchDelivered(expectedTopic, expectedPartition, messageCount);
+
+            var timestamp = partitionResponse.LogAppendTimeMs > 0
+                ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
+                : DateTimeOffset.UtcNow;
+
+            batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
+            InvokeOnAcknowledgementForBatch(batch.TopicPartition, partitionResponse.BaseOffset, timestamp, messageCount, exception: null);
+        }
+
+        return failures;
+    }
+
+    /// <summary>
+    /// Eagerly initializes metadata and idempotent producer in the background.
+    /// Started in the constructor so that by the time Send()/ProduceAsync is called,
+    /// the task is already running or complete — avoiding the need for Task.Run
+    /// which can cause thread pool starvation under parallel test load.
+    /// </summary>
+    private async Task InitializeEagerlyAsync()
+    {
+        try
+        {
+            await _metadataManager.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw new TimeoutException(
+                $"Failed to fetch initial metadata within max.block.ms ({_options.MaxBlockMs}ms). " +
+                $"Ensure the Kafka cluster is reachable and the bootstrap servers are correct.");
+        }
+
+        if (_options.EnableIdempotence && _options.TransactionalId is null && !_idempotentInitialized)
+        {
+            await InitIdempotentProducerAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
     /// Ensures metadata is initialized. Uses inline check to avoid async state machine
     /// overhead when metadata is already initialized (which is 99%+ of calls).
     /// </summary>
@@ -2960,32 +3607,77 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             return ValueTask.CompletedTask;
         }
 
-        // Slow path: need to initialize metadata and/or idempotent producer
-        return EnsureInitializedWithTimeoutAsync(cancellationToken);
+        // Await the eagerly-started initialization task
+        return new ValueTask(_initializationTask.WaitAsync(cancellationToken));
     }
 
-    private async ValueTask EnsureInitializedWithTimeoutAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Synchronous version of <see cref="EnsureInitializedAsync"/> for use in <c>Send()</c> methods.
+    /// Uses the double-checked lock pattern: fast check is zero-cost (99%+ of calls), slow path
+    /// blocks on the eagerly-started <see cref="_initializationTask"/> which is already running
+    /// on the thread pool (no Task.Run needed, so no thread pool starvation risk).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void EnsureInitialized()
     {
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(_options.MaxBlockMs);
+        // Fast path: metadata already initialized and idempotent producer ready (zero-cost check)
+        if (_metadataManager.Metadata.LastRefreshed != default &&
+            (!_options.EnableIdempotence || _options.TransactionalId is not null || _idempotentInitialized))
+        {
+            return;
+        }
 
+        // Slow path: block on the eagerly-started init task (one-time startup cost).
+        // The task is already running from the constructor — we just wait for it to complete.
+        // No thread pool starvation risk since we're not scheduling new work.
+        EnsureInitializedBlocking();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void EnsureInitializedBlocking()
+    {
+        // Block on the eagerly-started initialization task.
+        // The task was started in the constructor and uses ConfigureAwait(false) throughout,
+        // so its continuations run on I/O completion threads, not the thread pool.
+        // This means blocking here won't cause thread pool starvation.
+        _initializationTask.GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// Fetches topic metadata synchronously for Send() when the topic is not in the cache.
+    /// This is a rare path — only hit on the first produce to a new topic.
+    /// Uses TaskCreationOptions.LongRunning to avoid thread pool starvation.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private TopicInfo FetchTopicMetadataSync(string topic)
+    {
+        using var timeoutCts = new CancellationTokenSource(_options.MaxBlockMs);
+        var token = timeoutCts.Token;
+        TopicInfo topicInfo;
         try
         {
-            await _metadataManager.InitializeAsync(timeoutCts.Token).ConfigureAwait(false);
+            // Use LongRunning to get a dedicated thread — avoids thread pool starvation
+            // when multiple producers fetch topic metadata simultaneously.
+            topicInfo = Task.Factory.StartNew(
+                () => _metadataManager.GetTopicMetadataAsync(topic, token).AsTask(),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default).Unwrap().GetAwaiter().GetResult()!;
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            // The timeout fired, not the caller's token - throw a descriptive TimeoutException
             throw new TimeoutException(
-                $"Failed to fetch initial metadata within max.block.ms ({_options.MaxBlockMs}ms). " +
-                $"Ensure the Kafka cluster is reachable and the bootstrap servers are correct.");
+                $"Failed to fetch metadata for topic '{topic}' within max.block.ms ({_options.MaxBlockMs}ms). " +
+                $"Ensure the topic exists and the Kafka cluster is reachable.");
         }
 
-        // Initialize idempotent producer after metadata is available (non-transactional only)
-        if (_options.EnableIdempotence && _options.TransactionalId is null && !_idempotentInitialized)
+        if (topicInfo is null || topicInfo.PartitionCount == 0)
         {
-            await InitIdempotentProducerAsync(timeoutCts.Token).ConfigureAwait(false);
+            throw new InvalidOperationException($"Topic '{topic}' not found or has no partitions");
         }
+
+        UpdateCachedTopicInfo(topic, topicInfo);
+        return topicInfo;
     }
 
     /// <summary>
@@ -3190,20 +3882,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         try
         {
-            // 1. Complete the work channel (no more writes accepted)
-            _workChannel.Writer.Complete();
-
-            // 2. Wait for workers to drain - they'll process remaining items and exit
-            //    when the channel is empty and completed
-            if (hasTimeout)
-                await Task.WhenAll(_workerTasks).WaitAsync(shutdownCts.Token).ConfigureAwait(false);
-            else
-                await Task.WhenAll(_workerTasks).ConfigureAwait(false);
-
-            // 3. Flush accumulator and complete its channel - sender will process remaining batches
+            // 1. Flush accumulator and complete its channel - sender will process remaining batches
             await _accumulator.CloseAsync(shutdownCts.Token).ConfigureAwait(false);
 
-            // 4. Wait for sender to drain remaining batches
+            // 2. Wait for sender to drain remaining batches
             // CRITICAL: Don't cancel _senderCts yet - sender needs to process flushed batches
             // The sender will exit naturally when the ready batches channel completes (done in CloseAsync)
             if (hasTimeout)
@@ -3211,7 +3893,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             else
                 await _senderTask.ConfigureAwait(false);
 
-            // 5. Now safe to cancel linger loop (it's already exited or will exit soon)
+            // 3. Now safe to cancel linger loop (it's already exited or will exit soon)
             _senderCts.Cancel();
         }
         catch (OperationCanceledException)
@@ -3232,9 +3914,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             try
             {
-                // BUG FIX: Await BOTH workers and sender to ensure in-flight batches complete
-                // This prevents DeliveryTasks from hanging if timeout occurred during FlushAsync
-                await Task.WhenAll(_workerTasks.Append(_senderTask))
+                await _senderTask
                     .WaitAsync(TimeSpan.FromSeconds(5))
                     .ConfigureAwait(false);
             }
@@ -3281,38 +3961,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
-    }
-}
-
-/// <summary>
-/// Work item for the producer worker pool.
-/// Changed from struct to class to avoid multiple copies during channel operations.
-/// As a class, the work item is allocated once and a single reference is passed through the channel,
-/// eliminating struct copy overhead and any potential boxing issues.
-/// </summary>
-internal sealed class ProduceWorkItem<TKey, TValue>
-{
-    public ProducerMessage<TKey, TValue> Message { get; }
-    public PooledValueTaskSource<RecordMetadata> Completion { get; }
-    public CancellationToken CancellationToken { get; }
-
-    /// <summary>
-    /// Memory pre-reserved before queueing to the work channel.
-    /// This provides backpressure for fire-and-forget Send() calls.
-    /// Must be released after AppendAsync completes (which reserves its own memory based on actual size).
-    /// </summary>
-    public int PreReservedBytes { get; }
-
-    public ProduceWorkItem(
-        ProducerMessage<TKey, TValue> message,
-        PooledValueTaskSource<RecordMetadata> completion,
-        CancellationToken cancellationToken,
-        int preReservedBytes = 0)
-    {
-        Message = message;
-        Completion = completion;
-        CancellationToken = cancellationToken;
-        PreReservedBytes = preReservedBytes;
     }
 }
 
