@@ -16,6 +16,10 @@ internal sealed class InflightEntry
     internal InflightEntry? Previous { get; set; }
     internal InflightEntry? Next { get; set; }
 
+    // Guard against double-return to pool when FailAll and Complete race.
+    // Set to true by Register, checked and cleared by Complete/FailAll under lock.
+    internal bool InList { get; set; }
+
     private TaskCompletionSource? _completionSignal;
 
     /// <summary>
@@ -68,6 +72,7 @@ internal sealed class InflightEntry
         RecordCount = 0;
         Previous = null;
         Next = null;
+        InList = false;
         _completionSignal = null;
     }
 }
@@ -151,6 +156,8 @@ internal sealed class PartitionInflightTracker
 
         lock (state.Lock)
         {
+            entry.InList = true;
+
             if (state.Tail is null)
             {
                 // Empty list
@@ -183,6 +190,14 @@ internal sealed class PartitionInflightTracker
 
         lock (state.Lock)
         {
+            // Guard against double-return when FailAll and Complete race
+            if (!entry.InList)
+            {
+                return;
+            }
+
+            entry.InList = false;
+
             // Unlink from doubly-linked list
             if (entry.Previous is not null)
             {
@@ -268,6 +283,7 @@ internal sealed class PartitionInflightTracker
             var current = state.Head;
             while (current is not null)
             {
+                current.InList = false;
                 entries.Add(current);
                 current = current.Next;
             }
