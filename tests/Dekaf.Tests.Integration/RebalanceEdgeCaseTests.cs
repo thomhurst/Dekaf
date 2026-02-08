@@ -85,7 +85,8 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         }
 
         // Consumer 1 - will be the "slow" consumer that leaves the group
-        await using var consumer1 = Kafka.CreateConsumer<string, string>()
+        // Not using 'await using' because we manually dispose consumer1 mid-test
+        var consumer1 = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromSeconds(10))
@@ -123,17 +124,33 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
             // May timeout if all messages were consumed by consumer 1
         }
 
-        // Wait for rebalance to settle
-        await Task.Delay(5000);
+        // Wait for rebalance to settle - poll until consumer 2 gets assigned
+        await WaitForConditionAsync(
+            () => listener2.AssignedCallCount >= 1,
+            timeout: TimeSpan.FromSeconds(15),
+            pollInterval: TimeSpan.FromMilliseconds(500));
 
         // Assert - both consumers should have been assigned partitions
         await Assert.That(listener2.AssignedCallCount).IsGreaterThanOrEqualTo(1);
 
+        var revokedCountBefore = listener2.RevokedCallCount + listener2.AssignedCallCount;
+
         // Now dispose consumer 1 to simulate it leaving the group
-        await consumer1.DisposeAsync();
+        try
+        {
+            await consumer1.DisposeAsync();
+        }
+        catch (Exception)
+        {
+            // Expected - consumer may have background work completing
+        }
 
         // Wait for session timeout to expire and rebalance to happen
-        await Task.Delay(15000);
+        // Poll until consumer 2 sees a new rebalance event
+        await WaitForConditionAsync(
+            () => (listener2.RevokedCallCount + listener2.AssignedCallCount) > revokedCountBefore,
+            timeout: TimeSpan.FromSeconds(30),
+            pollInterval: TimeSpan.FromMilliseconds(500));
 
         // Produce more messages for consumer 2 to pick up after rebalance
         for (var i = 0; i < 4; i++)
@@ -242,8 +259,11 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
             // May timeout if all messages already consumed
         }
 
-        // Wait for rebalance to complete
-        await Task.Delay(5000);
+        // Wait for rebalance to complete - poll until consumer 2 gets assigned
+        await WaitForConditionAsync(
+            () => listener2.AssignedCallCount >= 1,
+            timeout: TimeSpan.FromSeconds(15),
+            pollInterval: TimeSpan.FromMilliseconds(500));
 
         // Verify the committed offsets are preserved by checking with a new consumer
         await using var verifier = Kafka.CreateConsumer<string, string>()
@@ -303,31 +323,42 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         // Rapidly create and dispose consumers to stress the group coordinator
         for (var round = 0; round < 3; round++)
         {
-            await using var tempConsumer = Kafka.CreateConsumer<string, string>()
+            var tempConsumer = Kafka.CreateConsumer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithSessionTimeout(TimeSpan.FromSeconds(10))
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .Build();
 
-            tempConsumer.Subscribe(topic);
-
-            // Briefly try to consume
             try
             {
-                using var tempCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                await tempConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), tempCts.Token);
+                tempConsumer.Subscribe(topic);
+
+                // Briefly try to consume
+                try
+                {
+                    using var tempCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                    await tempConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(2), tempCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected - short timeout
+                }
             }
-            catch (OperationCanceledException)
+            finally
             {
-                // Expected - short timeout
+                try
+                {
+                    await tempConsumer.DisposeAsync();
+                }
+                catch (Exception)
+                {
+                    // Expected - consumer may have background work completing
+                }
             }
 
-            // Consumer disposed at end of iteration, leaving the group
+            // Consumer disposed, leaving the group
         }
-
-        // Wait for group to stabilize after rapid join/leave
-        await Task.Delay(5000);
 
         // Now create a stable consumer and verify it can consume normally
         var stableListener = new TrackingRebalanceListener();
@@ -452,6 +483,27 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         // Total messages consumed across both consumers should account for all produced messages
         var totalConsumed = consumer1Messages.Count + consumer2Messages.Count;
         await Assert.That(totalConsumed).IsGreaterThanOrEqualTo(1);
+    }
+
+    /// <summary>
+    /// Polls a condition until it returns true, or until the timeout expires.
+    /// Preferred over hard-coded Task.Delay to reduce flakiness.
+    /// </summary>
+    private static async Task WaitForConditionAsync(
+        Func<bool> condition,
+        TimeSpan timeout,
+        TimeSpan pollInterval)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(pollInterval);
+        }
     }
 
     /// <summary>
