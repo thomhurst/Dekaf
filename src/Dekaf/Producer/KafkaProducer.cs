@@ -1431,20 +1431,20 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new TimeoutException(
+                throw new ProduceException(
                     $"Failed to fetch metadata for topic '{message.Topic}' within max.block.ms ({_options.MaxBlockMs}ms). " +
-                    $"Ensure the topic exists and the Kafka cluster is reachable.");
+                    $"Ensure the topic exists and the Kafka cluster is reachable.") { Topic = message.Topic };
             }
         }
 
         if (topicInfo is null)
         {
-            throw new InvalidOperationException($"Topic '{message.Topic}' not found");
+            throw new ProduceException($"Topic '{message.Topic}' not found") { Topic = message.Topic };
         }
 
         if (topicInfo.PartitionCount == 0)
         {
-            throw new InvalidOperationException($"Topic '{message.Topic}' has no partitions. Error code: {topicInfo.ErrorCode}");
+            throw new ProduceException($"Topic '{message.Topic}' has no partitions. Error code: {topicInfo.ErrorCode}") { Topic = message.Topic };
         }
 
         // Serialize key and value to pooled memory (returned to pool when batch completes)
@@ -2496,14 +2496,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
         catch (OperationCanceledException)
         {
-            throw new TimeoutException(
+            throw new ProduceException(
                 $"Failed to fetch metadata for topic '{topic}' within max.block.ms ({_options.MaxBlockMs}ms). " +
-                $"Ensure the topic exists and the Kafka cluster is reachable.");
+                $"Ensure the topic exists and the Kafka cluster is reachable.") { Topic = topic };
         }
 
         if (topicInfo is null || topicInfo.PartitionCount == 0)
         {
-            throw new InvalidOperationException($"Topic '{topic}' not found or has no partitions");
+            throw new ProduceException($"Topic '{topic}' not found or has no partitions") { Topic = topic };
         }
 
         UpdateCachedTopicInfo(topic, topicInfo);
