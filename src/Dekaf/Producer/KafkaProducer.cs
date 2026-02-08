@@ -40,9 +40,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     // Pipelining: allow multiple batches to be sent concurrently (up to MaxInFlightRequestsPerConnection)
     // This dramatically improves throughput by overlapping network round-trips for DIFFERENT partitions.
     //
-    // Per-partition ordering: a per-partition semaphore ensures only one batch per partition is in-flight
-    // at a time. The broker requires strictly ascending sequence numbers per partition for idempotent
-    // producers; sending batches out-of-order causes OutOfOrderSequenceNumber rejections.
+    // Per-partition ordering: a per-partition semaphore controls how many batches per partition are
+    // in-flight. For idempotent producers, multiple batches are allowed (sequence numbers guarantee
+    // ordering at broker); OutOfOrderSequenceNumber triggers coordinated retry via PartitionInflightTracker.
+    // For non-idempotent producers, only one batch per partition is in-flight at a time.
     //
     // Thread-safety model:
     // - _senderPipelineSemaphore: Acquired in SenderLoopAsync, released in SendBatchWithCleanupAsync.
@@ -66,6 +67,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     // Reused by DispatchCoalescedBatches (sender loop is single-threaded, so no contention).
     // Inner arrays are rented from ArrayPool and returned by the fire-and-forget send tasks.
     private readonly Dictionary<int, (int Count, ReadyBatch[] Batches, SemaphoreSlim[] Gates)> _brokerGroups = new();
+    private readonly HashSet<TopicPartition> _coalescedPartitions = new();
 
 
     // Eager initialization: started in constructor, awaited/blocked by produce paths.
@@ -90,6 +92,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     internal volatile TransactionState _transactionState = TransactionState.Uninitialized;
     private readonly SemaphoreSlim _transactionLock = new(1, 1);
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
+
+    // In-flight batch tracker for coordinated retry with multiple in-flight batches per partition.
+    // Only initialized when idempotence is enabled (sequence numbers guarantee ordering at broker).
+    // When null, partition gates use SemaphoreSlim(1,1) for single in-flight batch per partition.
+    private readonly PartitionInflightTracker? _inflightTracker;
 
     // Statistics collection
     private readonly ProducerStatisticsCollector _statisticsCollector = new();
@@ -219,6 +226,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         _accumulator = new RecordAccumulator(options);
         _compressionCodecs = CreateCompressionCodecRegistry(options);
+
+        // Initialize inflight tracker for idempotent producers to enable multiple in-flight
+        // batches per partition. With idempotence, the broker uses sequence numbers to guarantee
+        // ordering, so multiple batches can be in-flight simultaneously. The tracker enables
+        // coordinated retry on OutOfOrderSequenceNumber instead of blind backoff.
+        if (options.EnableIdempotence)
+        {
+            _inflightTracker = new PartitionInflightTracker();
+        }
 
         // Pipeline depth limiter: bounds fire-and-forget task count to prevent thread pool saturation.
         // 4x MaxInFlightRequestsPerConnection provides enough depth for concurrent sends plus
@@ -2350,6 +2366,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     // Complete delivery task (fire-and-forget semantic: batch is "ready")
                     batch.CompleteDelivery();
 
+                    // Register with inflight tracker for coordinated retry (idempotent producers only).
+                    // Single-threaded drain context guarantees registration order matches sequence order.
+                    if (_inflightTracker is not null && batch.RecordBatch.BaseSequence >= 0)
+                    {
+                        batch.InflightEntry = _inflightTracker.Register(
+                            batch.TopicPartition,
+                            batch.RecordBatch.BaseSequence,
+                            batch.CompletionSourcesCount);
+                    }
+
                     // Release buffer memory as soon as the sender dequeues the batch.
                     _accumulator.ReleaseMemory(batch.DataSize);
 
@@ -2364,6 +2390,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     catch
                     {
                         // Current batch: pipeline semaphore NOT acquired, so only clean up in-flight + batch resources
+                        CompleteInflightEntry(batch);
                         try { batch.Fail(new OperationCanceledException(cancellationToken)); }
                         catch { /* Observe exception */ }
 
@@ -2377,6 +2404,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                         {
                             var abandonedBatch = drainBuffer[c];
 
+                            CompleteInflightEntry(abandonedBatch);
                             try { abandonedBatch.Fail(new OperationCanceledException(cancellationToken)); }
                             catch { /* Observe exception */ }
 
@@ -2428,6 +2456,35 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <summary>
+    /// Completes the inflight tracker entry for a batch, if registered.
+    /// Signals any successors waiting via WaitForPredecessorAsync and returns entry to pool.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CompleteInflightEntry(ReadyBatch batch)
+    {
+        if (batch.InflightEntry is { } entry)
+        {
+            _inflightTracker?.Complete(entry);
+            batch.InflightEntry = null;
+        }
+    }
+
+    /// <summary>
+    /// Creates a partition gate semaphore with appropriate concurrency.
+    /// Idempotent producers allow multiple in-flight batches (sequence numbers guarantee ordering at broker).
+    /// Non-idempotent producers use single in-flight batch to preserve ordering.
+    /// </summary>
+    private static SemaphoreSlim CreatePartitionGate()
+    {
+        // Single in-flight batch per partition to preserve ordering.
+        // The inflight tracker still provides coordinated retry for edge-case OOSN
+        // (e.g., connection failure + retry on new connection), but we don't increase
+        // concurrency because Dekaf's fire-and-forget send model doesn't guarantee
+        // wire-order within a partition when multiple tasks race.
+        return new SemaphoreSlim(1, 1);
+    }
+
+    /// <summary>
     /// Sends a batch and handles all cleanup (error handling, semaphore release, pool return).
     /// This method is fire-and-forget from SenderLoopAsync to enable pipelining.
     /// </summary>
@@ -2439,7 +2496,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // semaphore slots, in-flight counts, and batch resources.
         var partitionGateAcquired = false;
         var sendSemaphoreAcquired = false;
-        var partitionGate = _partitionSendGates.GetOrAdd(batch.TopicPartition, _ => new SemaphoreSlim(1, 1));
+        var partitionGate = _partitionSendGates.GetOrAdd(batch.TopicPartition, _ => CreatePartitionGate());
 
         try
         {
@@ -2462,6 +2519,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         catch (OperationCanceledException ex)
         {
             // Cancellation during gate/semaphore/send — fail completion sources so ProduceAsync callers don't hang
+            CompleteInflightEntry(batch);
             try { batch.Fail(ex); }
             catch { /* Observe exception */ }
         }
@@ -2469,6 +2527,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             _logger?.LogError(ex, "Failed to send batch to {Topic}-{Partition}",
                 batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+
+            CompleteInflightEntry(batch);
 
             // Track batch failure (if not already tracked in SendBatchAsync)
             _statisticsCollector.RecordBatchFailed(
@@ -2612,6 +2672,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Reuse instance dictionary (sender loop is single-threaded, so no contention).
         // Inner arrays are rented from ArrayPool and ownership is transferred to fire-and-forget tasks.
         _brokerGroups.Clear();
+        _coalescedPartitions.Clear();
 
         // Deferred batches: gate-busy or no-leader batches that must be sent sequentially
         // per partition to preserve ordering. Per-drain allocation (~100 bytes), acceptable.
@@ -2635,12 +2696,23 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 continue;
             }
 
+            // Ensure at most one batch per partition per coalesced request.
+            // A single ProduceRequest can only contain one RecordBatch per partition;
+            // duplicates would cause response deduplication and phantom errors.
+            if (!_coalescedPartitions.Add(batch.TopicPartition))
+            {
+                deferredBatches ??= [];
+                deferredBatches.Add(batch);
+                continue;
+            }
+
             // Try non-blocking acquire of partition gate
-            var partitionGate = _partitionSendGates.GetOrAdd(batch.TopicPartition, _ => new SemaphoreSlim(1, 1));
+            var partitionGate = _partitionSendGates.GetOrAdd(batch.TopicPartition, _ => CreatePartitionGate());
             if (!partitionGate.Wait(0, CancellationToken.None))
             {
                 // Gate is busy (another batch for this partition is in-flight from this or previous drain).
                 // Defer to send sequentially after the gate-holder completes.
+                _coalescedPartitions.Remove(batch.TopicPartition);
                 deferredBatches ??= [];
                 deferredBatches.Add(batch);
                 continue;
@@ -2774,7 +2846,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         CancellationToken cancellationToken)
     {
         var partitionGate = _partitionSendGates.GetOrAdd(
-            batches[0].TopicPartition, _ => new SemaphoreSlim(1, 1));
+            batches[0].TopicPartition, _ => CreatePartitionGate());
         var gateAcquired = false;
         var lastProcessedIndex = -1;
 
@@ -2802,6 +2874,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 catch (OperationCanceledException ex)
                 {
                     // Cancellation during semaphore/send — fail current + remaining chain batches
+                    CompleteInflightEntry(batch);
                     try { batch.Fail(ex); }
                     catch { /* Observe exception */ }
 
@@ -2810,6 +2883,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                         lastProcessedIndex = j;
                         var remaining = batches[j];
 
+                        CompleteInflightEntry(remaining);
                         try { remaining.Fail(ex); }
                         catch { /* Observe exception */ }
                     }
@@ -2820,6 +2894,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 {
                     _logger?.LogError(ex, "Deferred chain: failed to send batch to {Topic}-{Partition}",
                         batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+
+                    CompleteInflightEntry(batch);
 
                     _statisticsCollector.RecordBatchFailed(
                         batch.TopicPartition.Topic,
@@ -2841,6 +2917,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     {
                         lastProcessedIndex = j;
                         var remaining = batches[j];
+
+                        CompleteInflightEntry(remaining);
 
                         _statisticsCollector.RecordBatchFailed(
                             remaining.TopicPartition.Topic,
@@ -2931,6 +3009,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         catch (OperationCanceledException ex)
         {
             // Cancellation during semaphore/send — fail completion sources so ProduceAsync callers don't hang
+            CompleteInflightEntry(batch);
             try { batch.Fail(ex); }
             catch { /* Observe exception */ }
         }
@@ -2938,6 +3017,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             _logger?.LogError(ex, "Failed to send batch to {Topic}-{Partition}",
                 batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+
+            CompleteInflightEntry(batch);
 
             _statisticsCollector.RecordBatchFailed(
                 batch.TopicPartition.Topic,
@@ -3039,6 +3120,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     else
                     {
                         // Non-retriable error — fail the batch
+                        CompleteInflightEntry(batch);
                         _statisticsCollector.RecordBatchFailed(
                             batch.TopicPartition.Topic,
                             batch.TopicPartition.Partition,
@@ -3068,6 +3150,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 if ((retriedMask & (1 << i)) != 0)
                     continue;
 
+                CompleteInflightEntry(batches[i]);
                 try { batches[i].Fail(ex); }
                 catch { /* Observe exception */ }
             }
@@ -3084,6 +3167,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
                 var batch = batches[i];
 
+                CompleteInflightEntry(batch);
                 _statisticsCollector.RecordBatchFailed(
                     batch.TopicPartition.Topic,
                     batch.TopicPartition.Partition,
@@ -3192,6 +3276,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 if (errorCode == ErrorCode.None)
                 {
                     // Success - batch completed in TrySendBatchCoreAsync
+                    CompleteInflightEntry(batch);
                     return;
                 }
 
@@ -3209,6 +3294,36 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 // Retriable error - refresh metadata and retry
                 lastErrorCode = errorCode;
                 _statisticsCollector.RecordRetry();
+
+                // Coordinated retry for OutOfOrderSequenceNumber with inflight tracker:
+                // Instead of blind backoff, wait for the predecessor batch to complete.
+                // This is faster (retries as soon as predecessor finishes) and more correct
+                // (backoff may not be enough if predecessor is still in-flight).
+                if (errorCode == ErrorCode.OutOfOrderSequenceNumber
+                    && batch.InflightEntry is { } inflightEntry
+                    && _inflightTracker is not null)
+                {
+                    _logger?.LogDebug(
+                        "[SendBatch] OutOfOrderSequenceNumber for {Topic}-{Partition} seq={Seq}, waiting for predecessor",
+                        batch.TopicPartition.Topic, batch.TopicPartition.Partition, inflightEntry.BaseSequence);
+
+                    try
+                    {
+                        await _inflightTracker.WaitForPredecessorAsync(inflightEntry, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception predecessorEx) when (predecessorEx is not OperationCanceledException)
+                    {
+                        // Predecessor failed — retry anyway, broker may accept now
+                        _logger?.LogDebug(predecessorEx,
+                            "[SendBatch] Predecessor failed for {Topic}-{Partition}, retrying",
+                            batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+                    }
+
+                    // Reset backoff since this is coordinated, not random failure
+                    backoffMs = _options.RetryBackoffMs;
+                    continue;
+                }
 
                 _logger?.LogDebug(
                     "[SendBatch] Retriable error {ErrorCode} for {Topic}-{Partition}, refreshing metadata and retrying after {BackoffMs}ms",
@@ -3228,8 +3343,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
         catch (Exception ex)
         {
-            // CRITICAL: Fail the batch to complete its DeliveryTask
+            // CRITICAL: Complete inflight entry and fail the batch to complete its DeliveryTask
             // Otherwise FlushAsync will hang waiting for delivery completion
+            CompleteInflightEntry(batch);
             _logger?.LogError(ex, "[SendBatch] FAIL {Topic}-{Partition} - calling batch.Fail()",
                 batch.TopicPartition.Topic, batch.TopicPartition.Partition);
             batch.Fail(ex);
@@ -3588,6 +3704,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     batch.TopicPartition.Topic,
                     batch.TopicPartition.Partition,
                     batch.CompletionSourcesCount);
+                CompleteInflightEntry(batch);
                 batch.CompleteSend(-1, fireAndForgetTimestamp);
                 InvokeOnAcknowledgementForBatch(batch.TopicPartition, -1, fireAndForgetTimestamp, batch.CompletionSourcesCount, exception: null);
             }
@@ -3664,6 +3781,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
                 : DateTimeOffset.UtcNow;
 
+            CompleteInflightEntry(batch);
             batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
             InvokeOnAcknowledgementForBatch(batch.TopicPartition, partitionResponse.BaseOffset, timestamp, messageCount, exception: null);
         }
