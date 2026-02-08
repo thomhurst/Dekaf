@@ -4,6 +4,7 @@ using Dekaf;
 using Dekaf.Compression;
 using Dekaf.Protocol.Records;
 using K4os.Compression.LZ4;
+using K4os.Compression.LZ4.Encoders;
 using K4os.Compression.LZ4.Streams;
 
 namespace Dekaf.Compression.Lz4;
@@ -14,7 +15,7 @@ namespace Dekaf.Compression.Lz4;
 /// </summary>
 public sealed class Lz4CompressionCodec : ICompressionCodec
 {
-    private readonly LZ4Level _compressionLevel;
+    private readonly LZ4EncoderSettings _encoderSettings;
 
     /// <summary>
     /// Creates a new LZ4 compression codec with the specified compression level.
@@ -22,7 +23,13 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
     /// <param name="compressionLevel">The compression level to use. Default is LZ4Level.L00_FAST.</param>
     public Lz4CompressionCodec(LZ4Level compressionLevel = LZ4Level.L00_FAST)
     {
-        _compressionLevel = compressionLevel;
+        _encoderSettings = new LZ4EncoderSettings
+        {
+            CompressionLevel = compressionLevel,
+            // Kafka does not support dependent-block compression (block linking).
+            // Independent blocks are required for Kafka compatibility.
+            ChainBlocks = false,
+        };
     }
 
     /// <inheritdoc />
@@ -31,9 +38,9 @@ public sealed class Lz4CompressionCodec : ICompressionCodec
     /// <inheritdoc />
     public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
     {
-        // Use LZ4 frame format as required by Kafka
+        // Use LZ4 frame format as required by Kafka, with independent blocks (no block chaining)
         using var outputStream = new BufferWriterStream(destination);
-        using var lz4Stream = LZ4Stream.Encode(outputStream, _compressionLevel, leaveOpen: true);
+        using var lz4Stream = LZ4Stream.Encode(outputStream, _encoderSettings, leaveOpen: true);
 
         foreach (var segment in source)
         {
