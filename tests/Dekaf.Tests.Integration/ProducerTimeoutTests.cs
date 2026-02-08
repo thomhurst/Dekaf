@@ -1,4 +1,5 @@
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
@@ -71,7 +72,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         // Act & Assert - Producing to an unreachable broker should fail within the MaxBlock timeout
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        await Assert.ThrowsAsync<Exception>(async () =>
+        await Assert.ThrowsAsync<KafkaException>(async () =>
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
@@ -215,7 +216,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-flush-cancel-stops-waiting")
-            .WithLinger(TimeSpan.FromMilliseconds(5000)) // Long linger to ensure flush has something to wait for
+            .WithLinger(TimeSpan.FromSeconds(30)) // Very long linger to guarantee batch won't send on its own
             .Build();
 
         // Send messages via fire-and-forget
@@ -229,8 +230,9 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
             });
         }
 
-        // Act - Cancel the flush after a short time
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        // Act - Cancel the flush after a generous timeout (1 second is plenty for the cancellation
+        // to propagate, even in slow CI environments)
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
@@ -245,15 +247,13 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
 
         sw.Stop();
 
-        // Assert - Flush should have been cancelled (or completed very quickly if messages were already sent)
-        // If messages were already flushed before cancellation, that is also acceptable behavior.
-        // The key invariant is that flush does NOT block for the full 5-second linger.
-        await Assert.That(sw.Elapsed.TotalSeconds).IsLessThan(4);
+        // Assert - Flush should have been cancelled well before the 30-second linger expires.
+        // We use a generous upper bound (10s) to avoid flaky tests in slow CI.
+        await Assert.That(sw.Elapsed.TotalSeconds).IsLessThan(10);
 
         // Whether flush was cancelled or completed, messages should eventually be delivered.
-        // Wait for background delivery to complete, then verify.
-        await Task.Delay(1000);
-        await producer.FlushAsync(); // Flush again without cancellation to ensure delivery
+        // Flush again without cancellation to ensure all messages are delivered before consuming.
+        await producer.FlushAsync();
 
         await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
