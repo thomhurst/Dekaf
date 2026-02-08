@@ -244,6 +244,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         // Send() blocks on it without needing Task.Run (no thread pool starvation risk).
         _initializationTask = InitializeEagerlyAsync();
 
+        // Observe any exception from the init task to prevent UnobservedTaskException.
+        // If the producer is disposed before init completes, the task may throw
+        // ObjectDisposedException when MetadataManager resources are torn down.
+        // EnsureInitialized[Async] still propagates the exception to callers normally.
+        _ = _initializationTask.ContinueWith(
+            static t => _ = t.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
+
         // Start statistics emitter if configured
         if (options.StatisticsInterval.HasValue &&
             options.StatisticsInterval.Value > TimeSpan.Zero &&
