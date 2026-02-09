@@ -48,11 +48,11 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         var stats = new ConcurrentBag<ProducerStatistics>();
         const int messageCount = 25;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
             .WithStatisticsHandler(s => stats.Add(s))
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -86,9 +86,9 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         const int messageCount = 10;
 
         // Produce messages
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -106,13 +106,13 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         // The consumer stats are recorded at batch-level when a fetch is fully consumed,
         // so we let the consumer continue briefly after consuming all messages to allow
         // the batch stats to be recorded on the next MoveNextAsync call.
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
             .WithStatisticsHandler(s => stats.Add(s))
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -158,9 +158,9 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         const int consumeCount = 5;
 
         // Produce messages
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < totalMessages; i++)
         {
@@ -175,7 +175,7 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         await producer.FlushAsync();
 
         // Consume only some messages with auto-commit
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -183,7 +183,7 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             .WithAutoCommitInterval(TimeSpan.FromMilliseconds(100))
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
             .WithStatisticsHandler(s => stats.Add(s))
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -234,11 +234,11 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         const int messageCount = 1000;
 
         // Produce 1000 messages
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
             .WithStatisticsHandler(s => producerStats.Add(s))
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -263,13 +263,13 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         await Assert.That(matchingProducerStats.BytesProduced).IsGreaterThan(0);
 
         // Consume all messages and verify consumer stats
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
             .WithStatisticsHandler(s => consumerStats.Add(s))
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -312,11 +312,11 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         // First producer: produce some messages and collect stats
         var firstStats = new ConcurrentBag<ProducerStatistics>();
 
-        await using (var producer1 = Kafka.CreateProducer<string, string>()
+        await using (var producer1 = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
             .WithStatisticsHandler(s => firstStats.Add(s))
-            .Build())
+            .BuildAsync())
         {
             for (var i = 0; i < 10; i++)
             {
@@ -340,11 +340,11 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         // Second producer: fresh instance should start with zero counters
         var secondStats = new ConcurrentBag<ProducerStatistics>();
 
-        await using var producer2 = Kafka.CreateProducer<string, string>()
+        await using var producer2 = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
             .WithStatisticsHandler(s => secondStats.Add(s))
-            .Build();
+            .BuildAsync();
 
         // Produce fewer messages with the new producer
         for (var i = 0; i < 3; i++)
@@ -383,11 +383,11 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         var stats = new ConcurrentBag<ProducerStatistics>();
         const int messagesPerTopic = 15;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
             .WithStatisticsHandler(s => stats.Add(s))
-            .Build();
+            .BuildAsync();
 
         // Produce to topic1
         for (var i = 0; i < messagesPerTopic; i++)
@@ -449,9 +449,9 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         var stats = new ConcurrentBag<ConsumerStatistics>();
 
         // Produce a message to ensure the topic has data
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < expectedPartitions; i++)
         {
@@ -466,13 +466,13 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         await producer.FlushAsync();
 
         // Consume with stats handler - single consumer in group should get all partitions
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
             .WithStatisticsHandler(s => stats.Add(s))
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

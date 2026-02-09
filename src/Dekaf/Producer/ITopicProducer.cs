@@ -25,6 +25,18 @@ public interface ITopicProducer<TKey, TValue> : IAsyncDisposable
     string Topic { get; }
 
     /// <summary>
+    /// Initializes the underlying producer by fetching cluster metadata and setting up idempotent producer state.
+    /// Must be called before producing messages, unless the producer was created via <c>BuildForTopicAsync()</c>
+    /// which calls this automatically.
+    /// </summary>
+    /// <remarks>
+    /// <para>This method is idempotent and thread-safe. Calling it multiple times has no effect
+    /// after the first successful initialization.</para>
+    /// </remarks>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    ValueTask InitializeAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Produces a message to the bound topic.
     /// </summary>
     /// <remarks>

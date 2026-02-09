@@ -17,11 +17,11 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
         var stats = new ConcurrentBag<ProducerStatistics>();
         const int messageCount = 10;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
             .WithStatisticsHandler(s => stats.Add(s))
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -51,11 +51,11 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var stats = new ConcurrentBag<ProducerStatistics>();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
             .WithStatisticsHandler(s => stats.Add(s))
-            .Build();
+            .BuildAsync();
 
         // Produce some messages to generate activity
         for (var i = 0; i < 5; i++)
@@ -82,9 +82,9 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
         var stats = new ConcurrentBag<ConsumerStatistics>();
 
         // Produce a message
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -94,13 +94,13 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
         });
 
         // Consume with group to trigger rebalance and assignment
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
             .WithStatisticsHandler(s => stats.Add(s))
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

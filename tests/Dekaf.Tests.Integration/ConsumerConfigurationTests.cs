@@ -17,10 +17,10 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-max-poll")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 50; i++)
         {
@@ -33,13 +33,13 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         }
 
         // Act - consume with small MaxPollRecords
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-max-poll")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithMaxPollRecords(5)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -64,10 +64,10 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-no-prefetch")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 20; i++)
         {
@@ -80,13 +80,13 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         }
 
         // Act - consume with minimal prefetching
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-no-prefetch")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithQueuedMinMessages(1) // Minimal prefetching
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -110,10 +110,10 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-subscribe-to")
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -123,13 +123,13 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         }).ConfigureAwait(false);
 
         // Act - use SubscribeTo() in the builder instead of Subscribe() after Build()
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-subscribe-to")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .SubscribeTo(topic)
-            .Build();
+            .BuildAsync();
 
         // No explicit Subscribe() call needed
 
@@ -148,10 +148,10 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         // Arrange - manual assignment without group ID
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3).ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-manual-assign")
-            .Build();
+            .BuildAsync();
 
         // Produce to partition 2 specifically
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -163,11 +163,11 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         }).ConfigureAwait(false);
 
         // Act - create consumer without group ID and use Assign() directly
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-manual-assign")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         // Assign specific partition without joining a consumer group
         consumer.Assign(new TopicPartition(topic, 2));
@@ -190,10 +190,10 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-low-latency")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 10; i++)
         {
@@ -206,13 +206,13 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         }
 
         // Act - consume with low latency preset
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-low-latency")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .ForLowLatency()
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

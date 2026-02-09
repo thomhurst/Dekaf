@@ -25,11 +25,11 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         // ~800KB value - large but safely under the 1MB default limit
         var largeValue = new string('A', 800_000);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-near-max")
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         // Act
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -44,11 +44,11 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Verify round-trip by consuming
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -88,11 +88,11 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         // Wait for topic metadata to propagate
         await Task.Delay(3000);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-exceed-max")
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         // Create a message that clearly exceeds the topic's 1024-byte max.message.bytes
         var oversizedValue = new string('X', 2048);
@@ -125,10 +125,10 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-large-headers")
-            .Build();
+            .BuildAsync();
 
         // Create a header with a 64KB value
         var largeHeaderValue = new byte[65_536]; // 64KB
@@ -152,11 +152,11 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         });
 
         // Consume and verify headers round-trip
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -189,10 +189,10 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-many-headers")
-            .Build();
+            .BuildAsync();
 
         const int headerCount = 150;
         var headers = new Headers(headerCount);
@@ -215,11 +215,11 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         });
 
         // Consume and verify all headers round-trip
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -254,12 +254,12 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         // Use a small batch size (16KB) and produce a message close to that size
         const int batchSize = 16384; // 16KB
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-batch-boundary")
             .WithBatchSize(batchSize)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         // Create a message that's close to the batch size.
         // The batch has overhead (record batch header ~61 bytes, record header, etc.)
@@ -277,11 +277,11 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Verify round-trip
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -302,12 +302,12 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
 
         const int smallBatchSize = 4096; // 4KB batch size
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-exceeds-batch")
             .WithBatchSize(smallBatchSize)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         // Create a message that's 3x the batch size
         var largeValue = new string('C', smallBatchSize * 3);
@@ -323,11 +323,11 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Verify round-trip
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -346,10 +346,10 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-large-key-value")
-            .Build();
+            .BuildAsync();
 
         // 50KB key and 200KB value
         var largeKey = new string('K', 50_000);
@@ -366,11 +366,11 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Verify round-trip
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -392,10 +392,10 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-combined-large")
-            .Build();
+            .BuildAsync();
 
         // 400KB value
         var largeValue = new string('D', 400_000);
@@ -421,11 +421,11 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Verify round-trip
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -456,12 +456,12 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         const int smallBatchSize = 8192; // 8KB
         const int messageCount = 5;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-multi-large-batch")
             .WithBatchSize(smallBatchSize)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         // Each message is ~10KB, larger than the 8KB batch size
         // This forces each message into its own batch
@@ -478,11 +478,11 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         }
 
         // Consume all messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

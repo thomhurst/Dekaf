@@ -18,11 +18,11 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
         var topic2 = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
         var txnId = $"txn-multi-topic-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await producer.InitTransactionsAsync();
 
@@ -55,19 +55,19 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // Assert - all messages visible on both topics with ReadCommitted
-        await using var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"txn-multi-topic-c1-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"txn-multi-topic-c2-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
         consumer1.Subscribe(topic1);
         consumer2.Subscribe(topic2);
@@ -110,12 +110,12 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var txnId = $"txn-timeout-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithTransactionTimeout(TimeSpan.FromSeconds(5))
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await producer.InitTransactionsAsync();
 
@@ -147,11 +147,11 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
 
         // Produce a committed message with a fresh producer to verify the consumer works
         var txnId2 = $"txn-timeout-verify-{Guid.NewGuid():N}";
-        await using var producer2 = Kafka.CreateProducer<string, string>()
+        await using var producer2 = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId2)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await producer2.InitTransactionsAsync();
 
@@ -167,12 +167,12 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // Assert - ReadCommitted consumer should only see the committed message, not the timed-out one
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"txn-timeout-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -190,11 +190,11 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var txnId = $"txn-uncommitted-open-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await producer.InitTransactionsAsync();
 
@@ -213,12 +213,12 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
             await producer.FlushAsync();
 
             // Act - ReadUncommitted consumer should see the uncommitted message
-            await using var consumer = Kafka.CreateConsumer<string, string>()
+            await using var consumer = await Kafka.CreateConsumer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId($"txn-open-verify-{Guid.NewGuid():N}")
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .WithIsolationLevel(IsolationLevel.ReadUncommitted)
-                .Build();
+                .BuildAsync();
 
             consumer.Subscribe(topic);
 
@@ -244,11 +244,11 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var txnId = $"txn-abort-then-new-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await producer.InitTransactionsAsync();
 
@@ -293,12 +293,12 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // Assert - ReadCommitted consumer sees only the committed messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"txn-abort-new-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -331,11 +331,11 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
         var txnId = $"txn-large-batch-{Guid.NewGuid():N}";
         const int messageCount = 150;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await producer.InitTransactionsAsync();
 
@@ -356,12 +356,12 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // Assert - all 150 messages are visible to ReadCommitted consumer
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"txn-large-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

@@ -17,9 +17,9 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         // Arrange - produce a small message that won't meet the min bytes threshold
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce a small message (~20 bytes) that won't meet the 50KB min bytes threshold
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -32,12 +32,12 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         // Act - consumer with high fetch min bytes and short max wait
         // The consumer should wait (up to FetchMaxWait) because the small message
         // doesn't meet FetchMinBytes, then return when max wait expires
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithFetchMinBytes(50 * 1024) // 50KB - much larger than our small message
             .WithFetchMaxWait(TimeSpan.FromMilliseconds(500))
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -63,12 +63,12 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         // Act - consumer with short max wait on an empty topic
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithFetchMinBytes(1024) // Require 1KB, but topic is empty
             .WithFetchMaxWait(TimeSpan.FromMilliseconds(200)) // Short wait
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -92,9 +92,9 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         // Arrange - produce messages larger than the configured max fetch bytes
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce 5 messages, each ~10KB
         const int messageCount = 5;
@@ -113,12 +113,12 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         // Act - consumer with a small max partition fetch bytes
         // Kafka will still return at least one complete message per partition even if
         // it exceeds the configured limit, so all messages should be consumable
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithFetchMaxBytes(1024) // 1KB - much smaller than message size
             .WithMaxPartitionFetchBytes(1024) // 1KB per partition
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -147,9 +147,9 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         // Arrange - produce messages of wildly varying sizes
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         var sizes = new[] { 10, 50_000, 5, 100_000, 1, 25_000, 200_000, 3 };
         for (var i = 0; i < sizes.Length; i++)
@@ -164,13 +164,13 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         }
 
         // Act - consumer with moderate fetch buffer settings
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithFetchMinBytes(1)
             .WithFetchMaxBytes(64 * 1024) // 64KB - some messages exceed this
             .WithMaxPartitionFetchBytes(32 * 1024) // 32KB per partition
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -198,9 +198,9 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         // Arrange - produce multiple messages to a single partition
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce 10 messages each ~1KB to a single partition
         const int messageCount = 10;
@@ -220,12 +220,12 @@ public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         // Act - consumer with small per-partition fetch bytes
         // With MaxPartitionFetchBytes of 2KB, only ~1 message fits per fetch round,
         // so the consumer needs multiple rounds to consume all 10 messages.
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithMaxPartitionFetchBytes(2 * 1024) // 2KB per partition - fits ~1 message per fetch
             .WithFetchMaxWait(TimeSpan.FromMilliseconds(100))
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);

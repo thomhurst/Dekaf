@@ -17,14 +17,14 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 1000;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-single-partition")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithBatchSize(512) // Small batch size to force many batches
             .WithLinger(TimeSpan.FromMilliseconds(1))
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -38,10 +38,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
         await producer.FlushAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -75,13 +75,13 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: partitionCount);
         const int messagesPerPartition = 500;
 
-        await using var producer = Kafka.CreateProducer<int, string>()
+        await using var producer = await Kafka.CreateProducer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-multi-partition")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithLinger(TimeSpan.FromMilliseconds(2))
-            .Build();
+            .BuildAsync();
 
         // Produce messages keyed by partition index
         for (var p = 0; p < partitionCount; p++)
@@ -101,10 +101,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         await producer.FlushAsync();
 
         // Consume each partition and verify ordering
-        await using var consumer = Kafka.CreateConsumer<int, string>()
+        await using var consumer = await Kafka.CreateConsumer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var totalExpected = partitionCount * messagesPerPartition;
         var partitions = Enumerable.Range(0, partitionCount)
@@ -151,13 +151,13 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         const int threadCount = 5;
         const int messagesPerThread = 200;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-concurrent")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithLinger(TimeSpan.FromMilliseconds(2))
-            .Build();
+            .BuildAsync();
 
         // Multiple threads producing concurrently to the same partition
         var tasks = Enumerable.Range(0, threadCount).Select(async threadId =>
@@ -176,10 +176,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         await Task.WhenAll(tasks);
 
         // Consume and verify all messages delivered
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -208,14 +208,14 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 2000;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-high-volume")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithBatchSize(256) // Very small to force many batch rotations
             .WithLinger(TimeSpan.FromMilliseconds(1))
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -229,10 +229,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
         await producer.FlushAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -260,13 +260,13 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 1000;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-fire-and-forget")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithLinger(TimeSpan.FromMilliseconds(2))
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -280,10 +280,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
         await producer.FlushAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -310,11 +310,11 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 100;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-non-idempotent-single-inflight")
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -326,10 +326,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -357,13 +357,13 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: partitionCount);
         const int messagesPerPartition = 500;
 
-        await using var producer = Kafka.CreateProducer<int, string>()
+        await using var producer = await Kafka.CreateProducer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-coalescing")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithLinger(TimeSpan.FromMilliseconds(5)) // Higher linger to trigger coalescing
-            .Build();
+            .BuildAsync();
 
         // Produce to all partitions to trigger coalescing
         for (var i = 0; i < messagesPerPartition; i++)
@@ -382,10 +382,10 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
         await producer.FlushAsync();
 
-        await using var consumer = Kafka.CreateConsumer<int, string>()
+        await using var consumer = await Kafka.CreateConsumer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var partitions = Enumerable.Range(0, partitionCount)
             .Select(p => new TopicPartition(topic, p))

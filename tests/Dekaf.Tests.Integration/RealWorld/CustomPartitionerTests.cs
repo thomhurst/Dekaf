@@ -87,10 +87,10 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var partitioner = new AlwaysPartitionZeroPartitioner();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithCustomPartitioner(partitioner)
-            .Build();
+            .BuildAsync();
 
         // Act - produce multiple messages with different keys
         var results = new List<RecordMetadata>();
@@ -119,10 +119,10 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var partitioner = new SumHashPartitioner();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithCustomPartitioner(partitioner)
-            .Build();
+            .BuildAsync();
 
         // Act - produce messages and consume them to verify partition assignment
         const int messageCount = 30;
@@ -158,10 +158,10 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: partitionCount);
         var partitioner = new RecordingPartitioner();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithCustomPartitioner(partitioner)
-            .Build();
+            .BuildAsync();
 
         // Act - produce a message with a key
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -193,10 +193,10 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var partitioner = new RecordingPartitioner();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithCustomPartitioner(partitioner)
-            .Build();
+            .BuildAsync();
 
         // Act - produce a message with null key
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -222,11 +222,11 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
         await Assert.That(metadata.Partition).IsEqualTo(0);
 
         // Verify the message was actually delivered
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"null-key-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -246,10 +246,10 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var partitioner = new StatefulCountingPartitioner();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithCustomPartitioner(partitioner)
-            .Build();
+            .BuildAsync();
 
         // Act - produce multiple messages; the stateful partitioner cycles through partitions
         const int messageCount = 9;
@@ -283,10 +283,10 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithPartitioner(PartitionerType.RoundRobin)
-            .Build();
+            .BuildAsync();
 
         // Act - produce 9 messages (evenly divisible by 3 partitions)
         var results = new List<RecordMetadata>();

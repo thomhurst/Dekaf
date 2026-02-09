@@ -18,11 +18,11 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var txnId = $"txn-open-ru-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await producer.InitTransactionsAsync();
 
@@ -44,12 +44,12 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
         });
 
         // Act - ReadUncommitted consumer should see these uncommitted messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"txn-open-ru-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadUncommitted)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -79,11 +79,11 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var txnId = $"txn-open-rc-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await producer.InitTransactionsAsync();
 
@@ -98,12 +98,12 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
         });
 
         // Act - ReadCommitted consumer should NOT see the uncommitted messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"txn-open-rc-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -126,17 +126,17 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
         var commitTxnId = $"txn-commit-concurrent-{Guid.NewGuid():N}";
         var abortTxnId = $"txn-abort-concurrent-{Guid.NewGuid():N}";
 
-        await using var commitProducer = Kafka.CreateProducer<string, string>()
+        await using var commitProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(commitTxnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
-        await using var abortProducer = Kafka.CreateProducer<string, string>()
+        await using var abortProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(abortTxnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await commitProducer.InitTransactionsAsync();
         await abortProducer.InitTransactionsAsync();
@@ -168,12 +168,12 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
         await abortTxn.AbortAsync();
 
         // Assert - ReadCommitted consumer should only see committed messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"txn-concurrent-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -207,11 +207,11 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var txnId = $"txn-abort-markers-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await producer.InitTransactionsAsync();
 
@@ -241,12 +241,12 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
         }
 
         // Act - ReadCommitted consumer should skip all abort markers and see only the committed message
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"txn-markers-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -282,17 +282,17 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
         var longTxnId = $"txn-long-running-{Guid.NewGuid():N}";
         var otherTxnId = $"txn-other-{Guid.NewGuid():N}";
 
-        await using var longProducer = Kafka.CreateProducer<string, string>()
+        await using var longProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(longTxnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
-        await using var otherProducer = Kafka.CreateProducer<string, string>()
+        await using var otherProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(otherTxnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await longProducer.InitTransactionsAsync();
         await otherProducer.InitTransactionsAsync();
@@ -333,12 +333,12 @@ public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : K
         // Act - ReadCommitted consumer: the open transaction's offset (last stable offset)
         // should block the consumer from reading past it, so only the early committed
         // message (which is before the open transaction) should be visible.
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"txn-lso-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

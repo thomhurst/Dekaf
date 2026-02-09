@@ -88,9 +88,9 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
         const int duplicatesPerKey = 10;
         var totalProduced = uniqueKeys * duplicatesPerKey;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce many messages with duplicate keys to encourage compaction.
         // Each key gets multiple values; after compaction only the latest per key survives.
@@ -107,10 +107,10 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
             }
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
 
@@ -145,9 +145,9 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
         const int duplicatesPerKey = 5;
         var totalProduced = uniqueKeys * duplicatesPerKey;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages with duplicate keys
         for (var round = 0; round < duplicatesPerKey; round++)
@@ -163,10 +163,10 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
             }
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -223,9 +223,9 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
         var topic = await CreateRetentionTopicAsync();
         const int messageCount = 50;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages
         for (var i = 0; i < messageCount; i++)
@@ -238,10 +238,10 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
 
@@ -289,9 +289,9 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
     {
         var topic = await CreateCompactedTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Phase 1: Produce initial messages with duplicate keys
         const int initialUniqueKeys = 20;
@@ -305,10 +305,10 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
 

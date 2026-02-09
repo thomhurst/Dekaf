@@ -15,10 +15,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Record timestamp before producing first message
         var beforeFirstMessage = DateTimeOffset.UtcNow;
@@ -53,10 +53,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         }
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -83,10 +83,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce 5 messages
         for (var i = 0; i < 5; i++)
@@ -100,10 +100,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         }
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -127,10 +127,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce some messages
         for (var i = 0; i < 3; i++)
@@ -144,10 +144,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         }
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -171,10 +171,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -192,10 +192,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce messages to each partition
         for (var partition = 0; partition < 3; partition++)
@@ -213,10 +213,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         }
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp0 = new TopicPartition(topic, 0);
         var tp1 = new TopicPartition(topic, 1);
@@ -258,10 +258,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         // Don't produce any messages - partition is empty
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -292,10 +292,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         // Arrange - this tests the common use case of seeking to a timestamp
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce messages with delays to ensure distinct timestamps
         for (var i = 0; i < 5; i++)
@@ -324,10 +324,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         }
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -360,10 +360,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce some messages
         for (var i = 0; i < 3; i++)
@@ -377,10 +377,10 @@ public class OffsetsForTimesTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         }
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);

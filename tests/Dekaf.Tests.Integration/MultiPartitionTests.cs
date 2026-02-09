@@ -14,10 +14,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 5);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Act - produce multiple messages with same key
         var results = new List<RecordMetadata>();
@@ -43,10 +43,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 5);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Act - produce messages with different keys
         var results = new List<RecordMetadata>();
@@ -72,10 +72,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce to all partitions
         for (var p = 0; p < 3; p++)
@@ -90,11 +90,11 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         }
 
         // Act - manually assign only partition 1
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 1));
 
@@ -114,10 +114,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce to partitions 0, 1, and 2
         for (var p = 0; p < 3; p++)
@@ -132,11 +132,11 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         }
 
         // Act - assign partitions 0 and 2 only
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(
             new TopicPartition(topic, 0),
@@ -165,10 +165,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce to all partitions
         for (var p = 0; p < 3; p++)
@@ -183,12 +183,12 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         }
 
         // Act - subscribe (not manual assign)
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -214,10 +214,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce ordered messages to partition 0
         for (var i = 0; i < 10; i++)
@@ -232,11 +232,11 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         }
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -264,10 +264,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce to both partitions
         for (var i = 0; i < 5; i++)
@@ -289,11 +289,11 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         }
 
         // Act - assign both but seek partition 0 to offset 3
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(
             new TopicPartition(topic, 0),
@@ -325,10 +325,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 10);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce to all 10 partitions
         for (var p = 0; p < 10; p++)
@@ -343,12 +343,12 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         }
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -374,10 +374,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 5);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce same key multiple times
         var expectedPartition = -1;
@@ -402,12 +402,12 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         }
 
         // Act - consume
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

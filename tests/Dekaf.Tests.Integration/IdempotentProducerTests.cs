@@ -15,12 +15,12 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-idempotent-basic")
             .WithAcks(Acks.All)
             .EnableIdempotence()
-            .Build();
+            .BuildAsync();
 
         // Act
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -44,12 +44,12 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
         const int threadCount = 5;
         const int messagesPerThread = 20;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-idempotent-concurrent")
             .WithAcks(Acks.All)
             .EnableIdempotence()
-            .Build();
+            .BuildAsync();
 
         var allResults = new System.Collections.Concurrent.ConcurrentBag<RecordMetadata>();
         var errors = new System.Collections.Concurrent.ConcurrentBag<Exception>();
@@ -96,12 +96,12 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         const int messageCount = 50;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-idempotent-ordering")
             .WithAcks(Acks.All)
             .EnableIdempotence()
-            .Build();
+            .BuildAsync();
 
         // Act - produce messages concurrently and verify ordering
         var produceTasks = new List<ValueTask<RecordMetadata>>();
@@ -137,11 +137,11 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
         // Arrange - ForReliability() should enable idempotence
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-reliability-preset")
             .ForReliability()
-            .Build();
+            .BuildAsync();
 
         // Act
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -156,12 +156,12 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Verify by consuming
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-reliability-consumer")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -180,13 +180,13 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         const int messageCount = 1000;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-idempotent-volume")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithLinger(TimeSpan.FromMilliseconds(5))
-            .Build();
+            .BuildAsync();
 
         // Act - produce 1000 messages
         var produceTasks = new List<ValueTask<RecordMetadata>>();
@@ -206,12 +206,12 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // Consume all messages back
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-idempotent-volume-consumer")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

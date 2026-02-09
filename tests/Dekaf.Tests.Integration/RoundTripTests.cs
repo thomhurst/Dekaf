@@ -16,17 +16,17 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -58,17 +58,17 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -109,17 +109,17 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -148,17 +148,17 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -188,17 +188,17 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         var groupId = $"test-group-{Guid.NewGuid():N}";
         var largeValue = new string('A', 50_000); // 50KB
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -228,17 +228,17 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         var groupId = $"test-group-{Guid.NewGuid():N}";
         const int messageCount = 20;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -281,17 +281,17 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         var unicodeKey = "键-Ключ-キー-مفتاح";
         var unicodeValue = "值-Значение-値-قيمة-🎉🚀💡";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -320,17 +320,17 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -362,17 +362,17 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         var groupId = $"test-group-{Guid.NewGuid():N}";
         var timestamp = DateTimeOffset.UtcNow;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -406,18 +406,18 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         var producers = new List<IKafkaProducer<string, string>>();
         for (var i = 0; i < producerCount; i++)
         {
-            producers.Add(Kafka.CreateProducer<string, string>()
+            producers.Add(await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId($"test-producer-{i}")
-                .Build());
+                .BuildAsync());
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -471,17 +471,17 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         var keyBytes = new byte[] { 1, 2, 3, 4, 5 };
         var valueBytes = new byte[] { 10, 20, 30, 40, 50, 60, 70, 80, 90, 100 };
 
-        await using var producer = Kafka.CreateProducer<byte[], byte[]>()
+        await using var producer = await Kafka.CreateProducer<byte[], byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
-        await using var consumer = Kafka.CreateConsumer<byte[], byte[]>()
+        await using var consumer = await Kafka.CreateConsumer<byte[], byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

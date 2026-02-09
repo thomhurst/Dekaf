@@ -13,9 +13,9 @@ public class RebalanceListenerTests(KafkaTestContainer kafka) : KafkaIntegration
         var listener = new TestRebalanceListener();
 
         // Produce a message first so the consumer has something to join for
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -24,12 +24,12 @@ public class RebalanceListenerTests(KafkaTestContainer kafka) : KafkaIntegration
             Value = "value"
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

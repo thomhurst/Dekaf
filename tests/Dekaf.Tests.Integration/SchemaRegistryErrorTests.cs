@@ -45,11 +45,11 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
         record.Add("id", 1);
         record.Add("name", "error-test");
 
-        await using var producer = Kafka.CreateProducer<string, GenericRecord>()
+        await using var producer = await Kafka.CreateProducer<string, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("error-test-producer")
             .WithValueSerializer(serializer)
-            .Build();
+            .BuildAsync();
 
         // Act & Assert - producing with a bad registry URL should throw an exception
         await Assert.That(async () =>
@@ -159,11 +159,11 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
         v2Record.Add("name", "evolved-user");
         v2Record.Add("email", "user@example.com");
 
-        await using var producer = Kafka.CreateProducer<string, GenericRecord>()
+        await using var producer = await Kafka.CreateProducer<string, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("evolution-producer")
             .WithValueSerializer(serializer)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>
         {
@@ -196,13 +196,13 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
                 ReaderSchema = v1SchemaString
             });
 
-        await using var consumer = Kafka.CreateConsumer<string, GenericRecord>()
+        await using var consumer = await Kafka.CreateConsumer<string, GenericRecord>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("evolution-consumer")
             .WithGroupId($"evolution-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(deserializer)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

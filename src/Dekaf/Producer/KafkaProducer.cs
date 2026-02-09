@@ -44,11 +44,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly ConcurrentDictionary<TopicPartition, SemaphoreSlim> _partitionSendGates = new();
 
 
-    // Eager initialization: started in constructor, awaited/blocked by produce paths.
-    // By the time Send()/ProduceAsync is called, this task is already running or complete,
-    // so blocking on it doesn't require scheduling new work (no thread pool starvation).
-    // Non-readonly: replaced on failure for retry semantics.
-    private Task _initializationTask = null!;
+    // Explicit initialization: users must call InitializeAsync() or use BuildAsync() before producing.
+    private volatile bool _initialized;
+    private readonly SemaphoreSlim _initLock = new(1, 1);
 
     private int _produceApiVersion = -1;
     internal volatile bool _disposed;
@@ -210,21 +208,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _senderTask = SenderLoopAsync(_senderCts.Token);
         _lingerTask = LingerLoopAsync(_senderCts.Token);
 
-        // Start metadata + idempotent initialization eagerly in the background.
-        // By the time Send()/ProduceAsync is called, this is already running or complete.
-        // Send() blocks on it without needing Task.Run (no thread pool starvation risk).
-        _initializationTask = InitializeEagerlyAsync();
-
-        // Observe any exception from the init task to prevent UnobservedTaskException.
-        // If the producer is disposed before init completes, the task may throw
-        // ObjectDisposedException when MetadataManager resources are torn down.
-        // EnsureInitialized[Async] still propagates the exception to callers normally.
-        _ = _initializationTask.ContinueWith(
-            static t => _ = t.Exception,
-            CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted,
-            TaskScheduler.Default);
-
         // Start statistics emitter if configured
         if (options.StatisticsInterval.HasValue &&
             options.StatisticsInterval.Value > TimeSpan.Zero &&
@@ -314,6 +297,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
+        ThrowIfNotInitialized();
+
         // Check cancellation upfront before any work
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -380,7 +365,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         completion = null;
 
         // Check if metadata is initialized (sync check).
-        // Callers ensure initialization via EnsureInitialized[Async], so this only
+        // Callers ensure initialization via InitializeAsync, so this only
         // returns false on the very first call before init completes.
         if (_metadataManager.Metadata.LastRefreshed == default)
         {
@@ -431,12 +416,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken)
     {
-        // Ensure metadata + idempotent init is ready (blocks until done).
-        // This is the one-time startup cost path; subsequent calls skip this via
-        // TryProduceSyncForAsync's fast-path check.
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
-        // Retry fast path now that metadata is initialized
+        // Retry fast path - metadata should already be initialized via InitializeAsync()
         if (TryProduceSyncForAsync(message, out var fastCompletion))
         {
             if (cancellationToken.CanBeCanceled)
@@ -474,11 +454,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
+        ThrowIfNotInitialized();
+
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
-
-        // Ensure metadata is initialized (blocks on first call only, zero-cost after).
-        EnsureInitialized();
 
         // Fast path: synchronous fire-and-forget produce with cached metadata (99%+ of calls).
         if (TryProduceSyncFireAndForget(message))
@@ -510,15 +489,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
+        ThrowIfNotInitialized();
+
         // When interceptors are present, we must create a ProducerMessage so interceptors can operate
         if (_interceptors is not null)
         {
             Send(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
             return;
         }
-
-        // Ensure metadata is initialized (blocks on first call only, zero-cost after).
-        EnsureInitialized();
 
         // Fast path: synchronous fire-and-forget produce with cached metadata.
         if (TryProduceSyncFireAndForgetDirect(topic, key, value, partition: null, timestamp: null, headers: null))
@@ -927,7 +905,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             return true;
         }
 
-        // Metadata manager cache check (callers guarantee metadata is initialized via EnsureInitialized).
+        // Metadata manager cache check (callers guarantee metadata is initialized via InitializeAsync).
         if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out topicInfo) || topicInfo is null)
         {
             return false; // Topic cache miss — caller will fetch inline
@@ -980,7 +958,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryProduceSync(ProducerMessage<TKey, TValue> message)
     {
-        // Callers guarantee metadata is initialized via EnsureInitialized[Async].
+        // Callers guarantee metadata is initialized via InitializeAsync.
         if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out var topicInfo) || topicInfo is null)
         {
             return false; // Topic cache miss — caller will fetch inline
@@ -1212,13 +1190,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
+        ThrowIfNotInitialized();
+
         ArgumentNullException.ThrowIfNull(deliveryHandler);
 
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
-
-        // Ensure metadata is initialized (blocks on first call only, zero-cost after).
-        EnsureInitialized();
 
         // Fast path: synchronous produce with handler using cached metadata (99%+ of calls).
         if (TryProduceSyncWithHandler(message, deliveryHandler))
@@ -1243,7 +1220,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryProduceSyncWithHandler(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
     {
-        // Callers guarantee metadata is initialized via EnsureInitialized.
+        // Callers guarantee metadata is initialized via InitializeAsync.
         if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out var topicInfo) || topicInfo is null)
         {
             return false; // Topic cache miss — caller will fetch inline
@@ -1514,9 +1491,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken)
     {
-        // Ensure metadata is initialized
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
         // Fast path: try to get topic metadata from cache synchronously
         // This avoids async state machine overhead for 99%+ of calls
         TopicInfo? topicInfo;
@@ -1669,6 +1643,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     public ValueTask FlushAsync(CancellationToken cancellationToken = default)
     {
+        ThrowIfNotInitialized();
+
         // No channel to drain — all produce paths append directly to the accumulator.
         return _accumulator.FlushAsync(cancellationToken);
     }
@@ -1718,11 +1694,11 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 "Cannot initialize transactions: TransactionalId is not set in producer options.");
         }
 
+        ThrowIfNotInitialized();
+
         await _transactionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            // Ensure metadata is initialized
-            await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
             // Step 1: Find the transaction coordinator
             await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
@@ -2508,79 +2484,62 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
     }
 
-    /// <summary>
-    /// Eagerly initializes metadata and idempotent producer in the background.
-    /// Started in the constructor so that by the time Send()/ProduceAsync is called,
-    /// the task is already running or complete — avoiding the need for Task.Run
-    /// which can cause thread pool starvation under parallel test load.
-    /// </summary>
-    private async Task InitializeEagerlyAsync()
+    /// <inheritdoc />
+    public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
+
+        // Fast path: already initialized (volatile read provides acquire semantics)
+        if (_initialized)
+            return;
+
+        await _initLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await _metadataManager.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw new TimeoutException(
-                $"Failed to fetch initial metadata within max.block.ms ({_options.MaxBlockMs}ms). " +
-                $"Ensure the Kafka cluster is reachable and the bootstrap servers are correct.");
-        }
+            // Double-check after acquiring lock
+            if (_initialized)
+                return;
 
-        if (_options.EnableIdempotence && _options.TransactionalId is null && !_idempotentInitialized)
+            try
+            {
+                await _metadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    $"Failed to fetch initial metadata within max.block.ms ({_options.MaxBlockMs}ms). " +
+                    $"Ensure the Kafka cluster is reachable and the bootstrap servers are correct.");
+            }
+
+            if (_options.EnableIdempotence && _options.TransactionalId is null && !_idempotentInitialized)
+            {
+                await InitIdempotentProducerAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            _initialized = true;
+        }
+        finally
         {
-            await InitIdempotentProducerAsync(CancellationToken.None).ConfigureAwait(false);
+            _initLock.Release();
         }
     }
 
     /// <summary>
-    /// Ensures metadata is initialized. Uses inline check to avoid async state machine
-    /// overhead when metadata is already initialized (which is 99%+ of calls).
+    /// Throws <see cref="InvalidOperationException"/> if the producer has not been initialized.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private ValueTask EnsureInitializedAsync(CancellationToken cancellationToken)
+    private void ThrowIfNotInitialized()
     {
-        // Fast path: metadata already initialized and idempotent producer ready (no allocation)
-        if (_metadataManager.Metadata.LastRefreshed != default &&
-            (!_options.EnableIdempotence || _options.TransactionalId is not null || _idempotentInitialized))
-        {
-            return ValueTask.CompletedTask;
-        }
-
-        // Await the eagerly-started initialization task
-        return new ValueTask(_initializationTask.WaitAsync(cancellationToken));
-    }
-
-    /// <summary>
-    /// Synchronous version of <see cref="EnsureInitializedAsync"/> for use in <c>Send()</c> methods.
-    /// Uses the double-checked lock pattern: fast check is zero-cost (99%+ of calls), slow path
-    /// blocks on the eagerly-started <see cref="_initializationTask"/> which is already running
-    /// on the thread pool (no Task.Run needed, so no thread pool starvation risk).
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void EnsureInitialized()
-    {
-        // Fast path: metadata already initialized and idempotent producer ready (zero-cost check)
-        if (_metadataManager.Metadata.LastRefreshed != default &&
-            (!_options.EnableIdempotence || _options.TransactionalId is not null || _idempotentInitialized))
-        {
-            return;
-        }
-
-        // Slow path: block on the eagerly-started init task (one-time startup cost).
-        // The task is already running from the constructor — we just wait for it to complete.
-        // No thread pool starvation risk since we're not scheduling new work.
-        EnsureInitializedBlocking();
+        if (!_initialized)
+            ThrowNotInitialized();
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private void EnsureInitializedBlocking()
+    private static void ThrowNotInitialized()
     {
-        // Block on the eagerly-started initialization task.
-        // The task was started in the constructor and uses ConfigureAwait(false) throughout,
-        // so its continuations run on I/O completion threads, not the thread pool.
-        // This means blocking here won't cause thread pool starvation.
-        _initializationTask.GetAwaiter().GetResult();
+        throw new InvalidOperationException(
+            "Call InitializeAsync() or use BuildAsync() before producing messages.");
     }
 
     /// <summary>
@@ -2891,6 +2850,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _senderCts.Dispose();
         _lingerTimer.Dispose();
         _transactionLock.Dispose();
+        _initLock.Dispose();
 
         foreach (var gate in _partitionSendGates.Values)
         {

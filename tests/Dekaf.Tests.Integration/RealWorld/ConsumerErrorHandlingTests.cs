@@ -17,11 +17,11 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         // Arrange - create topic but produce nothing
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-empty-topic")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -42,10 +42,10 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Produce a message to topic2
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-double-sub")
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -54,12 +54,12 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             Value = "from-topic2"
         }).ConfigureAwait(false);
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-double-sub")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         // Act - subscribe to topic1, then replace with topic2
         consumer.Subscribe(topic1);
@@ -84,11 +84,11 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
     public async Task Consumer_ConsumeWithoutSubscribe_ReturnsNoMessages()
     {
         // Arrange - create consumer without subscribing or assigning
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-no-sub")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
-            .Build();
+            .BuildAsync();
 
         // Act - try to consume with no subscription
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -106,10 +106,10 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
         // Produce a message so the topic isn't empty
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-offset-none")
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -119,11 +119,11 @@ public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         }).ConfigureAwait(false);
 
         // Use manual assignment to avoid group coordinator delays
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-offset-none")
             .WithAutoOffsetReset(AutoOffsetReset.None)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);

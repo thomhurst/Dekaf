@@ -18,13 +18,13 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
         // Arrange - very small buffer to trigger backpressure quickly
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-buffer-blocks")
             .WithBufferMemory(65536) // 64KB buffer
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithAcks(Acks.Leader)
-            .Build();
+            .BuildAsync();
 
         // Act - produce more data than the buffer can hold
         var messageValue = new string('x', 1000); // ~1KB per message
@@ -62,13 +62,13 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
         // Arrange - constrained buffer to exercise backpressure, but large enough to drain
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-no-loss")
             .WithBufferMemory(1_048_576) // 1MB
             .WithLinger(TimeSpan.FromMilliseconds(10))
             .WithAcks(Acks.Leader)
-            .Build();
+            .BuildAsync();
 
         var messageValue = new string('x', 500);
         const int messageCount = 500;
@@ -94,12 +94,12 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
         await Assert.That(results.Count).IsEqualTo(messageCount);
 
         // Verify by consuming all messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-no-loss")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -122,12 +122,12 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-concurrent")
             .WithBufferMemory(262144) // 256KB
             .WithLinger(TimeSpan.FromMilliseconds(5))
-            .Build();
+            .BuildAsync();
 
         const int tasksCount = 5;
         const int messagesPerTask = 100;
@@ -169,12 +169,12 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
         // Arrange - Send() with constrained buffer tests backpressure in fire-and-forget mode
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-ff-backpressure")
             .WithBufferMemory(1_048_576) // 1MB
             .WithLinger(TimeSpan.FromMilliseconds(10))
-            .Build();
+            .BuildAsync();
 
         var messageValue = new string('x', 500);
         const int messageCount = 300;
@@ -193,12 +193,12 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
         await producer.FlushAsync().ConfigureAwait(false);
 
         // Verify delivery
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-ff-backpressure")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -220,13 +220,13 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
         // This test verifies that even with backpressure, the system doesn't deadlock
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-no-deadlock")
             .WithBufferMemory(1_048_576) // 1MB
             .WithLinger(TimeSpan.FromMilliseconds(1))
             .WithAcks(Acks.Leader)
-            .Build();
+            .BuildAsync();
 
         var messageValue = new string('x', 200);
         const int messageCount = 1000;

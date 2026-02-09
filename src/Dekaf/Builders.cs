@@ -478,6 +478,43 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Builds and initializes the producer, ready for immediate use.
+    /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IKafkaProducer{TKey,TValue}.InitializeAsync"/>.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token for the initialization.</param>
+    /// <returns>An initialized producer ready to produce messages.</returns>
+    public async ValueTask<IKafkaProducer<TKey, TValue>> BuildAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var producer = Build();
+        try
+        {
+            await producer.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            return producer;
+        }
+        catch
+        {
+            await producer.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Builds and initializes a topic-specific producer bound to the specified topic, ready for immediate use.
+    /// </summary>
+    /// <param name="topic">The topic to bind the producer to.</param>
+    /// <param name="cancellationToken">Cancellation token for the initialization.</param>
+    /// <returns>An initialized producer bound to the specified topic.</returns>
+    public async ValueTask<ITopicProducer<TKey, TValue>> BuildForTopicAsync(
+        string topic,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(topic);
+        var producer = await BuildAsync(cancellationToken).ConfigureAwait(false);
+        return new TopicProducer<TKey, TValue>(producer, topic, ownsProducer: true);
+    }
+
     public IKafkaProducer<TKey, TValue> Build()
     {
         if (_bootstrapServers.Count == 0)
@@ -1106,6 +1143,28 @@ public sealed class ConsumerBuilder<TKey, TValue>
         _interceptors ??= [];
         _interceptors.Add(interceptor);
         return this;
+    }
+
+    /// <summary>
+    /// Builds and initializes the consumer, ready for immediate use.
+    /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IKafkaConsumer{TKey,TValue}.InitializeAsync"/>.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token for the initialization.</param>
+    /// <returns>An initialized consumer ready to consume messages.</returns>
+    public async ValueTask<IKafkaConsumer<TKey, TValue>> BuildAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var consumer = Build();
+        try
+        {
+            await consumer.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            return consumer;
+        }
+        catch
+        {
+            await consumer.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     public IKafkaConsumer<TKey, TValue> Build()

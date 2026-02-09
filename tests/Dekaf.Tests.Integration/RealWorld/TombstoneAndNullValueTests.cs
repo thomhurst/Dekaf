@@ -15,10 +15,10 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string?>()
+        await using var producer = await Kafka.CreateProducer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithValueSerializer(Serializers.NullableString)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string?>
         {
@@ -27,11 +27,11 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             Value = null
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string?>()
+        await using var consumer = await Kafka.CreateConsumer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(Serializers.NullableString)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -49,10 +49,10 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string?, string>()
+        await using var producer = await Kafka.CreateProducer<string?, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithKeySerializer(Serializers.NullableString)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string?, string>
         {
@@ -61,11 +61,11 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             Value = "value-with-null-key"
         });
 
-        await using var consumer = Kafka.CreateConsumer<string?, string>()
+        await using var consumer = await Kafka.CreateConsumer<string?, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithKeyDeserializer(Serializers.NullableString)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -83,10 +83,10 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string?>()
+        await using var producer = await Kafka.CreateProducer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithValueSerializer(Serializers.NullableString)
-            .Build();
+            .BuildAsync();
 
         // Produce a mix of normal values and tombstones
         await producer.ProduceAsync(new ProducerMessage<string, string?>
@@ -120,11 +120,11 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             Value = ""  // empty string (NOT a tombstone)
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string?>()
+        await using var consumer = await Kafka.CreateConsumer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(Serializers.NullableString)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -153,10 +153,10 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string?>()
+        await using var producer = await Kafka.CreateProducer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithValueSerializer(Serializers.NullableString)
-            .Build();
+            .BuildAsync();
 
         var headers = new Headers
         {
@@ -172,11 +172,11 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             Headers = headers
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string?>()
+        await using var consumer = await Kafka.CreateConsumer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(Serializers.NullableString)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -199,10 +199,10 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
         // Simulates a key being set and then deleted
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string?>()
+        await using var producer = await Kafka.CreateProducer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithValueSerializer(Serializers.NullableString)
-            .Build();
+            .BuildAsync();
 
         // Set the value
         await producer.ProduceAsync(new ProducerMessage<string, string?>
@@ -220,11 +220,11 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             Value = null
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string?>()
+        await using var consumer = await Kafka.CreateConsumer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(Serializers.NullableString)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -251,9 +251,9 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         // Produce a normal byte[] message
-        await using var producer = Kafka.CreateProducer<string, byte[]>()
+        await using var producer = await Kafka.CreateProducer<string, byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, byte[]>
         {
@@ -263,10 +263,10 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
         });
 
         // Produce a null value (tombstone) using nullable string producer
-        await using var nullProducer = Kafka.CreateProducer<string, string?>()
+        await using var nullProducer = await Kafka.CreateProducer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithValueSerializer(Serializers.NullableString)
-            .Build();
+            .BuildAsync();
 
         await nullProducer.ProduceAsync(new ProducerMessage<string, string?>
         {
@@ -275,10 +275,10 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             Value = null
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, byte[]>()
+        await using var consumer = await Kafka.CreateConsumer<string, byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);

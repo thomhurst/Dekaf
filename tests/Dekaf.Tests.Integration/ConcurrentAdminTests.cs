@@ -247,10 +247,10 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             groupIds.Add(groupId);
 
             // Produce a message to the topic
-            await using var producer = Kafka.CreateProducer<string, string>()
+            await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId($"test-producer-{i}")
-                .Build();
+                .BuildAsync();
 
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
@@ -260,11 +260,11 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             }).ConfigureAwait(false);
 
             // Consume and commit so the group coordinator is established
-            await using var consumer = Kafka.CreateConsumer<string, string>()
+            await using var consumer = await Kafka.CreateConsumer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .Build();
+                .BuildAsync();
 
             consumer.Subscribe(topic);
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -331,10 +331,10 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
         await using var admin = CreateAdminClient();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-concurrent")
-            .Build();
+            .BuildAsync();
 
         // Act - produce messages while simultaneously performing admin operations
         const int messageCount = 20;
@@ -404,10 +404,10 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Pre-produce messages
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-pre")
-            .Build();
+            .BuildAsync();
 
         const int messageCount = 5;
         for (var i = 0; i < messageCount; i++)
@@ -422,11 +422,11 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
 
         await using var admin = CreateAdminClient();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

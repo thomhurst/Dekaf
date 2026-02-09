@@ -16,7 +16,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         // Simplest possible producer creation
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>(KafkaContainer.BootstrapServers);
+        await using var producer = await Kafka.CreateProducerAsync<string, string>(KafkaContainer.BootstrapServers);
 
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -36,8 +36,8 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         var groupId = $"shortcut-consumer-{Guid.NewGuid():N}";
-        await using var consumer = Kafka.CreateConsumer<string, string>(
-            KafkaContainer.BootstrapServers, groupId, topic);
+        await using var consumer = await Kafka.CreateConsumerAsync<string, string>(
+            KafkaContainer.BootstrapServers, groupId, CancellationToken.None, topic);
 
         // Start consuming in background (default offset is Latest, so produce after consumer joins)
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -54,7 +54,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         // Allow time for consumer to join group
         await Task.Delay(3000);
 
-        await using var producer = Kafka.CreateProducer<string, string>(KafkaContainer.BootstrapServers);
+        await using var producer = await Kafka.CreateProducerAsync<string, string>(KafkaContainer.BootstrapServers);
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -75,9 +75,9 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         // Using BuildForTopic for applications that only produce to one topic
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var topicProducer = Kafka.CreateProducer<string, string>()
+        await using var topicProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .BuildForTopic(topic);
+            .BuildForTopicAsync(topic);
 
         var metadata = await topicProducer.ProduceAsync("topic-bound-key", "topic-bound-value");
 
@@ -92,9 +92,9 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         var topic1 = await KafkaContainer.CreateTestTopicAsync();
         var topic2 = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var baseProducer = Kafka.CreateProducer<string, string>()
+        await using var baseProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         var topic1Producer = baseProducer.ForTopic(topic1);
         var topic2Producer = baseProducer.ForTopic(topic2);
@@ -111,9 +111,9 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var topicProducer = Kafka.CreateProducer<string, string>()
+        await using var topicProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .BuildForTopic(topic);
+            .BuildForTopicAsync(topic);
 
         var messages = Enumerable.Range(0, 10)
             .Select(i => ($"key-{i}" as string, $"value-{i}" as string))
@@ -135,20 +135,20 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var topicProducer = Kafka.CreateProducer<string, string>()
+        await using var topicProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .BuildForTopic(topic);
+            .BuildForTopicAsync(topic);
 
         // Fire-and-forget through topic producer
         topicProducer.Send("fire-key", "fire-value");
         await topicProducer.FlushAsync();
 
         // Verify by consuming
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"fire-forget-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -166,20 +166,20 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         // Simplest message creation - no key
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         var message = ProducerMessage<string, string>.Create(topic, "keyless-value");
         var metadata = await producer.ProduceAsync(message);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"keyless-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -196,20 +196,20 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         var message = ProducerMessage<string, string>.Create(topic, "my-key", "my-value");
         var metadata = await producer.ProduceAsync(message);
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"kv-create-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -226,19 +226,19 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         var headers = new Headers { { "source", "test" } };
         var message = ProducerMessage<string, string>.Create(topic, "key", "value", headers);
         await producer.ProduceAsync(message);
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"headers-create-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -255,11 +255,11 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .ForHighThroughput()
             .UseGzipCompression() // Override LZ4 (requires separate codec package) with built-in Gzip
-            .Build();
+            .BuildAsync();
 
         var pendingTasks = new List<ValueTask<RecordMetadata>>();
         for (var i = 0; i < 50; i++)
@@ -279,12 +279,12 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         }
 
         // Consume all
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"ht-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .ForHighThroughput()
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -304,10 +304,10 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .ForLowLatency()
-            .Build();
+            .BuildAsync();
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -329,10 +329,10 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .ForReliability()
-            .Build();
+            .BuildAsync();
 
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -351,20 +351,20 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         // Simplest ProduceAsync overload without ProducerMessage
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         var metadata = await producer.ProduceAsync(topic, "simple-key", "simple-value");
 
         await Assert.That(metadata.Topic).IsEqualTo(topic);
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"simple-overload-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -381,7 +381,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>(KafkaContainer.BootstrapServers);
+        await using var producer = await Kafka.CreateProducerAsync<string, string>(KafkaContainer.BootstrapServers);
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
@@ -390,12 +390,12 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         });
 
         // SubscribeTo at build time
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"subscribe-to-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .SubscribeTo(topic)
-            .Build();
+            .BuildAsync();
 
         // Should already be subscribed - no need to call Subscribe()
         await Assert.That(consumer.Subscription).Contains(topic);
@@ -412,9 +412,9 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         var messages = Enumerable.Range(0, 10)
             .Select(i => ($"key-{i}" as string, $"value-{i}" as string))
@@ -436,9 +436,9 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
         // Test the fluent Headers API
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         var headers = Headers.Create()
             .Add("content-type", "application/json")
@@ -456,11 +456,11 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             Headers = headers
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"fluent-headers-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

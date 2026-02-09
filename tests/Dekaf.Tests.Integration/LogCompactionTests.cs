@@ -49,9 +49,9 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce two messages with the same key
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -69,11 +69,11 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
         });
 
         // Consume from beginning - both messages should be visible before compaction
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"duplicate-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

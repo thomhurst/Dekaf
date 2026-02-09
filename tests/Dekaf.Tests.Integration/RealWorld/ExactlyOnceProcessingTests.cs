@@ -19,9 +19,9 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
         const int messageCount = 5;
 
         // Produce input messages
-        await using var sourceProducer = Kafka.CreateProducer<string, string>()
+        await using var sourceProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -34,19 +34,19 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
         }
 
         // Consume-transform-produce pipeline with transactional offset commit
-        await using var pipelineConsumer = Kafka.CreateConsumer<string, string>()
+        await using var pipelineConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(consumerGroupId)
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
-        await using var txnProducer = Kafka.CreateProducer<string, string>()
+        await using var txnProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await txnProducer.InitTransactionsAsync();
 
@@ -82,12 +82,12 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
         }
 
         // Verify output topic has all transformed messages
-        await using var outputConsumer = Kafka.CreateConsumer<string, string>()
+        await using var outputConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"eo-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
         outputConsumer.Subscribe(outputTopic);
 
@@ -115,11 +115,11 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var txnId = $"eo-abort-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await producer.InitTransactionsAsync();
 
@@ -148,12 +148,12 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
         }
 
         // ReadCommitted consumer should only see committed message
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"eo-abort-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -173,11 +173,11 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
 
         // First producer with transactional ID — produce and dispose before creating second
         {
-            await using var producer1 = Kafka.CreateProducer<string, string>()
+            await using var producer1 = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithTransactionalId(txnId)
                 .WithAcks(Acks.All)
-                .Build();
+                .BuildAsync();
 
             await producer1.InitTransactionsAsync();
 
@@ -197,11 +197,11 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
         await Task.Delay(1000).ConfigureAwait(false);
 
         // Second producer with same transactional ID - fences first
-        await using var producer2 = Kafka.CreateProducer<string, string>()
+        await using var producer2 = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await producer2.InitTransactionsAsync();
 
@@ -218,12 +218,12 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
         }
 
         // Verify both messages are visible
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"eo-fence-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

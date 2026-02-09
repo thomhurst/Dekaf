@@ -18,16 +18,16 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         // Produce messages with Gzip compression
-        await using var gzipProducer = Kafka.CreateProducer<string, string>()
+        await using var gzipProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
-            .Build();
+            .BuildAsync();
 
         // Produce messages with Zstd compression
-        await using var zstdProducer = Kafka.CreateProducer<string, string>()
+        await using var zstdProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseZstdCompression()
-            .Build();
+            .BuildAsync();
 
         // Send messages with Gzip
         for (var i = 0; i < 5; i++)
@@ -57,11 +57,11 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
         await zstdProducer.FlushAsync();
 
         // Consumer should handle both compression types transparently
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"mixed-compression-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -97,15 +97,15 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         // Producer without compression
-        await using var plainProducer = Kafka.CreateProducer<string, string>()
+        await using var plainProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Producer with Gzip compression
-        await using var gzipProducer = Kafka.CreateProducer<string, string>()
+        await using var gzipProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
-            .Build();
+            .BuildAsync();
 
         // Send uncompressed messages
         for (var i = 0; i < 5; i++)
@@ -134,11 +134,11 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
         await gzipProducer.FlushAsync();
 
         // Consumer should handle both compressed and uncompressed batches
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"mixed-plain-compressed-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -176,19 +176,19 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
         // Create producers for each proven compression type plus uncompressed.
         // Gzip and Zstd are validated by existing integration tests.
         // Uncompressed is included to verify mixed-codec consumption in one consumer session.
-        await using var gzipProducer = Kafka.CreateProducer<string, string>()
+        await using var gzipProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
-            .Build();
+            .BuildAsync();
 
-        await using var zstdProducer = Kafka.CreateProducer<string, string>()
+        await using var zstdProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseZstdCompression()
-            .Build();
+            .BuildAsync();
 
-        await using var plainProducer = Kafka.CreateProducer<string, string>()
+        await using var plainProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce with each codec/mode
         await gzipProducer.ProduceAsync(new ProducerMessage<string, string>
@@ -216,11 +216,11 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
         await plainProducer.FlushAsync();
 
         // A single consumer with all codecs registered should read all messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"all-codecs-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -247,11 +247,11 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 200;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseZstdCompression()
             .WithLinger(TimeSpan.FromMilliseconds(50)) // Encourage batching
-            .Build();
+            .BuildAsync();
 
         // Produce many messages to create large compressed batches
         var pendingTasks = new List<ValueTask<RecordMetadata>>();
@@ -272,11 +272,11 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
 
         await producer.FlushAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"large-batch-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

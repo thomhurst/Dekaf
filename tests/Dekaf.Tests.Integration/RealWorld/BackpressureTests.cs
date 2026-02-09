@@ -15,13 +15,13 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
         // Arrange - use small buffer memory (1MB) to force backpressure
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3).ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-small-buffer")
             .WithAcks(Acks.Leader)
             .WithBufferMemory(1_048_576) // 1MB buffer
             .WithLinger(TimeSpan.FromMilliseconds(5))
-            .Build();
+            .BuildAsync();
 
         // Act - send more than 1MB of data (2MB+)
         var messageValue = new string('x', 1000); // 1KB per message
@@ -59,11 +59,11 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-pause")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -94,10 +94,10 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-pause-resume")
-            .Build();
+            .BuildAsync();
 
         // Produce 10 messages
         for (var i = 0; i < 10; i++)
@@ -110,11 +110,11 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
             }).ConfigureAwait(false);
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-pause-resume")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -153,11 +153,11 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3).ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-high-throughput")
             .WithLinger(TimeSpan.FromMilliseconds(5))
-            .Build();
+            .BuildAsync();
 
         // Produce messages
         const int messageCount = 500;
@@ -169,13 +169,13 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
         await producer.FlushAsync().ConfigureAwait(false);
 
         // Act - consume with high throughput preset
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-high-throughput")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .ForHighThroughput()
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

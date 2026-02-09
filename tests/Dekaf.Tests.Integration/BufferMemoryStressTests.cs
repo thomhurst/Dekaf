@@ -23,12 +23,12 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
 
         // Use small 8MB buffer to make the test more sensitive to leaks
         // Smaller buffer = leak more obvious relative to expected memory footprint
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("memory-stress-test")
             .WithAcks(Acks.Leader)
             .WithBufferMemory(8388608) // 8 MB - small buffer makes leaks more obvious
-            .Build();
+            .BuildAsync();
 
         // Force full GC before measuring baseline
         GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
@@ -132,12 +132,12 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4).ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("buffered-bytes-test")
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(50)) // Short linger for faster batching
-            .Build();
+            .BuildAsync();
 
         var messageValue = new string('x', 1000); // 1KB messages
         var messageCount = 100; // Reduced from 1000 - enough to test without being slow

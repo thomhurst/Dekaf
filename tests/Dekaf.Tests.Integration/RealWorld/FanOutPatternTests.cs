@@ -17,9 +17,9 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 10;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -61,9 +61,9 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 10;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -77,12 +77,12 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Fast consumer reads all 10
         var fastGroup = $"fast-{Guid.NewGuid():N}";
-        await using var fastConsumer = Kafka.CreateConsumer<string, string>()
+        await using var fastConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(fastGroup)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         fastConsumer.Subscribe(topic);
 
@@ -98,12 +98,12 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Slow consumer reads only 3 and commits
         var slowGroup = $"slow-{Guid.NewGuid():N}";
-        await using var slowConsumer = Kafka.CreateConsumer<string, string>()
+        await using var slowConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(slowGroup)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         slowConsumer.Subscribe(topic);
 
@@ -135,9 +135,9 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
         // A new service joins after events have already been produced
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages before any consumer exists
         for (var i = 0; i < 5; i++)
@@ -182,9 +182,9 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         const int messageCount = 30;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -203,11 +203,11 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         var consumeTasks = groups.Select(group => Task.Run(async () =>
         {
-            await using var consumer = Kafka.CreateConsumer<string, string>()
+            await using var consumer = await Kafka.CreateConsumer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(group)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .Build();
+                .BuildAsync();
 
             consumer.Subscribe(topic);
 
@@ -235,11 +235,11 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
     private async Task<List<ConsumeResult<string, string>>> ConsumeAllAsync(
         string topic, string groupId, int expectedCount)
     {
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

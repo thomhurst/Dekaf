@@ -17,11 +17,11 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
         // Arrange - create topic and producer with short metadata max age
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-metadata-refresh-max-age")
             .WithMetadataMaxAge(TimeSpan.FromSeconds(5))
-            .Build();
+            .BuildAsync();
 
         // Act - produce an initial message
         var metadata1 = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -56,11 +56,11 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
     public async Task NewTopic_MetadataDiscovered_OnFirstProduce()
     {
         // Arrange - create producer BEFORE creating the topic
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-metadata-new-topic-discovery")
             .WithMetadataMaxAge(TimeSpan.FromSeconds(5))
-            .Build();
+            .BuildAsync();
 
         // Create the topic after the producer is already built and initialized
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -86,11 +86,11 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
         // Arrange - create topic with 2 partitions
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-metadata-partition-expansion")
             .WithMetadataMaxAge(TimeSpan.FromSeconds(5))
-            .Build();
+            .BuildAsync();
 
         // Produce to original partitions to establish metadata
         for (var p = 0; p < 2; p++)
@@ -149,11 +149,11 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
         // to ensure frequent refreshes do not disrupt ongoing production
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-metadata-short-max-age")
             .WithMetadataMaxAge(TimeSpan.FromSeconds(2))
-            .Build();
+            .BuildAsync();
 
         // Act - produce messages continuously over a period longer than metadata max age
         // This ensures multiple metadata refreshes happen during production
@@ -205,13 +205,13 @@ public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegr
         // is correctly configured and does not interfere with normal production
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-metadata-recovery-strategy")
             .WithMetadataMaxAge(TimeSpan.FromSeconds(5))
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.Rebootstrap)
             .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromSeconds(10))
-            .Build();
+            .BuildAsync();
 
         // Act - produce messages to verify the producer works normally with recovery enabled
         var metadata1 = await producer.ProduceAsync(new ProducerMessage<string, string>

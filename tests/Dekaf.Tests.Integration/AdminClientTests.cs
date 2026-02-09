@@ -373,10 +373,10 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         try
         {
             // Produce a message
-            await using var producer = Kafka.CreateProducer<string, string>()
+            await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-producer")
-                .Build();
+                .BuildAsync();
 
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
@@ -386,13 +386,13 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             }).ConfigureAwait(false);
 
             // Consume and commit
-            await using (var consumer = Kafka.CreateConsumer<string, string>()
+            await using (var consumer = await Kafka.CreateConsumer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-consumer")
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual)
-                .Build())
+                .BuildAsync())
             {
                 consumer.Subscribe(topic);
 
@@ -503,10 +503,10 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         await using var admin = CreateAdminClient();
 
         // Produce some messages
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 5; i++)
         {
@@ -548,10 +548,10 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         await Task.Delay(100).ConfigureAwait(false); // Small delay to ensure timestamp difference
 
         // Produce messages
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 3; i++)
         {

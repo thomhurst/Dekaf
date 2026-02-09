@@ -45,10 +45,10 @@ public class DeleteRecordsTests(KafkaTestContainer kafka) : KafkaIntegrationTest
     /// </summary>
     private async Task ProduceMessagesAsync(string topic, int count, int partition = 0)
     {
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < count; i++)
         {
@@ -219,11 +219,11 @@ public class DeleteRecordsTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             offset => offset >= 5).ConfigureAwait(false);
 
         // Act - create a new consumer with Earliest and consume
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(tp);
 
@@ -287,11 +287,11 @@ public class DeleteRecordsTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         // Act - create a consumer and seek to offset 2 (simulating a committed offset
         // that is now before the low watermark of 5). This triggers OffsetOutOfRange,
         // which with AutoOffsetReset.Earliest should reset to the new low watermark.
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(tp);
 

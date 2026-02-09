@@ -15,11 +15,11 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
     public async Task Producer_MetadataRefresh_FindsNewlyCreatedTopic()
     {
         // Arrange - create producer BEFORE creating the topic
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-metadata-refresh")
             .WithMetadataMaxAge(TimeSpan.FromSeconds(5))
-            .Build();
+            .BuildAsync();
 
         // Create the topic after producer is built
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
@@ -44,10 +44,10 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-partition-expand")
-            .Build();
+            .BuildAsync();
 
         // Produce to original partitions
         for (var p = 0; p < 2; p++)
@@ -87,12 +87,12 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
         }
 
         // Act - consumer should discover all 4 partitions
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-partition-expand")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -116,11 +116,11 @@ public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaInteg
     public async Task Producer_ShortMetadataMaxAge_RefreshesAutomatically()
     {
         // Arrange - producer with very short metadata max age
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-short-metadata-age")
             .WithMetadataMaxAge(TimeSpan.FromSeconds(5))
-            .Build();
+            .BuildAsync();
 
         // Create first topic and produce
         var topic1 = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);

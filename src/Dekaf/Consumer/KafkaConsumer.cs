@@ -307,6 +307,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private int _fetchApiVersion = -1;
     private volatile bool _disposed;
     private volatile bool _closed;
+    private volatile bool _initialized;
+    private readonly SemaphoreSlim _initLock = new(1, 1);
     private bool _prefetchEnabled;
 
     // CancellationTokenSource pool to avoid allocations in hot paths
@@ -605,7 +607,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfNotInitialized();
 
         // Start auto-commit if enabled (only in Auto mode)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
@@ -1406,7 +1408,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfNotInitialized();
 
         var connection = await GetPartitionLeaderConnectionAsync(topicPartition, cancellationToken).ConfigureAwait(false);
         if (connection is null)
@@ -1531,12 +1533,47 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         return watermarks;
     }
 
-    private async ValueTask EnsureInitializedAsync(CancellationToken cancellationToken)
+    /// <inheritdoc />
+    public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
-        if (_metadataManager.Metadata.LastRefreshed == default)
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+
+        // Fast path: already initialized (volatile read provides acquire semantics)
+        if (_initialized)
+            return;
+
+        await _initLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
+            // Double-check after acquiring lock
+            if (_initialized)
+                return;
+
             await _metadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            _initialized = true;
         }
+        finally
+        {
+            _initLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Throws <see cref="InvalidOperationException"/> if the consumer has not been initialized.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ThrowIfNotInitialized()
+    {
+        if (!_initialized)
+            ThrowNotInitialized();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowNotInitialized()
+    {
+        throw new InvalidOperationException(
+            "Call InitializeAsync() or use BuildAsync() before consuming messages.");
     }
 
     /// <summary>
@@ -2581,7 +2618,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfNotInitialized();
 
         // Group partitions by broker leader for efficient batch requests
         var partitionsByBroker = new Dictionary<int, List<TopicPartitionTimestamp>>();
@@ -2769,6 +2806,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
 
         _assignmentLock.Dispose();
+        _initLock.Dispose();
 
         // Dispose statistics emitter
         if (_statisticsEmitter is not null)

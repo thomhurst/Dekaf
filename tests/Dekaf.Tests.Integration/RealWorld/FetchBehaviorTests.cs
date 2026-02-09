@@ -15,10 +15,10 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithLinger(TimeSpan.FromMilliseconds(5))
-            .Build();
+            .BuildAsync();
 
         const int messageCount = 500;
         for (var i = 0; i < messageCount; i++)
@@ -33,12 +33,12 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await producer.FlushAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"ht-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .ForHighThroughput()
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -64,9 +64,9 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages first
         const int messageCount = 50;
@@ -81,11 +81,11 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
         }
 
         // Use low-latency consumer with assign (no group coordination delay)
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .ForLowLatency()
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -112,9 +112,9 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce many messages
         const int totalMessages = 100;
@@ -129,12 +129,12 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
         }
 
         // Consumer with max poll records of 10
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"poll-limit-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithMaxPollRecords(10)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -156,9 +156,9 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages of varying sizes
         var sizes = new[] { 100, 1000, 10_000, 100_000, 500_000 };
@@ -173,10 +173,10 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -204,10 +204,10 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -223,9 +223,9 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce to each partition
         for (var p = 0; p < 4; p++)
@@ -242,11 +242,11 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
             }
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"multi-fetch-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -273,10 +273,10 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .ForReliability()
-            .Build();
+            .BuildAsync();
 
         const int messageCount = 20;
         for (var i = 0; i < messageCount; i++)
@@ -289,11 +289,11 @@ public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrat
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"reliable-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
