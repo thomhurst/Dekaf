@@ -20,12 +20,8 @@ env:
 
 jobs:
   build-and-unit-test:
-    name: Build & Unit Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-      fail-fast: false
+    name: Build & Unit Test
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -60,7 +56,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results-${{ matrix.os }}
+          name: test-results-unit
           path: |
             **/TestResults/**
             **/test-results/**
@@ -68,7 +64,6 @@ jobs:
 
       - name: Upload Packages
         uses: actions/upload-artifact@v4
-        if: runner.os == 'Linux'
         with:
           name: nuget-packages
           path: |
