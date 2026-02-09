@@ -17,12 +17,11 @@ public class ProducerBuilderValidationTests
     [Test]
     public async Task Build_WithBootstrapServers_Succeeds()
     {
-        var builder = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers("localhost:9092");
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
 
-        var act = () => builder.Build();
-
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(producer).IsNotNull();
     }
 
     [Test]
@@ -221,34 +220,34 @@ public class ProducerBuilderValidationTests
     [Test]
     public async Task ForHighThroughput_ThenBuild_Succeeds()
     {
-        var act = () => Kafka.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .ForHighThroughput()
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(producer).IsNotNull();
     }
 
     [Test]
     public async Task ForLowLatency_ThenBuild_Succeeds()
     {
-        var act = () => Kafka.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .ForLowLatency()
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(producer).IsNotNull();
     }
 
     [Test]
     public async Task ForReliability_ThenBuild_Succeeds()
     {
-        var act = () => Kafka.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .ForReliability()
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(producer).IsNotNull();
     }
 
     #endregion

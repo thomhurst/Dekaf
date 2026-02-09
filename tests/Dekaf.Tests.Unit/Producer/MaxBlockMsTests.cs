@@ -68,12 +68,12 @@ public sealed class MaxBlockMsTests
     [Test]
     public async Task WithMaxBlock_Milliseconds_BuildSucceeds()
     {
-        var act = () => Kafka.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMaxBlock(TimeSpan.FromMilliseconds(5000))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(producer).IsNotNull();
     }
 
     [Test]
@@ -121,12 +121,12 @@ public sealed class MaxBlockMsTests
     [Test]
     public async Task WithMaxBlock_BuildSucceeds()
     {
-        var act = () => Kafka.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMaxBlock(TimeSpan.FromSeconds(30))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(producer).IsNotNull();
     }
 
     [Test]
@@ -156,27 +156,27 @@ public sealed class MaxBlockMsTests
     [Test]
     public async Task WithMaxBlock_ChainsWithOtherBuilderMethods_Milliseconds()
     {
-        var act = () => Kafka.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMaxBlock(TimeSpan.FromMilliseconds(10000))
             .WithBufferMemory(1024 * 1024)
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(producer).IsNotNull();
     }
 
     [Test]
     public async Task WithMaxBlock_ChainsWithOtherBuilderMethods()
     {
-        var act = () => Kafka.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMaxBlock(TimeSpan.FromSeconds(10))
             .WithBufferMemory(1024 * 1024)
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(producer).IsNotNull();
     }
 
     #endregion
