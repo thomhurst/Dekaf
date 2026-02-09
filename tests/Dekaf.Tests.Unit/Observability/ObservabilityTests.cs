@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Diagnostics.Metrics;
 using Dekaf.Observability;
 
 namespace Dekaf.Tests.Unit.Observability;

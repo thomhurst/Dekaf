@@ -1,5 +1,4 @@
 using Dekaf.Producer;
-using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Integration;
 

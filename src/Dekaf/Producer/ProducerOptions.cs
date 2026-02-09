@@ -1,9 +1,7 @@
-using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Protocol.Records;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
-using Dekaf.Serialization;
 
 namespace Dekaf.Producer;
 

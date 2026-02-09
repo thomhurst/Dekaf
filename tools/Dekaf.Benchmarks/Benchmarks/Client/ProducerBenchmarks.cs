@@ -2,7 +2,6 @@ using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Engines;
 using Dekaf.Benchmarks.Infrastructure;
-using DekafLib = Dekaf;
 using DekafProducer = Dekaf.Producer;
 
 namespace Dekaf.Benchmarks.Benchmarks.Client;

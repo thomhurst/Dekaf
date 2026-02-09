@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Text;
-using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;

@@ -1,4 +1,3 @@
-using Dekaf.Admin;
 using Dekaf.Metadata;
 using Dekaf.Producer;
 

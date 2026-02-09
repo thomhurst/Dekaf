@@ -1,5 +1,4 @@
 using Dekaf.Consumer;
-using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol;

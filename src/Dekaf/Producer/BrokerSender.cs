@@ -4,12 +4,10 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Dekaf.Compression;
-using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
-using Dekaf.Protocol.Records;
 using Dekaf.Statistics;
 using Microsoft.Extensions.Logging;
 

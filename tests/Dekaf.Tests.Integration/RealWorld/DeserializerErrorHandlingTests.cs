@@ -1,5 +1,4 @@
 using Dekaf.Consumer;
-using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 

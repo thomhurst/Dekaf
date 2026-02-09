@@ -1,10 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
-using Dekaf;
-using Dekaf.Compression;
 using Dekaf.Protocol.Records;
-using Snappier;
 
 namespace Dekaf.Compression.Snappy;
 

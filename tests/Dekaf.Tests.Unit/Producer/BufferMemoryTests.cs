@@ -1,7 +1,5 @@
 using System.Buffers;
-using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Reflection;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;

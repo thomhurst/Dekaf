@@ -1,6 +1,4 @@
-using System.Runtime.CompilerServices;
 using Dekaf.Consumer;
-using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Consumer;
 

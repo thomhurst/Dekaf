@@ -1,6 +1,5 @@
 using Dekaf.Admin;
 using Dekaf.Consumer;
-using Dekaf.Errors;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;

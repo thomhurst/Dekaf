@@ -1,10 +1,7 @@
 using System.Buffers;
 using System.Runtime.CompilerServices;
-using Dekaf;
-using Dekaf.Compression;
 using Dekaf.Protocol.Records;
 using K4os.Compression.LZ4;
-using K4os.Compression.LZ4.Encoders;
 using K4os.Compression.LZ4.Streams;
 
 namespace Dekaf.Compression.Lz4;

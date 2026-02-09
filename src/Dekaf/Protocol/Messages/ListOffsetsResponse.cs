@@ -1,5 +1,3 @@
-using System.Buffers;
-
 namespace Dekaf.Protocol.Messages;
 
 /// <summary>

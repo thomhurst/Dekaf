@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using Dekaf.Consumer;
 using Dekaf.Producer;
-using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Integration;
 

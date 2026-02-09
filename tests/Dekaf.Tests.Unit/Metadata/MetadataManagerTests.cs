@@ -1,5 +1,4 @@
 using Dekaf.Metadata;
-using Dekaf.Networking;
 using Dekaf.Protocol.Messages;
 
 namespace Dekaf.Tests.Unit.Metadata;

@@ -1,10 +1,8 @@
-using System.Buffers;
 using Avro.Generic;
 using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
-using Dekaf.Serialization;
 using AvroSchema = Avro.Schema;
 
 namespace Dekaf.Tests.Integration;
