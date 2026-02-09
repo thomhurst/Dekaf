@@ -11,6 +11,7 @@ using ModularPipelines.Options;
 namespace Dekaf.Pipeline.Modules;
 
 [RunOnLinuxOnly]
+[RunOnlyOnBranch("main")]
 [DependsOn<BuildModule>]
 [DependsOn<RunIntegrationTestsModule>]
 public class RunBenchmarksModule : Module<CommandResult>
