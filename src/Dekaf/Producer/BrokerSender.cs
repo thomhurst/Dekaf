@@ -231,8 +231,17 @@ internal sealed class BrokerSender : IAsyncDisposable
                     ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
                     ArrayPool<SemaphoreSlim>.Shared.Return(coalescedGates, clearArray: true);
 
-                    // All gates busy — yield to let response handlers release gates
-                    await Task.Yield();
+                    // All gates busy — wait for the first carry-over batch's partition gate to free up.
+                    // When coalescedCount==0 and drainCount>0, the first batch in newCarryOver must have
+                    // failed its gate.Wait(0) check (it can't fail the coalescedPartitions.Add since
+                    // that set starts empty). Waiting on its gate blocks until HandleResponseAsync
+                    // releases it, guaranteeing forward progress without a tight spin loop.
+                    // (The old Task.Yield() approach starved response handler threads; the
+                    // _inFlightSemaphore approach didn't block when the semaphore had spare capacity.)
+                    var blockedGate = _partitionSendGates.GetOrAdd(
+                        newCarryOver![0].TopicPartition, _ => _createPartitionGate());
+                    await blockedGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    blockedGate.Release();
                 }
 
                 // Merge new carry-over into persistent list for next iteration
