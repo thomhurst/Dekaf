@@ -2744,12 +2744,13 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         _disposed = true;
 
-        // If not already closed, perform graceful close first (but with a short timeout)
+        // If not already closed, perform graceful close first
+        // Use 30 seconds to allow CommitAsync (which may take up to RequestTimeoutMs=30s) to complete
         if (!_closed)
         {
             try
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 await CloseAsync(cts.Token).ConfigureAwait(false);
             }
             catch
@@ -2766,11 +2767,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             try
             {
-                await _autoCommitTask.ConfigureAwait(false);
+                await _autoCommitTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch
             {
-                // Ignore
+                // Ignore — task may not exit promptly after cancellation
             }
         }
 
@@ -2778,11 +2779,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             try
             {
-                await _prefetchTask.ConfigureAwait(false);
+                await _prefetchTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch
             {
-                // Ignore
+                // Ignore — task may not exit promptly after cancellation
             }
         }
 

@@ -680,7 +680,8 @@ public sealed class KafkaConnection : IKafkaConnection
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Expected during shutdown
+            // Expected during shutdown — fail any pending requests so callers don't hang
+            FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
         }
         catch (Exception ex)
         {

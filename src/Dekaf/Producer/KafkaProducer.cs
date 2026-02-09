@@ -2297,11 +2297,22 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
                         if (leader is null)
                         {
-                            // No leader cached — do async lookup
-                            leader = await _metadataManager.GetPartitionLeaderAsync(
-                                batch.TopicPartition.Topic,
-                                batch.TopicPartition.Partition,
-                                cancellationToken).ConfigureAwait(false);
+                            // No leader cached — do async lookup with timeout to prevent
+                            // hanging the sender loop if metadata refresh is blocked
+                            using var metadataCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                            metadataCts.CancelAfter(TimeSpan.FromSeconds(30));
+                            try
+                            {
+                                leader = await _metadataManager.GetPartitionLeaderAsync(
+                                    batch.TopicPartition.Topic,
+                                    batch.TopicPartition.Partition,
+                                    metadataCts.Token).ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                            {
+                                // Metadata lookup timed out — fall through to fail the batch below
+                                leader = null;
+                            }
                         }
 
                         if (leader is null)

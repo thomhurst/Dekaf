@@ -402,7 +402,10 @@ public sealed class MetadataManager : IAsyncDisposable
         {
             try
             {
-                var addresses = await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
+                // Apply a per-host timeout to prevent DNS hangs from blocking rebootstrap
+                using var dnsCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                dnsCts.CancelAfter(TimeSpan.FromSeconds(5));
+                var addresses = await Dns.GetHostAddressesAsync(host, dnsCts.Token).ConfigureAwait(false);
                 foreach (var address in addresses)
                 {
                     var endpoint = (address.ToString(), port);
