@@ -54,6 +54,7 @@ public class RunIntegrationTestsModule : Module<IReadOnlyList<CommandResult>>
                     "--timeout", "22m",
                     "--hangdump",
                     "--hangdump-timeout", "20m", // Dump before the timeout kills the run
+                    "--maximum-parallel-tests", "2", // Limit parallelism to avoid OOM on CI runners
                     "--log-level", "Trace",
                     "--output", "Detailed"
                 ]
