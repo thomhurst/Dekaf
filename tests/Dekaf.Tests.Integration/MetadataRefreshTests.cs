@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// Verifies that producers correctly refresh metadata after max age expiry,
 /// discover new topics, handle partition expansion, and recover via rebootstrap.
 /// </summary>
+[Category("Admin")]
 public sealed class MetadataRefreshTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies that custom IPartitioner instances correctly route messages
 /// to the expected partitions when used with the producer builder API.
 /// </summary>
+[Category("Messaging")]
 public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     /// <summary>

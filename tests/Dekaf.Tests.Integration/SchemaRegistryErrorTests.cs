@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for Schema Registry error paths and caching behavior.
 /// </summary>
+[Category("Serialization")]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer testInfra)
 {

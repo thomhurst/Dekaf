@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies correct exception types for various failure scenarios,
 /// including disposed resources, invalid configuration, and error context.
 /// </summary>
+[Category("Resilience")]
 public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

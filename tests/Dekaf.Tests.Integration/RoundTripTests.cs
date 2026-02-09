@@ -7,6 +7,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// End-to-end round-trip tests validating produce and consume scenarios.
 /// </summary>
+[Category("Serialization")]
 public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

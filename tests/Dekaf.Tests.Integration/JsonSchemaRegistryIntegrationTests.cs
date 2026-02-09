@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for JSON Schema Registry serialization.
 /// </summary>
+[Category("Serialization")]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {

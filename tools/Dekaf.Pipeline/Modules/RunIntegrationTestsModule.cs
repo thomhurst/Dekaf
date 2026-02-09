@@ -12,8 +12,13 @@ using ModularPipelines.Options;
 namespace Dekaf.Pipeline.Modules;
 
 [DependsOn<BuildModule>]
-public class RunIntegrationTestsModule : Module<IReadOnlyList<CommandResult>>
+public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandResult>>
 {
+    /// <summary>
+    /// The TUnit test category to filter by (matches [Category("X")] on test classes).
+    /// </summary>
+    protected new abstract string Category { get; }
+
     protected override ModuleConfiguration Configure()
     {
         return new ModuleConfigurationBuilder()
@@ -33,14 +38,45 @@ public class RunIntegrationTestsModule : Module<IReadOnlyList<CommandResult>>
             return null;
         }
 
+        // When SKIP_INTEGRATION_TESTS is set, skip all integration tests (used by build-and-unit-test CI job)
+        if (string.Equals(Environment.GetEnvironmentVariable("SKIP_INTEGRATION_TESTS"), "true", StringComparison.OrdinalIgnoreCase))
+        {
+            context.Logger.LogInformation("Skipping integration tests (SKIP_INTEGRATION_TESTS=true)");
+            return null;
+        }
+
+        // When INTEGRATION_TEST_CATEGORY is set (CI matrix), only run the matching category
+        var targetCategory = Environment.GetEnvironmentVariable("INTEGRATION_TEST_CATEGORY");
+        if (!string.IsNullOrEmpty(targetCategory) &&
+            !string.Equals(targetCategory, Category, StringComparison.OrdinalIgnoreCase))
+        {
+            context.Logger.LogInformation(
+                "Skipping {Category} integration tests (INTEGRATION_TEST_CATEGORY={TargetCategory})",
+                Category, targetCategory);
+            return null;
+        }
+
         var results = new List<CommandResult>();
 
         var project = context.Git().RootDirectory.FindFile(x => x.Name == "Dekaf.Tests.Integration.csproj");
-        
+
         if (project is null)
         {
             throw new InvalidOperationException("Dekaf.Tests.Integration.csproj not found");
         }
+
+        var arguments = new List<string>
+        {
+            "--",
+            "--timeout", "22m",
+            "--hangdump",
+            "--hangdump-timeout", "20m", // Dump before the timeout kills the run
+            "--log-level", "Trace",
+            "--output", "Detailed",
+            "--treenode-filter", $"/**[Category={Category}]"
+        };
+
+        context.Logger.LogInformation("Running integration tests for category: {Category}", Category);
 
         var testResult = await context.DotNet().Run(
             new DotNetRunOptions
@@ -48,14 +84,7 @@ public class RunIntegrationTestsModule : Module<IReadOnlyList<CommandResult>>
                 NoBuild = true,
                 Configuration = "Release",
                 Framework = "net10.0",
-                Arguments = [
-                    "--",
-                    "--timeout", "22m",
-                    "--hangdump",
-                    "--hangdump-timeout", "20m", // Dump before the timeout kills the run
-                    "--log-level", "Trace",
-                    "--output", "Detailed"
-                ]
+                Arguments = arguments
             },
             new CommandExecutionOptions
             {

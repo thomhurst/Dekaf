@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for consumer behavior when partitions are added to a topic
 /// while the consumer is actively consuming.
 /// </summary>
+[Category("ConsumerGroup")]
 public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     private IAdminClient CreateAdminClient()

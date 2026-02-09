@@ -6,6 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for producer transactions.
 /// </summary>
+[Category("Transaction")]
 public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

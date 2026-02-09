@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies that within a partition, messages are always delivered in order,
 /// and that key-based partitioning consistently routes to the same partition.
 /// </summary>
+[Category("Messaging")]
 public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

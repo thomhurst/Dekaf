@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies that producers can discover newly created topics, consumers can discover
 /// expanded partitions, and short metadata max age triggers automatic refreshes.
 /// </summary>
+[Category("Admin")]
 public sealed class MetadataRecoveryTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

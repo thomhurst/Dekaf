@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies partition distribution, rebalancing on join/leave, rebalance listener callbacks,
 /// and group stability across member restarts.
 /// </summary>
+[Category("ConsumerGroup")]
 public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

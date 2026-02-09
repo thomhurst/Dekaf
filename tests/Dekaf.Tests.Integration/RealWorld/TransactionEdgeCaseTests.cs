@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Covers multi-partition atomicity, isolation level differences,
 /// sequential transaction ordering, and consume-transform-produce failure scenarios.
 /// </summary>
+[Category("Transaction")]
 public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

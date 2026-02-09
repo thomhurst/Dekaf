@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// across transactional scenarios, including edge cases around open transactions,
 /// concurrent commit/abort, abort markers, and last stable offset blocking.
 /// </summary>
+[Category("Transaction")]
 public sealed class TransactionIsolationLevelTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for protocol version negotiation and compatibility.
 /// </summary>
+[Category("Admin")]
 public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

@@ -6,6 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for multi-partition scenarios.
 /// </summary>
+[Category("Messaging")]
 public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

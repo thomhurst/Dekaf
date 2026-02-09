@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for concurrent access patterns commonly seen in production applications.
 /// Validates thread-safety of producers and consumers under realistic contention.
 /// </summary>
+[Category("Resilience")]
 public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

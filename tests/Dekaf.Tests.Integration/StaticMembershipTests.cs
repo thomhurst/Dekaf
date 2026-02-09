@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// Static membership allows consumers to rejoin a group without triggering a rebalance,
 /// as long as they rejoin within the session timeout using the same group.instance.id.
 /// </summary>
+[Category("ConsumerGroup")]
 public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

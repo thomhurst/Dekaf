@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies that consumers can stop cleanly and resume from the correct position,
 /// which is critical for at-least-once and exactly-once processing guarantees.
 /// </summary>
+[Category("Consumer")]
 public sealed class GracefulShutdownTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

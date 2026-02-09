@@ -12,6 +12,7 @@ namespace Dekaf.Tests.Integration;
 /// Verifies that producers and consumers handle throttle responses gracefully, and that
 /// high-throughput operations work correctly with default (unthrottled) broker configuration.
 /// </summary>
+[Category("Resilience")]
 public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     private IAdminClient CreateAdminClient()

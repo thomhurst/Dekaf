@@ -3,6 +3,7 @@ using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
 
+[Category("ConsumerGroup")]
 public class RebalanceListenerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

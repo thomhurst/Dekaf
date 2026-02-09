@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies behavior with empty topics, double subscribe, consume without subscribe,
 /// and AutoOffsetReset.None behavior.
 /// </summary>
+[Category("Consumer")]
 public sealed class ConsumerErrorHandlingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

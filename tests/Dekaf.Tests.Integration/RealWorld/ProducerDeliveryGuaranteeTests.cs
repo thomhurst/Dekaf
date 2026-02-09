@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for producer delivery guarantees across different acks levels,
 /// flush semantics, and callback-based production patterns.
 /// </summary>
+[Category("Producer")]
 public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

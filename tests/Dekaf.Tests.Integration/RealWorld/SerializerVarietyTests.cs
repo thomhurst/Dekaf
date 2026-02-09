@@ -7,6 +7,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for different serializer type combinations commonly used in production.
 /// Real applications use various key/value types beyond just string/string.
 /// </summary>
+[Category("Serialization")]
 public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

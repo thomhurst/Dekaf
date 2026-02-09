@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for producer and consumer interceptors, commonly used for
 /// cross-cutting concerns: tracing, metrics, header injection, auditing.
 /// </summary>
+[Category("Resilience")]
 public sealed class InterceptorTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

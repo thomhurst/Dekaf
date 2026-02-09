@@ -13,7 +13,6 @@ namespace Dekaf.Pipeline.Modules;
 [RunOnLinuxOnly]
 [RunOnlyOnBranch("main")]
 [DependsOn<BuildModule>]
-[DependsOn<RunIntegrationTestsModule>]
 public class RunBenchmarksModule : Module<CommandResult>
 {
     protected override async Task<CommandResult?> ExecuteAsync(IModuleContext context, CancellationToken cancellationToken)

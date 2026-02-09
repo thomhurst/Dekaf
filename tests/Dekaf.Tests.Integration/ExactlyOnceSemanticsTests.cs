@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// Covers transactional offset commit atomicity, read-committed consistent snapshots,
 /// multi-producer isolation, epoch bumping/fencing, and consume-transform-produce patterns.
 /// </summary>
+[Category("Transaction")]
 public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

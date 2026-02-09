@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// - After append: caller gets OperationCanceledException but message IS delivered
 /// - Flush cancellation: wait stops but batches continue sending
 /// </summary>
+[Category("Producer")]
 public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

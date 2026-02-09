@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies that large headers, many small messages, multi-partition distribution, and unicode
 /// all round-trip correctly through produce/consume.
 /// </summary>
+[Category("Resilience")]
 public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

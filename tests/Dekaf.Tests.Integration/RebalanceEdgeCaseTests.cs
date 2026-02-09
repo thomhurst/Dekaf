@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// Tests scenarios around listener exceptions, slow consumers, offset commits
 /// during rebalance, rapid join/leave cycles, and poll timeouts.
 /// </summary>
+[Category("ConsumerGroup")]
 public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

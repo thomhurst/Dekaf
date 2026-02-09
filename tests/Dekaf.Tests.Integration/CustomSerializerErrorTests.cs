@@ -11,6 +11,7 @@ namespace Dekaf.Tests.Integration;
 /// properly propagated and do not corrupt internal producer/consumer state.
 /// Closes #210
 /// </summary>
+[Category("Serialization")]
 public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     /// <summary>

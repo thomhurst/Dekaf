@@ -6,6 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for consumer group coordination.
 /// </summary>
+[Category("ConsumerGroup")]
 public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

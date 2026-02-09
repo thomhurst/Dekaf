@@ -7,6 +7,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for consumer behavior on empty topics with subsequent message arrival.
 /// Closes #223
 /// </summary>
+[Category("Consumer")]
 public class EmptyTopicConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

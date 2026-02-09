@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// Verifies behavior when fetch min/max bytes, max wait, and per-partition limits
 /// are configured to trigger boundary conditions.
 /// </summary>
+[Category("Consumer")]
 public sealed class FetchBufferEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

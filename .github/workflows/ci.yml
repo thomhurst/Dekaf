@@ -19,8 +19,8 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: true
 
 jobs:
-  build-and-test:
-    name: Build & Test
+  build-and-unit-test:
+    name: Build & Unit Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -28,15 +28,6 @@ jobs:
       fail-fast: false
 
     steps:
-      - name: Add Swap Space (Ubuntu only)
-        if: runner.os == 'Linux'
-        run: |
-          sudo fallocate -l 8G /mnt/extra-swapfile
-          sudo chmod 600 /mnt/extra-swapfile
-          sudo mkswap /mnt/extra-swapfile
-          sudo swapon /mnt/extra-swapfile
-          free -h
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -58,12 +49,9 @@ jobs:
         uses: gittools/actions/gitversion/execute@v3
         continue-on-error: true  # Don't fail if GitVersion has issues on PR branches
 
-      - name: Pre-pull Kafka Image (Ubuntu only)
-        if: runner.os == 'Linux'
-        run: docker pull confluentinc/cp-kafka:7.5.0
-
       - name: Run Pipeline
         env:
+          SKIP_INTEGRATION_TESTS: 'true'
           NuGet__ShouldPublish: ${{ inputs.publish_nuget == true && 'true' || 'false' }}
           NuGet__ApiKey: ${{ secrets.NUGET__APIKEY }}
         run: dotnet run --project tools/Dekaf.Pipeline
@@ -78,18 +66,6 @@ jobs:
             **/test-results/**
           retention-days: 7
 
-      - name: Upload HangDump artifacts
-        uses: actions/upload-artifact@v4
-        if: always() && runner.os == 'Linux'
-        with:
-          name: hangdump-artifacts
-          path: |
-            ./TestResults/**/*.dmp
-            ./TestResults/**/*hangdump*
-            ./**/*.dmp
-          if-no-files-found: ignore
-          retention-days: 7
-
       - name: Upload Packages
         uses: actions/upload-artifact@v4
         if: runner.os == 'Linux'
@@ -100,6 +76,65 @@ jobs:
             **/bin/Release/*.snupkg
           if-no-files-found: ignore
           retention-days: 30
+
+  integration-tests:
+    name: Integration Tests (${{ matrix.category }})
+    needs: build-and-unit-test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        category: [Producer, Consumer, ConsumerGroup, Transaction, Admin, Serialization, Resilience, Messaging]
+      fail-fast: false
+
+    steps:
+      - name: Add Swap Space
+        run: |
+          sudo fallocate -l 8G /mnt/extra-swapfile
+          sudo chmod 600 /mnt/extra-swapfile
+          sudo mkswap /mnt/extra-swapfile
+          sudo swapon /mnt/extra-swapfile
+          free -h
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          dotnet-quality: 'preview'
+
+      - name: Pre-pull Kafka Image
+        run: docker pull confluentinc/cp-kafka:7.5.0
+
+      - name: Run Pipeline
+        env:
+          INTEGRATION_TEST_CATEGORY: ${{ matrix.category }}
+        run: dotnet run --project tools/Dekaf.Pipeline
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-integration-${{ matrix.category }}
+          path: |
+            **/TestResults/**
+            **/test-results/**
+          retention-days: 7
+
+      - name: Upload HangDump artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hangdump-artifacts-${{ matrix.category }}
+          path: |
+            ./TestResults/**/*.dmp
+            ./TestResults/**/*hangdump*
+            ./**/*.dmp
+          if-no-files-found: ignore
+          retention-days: 7
 
   code-quality:
     name: Code Quality

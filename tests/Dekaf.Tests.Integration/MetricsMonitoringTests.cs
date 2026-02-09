@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for client metrics (statistics) verifying accuracy of counters,
 /// lag tracking, multi-topic aggregation, partition assignment reporting, and reset behavior.
 /// </summary>
+[Category("Messaging")]
 public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     /// <summary>

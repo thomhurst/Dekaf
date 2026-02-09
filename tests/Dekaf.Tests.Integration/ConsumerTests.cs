@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for the Kafka consumer.
 /// </summary>
+[Category("Consumer")]
 public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

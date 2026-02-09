@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for DeleteRecords (log truncation) admin API.
 /// Closes #225
 /// </summary>
+[Category("Admin")]
 public class DeleteRecordsTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     private IAdminClient CreateAdminClient()

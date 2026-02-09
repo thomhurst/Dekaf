@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for convenience APIs and builder presets that simplify common usage patterns.
 /// These verify that the "happy path" shorthand APIs work correctly for quick setups.
 /// </summary>
+[Category("Consumer")]
 public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

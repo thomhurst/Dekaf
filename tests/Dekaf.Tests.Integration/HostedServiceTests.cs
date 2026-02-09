@@ -12,6 +12,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for KafkaConsumerService hosted service.
 /// </summary>
+[Category("Messaging")]
 public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

@@ -6,6 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for cooperative sticky rebalancing and incremental assign/unassign.
 /// </summary>
+[Category("ConsumerGroup")]
 public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

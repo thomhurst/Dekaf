@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for Protobuf serializer with Kafka and Schema Registry.
 /// </summary>
+[Category("Serialization")]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {

@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration;
 /// message ordering under various conditions including high concurrency,
 /// multi-partition scenarios, and flush boundaries.
 /// </summary>
+[Category("Producer")]
 public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

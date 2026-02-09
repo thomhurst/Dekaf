@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for producing with LZ4 compression and consuming, verifying data integrity.
 /// Codec registration is handled by <see cref="GlobalTestSetup"/>.
 /// </summary>
+[Category("Messaging")]
 public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

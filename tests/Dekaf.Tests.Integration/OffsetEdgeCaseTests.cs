@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// Tests timestamp-based offset lookup boundaries, unassigned partition commits,
 /// concurrent offset commits, and seeking beyond the high watermark.
 /// </summary>
+[Category("Messaging")]
 public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

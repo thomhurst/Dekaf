@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies behavior when consumers encounter data that doesn't match their deserializer,
 /// including mismatched types, custom deserializer exceptions, and null value handling.
 /// </summary>
+[Category("Serialization")]
 public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

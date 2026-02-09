@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration;
 /// Covers scenarios like non-existent topics, oversized messages, and offset out of range recovery.
 /// Closes #211
 /// </summary>
+[Category("Admin")]
 public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

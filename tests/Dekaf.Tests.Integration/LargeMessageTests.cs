@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for large message and payload edge cases.
 /// Closes #212
 /// </summary>
+[Category("Resilience")]
 public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

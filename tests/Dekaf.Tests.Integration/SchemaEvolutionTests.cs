@@ -5,6 +5,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for schema evolution and compatibility checking via Schema Registry.
 /// </summary>
+[Category("Serialization")]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class SchemaEvolutionTests(KafkaWithSchemaRegistryContainer testInfra)
 {

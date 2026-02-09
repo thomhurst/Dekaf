@@ -7,6 +7,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for idempotent producer behavior.
 /// Verifies that EnableIdempotence() provides exactly-once semantics within a producer session.
 /// </summary>
+[Category("Producer")]
 public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies that high-throughput and low-latency presets work correctly,
 /// and that max poll records limits are respected.
 /// </summary>
+[Category("Consumer")]
 public sealed class FetchBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

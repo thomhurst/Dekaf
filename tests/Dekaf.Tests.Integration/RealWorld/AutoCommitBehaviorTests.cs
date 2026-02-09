@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies that auto-commit works correctly with various intervals,
 /// that it fires on close/dispose, and that committed offsets are respected on restart.
 /// </summary>
+[Category("Consumer")]
 public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

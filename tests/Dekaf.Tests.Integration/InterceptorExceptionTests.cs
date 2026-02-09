@@ -11,6 +11,7 @@ namespace Dekaf.Tests.Integration;
 /// still execute, and subsequent messages are unaffected.
 /// Closes #214
 /// </summary>
+[Category("Resilience")]
 public sealed class InterceptorExceptionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

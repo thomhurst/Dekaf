@@ -11,6 +11,7 @@ namespace Dekaf.Tests.Integration;
 /// or inconsistent state.
 /// Closes #222
 /// </summary>
+[Category("Admin")]
 public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     private IAdminClient CreateAdminClient()

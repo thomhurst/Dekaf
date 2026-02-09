@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for Avro serializer with Kafka and Schema Registry.
 /// </summary>
+[Category("Serialization")]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {

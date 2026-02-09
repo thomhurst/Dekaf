@@ -7,6 +7,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for partition EOF (end-of-file) events.
 /// Tests verify that EOF events fire correctly when reaching the high watermark.
 /// </summary>
+[Category("Consumer")]
 public class PartitionEofTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

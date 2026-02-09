@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies buffer memory limits, MaxBlock timeout, message delivery under pressure,
 /// and concurrent producer behavior with shared buffer memory.
 /// </summary>
+[Category("Producer")]
 public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

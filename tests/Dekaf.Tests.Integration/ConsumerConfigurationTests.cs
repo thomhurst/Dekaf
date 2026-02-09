@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// Verifies MaxPollRecords, QueuedMinMessages, SubscribeTo at build time,
 /// manual assignment without group protocol, and preset configurations.
 /// </summary>
+[Category("Consumer")]
 public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for admin client workflows that DevOps and platform teams commonly perform:
 /// topic lifecycle management, configuration, and consumer group operations.
 /// </summary>
+[Category("Admin")]
 public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies behavior with null values (tombstones), empty strings, large messages,
 /// use-after-dispose, and fire-and-forget callbacks.
 /// </summary>
+[Category("Producer")]
 public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

@@ -5,6 +5,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for consumer pattern subscription (Subscribe with topic filter).
 /// </summary>
+[Category("ConsumerGroup")]
 public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

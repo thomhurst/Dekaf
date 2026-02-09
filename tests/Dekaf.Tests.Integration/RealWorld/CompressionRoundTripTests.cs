@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for producing with compression and consuming, verifying data integrity.
 /// Compression is commonly used in production to reduce network bandwidth and storage costs.
 /// </summary>
+[Category("Messaging")]
 public sealed class CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

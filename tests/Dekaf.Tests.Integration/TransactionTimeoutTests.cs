@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for transactional producer edge cases: transaction timeouts,
 /// multi-topic transactions, isolation level behavior, and failure recovery scenarios.
 /// </summary>
+[Category("Transaction")]
 public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

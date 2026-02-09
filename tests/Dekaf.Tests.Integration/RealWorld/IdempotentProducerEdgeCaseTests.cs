@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies that idempotent producers correctly deduplicate messages,
 /// handle concurrent access, and maintain ordering guarantees.
 /// </summary>
+[Category("Producer")]
 public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

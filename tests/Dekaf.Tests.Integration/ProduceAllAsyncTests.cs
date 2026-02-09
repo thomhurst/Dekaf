@@ -3,6 +3,7 @@ using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
 
+[Category("Producer")]
 public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

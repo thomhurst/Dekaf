@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests lag during pause/resume, concurrent production,
 /// multi-partition scenarios, and committed vs position-based lag.
 /// </summary>
+[Category("Consumer")]
 public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

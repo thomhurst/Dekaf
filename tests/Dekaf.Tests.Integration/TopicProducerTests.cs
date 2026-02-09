@@ -7,6 +7,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for the topic-specific producer.
 /// </summary>
+[Category("Producer")]
 public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

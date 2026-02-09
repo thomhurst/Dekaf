@@ -6,6 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for OffsetCommitMode behavior.
 /// </summary>
+[Category("Messaging")]
 public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

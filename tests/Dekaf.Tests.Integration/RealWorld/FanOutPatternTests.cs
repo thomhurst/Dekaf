@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// each receive a full copy of all messages from the same topic.
 /// Common in event-driven architectures where different services need the same data.
 /// </summary>
+[Category("Messaging")]
 public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

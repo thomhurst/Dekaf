@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration;
 /// providing faster rebalancing compared to the classic JoinGroup/SyncGroup protocol.
 /// Requires Kafka 4.0+.
 /// </summary>
+[Category("Consumer")]
 [SupportsKafka(400)]
 public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {

@@ -5,6 +5,7 @@ using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Integration;
 
+[Category("Serialization")]
 public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
