@@ -112,6 +112,7 @@ jobs:
       - name: Run Pipeline
         env:
           INTEGRATION_TEST_CATEGORY: ${{ matrix.category }}
+          SKIP_UNIT_TESTS: 'true'
         run: dotnet run --project tools/Dekaf.Pipeline
 
       - name: Upload Test Results
