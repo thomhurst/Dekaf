@@ -14,7 +14,7 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 {
     private KafkaContainer? _container;
     private KafkaContainer Container => _container ??= new KafkaBuilder(ContainerName)
-        .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx256m -Xms256m")     // Limit JVM heap for CI runners
+        .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")     // Limit JVM heap for CI runners
         .WithEnvironment("KAFKA_LOG_RETENTION_MS", "30000")           // Delete segments after 30s
         .WithEnvironment("KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS", "10000") // Check every 10s
         .WithEnvironment("KAFKA_LOG_SEGMENT_BYTES", "1048576")        // 1MB segments for faster rotation

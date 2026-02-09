@@ -65,6 +65,7 @@ public class RunIntegrationTestsModule : Module<IReadOnlyList<CommandResult>>
                 EnvironmentVariables = new Dictionary<string, string?>
                 {
                     ["NET_VERSION"] = "net10.0",
+                    ["DOTNET_GCConserveMemory"] = "9", // Aggressive GC to reduce memory pressure on CI
                 }
             },
             cancellationToken);

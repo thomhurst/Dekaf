@@ -63,7 +63,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         _kafkaContainer = new KafkaBuilder("confluentinc/cp-kafka:7.5.0")
             .WithNetwork(_network)
             .WithNetworkAliases("kafka")
-            .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx256m -Xms256m")
+            .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")
             .WithEnvironment("KAFKA_LOG_RETENTION_MS", "30000")
             .WithEnvironment("KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS", "10000")
             .WithEnvironment("KAFKA_LOG_SEGMENT_BYTES", "1048576")
