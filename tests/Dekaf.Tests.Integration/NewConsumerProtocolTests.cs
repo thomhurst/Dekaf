@@ -163,11 +163,13 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         }
 
         // First consumer: consume 3 messages and commit
+        // Use short session timeout so coordinator processes departure quickly after disposal
         await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
+            .WithSessionTimeout(TimeSpan.FromMilliseconds(6000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .BuildAsync())
@@ -187,8 +189,8 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         }
 
         // Allow time for the group coordinator to process the first consumer's departure.
-        // CI environments with Docker need extra time for coordinator to process session timeout.
-        await Task.Delay(10_000).ConfigureAwait(false);
+        // Consumer 1 uses 6s session timeout. We wait 15s to be safe in slow CI environments.
+        await Task.Delay(15_000).ConfigureAwait(false);
 
         // Second consumer: should start from committed offset
         await using var consumer2 = await Kafka.CreateConsumer<string, string>()
