@@ -60,19 +60,6 @@ internal sealed class ProducerStatisticsCollector
         Interlocked.Add(ref _bytesProduced, bytes);
     }
 
-    public void RecordMessageDelivered(string topic, int partition, int bytes)
-    {
-        Interlocked.Increment(ref _messagesDelivered);
-
-        var topicCounters = _topicCounters.GetOrAdd(topic, static _ => new TopicCounters());
-        topicCounters.IncrementDelivered();
-
-        var partitionKey = (topic, partition);
-        var partitionCounters = _partitionCounters.GetOrAdd(partitionKey, static _ => new PartitionCounters());
-        partitionCounters.IncrementDelivered();
-        partitionCounters.DecrementQueued();
-    }
-
     public void RecordBatchDelivered(string topic, int partition, int messageCount)
     {
         Interlocked.Add(ref _messagesDelivered, messageCount);
@@ -84,19 +71,6 @@ internal sealed class ProducerStatisticsCollector
         var partitionCounters = _partitionCounters.GetOrAdd(partitionKey, static _ => new PartitionCounters());
         partitionCounters.AddDelivered(messageCount);
         partitionCounters.AddQueued(-messageCount);
-    }
-
-    public void RecordMessageFailed(string topic, int partition)
-    {
-        Interlocked.Increment(ref _messagesFailed);
-
-        var topicCounters = _topicCounters.GetOrAdd(topic, static _ => new TopicCounters());
-        topicCounters.IncrementFailed();
-
-        var partitionKey = (topic, partition);
-        var partitionCounters = _partitionCounters.GetOrAdd(partitionKey, static _ => new PartitionCounters());
-        partitionCounters.IncrementFailed();
-        partitionCounters.DecrementQueued();
     }
 
     public void RecordBatchFailed(string topic, int partition, int messageCount)
@@ -273,27 +247,9 @@ internal sealed class ConsumerStatisticsCollector
     // Reverse index: topic -> set of partitions for O(1) lookup in GetTopicStatistics()
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, byte>> _topicPartitionIndex = new();
 
-    public void RecordMessageConsumed(string topic, int partition, int bytes)
-    {
-        Interlocked.Increment(ref _messagesConsumed);
-        Interlocked.Add(ref _bytesConsumed, bytes);
-
-        var topicCounters = _topicCounters.GetOrAdd(topic, static _ => new ConsumerTopicCounters());
-        topicCounters.IncrementConsumed(bytes);
-
-        var partitionKey = (topic, partition);
-        var partitionCounters = _partitionCounters.GetOrAdd(partitionKey, static _ => new ConsumerPartitionCounters());
-        partitionCounters.IncrementConsumed(bytes);
-
-        // Maintain reverse index for O(1) topic->partition lookup
-        var partitionSet = _topicPartitionIndex.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, byte>());
-        partitionSet.TryAdd(partition, 0);
-    }
-
     /// <summary>
-    /// Batch version of RecordMessageConsumed for efficient statistics updates.
+    /// Records consumed messages at the batch level for efficient statistics updates.
     /// Called once per partition-fetch instead of per message.
-    /// Inspired by librdkafka's batch-level accounting.
     /// </summary>
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public void RecordMessagesConsumedBatch(string topic, int partition, long messageCount, long bytes)

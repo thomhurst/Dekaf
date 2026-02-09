@@ -22,6 +22,29 @@ namespace Dekaf.Networking;
 /// </summary>
 internal static class ConnectionHelper
 {
+    /// <summary>
+    /// Reads a variable-length unsigned integer from a span using Kafka's varint encoding.
+    /// Shared by KafkaConnection and PooledPendingRequest for tagged field parsing.
+    /// </summary>
+    public static (int value, int bytesRead) ReadUnsignedVarInt(ReadOnlySpan<byte> span)
+    {
+        var result = 0;
+        var shift = 0;
+        var bytesRead = 0;
+
+        while (bytesRead < span.Length && shift < 35)
+        {
+            var b = span[bytesRead++];
+            result |= (b & 0x7F) << shift;
+
+            if ((b & 0x80) == 0)
+                return (result, bytesRead);
+
+            shift += 7;
+        }
+
+        return (result, bytesRead);
+    }
     // Minimum pause threshold for pipeline backpressure (16 MB)
     private const long MinimumPauseThresholdBytes = 16L * 1024 * 1024;
 
@@ -107,8 +130,6 @@ public sealed class KafkaConnection : IKafkaConnection
     private readonly PendingRequestPool _pendingRequestPool = new();
     private readonly CancellationTokenSourcePool _timeoutCtsPool = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
-    private static int s_connectionCounter;
-    private readonly int _connectionInstanceId = Interlocked.Increment(ref s_connectionCounter);
     private Task? _receiveTask;
     private CancellationTokenSource? _receiveCts;
     private OAuthBearerTokenProvider? _ownedTokenProvider;
@@ -132,11 +153,6 @@ public sealed class KafkaConnection : IKafkaConnection
     public string Host => _host;
     public int Port => _port;
     public bool IsConnected => !_disposed && (_socket?.Connected ?? false);
-
-    /// <summary>
-    /// Unique identifier for this connection instance (for debugging).
-    /// </summary>
-    public int ConnectionInstanceId => _connectionInstanceId;
 
     /// <summary>
     /// Gets the current SASL session state, if SASL authentication was performed.
@@ -1385,17 +1401,17 @@ public sealed class KafkaConnection : IKafkaConnection
                 {
                     // Skip tagged fields
                     var span = responseBuffer.AsSpan(offset);
-                    var (tagCount, bytesRead) = ReadUnsignedVarInt(span);
+                    var (tagCount, bytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
                     offset += bytesRead;
 
                     for (var i = 0; i < tagCount; i++)
                     {
                         span = responseBuffer.AsSpan(offset);
-                        var (_, tagBytesRead) = ReadUnsignedVarInt(span);
+                        var (_, tagBytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
                         offset += tagBytesRead;
 
                         span = responseBuffer.AsSpan(offset);
-                        var (size, sizeBytesRead) = ReadUnsignedVarInt(span);
+                        var (size, sizeBytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
                         offset += sizeBytesRead + size;
                     }
                 }
@@ -1425,26 +1441,6 @@ public sealed class KafkaConnection : IKafkaConnection
                 throw new IOException("Connection closed unexpectedly");
             totalRead += read;
         }
-    }
-
-    private static (int value, int bytesRead) ReadUnsignedVarInt(ReadOnlySpan<byte> span)
-    {
-        var result = 0;
-        var shift = 0;
-        var bytesRead = 0;
-
-        while (bytesRead < span.Length && shift < 35)
-        {
-            var b = span[bytesRead++];
-            result |= (b & 0x7F) << shift;
-
-            if ((b & 0x80) == 0)
-                return (result, bytesRead);
-
-            shift += 7;
-        }
-
-        return (result, bytesRead);
     }
 
     public async ValueTask DisposeAsync()
@@ -1924,7 +1920,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
             }
 
             var span = pooledBuffer.Data.Span[offset..];
-            var (tagCount, bytesRead) = ReadUnsignedVarInt(span);
+            var (tagCount, bytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
             offset += bytesRead;
 
             // Sanity check: tag count should be reasonable (< 1000)
@@ -1941,7 +1937,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
                 }
 
                 span = pooledBuffer.Data.Span[offset..];
-                var (_, tagBytesRead) = ReadUnsignedVarInt(span);
+                var (_, tagBytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
                 offset += tagBytesRead;
 
                 if (offset >= bufferLength)
@@ -1950,7 +1946,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
                 }
 
                 span = pooledBuffer.Data.Span[offset..];
-                var (size, sizeBytesRead) = ReadUnsignedVarInt(span);
+                var (size, sizeBytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
                 offset += sizeBytesRead + size;
 
                 if (offset > bufferLength)
@@ -1967,26 +1963,6 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         }
 
         return pooledBuffer.Slice(offset);
-    }
-
-    private static (int value, int bytesRead) ReadUnsignedVarInt(ReadOnlySpan<byte> span)
-    {
-        var result = 0;
-        var shift = 0;
-        var bytesRead = 0;
-
-        while (bytesRead < span.Length && shift < 35)
-        {
-            var b = span[bytesRead++];
-            result |= (b & 0x7F) << shift;
-
-            if ((b & 0x80) == 0)
-                return (result, bytesRead);
-
-            shift += 7;
-        }
-
-        return (result, bytesRead);
     }
 
     /// <summary>

@@ -5,11 +5,11 @@ namespace Dekaf.Tests.Unit.Statistics;
 public class ConsumerStatisticsCollectorTests
 {
     [Test]
-    public async Task RecordMessageConsumed_IncrementsGlobalCounters()
+    public async Task RecordMessagesConsumedBatch_IncrementsGlobalCounters()
     {
         var collector = new ConsumerStatisticsCollector();
 
-        collector.RecordMessageConsumed("test-topic", 0, 100);
+        collector.RecordMessagesConsumedBatch("test-topic", 0, 1, 100);
 
         var (messagesConsumed, bytesConsumed, _, _, _, _) = collector.GetGlobalStats();
         await Assert.That(messagesConsumed).IsEqualTo(1);
@@ -17,12 +17,12 @@ public class ConsumerStatisticsCollectorTests
     }
 
     [Test]
-    public async Task RecordMessageConsumed_IncrementsTopicCounters()
+    public async Task RecordMessagesConsumedBatch_IncrementsTopicCounters()
     {
         var collector = new ConsumerStatisticsCollector();
 
-        collector.RecordMessageConsumed("test-topic", 0, 100);
-        collector.RecordMessageConsumed("test-topic", 1, 200);
+        collector.RecordMessagesConsumedBatch("test-topic", 0, 1, 100);
+        collector.RecordMessagesConsumedBatch("test-topic", 1, 1, 200);
 
         var topicStats = collector.GetTopicStatistics(_ => (null, null, false));
         await Assert.That(topicStats).ContainsKey("test-topic");
@@ -31,13 +31,13 @@ public class ConsumerStatisticsCollectorTests
     }
 
     [Test]
-    public async Task RecordMessageConsumed_IncrementsPartitionCounters()
+    public async Task RecordMessagesConsumedBatch_IncrementsPartitionCounters()
     {
         var collector = new ConsumerStatisticsCollector();
 
-        collector.RecordMessageConsumed("test-topic", 0, 100);
-        collector.RecordMessageConsumed("test-topic", 0, 150);
-        collector.RecordMessageConsumed("test-topic", 1, 200);
+        collector.RecordMessagesConsumedBatch("test-topic", 0, 1, 100);
+        collector.RecordMessagesConsumedBatch("test-topic", 0, 1, 150);
+        collector.RecordMessagesConsumedBatch("test-topic", 1, 1, 200);
 
         var topicStats = collector.GetTopicStatistics(_ => (null, null, false));
         await Assert.That(topicStats["test-topic"].Partitions).ContainsKey(0);
@@ -100,7 +100,7 @@ public class ConsumerStatisticsCollectorTests
     {
         var collector = new ConsumerStatisticsCollector();
 
-        collector.RecordMessageConsumed("test-topic", 0, 100);
+        collector.RecordMessagesConsumedBatch("test-topic", 0, 1, 100);
         collector.UpdatePartitionHighWatermark("test-topic", 0, 1000);
 
         var topicStats = collector.GetTopicStatistics(_ => (null, null, false));
@@ -125,7 +125,7 @@ public class ConsumerStatisticsCollectorTests
     {
         var collector = new ConsumerStatisticsCollector();
 
-        collector.RecordMessageConsumed("test-topic", 0, 100);
+        collector.RecordMessagesConsumedBatch("test-topic", 0, 1, 100);
         collector.UpdatePartitionHighWatermark("test-topic", 0, 1000);
 
         var topicStats = collector.GetTopicStatistics(tp =>
@@ -149,8 +149,8 @@ public class ConsumerStatisticsCollectorTests
     {
         var collector = new ConsumerStatisticsCollector();
 
-        collector.RecordMessageConsumed("topic-a", 0, 100);
-        collector.RecordMessageConsumed("topic-b", 0, 200);
+        collector.RecordMessagesConsumedBatch("topic-a", 0, 1, 100);
+        collector.RecordMessagesConsumedBatch("topic-b", 0, 1, 200);
 
         var topicStats = collector.GetTopicStatistics(_ => (null, null, false));
         await Assert.That(topicStats).Count().IsEqualTo(2);
@@ -172,7 +172,7 @@ public class ConsumerStatisticsCollectorTests
             {
                 for (var i = 0; i < operationsPerThread; i++)
                 {
-                    collector.RecordMessageConsumed("test-topic", i % 4, 100);
+                    collector.RecordMessagesConsumedBatch("test-topic", i % 4, 1, 100);
                 }
             }));
         }
