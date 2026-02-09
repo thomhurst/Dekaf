@@ -139,25 +139,51 @@ internal sealed class BrokerSender : IAsyncDisposable
 
         // Reusable collections for coalescing (single-threaded, no contention)
         var coalescedPartitions = new HashSet<TopicPartition>();
-        List<ReadyBatch>? carryOver = null;
+
+        // Persistent carry-over list across iterations. Kept LOCAL instead of re-enqueued to the
+        // channel to preserve batch ordering. Re-enqueueing puts batches at the back of the channel,
+        // allowing new batches from SenderLoopAsync to jump ahead and be sent out of order.
+        // This causes ordering violations for non-idempotent producers and OOSN errors + hangs
+        // for idempotent producers.
+        List<ReadyBatch>? pendingCarryOver = null;
 
         try
         {
-            while (await channelReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+            while (true)
             {
-                // Drain all currently-available batches
+                // Phase 1: Fill drain buffer — carry-over first (ordering), then channel
                 var drainCount = 0;
-                while (drainCount < maxDrain && channelReader.TryRead(out var batch))
+
+                if (pendingCarryOver is { Count: > 0 })
                 {
-                    drainBuffer[drainCount++] = batch;
+                    // Carry-over batches from previous iteration get priority to maintain ordering
+                    var take = Math.Min(pendingCarryOver.Count, maxDrain);
+                    for (var i = 0; i < take; i++)
+                    {
+                        drainBuffer[drainCount++] = pendingCarryOver[i];
+                    }
+                    pendingCarryOver.RemoveRange(0, take);
+                }
+
+                if (drainCount == 0)
+                {
+                    // No carry-over: wait for channel data
+                    if (!await channelReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+                        break;
+                }
+
+                // Fill remaining drain capacity from channel
+                while (drainCount < maxDrain && channelReader.TryRead(out var channelBatch))
+                {
+                    drainBuffer[drainCount++] = channelBatch;
                 }
 
                 if (drainCount == 0)
                     continue;
 
-                // Coalesce: at most one batch per partition per request
+                // Phase 2: Coalesce — at most one batch per partition per request
                 coalescedPartitions.Clear();
-                carryOver?.Clear();
+                List<ReadyBatch>? newCarryOver = null;
 
                 var coalescedCount = 0;
                 var coalescedBatches = ArrayPool<ReadyBatch>.Shared.Rent(drainCount);
@@ -170,8 +196,8 @@ internal sealed class BrokerSender : IAsyncDisposable
                     // Ensure at most one batch per partition per coalesced request
                     if (!coalescedPartitions.Add(batch.TopicPartition))
                     {
-                        carryOver ??= [];
-                        carryOver.Add(batch);
+                        newCarryOver ??= [];
+                        newCarryOver.Add(batch);
                         continue;
                     }
 
@@ -184,8 +210,8 @@ internal sealed class BrokerSender : IAsyncDisposable
                     {
                         // Gate busy — carry over to next iteration
                         coalescedPartitions.Remove(batch.TopicPartition);
-                        carryOver ??= [];
-                        carryOver.Add(batch);
+                        newCarryOver ??= [];
+                        newCarryOver.Add(batch);
                         continue;
                     }
 
@@ -194,7 +220,7 @@ internal sealed class BrokerSender : IAsyncDisposable
                     coalescedCount++;
                 }
 
-                // Send coalesced batches
+                // Phase 3: Send coalesced batches
                 if (coalescedCount > 0)
                 {
                     await SendCoalescedAsync(
@@ -204,26 +230,24 @@ internal sealed class BrokerSender : IAsyncDisposable
                 {
                     ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
                     ArrayPool<SemaphoreSlim>.Shared.Return(coalescedGates, clearArray: true);
+
+                    // All gates busy — yield to let response handlers release gates
+                    await Task.Yield();
                 }
 
-                // Re-enqueue carry-over batches to the channel so WaitToReadAsync wakes naturally.
-                // If nothing was coalesced (all gates busy), yield to let response handlers
-                // release gates before the next iteration — prevents a tight spin loop.
-                if (carryOver is { Count: > 0 })
+                // Merge new carry-over into persistent list for next iteration
+                if (newCarryOver is { Count: > 0 })
                 {
-                    if (coalescedCount == 0)
+                    if (pendingCarryOver is { Count: > 0 })
                     {
-                        await Task.Yield();
+                        // Prepend remaining old carry-over (already at front) before new carry-over
+                        // to maintain overall ordering
+                        pendingCarryOver.AddRange(newCarryOver);
                     }
-
-                    foreach (var batch in carryOver)
+                    else
                     {
-                        Enqueue(batch);
+                        pendingCarryOver = newCarryOver;
                     }
-
-                    // Clear after re-enqueue to prevent double-cleanup in the finally block.
-                    // If Enqueue fails (channel completed), it already called Fail+CleanupBatch.
-                    carryOver.Clear();
                 }
             }
         }
@@ -243,11 +267,11 @@ internal sealed class BrokerSender : IAsyncDisposable
         {
             ArrayPool<ReadyBatch>.Shared.Return(drainBuffer, clearArray: true);
 
-            // Fail any carry-over batches that couldn't be re-enqueued.
+            // Fail any carry-over batches that couldn't be sent.
             // Must complete inflight entries so successors in WaitForPredecessorAsync don't hang.
-            if (carryOver is { Count: > 0 })
+            if (pendingCarryOver is { Count: > 0 })
             {
-                foreach (var batch in carryOver)
+                foreach (var batch in pendingCarryOver)
                 {
                     CompleteInflightEntry(batch);
                     try { batch.Fail(new ObjectDisposedException(nameof(BrokerSender))); }

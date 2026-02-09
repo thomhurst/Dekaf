@@ -186,8 +186,9 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             await consumer1.CommitAsync([new TopicPartitionOffset(topic, 0, 3)]);
         }
 
-        // Allow time for the group coordinator to process the first consumer's departure
-        await Task.Delay(5000).ConfigureAwait(false);
+        // Allow time for the group coordinator to process the first consumer's departure.
+        // CI environments with Docker need extra time for coordinator to process session timeout.
+        await Task.Delay(10_000).ConfigureAwait(false);
 
         // Second consumer: should start from committed offset
         await using var consumer2 = await Kafka.CreateConsumer<string, string>()
