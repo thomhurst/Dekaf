@@ -3911,6 +3911,12 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     // Set by KafkaProducer when registering with PartitionInflightTracker, cleared in Reset().
     internal InflightEntry? InflightEntry { get; set; }
 
+    /// <summary>
+    /// Stopwatch timestamp when this batch was initialized. Used for absolute delivery deadline
+    /// computation in ScheduleRetryAsync (prevents infinite retries with relative deadlines).
+    /// </summary>
+    internal long StopwatchCreatedTicks { get; private set; }
+
     // Batch-level completion tracking using resettable ManualResetValueTaskSourceCore
     // Never faults - uses SetResult(true) for success, SetResult(false) for failure
     private ManualResetValueTaskSourceCore<bool> _doneCore;
@@ -3957,6 +3963,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _arena = arena;
         _callbacks = callbacks;
         _callbackCount = callbackCount;
+        StopwatchCreatedTicks = Stopwatch.GetTimestamp();
     }
 
     /// <summary>

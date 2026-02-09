@@ -220,6 +220,10 @@ internal sealed class BrokerSender : IAsyncDisposable
                     {
                         Enqueue(batch);
                     }
+
+                    // Clear after re-enqueue to prevent double-cleanup in the finally block.
+                    // If Enqueue fails (channel completed), it already called Fail+CleanupBatch.
+                    carryOver.Clear();
                 }
             }
         }
@@ -328,7 +332,8 @@ internal sealed class BrokerSender : IAsyncDisposable
                         batch.CompletionSourcesCount);
                     CompleteInflightEntry(batch);
                     batch.CompleteSend(-1, fireAndForgetTimestamp);
-                    _onAcknowledgement?.Invoke(batch.TopicPartition, -1, fireAndForgetTimestamp, batch.CompletionSourcesCount, null);
+                    try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, fireAndForgetTimestamp, batch.CompletionSourcesCount, null); }
+                    catch { /* Observe - must not prevent cleanup */ }
                 }
 
                 // Release everything synchronously (no pipelined response)
@@ -348,10 +353,16 @@ internal sealed class BrokerSender : IAsyncDisposable
             var responseTask = connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
                 request, (short)apiVersion, cancellationToken);
 
-            // Fire-and-forget response handling — HandleResponseAsync self-registers
-            // in _inFlightResponses for clean shutdown (zero allocation on success path)
-            _ = HandleResponseAsync(
+            // Fire-and-forget response handling — tracked in _inFlightResponses for clean shutdown.
+            // We track the handler task (not the response task) so DisposeAsync waits for the
+            // full response processing + retry lifecycle, not just the network response.
+            var handlerTask = HandleResponseAsync(
                 responseTask, batches, gates, count, requestStartTime, cancellationToken);
+            _inFlightResponses.TryAdd(handlerTask, 0);
+            _ = handlerTask.ContinueWith(static (t, state) =>
+            {
+                ((ConcurrentDictionary<Task, byte>)state!).TryRemove(t, out _);
+            }, _inFlightResponses, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
         catch (Exception ex)
         {
@@ -371,9 +382,8 @@ internal sealed class BrokerSender : IAsyncDisposable
     /// <summary>
     /// Handles the response from a pipelined send.
     /// Processes per-partition results, schedules retries for retriable errors, releases resources.
-    /// Self-registers in _inFlightResponses for clean shutdown. Awaits any spawned retry tasks
-    /// before unregistering, so DisposeAsync sees this task as running until all retries complete.
-    /// Zero extra allocations on the success path.
+    /// Tracked in _inFlightResponses by SendCoalescedAsync for clean shutdown. Awaits any spawned
+    /// retry tasks so DisposeAsync sees this task as running until all retries complete.
     /// </summary>
     private async Task HandleResponseAsync(
         Task<ProduceResponse> responseTask,
@@ -383,10 +393,6 @@ internal sealed class BrokerSender : IAsyncDisposable
         long requestStartTime,
         CancellationToken cancellationToken)
     {
-        // Self-register for clean shutdown tracking
-        var thisTask = responseTask as Task; // Use responseTask as the tracking key (already allocated)
-        _inFlightResponses.TryAdd(thisTask, 0);
-
         var inFlightReleased = false;
         List<Task>? retryTasks = null;
 
@@ -460,8 +466,9 @@ internal sealed class BrokerSender : IAsyncDisposable
                     _statisticsCollector.RecordBatchFailed(expectedTopic, expectedPartition, batch.CompletionSourcesCount);
                     try { batch.Fail(new KafkaException(partitionResponse.ErrorCode, $"Produce failed: {partitionResponse.ErrorCode}")); }
                     catch { /* Observe */ }
-                    _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow, batch.CompletionSourcesCount,
-                        new KafkaException(partitionResponse.ErrorCode, $"Produce failed: {partitionResponse.ErrorCode}"));
+                    try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow, batch.CompletionSourcesCount,
+                        new KafkaException(partitionResponse.ErrorCode, $"Produce failed: {partitionResponse.ErrorCode}")); }
+                    catch { /* Observe - must not prevent cleanup */ }
                     ReleaseGate(gates[i]);
                     CleanupBatch(batch);
                     batches[i] = null!;
@@ -476,7 +483,8 @@ internal sealed class BrokerSender : IAsyncDisposable
                     : DateTimeOffset.UtcNow;
                 CompleteInflightEntry(batch);
                 batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
-                _onAcknowledgement?.Invoke(batch.TopicPartition, partitionResponse.BaseOffset, timestamp, batch.CompletionSourcesCount, null);
+                try { _onAcknowledgement?.Invoke(batch.TopicPartition, partitionResponse.BaseOffset, timestamp, batch.CompletionSourcesCount, null); }
+                catch { /* Observe - must not prevent cleanup */ }
                 ReleaseGate(gates[i]);
                 CleanupBatch(batch);
                 batches[i] = null!;
@@ -503,15 +511,13 @@ internal sealed class BrokerSender : IAsyncDisposable
             ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
             ArrayPool<SemaphoreSlim>.Shared.Return(gates, clearArray: true);
 
-            // Await any spawned retry tasks before unregistering, so DisposeAsync
-            // sees this handler as running until all its retries complete
+            // Await any spawned retry tasks so this Task stays alive until all retries complete.
+            // The ContinueWith in SendCoalescedAsync removes us from _inFlightResponses when done.
             if (retryTasks is { Count: > 0 })
             {
                 try { await Task.WhenAll(retryTasks).ConfigureAwait(false); }
                 catch { /* Exceptions observed by ScheduleRetryAsync */ }
             }
-
-            _inFlightResponses.TryRemove(thisTask, out _);
         }
     }
 
@@ -531,7 +537,9 @@ internal sealed class BrokerSender : IAsyncDisposable
 
         try
         {
-            var deliveryDeadlineTicks = Stopwatch.GetTimestamp() +
+            // Use the batch's creation time as the anchor for the delivery deadline.
+            // This prevents infinite retries — each retry checks against the same absolute deadline.
+            var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
                 (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
             var backoffMs = _options.RetryBackoffMs;
 
@@ -620,8 +628,9 @@ internal sealed class BrokerSender : IAsyncDisposable
                 batch.TopicPartition.Topic, batch.TopicPartition.Partition);
             try { batch.Fail(ex); }
             catch { /* Observe */ }
-            _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
-                batch.CompletionSourcesCount, ex);
+            try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
+                batch.CompletionSourcesCount, ex); }
+            catch { /* Observe - must not prevent cleanup */ }
             if (!gateReleased)
                 ReleaseGate(partitionGate);
             CleanupBatch(batch);
@@ -753,8 +762,9 @@ internal sealed class BrokerSender : IAsyncDisposable
             batch.CompletionSourcesCount);
         try { batch.Fail(ex); }
         catch { /* Observe */ }
-        _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
-            batch.CompletionSourcesCount, ex);
+        try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
+            batch.CompletionSourcesCount, ex); }
+        catch { /* Observe - must not prevent CleanupBatch */ }
         CleanupBatch(batch);
     }
 
@@ -783,10 +793,13 @@ internal sealed class BrokerSender : IAsyncDisposable
         catch
         {
             // Timeout — cancel to force exit
-            await _cts.CancelAsync().ConfigureAwait(false);
             try { await _sendLoopTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
             catch { /* Best effort */ }
         }
+
+        // Always cancel CTS so HandleResponseAsync retry tasks terminate promptly.
+        // Without this, retries continue running after DisposeAsync returns, using disposed resources.
+        await _cts.CancelAsync().ConfigureAwait(false);
 
         // Wait for in-flight responses
         var inFlightTasks = _inFlightResponses.Keys.ToArray();
