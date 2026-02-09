@@ -28,14 +28,14 @@ jobs:
       fail-fast: false
 
     steps:
-      - name: Configure Swap (Ubuntu only)
+      - name: Add Swap Space (Ubuntu only)
         if: runner.os == 'Linux'
         run: |
-          sudo swapoff -a
-          sudo fallocate -l 4G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          sudo fallocate -l 8G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
 
       - name: Checkout
         uses: actions/checkout@v4
