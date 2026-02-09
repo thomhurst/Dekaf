@@ -16,6 +16,7 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
     /// growth stays under reasonable bounds.
     /// </summary>
     [Test]
+    [NotInParallel("MemoryMeasurement")]
     public async Task SustainedLoad_DoesNotCauseUnboundedMemoryGrowth()
     {
         // Arrange
@@ -30,7 +31,8 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithBufferMemory(8388608) // 8 MB - small buffer makes leaks more obvious
             .BuildAsync();
 
-        // Force full GC before measuring baseline
+        // Force full GC before measuring baseline to get a clean starting point
+        // This test runs [NotInParallel] to avoid other tests polluting GC.GetTotalMemory
         GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
         GC.WaitForPendingFinalizers();
         GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
@@ -111,15 +113,14 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
         Console.WriteLine($"[BufferMemoryStressTest] Final memory: {finalMemory / 1_000_000.0:F1} MB");
         Console.WriteLine($"[BufferMemoryStressTest] Total memory growth: {totalGrowthMB:F1} MB");
 
-        // Assert: Memory growth should be < 5000MB
+        // Assert: Memory growth should be < 4000MB
         // With 8MB buffer and semaphore-limited batches, expect memory to stay bounded.
         // The threshold accounts for: arena buffers, ArrayPool caching, Docker/network overhead,
-        // message throughput variability, CI environment variability, and process-wide GC measurement
-        // (GC.GetTotalMemory measures the entire process, including concurrent test allocations).
-        // The original bug caused 18GB+ growth in 90s (~6GB in 30s), so 5000MB still catches major leaks
-        // while being reliable on memory-constrained CI runners with parallel tests.
-        Console.WriteLine($"[BufferMemoryStressTest] Asserting memory growth < 5000 MB (actual: {totalGrowthMB:F1} MB)");
-        await Assert.That(totalGrowthMB).IsLessThan(5000);
+        // message throughput variability, and CI environment variability.
+        // This test runs [NotInParallel] so GC.GetTotalMemory isn't polluted by concurrent tests.
+        // The original bug caused 18GB+ growth in 90s (~6GB in 30s), so 4000MB still catches major leaks.
+        Console.WriteLine($"[BufferMemoryStressTest] Asserting memory growth < 4000 MB (actual: {totalGrowthMB:F1} MB)");
+        await Assert.That(totalGrowthMB).IsLessThan(4000);
     }
 
     /// <summary>
