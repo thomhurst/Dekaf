@@ -3,6 +3,8 @@ using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace Dekaf.Extensions.DependencyInjection;
 
@@ -13,11 +15,16 @@ public static class ServiceCollectionExtensions
 {
     /// <summary>
     /// Adds Dekaf services to the service collection.
+    /// Registers a hosted service that automatically initializes all Kafka clients at host startup.
     /// </summary>
     public static IServiceCollection AddDekaf(this IServiceCollection services, Action<DekafBuilder> configure)
     {
         var builder = new DekafBuilder(services);
         configure(builder);
+
+        // Register the initialization hosted service (TryAddEnumerable avoids duplicates if AddDekaf is called multiple times)
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, DekafInitializationService>());
+
         return services;
     }
 }
@@ -48,6 +55,10 @@ public sealed class DekafBuilder
             return builder.Build(loggerFactory);
         });
 
+        // Register as IInitializableKafkaClient (resolves the same singleton instance)
+        _services.AddSingleton<IInitializableKafkaClient>(sp =>
+            sp.GetRequiredService<IKafkaProducer<TKey, TValue>>());
+
         return this;
     }
 
@@ -64,6 +75,10 @@ public sealed class DekafBuilder
             var loggerFactory = sp.GetService<Microsoft.Extensions.Logging.ILoggerFactory>();
             return builder.Build(loggerFactory);
         });
+
+        // Register as IInitializableKafkaClient (resolves the same singleton instance)
+        _services.AddSingleton<IInitializableKafkaClient>(sp =>
+            sp.GetRequiredService<IKafkaConsumer<TKey, TValue>>());
 
         return this;
     }

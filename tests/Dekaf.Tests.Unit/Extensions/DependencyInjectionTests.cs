@@ -3,6 +3,7 @@ using Dekaf.Consumer;
 using Dekaf.Extensions.DependencyInjection;
 using Dekaf.Producer;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace Dekaf.Tests.Unit.Extensions;
 
@@ -267,6 +268,86 @@ public class DependencyInjectionTests
         var builder = new AdminClientServiceBuilder();
         var result = builder.UseTls();
         await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    #endregion
+
+    #region IInitializableKafkaClient Registration Tests
+
+    [Test]
+    public async Task AddProducer_RegistersAsInitializableKafkaClient()
+    {
+        var services = new ServiceCollection();
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>(p => p.WithBootstrapServers("localhost:9092"));
+        });
+
+        var descriptors = services.Where(d => d.ServiceType == typeof(IInitializableKafkaClient)).ToList();
+        await Assert.That(descriptors.Count).IsEqualTo(1);
+        await Assert.That(descriptors[0].Lifetime).IsEqualTo(ServiceLifetime.Singleton);
+    }
+
+    [Test]
+    public async Task AddConsumer_RegistersAsInitializableKafkaClient()
+    {
+        var services = new ServiceCollection();
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddConsumer<string, string>(c => c
+                .WithBootstrapServers("localhost:9092")
+                .WithGroupId("test-group"));
+        });
+
+        var descriptors = services.Where(d => d.ServiceType == typeof(IInitializableKafkaClient)).ToList();
+        await Assert.That(descriptors.Count).IsEqualTo(1);
+        await Assert.That(descriptors[0].Lifetime).IsEqualTo(ServiceLifetime.Singleton);
+    }
+
+    [Test]
+    public async Task AddProducerAndConsumer_RegistersBothAsInitializableKafkaClient()
+    {
+        var services = new ServiceCollection();
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddProducer<string, string>(p => p.WithBootstrapServers("localhost:9092"));
+            builder.AddConsumer<string, string>(c => c
+                .WithBootstrapServers("localhost:9092")
+                .WithGroupId("test-group"));
+        });
+
+        var descriptors = services.Where(d => d.ServiceType == typeof(IInitializableKafkaClient)).ToList();
+        await Assert.That(descriptors.Count).IsEqualTo(2);
+    }
+
+    #endregion
+
+    #region IHostedService Registration Tests
+
+    [Test]
+    public async Task AddDekaf_RegistersHostedService()
+    {
+        var services = new ServiceCollection();
+
+        services.AddDekaf(_ => { });
+
+        var descriptors = services.Where(d => d.ServiceType == typeof(IHostedService)).ToList();
+        await Assert.That(descriptors.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task AddDekaf_CalledMultipleTimes_RegistersHostedServiceOnce()
+    {
+        var services = new ServiceCollection();
+
+        services.AddDekaf(_ => { });
+        services.AddDekaf(_ => { });
+
+        var descriptors = services.Where(d => d.ServiceType == typeof(IHostedService)).ToList();
+        await Assert.That(descriptors.Count).IsEqualTo(1);
     }
 
     #endregion
