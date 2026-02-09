@@ -739,7 +739,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     /// Waits until buffer space is available, then reserves memory for a record.
     /// Throws TimeoutException if buffer space doesn't become available within DeliveryTimeoutMs.
     /// </summary>
-    private async ValueTask ReserveMemoryAsync(int recordSize, CancellationToken cancellationToken)
+    internal async ValueTask ReserveMemoryAsync(int recordSize, CancellationToken cancellationToken)
     {
         // Fast path: try to reserve immediately
         if (TryReserveMemory(recordSize))
@@ -796,23 +796,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
             await Task.Delay(waitMs, cancellationToken).ConfigureAwait(false);
         }
     }
-
-    /// <summary>
-    /// Reserves buffer memory synchronously for backpressure purposes.
-    /// Used by Send() to enforce backpressure before queueing to the work channel.
-    /// Blocks if buffer is full until space is available or timeout is reached.
-    /// Throws TimeoutException if buffer space doesn't become available within DeliveryTimeoutMs.
-    /// Throws OperationCanceledException if the producer is disposed while waiting.
-    /// </summary>
-    internal void ReserveMemorySyncForBackpressure(int recordSize) => ReserveMemorySync(recordSize);
-
-    /// <summary>
-    /// Reserves buffer memory asynchronously for backpressure purposes.
-    /// Used by ProduceAsync() to enforce backpressure before queueing to the work channel.
-    /// Awaits if buffer is full until space is available or timeout is reached.
-    /// </summary>
-    internal ValueTask ReserveMemoryAsyncForBackpressure(int recordSize, CancellationToken cancellationToken)
-        => ReserveMemoryAsync(recordSize, cancellationToken);
 
     private void ReserveMemorySync(int recordSize)
     {
@@ -924,15 +907,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
         {
             // Accumulator is disposed, event no longer valid - ignore
         }
-    }
-
-    /// <summary>
-    /// Gets the partition cache for a topic (for TopicPartition allocation avoidance).
-    /// Used by KafkaProducer for arena-based serialization path.
-    /// </summary>
-    internal ConcurrentDictionary<int, TopicPartition> GetTopicPartitionCache(string topic)
-    {
-        return _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
     }
 
     /// <summary>
@@ -1133,9 +1107,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
             if (result.Success)
             {
-#if DEBUG
                 ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: true);
-#endif
                 // Release the difference between estimated and actual size to prevent memory leak
                 // The actual batch memory will be released when the batch is sent via SendBatchAsync
                 var overestimate = recordSize - result.ActualSizeAdded;
@@ -1164,11 +1136,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     // Decrement pending awaited produce count by the number of completion sources in this batch
                     if (readyBatch.CompletionSourcesCount > 0)
                         Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
-#if DEBUG
                     ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
-#endif
                     // Track delivery task for FlushAsync
-                    TrackDeliveryTask(readyBatch);
+                    OnBatchEntersPipeline();
 
                     // Try synchronous write first to avoid async state machine allocation
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
@@ -1177,15 +1147,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
                         {
                             // Backpressure happens here: WriteAsync blocks when channel is full
                             await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-#if DEBUG
                             ProducerDebugCounters.RecordBatchQueuedToReady();
-#endif
                         }
                         catch
                         {
-#if DEBUG
                             ProducerDebugCounters.RecordBatchFailedToQueue();
-#endif
                             // CRITICAL: If WriteAsync fails (cancellation or disposal), fail the batch
                             // and release memory to prevent permanent leak
                             readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
@@ -1194,12 +1160,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
                             throw;
                         }
                     }
-#if DEBUG
-                    else
-                    {
-                        ProducerDebugCounters.RecordBatchQueuedToReady();
-                    }
-#endif
 
                     // Return the completed batch shell to the pool for reuse
                     _batchPool.Return(batch);
@@ -1283,9 +1243,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
             if (result.Success)
             {
-#if DEBUG
                 ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: true);
-#endif
                 // Release the difference between estimated and actual size to prevent memory leak
                 // The actual batch memory will be released when the batch is sent via SendBatchAsync
                 var overestimate = recordSize - result.ActualSizeAdded;
@@ -1312,19 +1270,15 @@ public sealed class RecordAccumulator : IAsyncDisposable
                     // Decrement pending awaited produce count by the number of completion sources in this batch
                     if (readyBatch.CompletionSourcesCount > 0)
                         Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
-#if DEBUG
                     ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
-#endif
                     // Track delivery task for FlushAsync
-                    TrackDeliveryTask(readyBatch);
+                    OnBatchEntersPipeline();
 
                     // Non-blocking write to unbounded channel - should always succeed
                     // If it fails (channel completed), the producer is being disposed
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
                     {
-#if DEBUG
                         ProducerDebugCounters.RecordBatchFailedToQueue();
-#endif
                         // Channel is closed, fail the batch and return false
                         readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
                         OnBatchExitsPipeline(); // Decrement counter on failure
@@ -1333,9 +1287,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                         return false;
                     }
 
-#if DEBUG
                     ProducerDebugCounters.RecordBatchQueuedToReady();
-#endif
                     // Return the completed batch shell to the pool for reuse
                     _batchPool.Return(batch);
                 }
@@ -1468,7 +1420,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
             if (readyBatch is not null)
             {
                 // Track delivery task for FlushAsync to wait on
-                TrackDeliveryTask(readyBatch);
+                OnBatchEntersPipeline();
 
                 if (!_readyBatches.Writer.TryWrite(readyBatch))
                 {
@@ -1640,7 +1592,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 if (readyBatch is not null)
                 {
                     // Track delivery task for FlushAsync
-                    TrackDeliveryTask(readyBatch);
+                    OnBatchEntersPipeline();
 
                     // Non-blocking write to unbounded channel - should always succeed
                     // If it fails (channel completed), the producer is being disposed
@@ -1751,7 +1703,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                 var readyBatch = batch.Complete();
                 if (readyBatch is not null)
                 {
-                    TrackDeliveryTask(readyBatch);
+                    OnBatchEntersPipeline();
 
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
                     {
@@ -1868,7 +1820,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                         if (readyBatch is not null)
                         {
                             // Track delivery task for FlushAsync
-                            TrackDeliveryTask(readyBatch);
+                            OnBatchEntersPipeline();
 
                             // Track memory for this batch - it will be released when sent or on failure
                             memoryUsed += readyBatch.DataSize;
@@ -1991,11 +1943,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Decrement pending awaited produce count by the number of completion sources in this batch
         if (readyBatch.CompletionSourcesCount > 0)
             Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
-#if DEBUG
         ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
-#endif
         // Track delivery task for FlushAsync
-        TrackDeliveryTask(readyBatch);
+        OnBatchEntersPipeline();
 
         // Try synchronous write first to avoid async state machine allocation
         if (!_readyBatches.Writer.TryWrite(readyBatch))
@@ -2004,15 +1954,11 @@ public sealed class RecordAccumulator : IAsyncDisposable
             {
                 // Channel is bounded or busy, fall back to async
                 await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-#if DEBUG
                 ProducerDebugCounters.RecordBatchQueuedToReady();
-#endif
             }
             catch
             {
-#if DEBUG
                 ProducerDebugCounters.RecordBatchFailedToQueue();
-#endif
                 // CRITICAL: Use nested try-finally to ensure memory is ALWAYS released
                 // even if readyBatch.Fail() itself throws an exception
                 try
@@ -2080,9 +2026,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                         {
                             // Reset oldest batch tracking if dictionary is now empty
                             ResetOldestBatchTrackingIfEmpty();
-#if DEBUG
                             ProducerDebugCounters.RecordBatchFlushedFromDictionary();
-#endif
                             await SealBatchToChannelAsync(batch, cancellationToken).ConfigureAwait(false);
                         }
                     }
@@ -2169,19 +2113,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Legacy method for tracking batches - now uses counter-based approach.
-    /// Kept for compatibility with places that call it, but now just increments counter.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void TrackDeliveryTask(ReadyBatch readyBatch)
-    {
-        if (readyBatch is not null)
-        {
-            OnBatchEntersPipeline();
-        }
-    }
-
-    /// <summary>
     /// Updates the oldest batch tracking when a new batch is added to the dictionary.
     /// Uses lock-free CAS loop to atomically set to min(current, newBatchTicks).
     /// This is called when TryAdd succeeds for a new batch.
@@ -2254,9 +2185,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     private async ValueTask FlushAsyncCore(CancellationToken cancellationToken)
     {
-#if DEBUG
         ProducerDebugCounters.RecordFlushCall();
-#endif
         await SealBatchesAsync(sealAll: true, cancellationToken).ConfigureAwait(false);
 
         // Wait for all in-flight batches to complete using counter-based tracking
@@ -2855,10 +2784,8 @@ internal sealed class PartitionBatch
 
         // Use the passed-in completion source - no allocation here
         _completionSources[_completionSourceCount++] = completion;
-#if DEBUG
         // Track inside exclusive lock - this MUST match batch completion count
         ProducerDebugCounters.RecordCompletionSourceStoredInBatch();
-#endif
 
         return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
     }
@@ -4076,9 +4003,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
 
         try
         {
-#if DEBUG
             ProducerDebugCounters.RecordBatchSentSuccessfully();
-#endif
+
             // Complete per-message completion sources with metadata
             if (_completionSourcesArray is not null)
             {
@@ -4162,9 +4088,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
 
         try
         {
-#if DEBUG
             ProducerDebugCounters.RecordBatchFailed();
-#endif
+
             // Fail per-message completion sources - these throw for ProduceAsync callers
             if (_completionSourcesArray is not null)
             {

@@ -355,7 +355,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// <summary>
     /// Attempts synchronous produce for awaited ProduceAsync when metadata is cached.
     /// Returns true if successful with the completion source to await.
-    /// Unlike TryProduceSync, this version throws exceptions for awaited callers.
+    /// Throws exceptions for awaited callers (unlike fire-and-forget which captures them).
     /// Uses thread-local metadata cache for maximum performance on hot path.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -469,7 +469,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         try
         {
             var topicInfo = FetchTopicMetadataSync(message.Topic);
-            ProduceSyncCoreFireAndForget(message, topicInfo);
+            ProduceSyncCoreFireAndForgetDirect(
+                message.Topic,
+                message.Key,
+                message.Value,
+                message.Partition,
+                message.Timestamp,
+                message.Headers,
+                topicInfo);
         }
         catch (TimeoutException)
         {
@@ -895,7 +902,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             try
             {
-                ProduceSyncCoreFireAndForget(message, topicInfo!);
+                ProduceSyncCoreFireAndForgetDirect(
+                    message.Topic,
+                    message.Key,
+                    message.Value,
+                    message.Partition,
+                    message.Timestamp,
+                    message.Headers,
+                    topicInfo!);
             }
             catch (Exception ex)
             {
@@ -920,7 +934,14 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
         try
         {
-            ProduceSyncCoreFireAndForget(message, topicInfo);
+            ProduceSyncCoreFireAndForgetDirect(
+                message.Topic,
+                message.Key,
+                message.Value,
+                message.Partition,
+                message.Timestamp,
+                message.Headers,
+                topicInfo);
         }
         catch (Exception ex)
         {
@@ -930,62 +951,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <summary>
-    /// Core synchronous fire-and-forget produce logic that skips completion source tracking.
-    /// This eliminates the overhead of PooledValueTaskSource rental and result handling.
-    /// Delegates to the direct parameters version to share the optimized arena path.
-    /// </summary>
-    private void ProduceSyncCoreFireAndForget(
-        ProducerMessage<TKey, TValue> message,
-        TopicInfo topicInfo)
-    {
-        // Delegate to the direct parameters version which has the optimized arena path
-        ProduceSyncCoreFireAndForgetDirect(
-            message.Topic,
-            message.Key,
-            message.Value,
-            message.Partition,
-            message.Timestamp,
-            message.Headers,
-            topicInfo);
-    }
-
-    /// <summary>
-    /// Attempts synchronous produce when metadata is initialized and cached.
-    /// Returns true if successful, false if async path is needed.
-    /// For fire-and-forget, exceptions are captured in the completion source, not thrown.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryProduceSync(ProducerMessage<TKey, TValue> message)
-    {
-        // Callers guarantee metadata is initialized via InitializeAsync.
-        if (!_metadataManager.TryGetCachedTopicMetadata(message.Topic, out var topicInfo) || topicInfo is null)
-        {
-            return false; // Topic cache miss — caller will fetch inline
-        }
-
-        if (topicInfo.PartitionCount == 0)
-        {
-            return false;
-        }
-
-        // All checks passed - we can proceed synchronously
-        var completion = _valueTaskSourcePool.Rent();
-        try
-        {
-            ProduceSyncCore(message, topicInfo, completion);
-        }
-        catch (Exception ex)
-        {
-            // Fire-and-forget: capture exception in completion source, don't throw
-            // This matches Confluent.Kafka behavior where Produce() doesn't throw
-            // for production errors - they're delivered via delivery report callback
-            completion.TrySetException(ex);
-        }
-        return true;
-    }
-
-    /// <summary>
-    /// Core synchronous produce logic shared between TryProduceSync and TryProduceSyncWithHandler.
+    /// Core synchronous produce logic shared between TryProduceSyncForAsync and TryProduceSyncWithHandler.
     /// Handles serialization, partitioning, and accumulator append with proper resource cleanup.
     /// </summary>
     private void ProduceSyncCore(
@@ -1142,45 +1108,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             };
             InvokeOnAcknowledgement(metadata, exception);
         }
-    }
-
-    /// <summary>
-    /// Estimates message size conservatively for backpressure purposes.
-    /// Used when queueing to the work channel before serialization occurs.
-    /// The actual size will be determined after serialization in AppendAsync.
-    /// </summary>
-    private static int EstimateMessageSizeForBackpressure(ProducerMessage<TKey, TValue> message)
-    {
-        const int recordOverhead = 20;
-        const int defaultKeyEstimate = 100;
-        const int defaultValueEstimate = 1000;
-
-        // Estimate key size - be more precise for common types
-        var keySize = message.Key switch
-        {
-            null => 0,
-            string s => s.Length * 3, // Max UTF8 expansion
-            byte[] b => b.Length,
-            _ => defaultKeyEstimate
-        };
-
-        // Estimate value size - be more precise for common types
-        var valueSize = message.Value switch
-        {
-            null => 0,
-            string s => s.Length * 3, // Max UTF8 expansion
-            byte[] b => b.Length,
-            _ => defaultValueEstimate
-        };
-
-        // Conservative header estimate
-        var headerSize = 0;
-        if (message.Headers is { Count: > 0 })
-        {
-            headerSize = message.Headers.Count * 50;
-        }
-
-        return recordOverhead + keySize + valueSize + headerSize;
     }
 
     /// <inheritdoc />

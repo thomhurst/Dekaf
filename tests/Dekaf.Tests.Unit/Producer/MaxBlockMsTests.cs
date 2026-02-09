@@ -197,7 +197,7 @@ public sealed class MaxBlockMsTests
         await using var accumulator = new RecordAccumulator(options);
 
         // Try to reserve more memory than available - should timeout with MaxBlockMs
-        var act = async () => await accumulator.ReserveMemoryAsyncForBackpressure(1024, CancellationToken.None)
+        var act = async () => await accumulator.ReserveMemoryAsync(1024, CancellationToken.None)
             .ConfigureAwait(false);
 
         await Assert.That(act).Throws<TimeoutException>();
@@ -217,7 +217,7 @@ public sealed class MaxBlockMsTests
 
         try
         {
-            await accumulator.ReserveMemoryAsyncForBackpressure(1024, CancellationToken.None)
+            await accumulator.ReserveMemoryAsync(1024, CancellationToken.None)
                 .ConfigureAwait(false);
 
             // Should not reach here
