@@ -51,6 +51,7 @@ public sealed class BrokerSenderTests
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
             ensurePartitionInTransaction: null,
+            rerouteBatch: null,
             onAcknowledgement: null,
             logger: null);
 
@@ -89,6 +90,7 @@ public sealed class BrokerSenderTests
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
             ensurePartitionInTransaction: null,
+            rerouteBatch: null,
             onAcknowledgement: null,
             logger: null);
 
@@ -105,7 +107,7 @@ public sealed class BrokerSenderTests
     }
 
     [Test]
-    public async Task PartitionGate_AlwaysSingleInflight()
+    public async Task PartitionGate_NonIdempotent_SingleInflight()
     {
         // Non-idempotent should use SemaphoreSlim(1,1)
         var gate = new SemaphoreSlim(1, 1);
@@ -117,6 +119,34 @@ public sealed class BrokerSenderTests
         await Assert.That(secondAcquired).IsFalse();
 
         gate.Release();
+        gate.Dispose();
+    }
+
+    [Test]
+    public async Task PartitionGate_IdempotentProducer_AllowsNInFlight()
+    {
+        // Idempotent producers use SemaphoreSlim(N,N) since all writes go through
+        // the BrokerSender's single-threaded send loop (no out-of-loop write paths)
+        var maxInflight = 5;
+        var gate = new SemaphoreSlim(maxInflight, maxInflight);
+
+        // Should be able to acquire N slots
+        for (var i = 0; i < maxInflight; i++)
+        {
+            var acquired = gate.Wait(0);
+            await Assert.That(acquired).IsTrue();
+        }
+
+        // N+1 should fail
+        var extra = gate.Wait(0);
+        await Assert.That(extra).IsFalse();
+
+        // Cleanup
+        for (var i = 0; i < maxInflight; i++)
+        {
+            gate.Release();
+        }
+
         gate.Dispose();
     }
 
@@ -163,6 +193,8 @@ public sealed class BrokerSenderTests
         var gates = new ConcurrentDictionary<TopicPartition, SemaphoreSlim>();
         var tracker = new PartitionInflightTracker();
 
+        // Idempotent producers use SemaphoreSlim(N,N) partition gates
+        var n = options.MaxInFlightRequestsPerConnection;
         var sender = new BrokerSender(
             brokerId: 1,
             connectionPool,
@@ -173,11 +205,12 @@ public sealed class BrokerSenderTests
             inflightTracker: tracker,
             statisticsCollector,
             gates,
-            createPartitionGate: () => new SemaphoreSlim(1, 1),
+            createPartitionGate: () => new SemaphoreSlim(n, n),
             getProduceApiVersion: () => 9,
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
             ensurePartitionInTransaction: null,
+            rerouteBatch: null,
             onAcknowledgement: null,
             logger: null);
 
@@ -212,6 +245,7 @@ public sealed class BrokerSenderTests
             setProduceApiVersion: _ => { },
             isTransactional: () => true,
             ensurePartitionInTransaction: (_, _) => { transactionCalled = true; return ValueTask.CompletedTask; },
+            rerouteBatch: null,
             onAcknowledgement: null,
             logger: null);
 

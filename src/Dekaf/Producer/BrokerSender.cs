@@ -21,6 +21,10 @@ namespace Dekaf.Producer;
 /// ProduceRequests, and sends them via pipelined writes. This guarantees wire-order
 /// for same-partition batches and enables N in-flight batches per partition for
 /// idempotent producers.
+///
+/// All writes go through the send loop — there are no out-of-loop write paths.
+/// Retries re-enqueue to the channel after backoff, and leader changes reroute
+/// to the correct BrokerSender via the rerouteBatch callback.
 /// </summary>
 internal sealed class BrokerSender : IAsyncDisposable
 {
@@ -34,6 +38,7 @@ internal sealed class BrokerSender : IAsyncDisposable
     private readonly ProducerStatisticsCollector _statisticsCollector;
     private readonly ConcurrentDictionary<TopicPartition, SemaphoreSlim> _partitionSendGates;
     private readonly Func<SemaphoreSlim> _createPartitionGate;
+    private readonly Action<ReadyBatch>? _rerouteBatch;
     private readonly Action<TopicPartition, long, DateTimeOffset, int, Exception?>? _onAcknowledgement;
     private readonly ILogger? _logger;
 
@@ -68,6 +73,7 @@ internal sealed class BrokerSender : IAsyncDisposable
         Action<int> setProduceApiVersion,
         Func<bool> isTransactional,
         Func<TopicPartition, CancellationToken, ValueTask>? ensurePartitionInTransaction,
+        Action<ReadyBatch>? rerouteBatch,
         Action<TopicPartition, long, DateTimeOffset, int, Exception?>? onAcknowledgement,
         ILogger? logger)
     {
@@ -85,6 +91,7 @@ internal sealed class BrokerSender : IAsyncDisposable
         _setProduceApiVersion = setProduceApiVersion;
         _isTransactional = isTransactional;
         _ensurePartitionInTransaction = ensurePartitionInTransaction;
+        _rerouteBatch = rerouteBatch;
         _onAcknowledgement = onAcknowledgement;
         _logger = logger;
 
@@ -119,6 +126,9 @@ internal sealed class BrokerSender : IAsyncDisposable
     /// <summary>
     /// Main send loop: drains batches from channel, coalesces by partition, and sends pipelined requests.
     /// Single-threaded: partition gate acquisition is deterministically FIFO.
+    ///
+    /// Batches that cannot be sent (gate busy or same-partition collision) are carried over
+    /// to the next iteration by re-enqueuing them to the channel.
     /// </summary>
     private async Task SendLoopAsync(CancellationToken cancellationToken)
     {
@@ -129,7 +139,7 @@ internal sealed class BrokerSender : IAsyncDisposable
 
         // Reusable collections for coalescing (single-threaded, no contention)
         var coalescedPartitions = new HashSet<TopicPartition>();
-        List<ReadyBatch>? deferredBatches = null;
+        List<ReadyBatch>? carryOver = null;
 
         try
         {
@@ -147,7 +157,7 @@ internal sealed class BrokerSender : IAsyncDisposable
 
                 // Coalesce: at most one batch per partition per request
                 coalescedPartitions.Clear();
-                deferredBatches?.Clear();
+                carryOver?.Clear();
 
                 var coalescedCount = 0;
                 var coalescedBatches = ArrayPool<ReadyBatch>.Shared.Rent(drainCount);
@@ -160,8 +170,8 @@ internal sealed class BrokerSender : IAsyncDisposable
                     // Ensure at most one batch per partition per coalesced request
                     if (!coalescedPartitions.Add(batch.TopicPartition))
                     {
-                        deferredBatches ??= [];
-                        deferredBatches.Add(batch);
+                        carryOver ??= [];
+                        carryOver.Add(batch);
                         continue;
                     }
 
@@ -172,10 +182,10 @@ internal sealed class BrokerSender : IAsyncDisposable
                     // Try non-blocking acquire first for coalescing
                     if (!partitionGate.Wait(0, CancellationToken.None))
                     {
-                        // Gate busy — defer for sequential send
+                        // Gate busy — carry over to next iteration
                         coalescedPartitions.Remove(batch.TopicPartition);
-                        deferredBatches ??= [];
-                        deferredBatches.Add(batch);
+                        carryOver ??= [];
+                        carryOver.Add(batch);
                         continue;
                     }
 
@@ -196,10 +206,13 @@ internal sealed class BrokerSender : IAsyncDisposable
                     ArrayPool<SemaphoreSlim>.Shared.Return(coalescedGates, clearArray: true);
                 }
 
-                // Send deferred batches sequentially (same partition as an in-flight batch)
-                if (deferredBatches is { Count: > 0 })
+                // Re-enqueue carry-over batches to the channel so WaitToReadAsync wakes naturally
+                if (carryOver is { Count: > 0 })
                 {
-                    await SendDeferredBatchesAsync(deferredBatches, cancellationToken).ConfigureAwait(false);
+                    foreach (var batch in carryOver)
+                    {
+                        Enqueue(batch);
+                    }
                 }
             }
         }
@@ -218,6 +231,17 @@ internal sealed class BrokerSender : IAsyncDisposable
         finally
         {
             ArrayPool<ReadyBatch>.Shared.Return(drainBuffer, clearArray: true);
+
+            // Fail any carry-over batches that couldn't be re-enqueued
+            if (carryOver is { Count: > 0 })
+            {
+                foreach (var batch in carryOver)
+                {
+                    try { batch.Fail(new ObjectDisposedException(nameof(BrokerSender))); }
+                    catch { /* Observe */ }
+                    CleanupBatch(batch);
+                }
+            }
 
             // Drain any remaining batches from channel and fail them
             while (channelReader.TryRead(out var remaining))
@@ -341,7 +365,7 @@ internal sealed class BrokerSender : IAsyncDisposable
 
     /// <summary>
     /// Handles the response from a pipelined send.
-    /// Processes per-partition results, retries retriable errors, releases resources.
+    /// Processes per-partition results, schedules retries for retriable errors, releases resources.
     /// </summary>
     private async Task HandleResponseAsync(
         Task<ProduceResponse> responseTask,
@@ -351,9 +375,16 @@ internal sealed class BrokerSender : IAsyncDisposable
         long requestStartTime,
         CancellationToken cancellationToken)
     {
+        var inFlightReleased = false;
+
         try
         {
             var response = await responseTask.ConfigureAwait(false);
+
+            // Response received — release in-flight semaphore immediately so the send loop
+            // can pipeline new requests while we process results.
+            inFlightReleased = true;
+            ReleaseInFlightSemaphore();
 
             var elapsedTicks = Stopwatch.GetTimestamp() - requestStartTime;
             var latencyMs = (long)(elapsedTicks * 1000.0 / Stopwatch.Frequency);
@@ -382,12 +413,11 @@ internal sealed class BrokerSender : IAsyncDisposable
 
                 if (partitionResponse is null)
                 {
-                    // No response — retriable
+                    // No response — retriable: schedule retry (fire-and-forget)
                     _logger?.LogWarning(
                         "[BrokerSender] No response for {Topic}-{Partition}",
                         expectedTopic, expectedPartition);
-                    await RetryBatchAsync(batch, gates[i], ErrorCode.NetworkException, cancellationToken)
-                        .ConfigureAwait(false);
+                    _ = ScheduleRetryAsync(batch, gates[i], ErrorCode.NetworkException, cancellationToken);
                     batches[i] = null!; // Mark as handed off
                     gates[i] = null!;
                     continue;
@@ -404,8 +434,7 @@ internal sealed class BrokerSender : IAsyncDisposable
                 {
                     if (partitionResponse.ErrorCode.IsRetriable())
                     {
-                        await RetryBatchAsync(batch, gates[i], partitionResponse.ErrorCode, cancellationToken)
-                            .ConfigureAwait(false);
+                        _ = ScheduleRetryAsync(batch, gates[i], partitionResponse.ErrorCode, cancellationToken);
                         batches[i] = null!;
                         gates[i] = null!;
                         continue;
@@ -454,7 +483,8 @@ internal sealed class BrokerSender : IAsyncDisposable
         }
         finally
         {
-            ReleaseInFlightSemaphore();
+            if (!inFlightReleased)
+                ReleaseInFlightSemaphore();
             _inFlightResponses.TryRemove(responseTask, out _);
             ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
             ArrayPool<SemaphoreSlim>.Shared.Return(gates, clearArray: true);
@@ -462,417 +492,112 @@ internal sealed class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Retries a single batch with backoff, OOSN coordinated retry, and leader re-route.
-    /// Holds the partition gate for the duration of retry.
+    /// Schedules a retry for a batch: performs backoff/OOSN coordination, releases the partition
+    /// gate, then re-enqueues the batch to the appropriate BrokerSender (self or rerouted).
+    /// This ensures retries go through the send loop's single-threaded path, preserving wire-order.
+    /// Fire-and-forget from HandleResponseAsync.
     /// </summary>
-    private async ValueTask RetryBatchAsync(
+    private async Task ScheduleRetryAsync(
         ReadyBatch batch,
         SemaphoreSlim partitionGate,
-        ErrorCode initialError,
+        ErrorCode errorCode,
         CancellationToken cancellationToken)
     {
-        var deliveryDeadlineTicks = Stopwatch.GetTimestamp() +
-            (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
-        var backoffMs = _options.RetryBackoffMs;
-        var lastErrorCode = initialError;
-
         try
         {
-            while (true)
+            var deliveryDeadlineTicks = Stopwatch.GetTimestamp() +
+                (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+            var backoffMs = _options.RetryBackoffMs;
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                throw new TimeoutException(
+                    $"Delivery timeout exceeded for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}" +
+                    (errorCode != ErrorCode.None ? $" (last error: {errorCode})" : ""));
+            }
 
-                if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
+            // Coordinated retry for OutOfOrderSequenceNumber
+            if (errorCode == ErrorCode.OutOfOrderSequenceNumber
+                && batch.InflightEntry is { } inflightEntry
+                && _inflightTracker is not null)
+            {
+                _logger?.LogDebug(
+                    "[BrokerSender] OOSN for {Topic}-{Partition} seq={Seq}, waiting for predecessor",
+                    batch.TopicPartition.Topic, batch.TopicPartition.Partition, inflightEntry.BaseSequence);
+
+                try
                 {
-                    throw new TimeoutException(
-                        $"Delivery timeout exceeded for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}" +
-                        (lastErrorCode != ErrorCode.None ? $" (last error: {lastErrorCode})" : ""));
+                    await _inflightTracker.WaitForPredecessorAsync(inflightEntry, cancellationToken)
+                        .ConfigureAwait(false);
                 }
-
-                // Coordinated retry for OutOfOrderSequenceNumber
-                if (lastErrorCode == ErrorCode.OutOfOrderSequenceNumber
-                    && batch.InflightEntry is { } inflightEntry
-                    && _inflightTracker is not null)
+                catch (Exception predecessorEx) when (predecessorEx is not OperationCanceledException)
                 {
-                    _logger?.LogDebug(
-                        "[BrokerSender] OOSN for {Topic}-{Partition} seq={Seq}, waiting for predecessor",
-                        batch.TopicPartition.Topic, batch.TopicPartition.Partition, inflightEntry.BaseSequence);
-
-                    try
-                    {
-                        await _inflightTracker.WaitForPredecessorAsync(inflightEntry, cancellationToken)
-                            .ConfigureAwait(false);
-                    }
-                    catch (Exception predecessorEx) when (predecessorEx is not OperationCanceledException)
-                    {
-                        _logger?.LogDebug(predecessorEx,
-                            "[BrokerSender] Predecessor failed for {Topic}-{Partition}, retrying",
-                            batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                    }
-
-                    backoffMs = _options.RetryBackoffMs;
+                    _logger?.LogDebug(predecessorEx,
+                        "[BrokerSender] Predecessor failed for {Topic}-{Partition}, retrying",
+                        batch.TopicPartition.Topic, batch.TopicPartition.Partition);
                 }
-                else
-                {
-                    _logger?.LogDebug(
-                        "[BrokerSender] Retriable error {ErrorCode} for {Topic}-{Partition}, retrying after {BackoffMs}ms",
-                        lastErrorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition, backoffMs);
+            }
+            else
+            {
+                _logger?.LogDebug(
+                    "[BrokerSender] Retriable error {ErrorCode} for {Topic}-{Partition}, retrying after {BackoffMs}ms",
+                    errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition, backoffMs);
 
-                    // Refresh metadata for leader changes
-                    _ = _metadataManager.RefreshMetadataAsync([batch.TopicPartition.Topic], cancellationToken);
+                // Refresh metadata for leader changes
+                _ = _metadataManager.RefreshMetadataAsync([batch.TopicPartition.Topic], cancellationToken);
 
-                    await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false);
-                    backoffMs = Math.Min(backoffMs * 2, _options.RetryBackoffMaxMs);
-                }
+                await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false);
+            }
 
-                // Re-resolve leader — may have changed
-                var leader = await _metadataManager.GetPartitionLeaderAsync(
-                    batch.TopicPartition.Topic,
-                    batch.TopicPartition.Partition,
-                    cancellationToken).ConfigureAwait(false);
+            _statisticsCollector.RecordRetry();
 
-                if (leader is null)
-                {
-                    lastErrorCode = ErrorCode.LeaderNotAvailable;
-                    continue;
-                }
+            // Release partition gate before re-enqueue so the send loop can acquire it
+            ReleaseGate(partitionGate);
 
-                // If leader moved to a different broker, send via that broker's connection
-                var connection = await _connectionPool.GetConnectionAsync(leader.NodeId, cancellationToken)
-                    .ConfigureAwait(false);
+            // Re-resolve leader — may have changed
+            var leader = await _metadataManager.GetPartitionLeaderAsync(
+                batch.TopicPartition.Topic,
+                batch.TopicPartition.Partition,
+                cancellationToken).ConfigureAwait(false);
 
-                var apiVersion = EnsureApiVersion();
-                var errorCode = await TrySendSingleBatchAsync(batch, connection, apiVersion, cancellationToken)
-                    .ConfigureAwait(false);
+            if (leader is null)
+            {
+                FailAndCleanupBatch(batch,
+                    new KafkaException(ErrorCode.LeaderNotAvailable,
+                        $"No leader available for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}"));
+                return;
+            }
 
-                if (errorCode == ErrorCode.None)
-                {
-                    CompleteInflightEntry(batch);
-                    return;
-                }
-
-                if (!errorCode.IsRetriable())
-                {
-                    _statisticsCollector.RecordBatchFailed(
-                        batch.TopicPartition.Topic,
-                        batch.TopicPartition.Partition,
-                        batch.CompletionSourcesCount);
-                    throw new KafkaException(errorCode, $"Produce failed: {errorCode}");
-                }
-
-                lastErrorCode = errorCode;
-                _statisticsCollector.RecordRetry();
+            if (leader.NodeId == _brokerId)
+            {
+                // Same broker — re-enqueue to own channel
+                Enqueue(batch);
+            }
+            else if (_rerouteBatch is not null)
+            {
+                // Leader moved to different broker — reroute
+                _rerouteBatch(batch);
+            }
+            else
+            {
+                // No reroute callback — re-enqueue to self (best effort)
+                Enqueue(batch);
             }
         }
         catch (Exception ex)
         {
             CompleteInflightEntry(batch);
-            _logger?.LogError(ex, "[BrokerSender] Retry failed for {Topic}-{Partition}",
+            _logger?.LogError(ex, "[BrokerSender] Retry scheduling failed for {Topic}-{Partition}",
                 batch.TopicPartition.Topic, batch.TopicPartition.Partition);
             try { batch.Fail(ex); }
             catch { /* Observe */ }
             _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
                 batch.CompletionSourcesCount, ex);
-        }
-        finally
-        {
             ReleaseGate(partitionGate);
             CleanupBatch(batch);
         }
-    }
-
-    /// <summary>
-    /// Sends deferred batches (same-partition duplicates from drain) sequentially.
-    /// Each batch acquires its own gate, ensuring FIFO ordering.
-    /// </summary>
-    private async ValueTask SendDeferredBatchesAsync(
-        List<ReadyBatch> deferredBatches,
-        CancellationToken cancellationToken)
-    {
-        foreach (var batch in deferredBatches)
-        {
-            var partitionGate = _partitionSendGates.GetOrAdd(
-                batch.TopicPartition, _ => _createPartitionGate());
-
-            try
-            {
-                // Blocking await on gate — single-threaded loop, so this is FIFO
-                await partitionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                FailAndCleanupBatch(batch, new OperationCanceledException(cancellationToken));
-                continue;
-            }
-
-            try
-            {
-                await _inFlightSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                ReleaseGate(partitionGate);
-                FailAndCleanupBatch(batch, new OperationCanceledException(cancellationToken));
-                continue;
-            }
-
-            try
-            {
-                var connection = await _connectionPool.GetConnectionAsync(_brokerId, cancellationToken)
-                    .ConfigureAwait(false);
-
-                var apiVersion = EnsureApiVersion();
-
-                if (_isTransactional() && _ensurePartitionInTransaction is not null)
-                {
-                    await _ensurePartitionInTransaction(batch.TopicPartition, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-
-                // Handle Acks.None
-                if (_options.Acks == Acks.None)
-                {
-                    var request = BuildSingleBatchRequest(batch);
-                    await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
-                        request, (short)apiVersion, cancellationToken).ConfigureAwait(false);
-
-                    var ts = DateTimeOffset.UtcNow;
-                    _statisticsCollector.RecordBatchDelivered(batch.TopicPartition.Topic, batch.TopicPartition.Partition, batch.CompletionSourcesCount);
-                    CompleteInflightEntry(batch);
-                    batch.CompleteSend(-1, ts);
-                    _onAcknowledgement?.Invoke(batch.TopicPartition, -1, ts, batch.CompletionSourcesCount, null);
-                    ReleaseInFlightSemaphore();
-                    ReleaseGate(partitionGate);
-                    CleanupBatch(batch);
-                    continue;
-                }
-
-                // Pipelined send
-                var singleRequest = BuildSingleBatchRequest(batch);
-                _statisticsCollector.RecordRequestSent();
-                var requestStartTime = Stopwatch.GetTimestamp();
-
-                var responseTask = connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
-                    singleRequest, (short)apiVersion, cancellationToken);
-
-                _inFlightResponses.TryAdd(responseTask, 0);
-
-                _ = HandleSingleResponseAsync(
-                    responseTask, batch, partitionGate, requestStartTime, cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                ReleaseInFlightSemaphore();
-                ReleaseGate(partitionGate);
-                FailAndCleanupBatch(batch, ex);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Handles the response for a single-batch pipelined send.
-    /// </summary>
-    private async Task HandleSingleResponseAsync(
-        Task<ProduceResponse> responseTask,
-        ReadyBatch batch,
-        SemaphoreSlim partitionGate,
-        long requestStartTime,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var response = await responseTask.ConfigureAwait(false);
-
-            var elapsedTicks = Stopwatch.GetTimestamp() - requestStartTime;
-            var latencyMs = (long)(elapsedTicks * 1000.0 / Stopwatch.Frequency);
-            _statisticsCollector.RecordResponseReceived(latencyMs);
-
-            var expectedTopic = batch.TopicPartition.Topic;
-            var expectedPartition = batch.TopicPartition.Partition;
-
-            // Find partition response
-            ProduceResponsePartitionData? partitionResponse = null;
-            foreach (var topicResp in response.Responses)
-            {
-                if (topicResp.Name != expectedTopic) continue;
-                foreach (var partResp in topicResp.PartitionResponses)
-                {
-                    if (partResp.Index == expectedPartition)
-                    {
-                        partitionResponse = partResp;
-                        break;
-                    }
-                }
-                break;
-            }
-
-            if (partitionResponse is null)
-            {
-                await RetryBatchAsync(batch, partitionGate, ErrorCode.NetworkException, cancellationToken)
-                    .ConfigureAwait(false);
-                return;
-            }
-
-            if (partitionResponse.ErrorCode == ErrorCode.DuplicateSequenceNumber)
-            {
-                // Treat as success
-            }
-            else if (partitionResponse.ErrorCode != ErrorCode.None)
-            {
-                if (partitionResponse.ErrorCode.IsRetriable())
-                {
-                    await RetryBatchAsync(batch, partitionGate, partitionResponse.ErrorCode, cancellationToken)
-                        .ConfigureAwait(false);
-                    return;
-                }
-
-                // Non-retriable error
-                CompleteInflightEntry(batch);
-                _statisticsCollector.RecordBatchFailed(expectedTopic, expectedPartition, batch.CompletionSourcesCount);
-                try { batch.Fail(new KafkaException(partitionResponse.ErrorCode, $"Produce failed: {partitionResponse.ErrorCode}")); }
-                catch { /* Observe */ }
-                _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow, batch.CompletionSourcesCount,
-                    new KafkaException(partitionResponse.ErrorCode, $"Produce failed: {partitionResponse.ErrorCode}"));
-                ReleaseGate(partitionGate);
-                CleanupBatch(batch);
-                return;
-            }
-
-            // Success
-            _statisticsCollector.RecordBatchDelivered(expectedTopic, expectedPartition, batch.CompletionSourcesCount);
-            var timestamp = partitionResponse.LogAppendTimeMs > 0
-                ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
-                : DateTimeOffset.UtcNow;
-            CompleteInflightEntry(batch);
-            batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
-            _onAcknowledgement?.Invoke(batch.TopicPartition, partitionResponse.BaseOffset, timestamp, batch.CompletionSourcesCount, null);
-            ReleaseGate(partitionGate);
-            CleanupBatch(batch);
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogError(ex, "BrokerSender[{BrokerId}] single response handling failed for {Topic}-{Partition}",
-                _brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-            // RetryBatchAsync handles its own gate release and cleanup
-            // If we get here, it's because retry itself failed or we had an unexpected exception
-            // Check if batch is still active (not already cleaned up by retry)
-            FailAndCleanupBatch(batch, ex);
-            ReleaseGate(partitionGate);
-        }
-        finally
-        {
-            ReleaseInFlightSemaphore();
-            _inFlightResponses.TryRemove(responseTask, out _);
-        }
-    }
-
-    /// <summary>
-    /// Attempts to send a single batch to a specific connection. Returns error code.
-    /// </summary>
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    private async ValueTask<ErrorCode> TrySendSingleBatchAsync(
-        ReadyBatch batch,
-        IKafkaConnection connection,
-        int apiVersion,
-        CancellationToken cancellationToken)
-    {
-        // Register partition in transaction if needed
-        if (_isTransactional() && _ensurePartitionInTransaction is not null)
-        {
-            await _ensurePartitionInTransaction(batch.TopicPartition, cancellationToken)
-                .ConfigureAwait(false);
-        }
-
-        var request = BuildSingleBatchRequest(batch);
-
-        _statisticsCollector.RecordRequestSent();
-
-        // Handle Acks.None
-        if (_options.Acks == Acks.None)
-        {
-            await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
-                request, (short)apiVersion, cancellationToken).ConfigureAwait(false);
-
-            var ts = DateTimeOffset.UtcNow;
-            _statisticsCollector.RecordBatchDelivered(
-                batch.TopicPartition.Topic, batch.TopicPartition.Partition, batch.CompletionSourcesCount);
-            batch.CompleteSend(-1, ts);
-            _onAcknowledgement?.Invoke(batch.TopicPartition, -1, ts, batch.CompletionSourcesCount, null);
-            return ErrorCode.None;
-        }
-
-        var response = await connection.SendAsync<ProduceRequest, ProduceResponse>(
-            request, (short)apiVersion, cancellationToken).ConfigureAwait(false);
-
-        // Find partition response
-        var expectedTopic = batch.TopicPartition.Topic;
-        var expectedPartition = batch.TopicPartition.Partition;
-
-        ProduceResponsePartitionData? partitionResponse = null;
-        foreach (var topicResp in response.Responses)
-        {
-            if (topicResp.Name != expectedTopic) continue;
-            foreach (var partResp in topicResp.PartitionResponses)
-            {
-                if (partResp.Index == expectedPartition)
-                {
-                    partitionResponse = partResp;
-                    break;
-                }
-            }
-            break;
-        }
-
-        if (partitionResponse is null)
-            return ErrorCode.NetworkException;
-
-        if (partitionResponse.ErrorCode == ErrorCode.DuplicateSequenceNumber)
-        {
-            // Already written — treat as success
-        }
-        else if (partitionResponse.ErrorCode != ErrorCode.None)
-        {
-            return partitionResponse.ErrorCode;
-        }
-
-        // Success
-        _statisticsCollector.RecordBatchDelivered(expectedTopic, expectedPartition, batch.CompletionSourcesCount);
-        var timestamp = partitionResponse.LogAppendTimeMs > 0
-            ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
-            : DateTimeOffset.UtcNow;
-        batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
-        _onAcknowledgement?.Invoke(batch.TopicPartition, partitionResponse.BaseOffset, timestamp, batch.CompletionSourcesCount, null);
-        return ErrorCode.None;
-    }
-
-    /// <summary>
-    /// Builds a ProduceRequest for a single batch.
-    /// </summary>
-    private ProduceRequest BuildSingleBatchRequest(ReadyBatch batch)
-    {
-        return new ProduceRequest
-        {
-            Acks = (short)_options.Acks,
-            TimeoutMs = _options.RequestTimeoutMs,
-            TransactionalId = _options.TransactionalId,
-            TopicData =
-            [
-                new ProduceRequestTopicData
-                {
-                    Name = batch.TopicPartition.Topic,
-                    PartitionData =
-                    [
-                        new ProduceRequestPartitionData
-                        {
-                            Index = batch.TopicPartition.Partition,
-                            Records = [batch.RecordBatch],
-                            Compression = _options.CompressionType,
-                            CompressionCodecs = _compressionCodecs
-                        }
-                    ]
-                }
-            ]
-        };
     }
 
     /// <summary>

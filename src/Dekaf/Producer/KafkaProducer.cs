@@ -2384,14 +2384,20 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     /// <summary>
     /// Creates a partition gate semaphore.
-    /// Always single-permit: only one in-flight batch per partition at a time.
-    /// This is required because RetryBatchAsync uses connection.SendAsync directly
-    /// (bypassing the BrokerSender's single-threaded write ordering), so multiple
-    /// in-flight batches per partition would risk OutOfOrderSequenceNumber errors
-    /// when retries race with subsequent batches.
+    /// For idempotent producers, allows N in-flight batches per partition (pipelining).
+    /// This is safe because all writes go through the BrokerSender's single-threaded
+    /// send loop, guaranteeing wire-order. Retries re-enqueue to the channel rather
+    /// than sending directly, so there are no out-of-loop write paths.
+    /// For non-idempotent producers, uses a single-permit gate.
     /// </summary>
     private SemaphoreSlim CreatePartitionGate()
     {
+        if (_inflightTracker is not null)
+        {
+            var n = _options.MaxInFlightRequestsPerConnection;
+            return new SemaphoreSlim(n, n);
+        }
+
         return new SemaphoreSlim(1, 1);
     }
 
@@ -2416,8 +2422,42 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             version => Interlocked.CompareExchange(ref _produceApiVersion, version, -1),
             () => _accumulator.IsTransactional,
             EnsurePartitionInTransactionAsync,
+            RerouteBatchToCurrentLeader,
             _interceptors is not null ? InvokeOnAcknowledgementForBatch : null,
             _logger));
+    }
+
+    /// <summary>
+    /// Routes a batch to the current leader's BrokerSender.
+    /// Used as a callback by BrokerSender when a retry discovers the leader has moved to a different broker.
+    /// </summary>
+    private void RerouteBatchToCurrentLeader(ReadyBatch batch)
+    {
+        try
+        {
+            var leader = _metadataManager.Metadata.GetPartitionLeader(
+                batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+
+            if (leader is null)
+            {
+                CompleteInflightEntry(batch);
+                try { batch.Fail(new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader available for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}")); }
+                catch { /* Observe */ }
+                _accumulator.ReturnReadyBatch(batch);
+                _accumulator.OnBatchExitsPipeline();
+                return;
+            }
+
+            GetOrCreateBrokerSender(leader.NodeId).Enqueue(batch);
+        }
+        catch (Exception ex)
+        {
+            CompleteInflightEntry(batch);
+            try { batch.Fail(ex); }
+            catch { /* Observe */ }
+            _accumulator.ReturnReadyBatch(batch);
+            _accumulator.OnBatchExitsPipeline();
+        }
     }
 
     /// <summary>

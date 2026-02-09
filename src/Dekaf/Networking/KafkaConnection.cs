@@ -284,7 +284,6 @@ public sealed class KafkaConnection : IKafkaConnection
         catch
         {
             // Write failed — clean up pending request before propagating
-            _writeLock.Release();
             if (_pendingRequests.TryRemove(correlationId, out var removed))
             {
                 _pendingRequestPool.Return(removed);
@@ -292,7 +291,10 @@ public sealed class KafkaConnection : IKafkaConnection
 
             throw;
         }
-        _writeLock.Release();
+        finally
+        {
+            _writeLock.Release();
+        }
 
         _logger?.LogDebug("Request sent, waiting for response (correlation {CorrelationId})", correlationId);
 
