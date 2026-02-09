@@ -348,10 +348,8 @@ internal sealed class BrokerSender : IAsyncDisposable
             var responseTask = connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
                 request, (short)apiVersion, cancellationToken);
 
-            // Track in-flight response
-            _inFlightResponses.TryAdd(responseTask, 0);
-
-            // Fire-and-forget response handling
+            // Fire-and-forget response handling — HandleResponseAsync self-registers
+            // in _inFlightResponses for clean shutdown (zero allocation on success path)
             _ = HandleResponseAsync(
                 responseTask, batches, gates, count, requestStartTime, cancellationToken);
         }
@@ -373,6 +371,9 @@ internal sealed class BrokerSender : IAsyncDisposable
     /// <summary>
     /// Handles the response from a pipelined send.
     /// Processes per-partition results, schedules retries for retriable errors, releases resources.
+    /// Self-registers in _inFlightResponses for clean shutdown. Awaits any spawned retry tasks
+    /// before unregistering, so DisposeAsync sees this task as running until all retries complete.
+    /// Zero extra allocations on the success path.
     /// </summary>
     private async Task HandleResponseAsync(
         Task<ProduceResponse> responseTask,
@@ -382,7 +383,12 @@ internal sealed class BrokerSender : IAsyncDisposable
         long requestStartTime,
         CancellationToken cancellationToken)
     {
+        // Self-register for clean shutdown tracking
+        var thisTask = responseTask as Task; // Use responseTask as the tracking key (already allocated)
+        _inFlightResponses.TryAdd(thisTask, 0);
+
         var inFlightReleased = false;
+        List<Task>? retryTasks = null;
 
         try
         {
@@ -420,11 +426,12 @@ internal sealed class BrokerSender : IAsyncDisposable
 
                 if (partitionResponse is null)
                 {
-                    // No response — retriable: schedule retry (fire-and-forget, tracked for shutdown)
+                    // No response — retriable
                     _logger?.LogWarning(
                         "[BrokerSender] No response for {Topic}-{Partition}",
                         expectedTopic, expectedPartition);
-                    TrackRetryTask(ScheduleRetryAsync(batch, gates[i], ErrorCode.NetworkException, cancellationToken));
+                    retryTasks ??= [];
+                    retryTasks.Add(ScheduleRetryAsync(batch, gates[i], ErrorCode.NetworkException, cancellationToken));
                     batches[i] = null!; // Mark as handed off
                     gates[i] = null!;
                     continue;
@@ -441,7 +448,8 @@ internal sealed class BrokerSender : IAsyncDisposable
                 {
                     if (partitionResponse.ErrorCode.IsRetriable())
                     {
-                        TrackRetryTask(ScheduleRetryAsync(batch, gates[i], partitionResponse.ErrorCode, cancellationToken));
+                        retryTasks ??= [];
+                        retryTasks.Add(ScheduleRetryAsync(batch, gates[i], partitionResponse.ErrorCode, cancellationToken));
                         batches[i] = null!;
                         gates[i] = null!;
                         continue;
@@ -492,9 +500,18 @@ internal sealed class BrokerSender : IAsyncDisposable
         {
             if (!inFlightReleased)
                 ReleaseInFlightSemaphore();
-            _inFlightResponses.TryRemove(responseTask, out _);
             ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
             ArrayPool<SemaphoreSlim>.Shared.Return(gates, clearArray: true);
+
+            // Await any spawned retry tasks before unregistering, so DisposeAsync
+            // sees this handler as running until all its retries complete
+            if (retryTasks is { Count: > 0 })
+            {
+                try { await Task.WhenAll(retryTasks).ConfigureAwait(false); }
+                catch { /* Exceptions observed by ScheduleRetryAsync */ }
+            }
+
+            _inFlightResponses.TryRemove(thisTask, out _);
         }
     }
 
@@ -710,31 +727,6 @@ internal sealed class BrokerSender : IAsyncDisposable
         {
             _inflightTracker?.Complete(entry);
             batch.InflightEntry = null;
-        }
-    }
-
-    /// <summary>
-    /// Tracks a retry task in _inFlightResponses so DisposeAsync waits for it.
-    /// Auto-removes when complete.
-    /// </summary>
-    private void TrackRetryTask(Task retryTask)
-    {
-        _inFlightResponses.TryAdd(retryTask, 0);
-
-        if (retryTask.IsCompleted)
-        {
-            _inFlightResponses.TryRemove(retryTask, out _);
-        }
-        else
-        {
-            _ = retryTask.ContinueWith(static (t, state) =>
-            {
-                var dict = (ConcurrentDictionary<Task, byte>)state!;
-                dict.TryRemove(t, out _);
-            }, _inFlightResponses,
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
         }
     }
 
