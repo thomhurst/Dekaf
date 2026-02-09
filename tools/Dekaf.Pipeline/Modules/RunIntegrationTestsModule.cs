@@ -65,7 +65,6 @@ public class RunIntegrationTestsModule : Module<IReadOnlyList<CommandResult>>
                 {
                     ["NET_VERSION"] = "net10.0",
                     ["DOTNET_GCConserveMemory"] = "9", // Aggressive GC to reduce memory pressure on CI
-                    ["DOTNET_GCHeapHardLimit"] = "0xC0000000", // 3GB hard limit on managed heap
                 }
             },
             cancellationToken);
