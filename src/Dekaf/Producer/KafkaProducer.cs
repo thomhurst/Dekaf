@@ -2383,25 +2383,15 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <summary>
-    /// Creates a partition gate semaphore with appropriate concurrency.
-    /// Idempotent producers allow multiple in-flight batches per partition because:
-    /// 1. Per-broker sender threads guarantee wire-order (single-threaded writes)
-    /// 2. Broker uses sequence numbers to guarantee ordering
-    /// 3. OutOfOrderSequenceNumber triggers coordinated retry via PartitionInflightTracker
-    /// Non-idempotent producers use single in-flight batch to preserve ordering.
+    /// Creates a partition gate semaphore.
+    /// Always single-permit: only one in-flight batch per partition at a time.
+    /// This is required because RetryBatchAsync uses connection.SendAsync directly
+    /// (bypassing the BrokerSender's single-threaded write ordering), so multiple
+    /// in-flight batches per partition would risk OutOfOrderSequenceNumber errors
+    /// when retries race with subsequent batches.
     /// </summary>
     private SemaphoreSlim CreatePartitionGate()
     {
-        if (_inflightTracker is not null)
-        {
-            // Idempotent producer: allow N in-flight batches per partition for pipelining.
-            // Wire-order is guaranteed by per-broker sender thread; sequence numbers guarantee
-            // broker-side ordering.
-            var n = _options.MaxInFlightRequestsPerConnection;
-            return new SemaphoreSlim(n, n);
-        }
-
-        // Non-idempotent: single in-flight batch per partition to preserve ordering.
         return new SemaphoreSlim(1, 1);
     }
 

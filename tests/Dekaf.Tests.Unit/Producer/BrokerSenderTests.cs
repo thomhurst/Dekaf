@@ -105,35 +105,7 @@ public sealed class BrokerSenderTests
     }
 
     [Test]
-    public async Task PartitionGate_IdempotentProducer_AllowsNInFlight()
-    {
-        // Verify that CreatePartitionGate returns N slots for idempotent producers
-        // by testing the SemaphoreSlim behavior directly
-        var maxInflight = 5;
-        var gate = new SemaphoreSlim(maxInflight, maxInflight);
-
-        // Should be able to acquire N times without blocking
-        for (var i = 0; i < maxInflight; i++)
-        {
-            var acquired = gate.Wait(0);
-            await Assert.That(acquired).IsTrue();
-        }
-
-        // N+1th should fail (non-blocking)
-        var extraAcquired = gate.Wait(0);
-        await Assert.That(extraAcquired).IsFalse();
-
-        // Release all
-        for (var i = 0; i < maxInflight; i++)
-        {
-            gate.Release();
-        }
-
-        gate.Dispose();
-    }
-
-    [Test]
-    public async Task PartitionGate_NonIdempotentProducer_AllowsOnlyOne()
+    public async Task PartitionGate_AlwaysSingleInflight()
     {
         // Non-idempotent should use SemaphoreSlim(1,1)
         var gate = new SemaphoreSlim(1, 1);
@@ -201,7 +173,7 @@ public sealed class BrokerSenderTests
             inflightTracker: tracker,
             statisticsCollector,
             gates,
-            createPartitionGate: () => new SemaphoreSlim(5, 5),
+            createPartitionGate: () => new SemaphoreSlim(1, 1),
             getProduceApiVersion: () => 9,
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
