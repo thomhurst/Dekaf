@@ -22,7 +22,7 @@ public sealed class ConnectionPoolTests
     [Test]
     public async Task GetConnectionAsync_UnknownBrokerId_ThrowsInvalidOperationException()
     {
-        var pool = new ConnectionPool("test-client");
+        await using var pool = new ConnectionPool("test-client");
 
         Func<Task> act = () => pool.GetConnectionAsync(999).AsTask();
 
@@ -32,7 +32,7 @@ public sealed class ConnectionPoolTests
     [Test]
     public async Task RegisterBroker_ThenGetConnection_UsesRegisteredBrokerInfo()
     {
-        var pool = new ConnectionPool("test-client");
+        await using var pool = new ConnectionPool("test-client");
 
         // Register a broker that doesn't actually exist - connection will fail
         pool.RegisterBroker(1, "nonexistent-host-12345.invalid", 9092);
@@ -67,9 +67,9 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
-    public void RegisterBroker_SameIdTwice_OverwritesWithoutError()
+    public async Task RegisterBroker_SameIdTwice_OverwritesWithoutError()
     {
-        var pool = new ConnectionPool("test-client");
+        await using var pool = new ConnectionPool("test-client");
 
         pool.RegisterBroker(1, "host-a", 9092);
         pool.RegisterBroker(1, "host-b", 9093);
@@ -78,9 +78,9 @@ public sealed class ConnectionPoolTests
     }
 
     [Test]
-    public void RegisterBroker_MultipleBrokers_AllRegistered()
+    public async Task RegisterBroker_MultipleBrokers_AllRegistered()
     {
-        var pool = new ConnectionPool("test-client");
+        await using var pool = new ConnectionPool("test-client");
 
         pool.RegisterBroker(0, "broker-0", 9092);
         pool.RegisterBroker(1, "broker-1", 9092);
@@ -92,7 +92,7 @@ public sealed class ConnectionPoolTests
     [Test]
     public async Task RemoveConnectionAsync_UnknownBroker_DoesNotThrow()
     {
-        var pool = new ConnectionPool("test-client");
+        await using var pool = new ConnectionPool("test-client");
 
         // Removing a non-existent broker should be a no-op
         await pool.RemoveConnectionAsync(999);
@@ -101,7 +101,7 @@ public sealed class ConnectionPoolTests
     [Test]
     public async Task CloseAllAsync_EmptyPool_DoesNotThrow()
     {
-        var pool = new ConnectionPool("test-client");
+        await using var pool = new ConnectionPool("test-client");
 
         await pool.CloseAllAsync();
     }
@@ -121,7 +121,7 @@ public sealed class ConnectionPoolTests
     [Test]
     public async Task GetConnectionAsync_AfterCloseAll_CanReconnect()
     {
-        var pool = new ConnectionPool("test-client");
+        await using var pool = new ConnectionPool("test-client");
         pool.RegisterBroker(1, "nonexistent-host-12345.invalid", 9092);
 
         await pool.CloseAllAsync();
@@ -137,7 +137,7 @@ public sealed class ConnectionPoolTests
     [Test]
     public async Task GetConnectionByHostPort_UnreachableHost_ThrowsException()
     {
-        var pool = new ConnectionPool("test-client");
+        await using var pool = new ConnectionPool("test-client");
 
         Func<Task> act = () => pool.GetConnectionAsync("nonexistent-host-12345.invalid", 9092).AsTask();
 
@@ -172,7 +172,7 @@ public sealed class ConnectionPoolTests
     [Test]
     public async Task Constructor_NullClientId_DoesNotThrow()
     {
-        var pool = new ConnectionPool();
+        await using var pool = new ConnectionPool();
 
         // Should create successfully with no client ID
         await Assert.That(pool).IsNotNull();
@@ -181,7 +181,7 @@ public sealed class ConnectionPoolTests
     [Test]
     public async Task Constructor_CustomConnectionsPerBroker_DoesNotThrow()
     {
-        var pool = new ConnectionPool("test-client", connectionsPerBroker: 4);
+        await using var pool = new ConnectionPool("test-client", connectionsPerBroker: 4);
 
         await Assert.That(pool).IsNotNull();
     }
