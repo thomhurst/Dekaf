@@ -117,7 +117,9 @@ internal sealed class BrokerSender : IAsyncDisposable
     {
         if (!_batchChannel.Writer.TryWrite(batch))
         {
-            // Channel is completed (disposal in progress) — fail the batch
+            // Channel is completed (disposal in progress) — fail the batch.
+            // Must complete inflight entry so successors in WaitForPredecessorAsync don't hang.
+            CompleteInflightEntry(batch);
             batch.Fail(new ObjectDisposedException(nameof(BrokerSender)));
             CleanupBatch(batch);
         }
@@ -243,11 +245,13 @@ internal sealed class BrokerSender : IAsyncDisposable
         {
             ArrayPool<ReadyBatch>.Shared.Return(drainBuffer, clearArray: true);
 
-            // Fail any carry-over batches that couldn't be re-enqueued
+            // Fail any carry-over batches that couldn't be re-enqueued.
+            // Must complete inflight entries so successors in WaitForPredecessorAsync don't hang.
             if (carryOver is { Count: > 0 })
             {
                 foreach (var batch in carryOver)
                 {
+                    CompleteInflightEntry(batch);
                     try { batch.Fail(new ObjectDisposedException(nameof(BrokerSender))); }
                     catch { /* Observe */ }
                     CleanupBatch(batch);
@@ -257,6 +261,7 @@ internal sealed class BrokerSender : IAsyncDisposable
             // Drain any remaining batches from channel and fail them
             while (channelReader.TryRead(out var remaining))
             {
+                CompleteInflightEntry(remaining);
                 try { remaining.Fail(new ObjectDisposedException(nameof(BrokerSender))); }
                 catch { /* Observe */ }
                 CleanupBatch(remaining);
