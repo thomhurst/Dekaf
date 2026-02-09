@@ -17,12 +17,13 @@ namespace Dekaf.Producer;
 /// Per-broker sender that serializes all writes to a single broker connection.
 /// A single-threaded send loop drains batches from a channel, coalesces them into
 /// ProduceRequests, and sends them via pipelined writes. This guarantees wire-order
-/// for same-partition batches and enables N in-flight batches per partition for
-/// idempotent producers.
+/// for same-partition batches. Partition gates (capacity=1) ensure at most one batch
+/// per partition is in-flight at a time, preventing OutOfOrderSequenceNumber cascades.
 ///
 /// All writes go through the send loop — there are no out-of-loop write paths.
-/// Retries re-enqueue to the channel after backoff, and leader changes reroute
-/// to the correct BrokerSender via the rerouteBatch callback.
+/// Same-broker retries keep their partition gate held (IsRetry flag) so newer batches
+/// cannot jump ahead. Leader-change retries release the gate and reroute to the
+/// correct BrokerSender via the rerouteBatch callback.
 /// </summary>
 internal sealed class BrokerSender : IAsyncDisposable
 {
@@ -117,6 +118,14 @@ internal sealed class BrokerSender : IAsyncDisposable
         {
             // Channel is completed (disposal in progress) — fail the batch.
             // Must complete inflight entry so successors in WaitForPredecessorAsync don't hang.
+            // If the batch is a retry, it still holds its partition gate — release it.
+            if (batch.IsRetry)
+            {
+                batch.IsRetry = false;
+                var gate = _partitionSendGates.GetOrAdd(
+                    batch.TopicPartition, _ => _createPartitionGate());
+                ReleaseGate(gate);
+            }
             CompleteInflightEntry(batch);
             batch.Fail(new ObjectDisposedException(nameof(BrokerSender)));
             CleanupBatch(batch);
@@ -128,7 +137,9 @@ internal sealed class BrokerSender : IAsyncDisposable
     /// Single-threaded: partition gate acquisition is deterministically FIFO.
     ///
     /// Batches that cannot be sent (gate busy or same-partition collision) are carried over
-    /// to the next iteration by re-enqueuing them to the channel.
+    /// to the next iteration in a persistent local list. Retry batches (IsRetry=true) already
+    /// hold their partition gate and skip gate acquisition, ensuring they are sent before
+    /// newer batches for the same partition.
     /// </summary>
     private async Task SendLoopAsync(CancellationToken cancellationToken)
     {
@@ -201,11 +212,22 @@ internal sealed class BrokerSender : IAsyncDisposable
                         continue;
                     }
 
-                    // Acquire partition gate (single-threaded → deterministically FIFO)
                     var partitionGate = _partitionSendGates.GetOrAdd(
                         batch.TopicPartition, _ => _createPartitionGate());
 
-                    // Try non-blocking acquire first for coalescing
+                    if (batch.IsRetry)
+                    {
+                        // Retry batch already holds its partition gate from the previous send.
+                        // Skip gate acquisition — this prevents newer batches from jumping ahead
+                        // during the retry cycle, which would cause OOSN cascades.
+                        batch.IsRetry = false;
+                        coalescedBatches[coalescedCount] = batch;
+                        coalescedGates[coalescedCount] = partitionGate;
+                        coalescedCount++;
+                        continue;
+                    }
+
+                    // Try non-blocking acquire for normal batches
                     if (!partitionGate.Wait(0, CancellationToken.None))
                     {
                         // Gate busy — carry over to next iteration
@@ -231,17 +253,41 @@ internal sealed class BrokerSender : IAsyncDisposable
                     ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
                     ArrayPool<SemaphoreSlim>.Shared.Return(coalescedGates, clearArray: true);
 
-                    // All gates busy — wait for the first carry-over batch's partition gate to free up.
-                    // When coalescedCount==0 and drainCount>0, the first batch in newCarryOver must have
-                    // failed its gate.Wait(0) check (it can't fail the coalescedPartitions.Add since
-                    // that set starts empty). Waiting on its gate blocks until HandleResponseAsync
-                    // releases it, guaranteeing forward progress without a tight spin loop.
-                    // (The old Task.Yield() approach starved response handler threads; the
-                    // _inFlightSemaphore approach didn't block when the semaphore had spare capacity.)
+                    // All carry-over batches have busy gates. Wait for either:
+                    // 1. A gate to free up (in-flight batch completes successfully), or
+                    // 2. New channel data arrives (retry batch with pre-acquired gate).
+                    // Using WhenAny prevents deadlock when a failed batch retries with its
+                    // gate held (IsRetry=true) — in that case the gate won't be released
+                    // until the retry batch is processed by the send loop.
                     var blockedGate = _partitionSendGates.GetOrAdd(
                         newCarryOver![0].TopicPartition, _ => _createPartitionGate());
-                    await blockedGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                    blockedGate.Release();
+
+                    var gateWaitTask = blockedGate.WaitAsync(cancellationToken);
+                    if (gateWaitTask.IsCompletedSuccessfully)
+                    {
+                        blockedGate.Release();
+                    }
+                    else
+                    {
+                        var channelWaitTask = channelReader.WaitToReadAsync(cancellationToken).AsTask();
+                        await Task.WhenAny(gateWaitTask, channelWaitTask).ConfigureAwait(false);
+
+                        if (gateWaitTask.IsCompletedSuccessfully)
+                        {
+                            blockedGate.Release();
+                        }
+                        else if (!gateWaitTask.IsCompleted)
+                        {
+                            // Channel data arrived first (likely a retry batch).
+                            // The pending gate wait will eventually complete — release it then.
+                            _ = gateWaitTask.ContinueWith(static (_, state) =>
+                            {
+                                try { ((SemaphoreSlim)state!).Release(); }
+                                catch { /* Disposal race */ }
+                            }, blockedGate, CancellationToken.None,
+                            TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
+                        }
+                    }
                 }
 
                 // Merge new carry-over into persistent list for next iteration
@@ -278,10 +324,12 @@ internal sealed class BrokerSender : IAsyncDisposable
 
             // Fail any carry-over batches that couldn't be sent.
             // Must complete inflight entries so successors in WaitForPredecessorAsync don't hang.
+            // Retry batches still hold their partition gate — release it.
             if (pendingCarryOver is { Count: > 0 })
             {
                 foreach (var batch in pendingCarryOver)
                 {
+                    ReleaseRetryGateIfNeeded(batch);
                     CompleteInflightEntry(batch);
                     try { batch.Fail(new ObjectDisposedException(nameof(BrokerSender))); }
                     catch { /* Observe */ }
@@ -292,6 +340,7 @@ internal sealed class BrokerSender : IAsyncDisposable
             // Drain any remaining batches from channel and fail them
             while (channelReader.TryRead(out var remaining))
             {
+                ReleaseRetryGateIfNeeded(remaining);
                 CompleteInflightEntry(remaining);
                 try { remaining.Fail(new ObjectDisposedException(nameof(BrokerSender))); }
                 catch { /* Observe */ }
@@ -623,10 +672,6 @@ internal sealed class BrokerSender : IAsyncDisposable
 
             _statisticsCollector.RecordRetry();
 
-            // Release partition gate before re-enqueue so the send loop can acquire it
-            gateReleased = true;
-            ReleaseGate(partitionGate);
-
             // Re-resolve leader — may have changed
             var leader = await _metadataManager.GetPartitionLeaderAsync(
                 batch.TopicPartition.Topic,
@@ -635,6 +680,8 @@ internal sealed class BrokerSender : IAsyncDisposable
 
             if (leader is null)
             {
+                gateReleased = true;
+                ReleaseGate(partitionGate);
                 FailAndCleanupBatch(batch,
                     new KafkaException(ErrorCode.LeaderNotAvailable,
                         $"No leader available for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}"));
@@ -643,17 +690,27 @@ internal sealed class BrokerSender : IAsyncDisposable
 
             if (leader.NodeId == _brokerId)
             {
-                // Same broker — re-enqueue to own channel
+                // Same broker — keep the partition gate held and mark as retry.
+                // The send loop will skip gate acquisition for retry batches, preventing
+                // newer batches from jumping ahead and causing OOSN cascades.
+                // The gate is released normally when the batch succeeds or finally fails.
+                batch.IsRetry = true;
+                gateReleased = true; // Gate ownership transferred to the retry batch
                 Enqueue(batch);
             }
             else if (_rerouteBatch is not null)
             {
-                // Leader moved to different broker — reroute
+                // Leader moved to different broker — release gate and reroute.
+                // The new BrokerSender will acquire the gate when processing the batch.
+                gateReleased = true;
+                ReleaseGate(partitionGate);
                 _rerouteBatch(batch);
             }
             else
             {
-                // No reroute callback — re-enqueue to self (best effort)
+                // No reroute callback — re-enqueue to self with gate held (best effort)
+                batch.IsRetry = true;
+                gateReleased = true; // Gate ownership transferred to the retry batch
                 Enqueue(batch);
             }
         }
@@ -780,6 +837,20 @@ internal sealed class BrokerSender : IAsyncDisposable
     {
         try { gate.Release(); }
         catch (ObjectDisposedException) { /* Disposal race */ }
+    }
+
+    /// <summary>
+    /// Releases the partition gate for a retry batch that still holds it.
+    /// Called during cleanup (finally block, Enqueue failure) to prevent gate leaks.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ReleaseRetryGateIfNeeded(ReadyBatch batch)
+    {
+        if (!batch.IsRetry) return;
+        batch.IsRetry = false;
+        var gate = _partitionSendGates.GetOrAdd(
+            batch.TopicPartition, _ => _createPartitionGate());
+        ReleaseGate(gate);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

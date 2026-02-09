@@ -37,8 +37,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly PeriodicTimer _lingerTimer;
 
     // Per-broker sender threads: each broker gets a dedicated BrokerSender with its own
-    // channel and send loop. This guarantees wire-order for same-partition batches (single-threaded
-    // writes) and enables N in-flight batches per partition for idempotent producers.
+    // channel and send loop. Partition gates (capacity=1) serialize sends per partition,
+    // while the per-broker in-flight semaphore enables pipelining across different partitions.
     private readonly ConcurrentDictionary<int, BrokerSender> _brokerSenders = new();
     private readonly ConcurrentDictionary<TopicPartition, SemaphoreSlim> _partitionSendGates = new();
 
@@ -2256,8 +2256,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     {
         // PER-BROKER SENDER ARCHITECTURE: Each broker gets a dedicated BrokerSender with its own
         // channel and single-threaded send loop. This guarantees wire-order for same-partition
-        // batches (eliminating SemaphoreSlim FIFO issues) and enables N in-flight batches per
-        // partition for idempotent producers via pipelined sends.
+        // batches. Partition gates (capacity=1) serialize sends per partition, while the
+        // per-broker in-flight semaphore enables pipelining across different partitions.
         //
         // SenderLoopAsync is now a simple router: drain batches, look up leader, enqueue to
         // the appropriate BrokerSender. BrokerSender handles coalescing, partition gate management,
@@ -2369,21 +2369,16 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <summary>
-    /// Creates a partition gate semaphore.
-    /// For idempotent producers, allows N in-flight batches per partition (pipelining).
-    /// This is safe because all writes go through the BrokerSender's single-threaded
-    /// send loop, guaranteeing wire-order. Retries re-enqueue to the channel rather
-    /// than sending directly, so there are no out-of-loop write paths.
-    /// For non-idempotent producers, uses a single-permit gate.
+    /// Creates a partition gate with capacity 1. This serializes sends per partition:
+    /// at most one batch per partition is in-flight at a time. Combined with the
+    /// IsRetry mechanism in BrokerSender, this prevents OutOfOrderSequenceNumber cascades
+    /// where retry batches are overtaken by newer batches during the gate-release → re-enqueue window.
+    ///
+    /// Cross-partition throughput is unaffected: multiple partitions can still be pipelined
+    /// up to MaxInFlightRequestsPerConnection, which is where the real throughput benefit lies.
     /// </summary>
-    private SemaphoreSlim CreatePartitionGate()
+    private static SemaphoreSlim CreatePartitionGate()
     {
-        if (_inflightTracker is not null)
-        {
-            var n = _options.MaxInFlightRequestsPerConnection;
-            return new SemaphoreSlim(n, n);
-        }
-
         return new SemaphoreSlim(1, 1);
     }
 

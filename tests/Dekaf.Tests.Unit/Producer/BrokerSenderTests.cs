@@ -193,8 +193,7 @@ public sealed class BrokerSenderTests
         var gates = new ConcurrentDictionary<TopicPartition, SemaphoreSlim>();
         var tracker = new PartitionInflightTracker();
 
-        // Idempotent producers use SemaphoreSlim(N,N) partition gates
-        var n = options.MaxInFlightRequestsPerConnection;
+        // Partition gates always use capacity 1 to prevent OOSN cascades
         var sender = new BrokerSender(
             brokerId: 1,
             connectionPool,
@@ -205,7 +204,7 @@ public sealed class BrokerSenderTests
             inflightTracker: tracker,
             statisticsCollector,
             gates,
-            createPartitionGate: () => new SemaphoreSlim(n, n),
+            createPartitionGate: () => new SemaphoreSlim(1, 1),
             getProduceApiVersion: () => 9,
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
