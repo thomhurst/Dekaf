@@ -1975,103 +1975,163 @@ public sealed class RecordAccumulator : IAsyncDisposable
         return ExpireLingerAsyncCore(cancellationToken);
     }
 
-    private async ValueTask ExpireLingerAsyncCore(CancellationToken cancellationToken)
+    /// <summary>
+    /// Seals a single batch and writes it to the ready channel for delivery.
+    /// Handles Complete → decrement pending count → track delivery → channel write → error handling → pool return.
+    /// </summary>
+    /// <returns>True if the batch was sealed and written; false if Complete() returned null.</returns>
+    private async ValueTask<bool> SealBatchToChannelAsync(
+        PartitionBatch batch,
+        CancellationToken cancellationToken)
     {
-        // Try non-blocking acquire of flush/linger coordination lock.
-        // If FlushAsyncCore holds the lock, skip this tick — FlushAsync will seal everything.
-        // This prevents the race where linger removes batch-0 from _batches, then FlushAsync
-        // snapshots _batches (missing batch-0), seals batch-1 first, reversing batch ordering.
-        if (!_flushLingerLock.Wait(0, CancellationToken.None))
-            return;
+        var readyBatch = batch.Complete();
+        if (readyBatch is null)
+            return false;
+
+        // Decrement pending awaited produce count by the number of completion sources in this batch
+        if (readyBatch.CompletionSourcesCount > 0)
+            Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
+#if DEBUG
+        ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+#endif
+        // Track delivery task for FlushAsync
+        TrackDeliveryTask(readyBatch);
+
+        // Try synchronous write first to avoid async state machine allocation
+        if (!_readyBatches.Writer.TryWrite(readyBatch))
+        {
+            try
+            {
+                // Channel is bounded or busy, fall back to async
+                await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
+#if DEBUG
+                ProducerDebugCounters.RecordBatchQueuedToReady();
+#endif
+            }
+            catch
+            {
+#if DEBUG
+                ProducerDebugCounters.RecordBatchFailedToQueue();
+#endif
+                // CRITICAL: Use nested try-finally to ensure memory is ALWAYS released
+                // even if readyBatch.Fail() itself throws an exception
+                try
+                {
+                    readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                    OnBatchExitsPipeline(); // Decrement counter on failure
+                }
+                finally
+                {
+                    // ALWAYS release memory to prevent permanent leak
+                    ReleaseMemory(readyBatch.DataSize);
+                }
+                throw;
+            }
+        }
+#if DEBUG
+        else
+        {
+            ProducerDebugCounters.RecordBatchQueuedToReady();
+        }
+#endif
+
+        // Return the completed batch shell to the pool for reuse
+        _batchPool.Return(batch);
+        return true;
+    }
+
+    /// <summary>
+    /// Unified batch-sealing method used by both linger timer and flush.
+    /// </summary>
+    /// <param name="sealAll">
+    /// true = flush mode: seals ALL batches (Keys.ToArray snapshot, blocking lock).
+    /// false = linger mode: seals only expired batches (foreach enumeration, non-blocking lock).
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    private async ValueTask SealBatchesAsync(bool sealAll, CancellationToken cancellationToken)
+    {
+        if (sealAll)
+        {
+            // Flush mode: blocking acquire — wait for any in-progress linger iteration to complete
+            await _flushLingerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            // Linger mode: non-blocking acquire — skip this tick if FlushAsync holds the lock
+            // FlushAsync will seal everything, so there's no work lost.
+            if (!_flushLingerLock.Wait(0, CancellationToken.None))
+                return;
+        }
 
         try
         {
-            var now = DateTimeOffset.UtcNow;
-            var newOldestTicks = long.MaxValue;
-
-            foreach (var kvp in _batches)
+            if (sealAll)
             {
-                var batch = kvp.Value;
-                if (batch.ShouldFlush(now, _options.LingerMs))
+                // Flush mode: snapshot keys to avoid infinite loop if messages are continuously added
+                var keysToFlush = _batches.Keys.ToArray();
+
+                foreach (var key in keysToFlush)
                 {
-                    // Atomically remove the batch from dictionary BEFORE completing.
-                    // Only the thread that wins the TryRemove race will complete the batch.
-                    if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch)))
+                    if (_batches.TryGetValue(key, out var batch))
                     {
-                        // Note: We don't call ResetOldestBatchTrackingIfEmpty() here because
-                        // ExpireLingerAsyncCore already recalculates _oldestBatchCreatedTicks
-                        // at the end of enumeration based on remaining batches.
-
-                        var readyBatch = batch.Complete();
-                        if (readyBatch is not null)
+                        // Atomically remove the batch from dictionary BEFORE completing.
+                        // Only the thread that wins the TryRemove race will complete the batch.
+                        if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(key, batch)))
                         {
-                            // Decrement pending awaited produce count by the number of completion sources in this batch
-                            if (readyBatch.CompletionSourcesCount > 0)
-                                Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
+                            // Reset oldest batch tracking if dictionary is now empty
+                            ResetOldestBatchTrackingIfEmpty();
 #if DEBUG
-                            ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+                            ProducerDebugCounters.RecordBatchFlushedFromDictionary();
 #endif
-                            // Track delivery task for FlushAsync
-                            TrackDeliveryTask(readyBatch);
-
-                            // Try synchronous write first to avoid async state machine allocation
-                            if (!_readyBatches.Writer.TryWrite(readyBatch))
-                            {
-                                try
-                                {
-                                    // Channel is bounded or busy, fall back to async
-                                    await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-#if DEBUG
-                                    ProducerDebugCounters.RecordBatchQueuedToReady();
-#endif
-                                }
-                                catch
-                                {
-#if DEBUG
-                                    ProducerDebugCounters.RecordBatchFailedToQueue();
-#endif
-                                    // CRITICAL: If WriteAsync fails (cancellation or disposal), fail the batch
-                                    // and release memory to prevent permanent leak
-                                    readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                                    OnBatchExitsPipeline(); // Decrement counter on failure
-                                    ReleaseMemory(readyBatch.DataSize);
-                                    throw;
-                                }
-                            }
-#if DEBUG
-                            else
-                            {
-                                ProducerDebugCounters.RecordBatchQueuedToReady();
-                            }
-#endif
-
-                            // Return the completed batch shell to the pool for reuse
-                            _batchPool.Return(batch);
+                            await SealBatchToChannelAsync(batch, cancellationToken).ConfigureAwait(false);
                         }
                     }
                 }
-                else
+            }
+            else
+            {
+                // Linger mode: enumerate and seal only expired batches, track oldest remaining
+                var now = DateTimeOffset.UtcNow;
+                var newOldestTicks = long.MaxValue;
+
+                foreach (var kvp in _batches)
                 {
-                    // Batch not ready for flush - track its creation time for oldest batch calculation
-                    var batchCreatedTicks = batch.CreatedAtTicks;
-                    if (batchCreatedTicks < newOldestTicks)
+                    var batch = kvp.Value;
+                    if (batch.ShouldFlush(now, _options.LingerMs))
                     {
-                        newOldestTicks = batchCreatedTicks;
+                        // Atomically remove the batch from dictionary BEFORE completing.
+                        // Only the thread that wins the TryRemove race will complete the batch.
+                        if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch)))
+                        {
+                            // Note: We don't call ResetOldestBatchTrackingIfEmpty() here because
+                            // linger mode already recalculates _oldestBatchCreatedTicks
+                            // at the end of enumeration based on remaining batches.
+                            await SealBatchToChannelAsync(batch, cancellationToken).ConfigureAwait(false);
+                        }
+                    }
+                    else
+                    {
+                        // Batch not ready for flush - track its creation time for oldest batch calculation
+                        var batchCreatedTicks = batch.CreatedAtTicks;
+                        if (batchCreatedTicks < newOldestTicks)
+                        {
+                            newOldestTicks = batchCreatedTicks;
+                        }
                     }
                 }
-            }
 
-            // Update the oldest batch tracking for next check using CAS to prevent race condition.
-            // A concurrent batch addition via UpdateOldestBatchTracking() may have set a valid
-            // timestamp after we started enumeration. Only update if we found an older batch
-            // than currently tracked, preserving timestamps from concurrent additions.
-            var current = Volatile.Read(ref _oldestBatchCreatedTicks);
-            while (newOldestTicks < current)
-            {
-                var original = Interlocked.CompareExchange(ref _oldestBatchCreatedTicks, newOldestTicks, current);
-                if (original == current)
-                    break;
-                current = original;
+                // Update the oldest batch tracking for next check using CAS to prevent race condition.
+                // A concurrent batch addition via UpdateOldestBatchTracking() may have set a valid
+                // timestamp after we started enumeration. Only update if we found an older batch
+                // than currently tracked, preserving timestamps from concurrent additions.
+                var current = Volatile.Read(ref _oldestBatchCreatedTicks);
+                while (newOldestTicks < current)
+                {
+                    var original = Interlocked.CompareExchange(ref _oldestBatchCreatedTicks, newOldestTicks, current);
+                    if (original == current)
+                        break;
+                    current = original;
+                }
             }
         }
         finally
@@ -2079,6 +2139,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
             _flushLingerLock.Release();
         }
     }
+
+    private ValueTask ExpireLingerAsyncCore(CancellationToken cancellationToken)
+        => SealBatchesAsync(sealAll: false, cancellationToken);
 
     /// <summary>
     /// Increments the in-flight batch counter when a batch enters the pipeline.
@@ -2194,89 +2257,13 @@ public sealed class RecordAccumulator : IAsyncDisposable
 #if DEBUG
         ProducerDebugCounters.RecordFlushCall();
 #endif
-        // Step 1: Acquire coordination lock to prevent the linger timer from concurrently
-        // removing and completing batches. Without this, the linger timer could remove batch-0
-        // from _batches (TryRemove succeeds) but before writing to _readyBatches, our
-        // Keys.ToArray() snapshot misses batch-0. We then seal batch-1 first, reversing ordering.
-        // WaitAsync ensures any in-progress linger iteration completes before we snapshot.
-        await _flushLingerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await SealBatchesAsync(sealAll: true, cancellationToken).ConfigureAwait(false);
 
-        try
-        {
-            // Take a snapshot of keys to avoid infinite loop if messages are continuously added
-            // This ensures FlushAsync only flushes batches that existed when it was called
-            var keysToFlush = _batches.Keys.ToArray();
-
-            foreach (var key in keysToFlush)
-            {
-                if (_batches.TryGetValue(key, out var batch))
-                {
-                    // Atomically remove the batch from dictionary BEFORE completing.
-                    // Only the thread that wins the TryRemove race will complete the batch.
-                    if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(key, batch)))
-                    {
-                        // Reset oldest batch tracking if dictionary is now empty
-                        ResetOldestBatchTrackingIfEmpty();
-#if DEBUG
-                        ProducerDebugCounters.RecordBatchFlushedFromDictionary();
-#endif
-                        var readyBatch = batch.Complete();
-                        if (readyBatch is not null)
-                        {
-                            // Decrement pending awaited produce count by the number of completion sources in this batch
-                            if (readyBatch.CompletionSourcesCount > 0)
-                                Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
-#if DEBUG
-                            ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
-#endif
-                            // Track delivery task for FlushAsync to wait on
-                            TrackDeliveryTask(readyBatch);
-
-                            // Try synchronous write first to avoid async state machine allocation
-                            if (!_readyBatches.Writer.TryWrite(readyBatch))
-                            {
-                                try
-                                {
-                                    // Channel is bounded or busy, fall back to async
-                                    await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-                                }
-                                catch
-                                {
-                                    // CRITICAL: Use nested try-finally to ensure memory is ALWAYS released
-                                    // even if readyBatch.Fail() itself throws an exception
-                                    try
-                                    {
-                                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                                        OnBatchExitsPipeline(); // Decrement counter on failure
-                                    }
-                                    finally
-                                    {
-                                        // ALWAYS release memory to prevent permanent leak
-                                        ReleaseMemory(readyBatch.DataSize);
-                                    }
-                                    throw;
-                                }
-                            }
-
-                            // Return the completed batch shell to the pool for reuse
-                            _batchPool.Return(batch);
-                        }
-                    }
-                }
-            }
-        }
-        finally
-        {
-            _flushLingerLock.Release();
-        }
-
-        // Step 2: Wait for all in-flight batches to complete using counter-based tracking
+        // Wait for all in-flight batches to complete using counter-based tracking
         // O(1) operation instead of dictionary enumeration and Task.WhenAll
         // Note: Lock is released before waiting — linger timer can resume for new batches
         if (Volatile.Read(ref _inFlightBatchCount) > 0)
         {
-            // Wait for all batches to complete
-            // Use polling with cancellation check instead of blocking
             await WaitForAllBatchesCompleteAsync(cancellationToken).ConfigureAwait(false);
         }
     }
