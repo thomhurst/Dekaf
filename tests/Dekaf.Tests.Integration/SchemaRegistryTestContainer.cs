@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
@@ -19,7 +20,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
     private bool _externalRegistry;
     private string _bootstrapServers = string.Empty;
     private string _registryUrl = string.Empty;
-    private readonly HashSet<string> _createdTopics = [];
+    private readonly ConcurrentDictionary<string, byte> _createdTopics = new();
 
     /// <summary>
     /// The Kafka bootstrap servers connection string.
@@ -149,7 +150,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
     /// </summary>
     public async Task CreateTopicAsync(string topicName, int partitions = 1, int replicationFactor = 1)
     {
-        if (_createdTopics.Contains(topicName))
+        if (_createdTopics.ContainsKey(topicName))
         {
             return;
         }
@@ -172,7 +173,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
             ]).ConfigureAwait(false);
         }
 
-        _createdTopics.Add(topicName);
+        _createdTopics.TryAdd(topicName, 0);
         await Task.Delay(500).ConfigureAwait(false);
         Console.WriteLine($"[KafkaWithSchemaRegistry] Topic '{topicName}' created");
     }
