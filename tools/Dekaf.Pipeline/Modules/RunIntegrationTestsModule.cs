@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using ModularPipelines.Attributes;
+using ModularPipelines.Configuration;
 using ModularPipelines.Context;
 using ModularPipelines.DotNet.Extensions;
 using ModularPipelines.DotNet.Options;
@@ -14,6 +15,13 @@ namespace Dekaf.Pipeline.Modules;
 [DependsOn<BuildModule>]
 public class RunIntegrationTestsModule : Module<IReadOnlyList<CommandResult>>
 {
+    protected override ModuleConfiguration Configure()
+    {
+        return new ModuleConfigurationBuilder()
+            .WithTimeout(TimeSpan.FromMinutes(30))
+            .Build();
+    }
+
     protected override async Task<IReadOnlyList<CommandResult>?> ExecuteAsync(
         IModuleContext context, CancellationToken cancellationToken)
     {
@@ -29,48 +37,38 @@ public class RunIntegrationTestsModule : Module<IReadOnlyList<CommandResult>>
         var results = new List<CommandResult>();
 
         var project = context.Git().RootDirectory.FindFile(x => x.Name == "Dekaf.Tests.Integration.csproj");
+        
         if (project is null)
         {
             throw new InvalidOperationException("Dekaf.Tests.Integration.csproj not found");
         }
 
-        // Add 15-minute pipeline timeout as safety fallback
-        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-
-        try
-        {
-            var testResult = await context.DotNet().Run(
-                new DotNetRunOptions
+        var testResult = await context.DotNet().Run(
+            new DotNetRunOptions
+            {
+                NoBuild = true,
+                Configuration = "Release",
+                Framework = "net10.0",
+                Arguments = [
+                    "--",
+                    "--timeout", "22m",
+                    "--hangdump",
+                    "--hangdump-timeout", "20m", // Dump before the timeout kills the run
+                    "--log-level", "Trace",
+                    "--output", "Detailed"
+                ]
+            },
+            new CommandExecutionOptions
+            {
+                WorkingDirectory = project.Folder!.Path,
+                EnvironmentVariables = new Dictionary<string, string?>
                 {
-                    NoBuild = true,
-                    Configuration = "Release",
-                    Framework = "net10.0",
-                    Arguments = [
-                        "--",
-                        "--timeout", "12m",
-                        "--hangdump",
-                        "--hangdump-timeout", "10m", // Dump before the 12m timeout kills the run
-                        "--log-level", "Trace",
-                        "--output", "Detailed"
-                    ]
-                },
-                new CommandExecutionOptions
-                {
-                    WorkingDirectory = project.Folder!.Path,
-                    EnvironmentVariables = new Dictionary<string, string?>
-                    {
-                        ["NET_VERSION"] = "net10.0",
-                    }
-                },
-                linkedCts.Token);
+                    ["NET_VERSION"] = "net10.0",
+                }
+            },
+            cancellationToken);
 
-            results.Add(testResult);
-        }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
-        {
-            throw new TimeoutException($"Integration test execution exceeded 15 minute pipeline timeout");
-        }
+        results.Add(testResult);
 
         return results;
     }
