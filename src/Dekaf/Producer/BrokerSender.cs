@@ -206,9 +206,16 @@ internal sealed class BrokerSender : IAsyncDisposable
                     ArrayPool<SemaphoreSlim>.Shared.Return(coalescedGates, clearArray: true);
                 }
 
-                // Re-enqueue carry-over batches to the channel so WaitToReadAsync wakes naturally
+                // Re-enqueue carry-over batches to the channel so WaitToReadAsync wakes naturally.
+                // If nothing was coalesced (all gates busy), yield to let response handlers
+                // release gates before the next iteration — prevents a tight spin loop.
                 if (carryOver is { Count: > 0 })
                 {
+                    if (coalescedCount == 0)
+                    {
+                        await Task.Yield();
+                    }
+
                     foreach (var batch in carryOver)
                     {
                         Enqueue(batch);
@@ -413,11 +420,11 @@ internal sealed class BrokerSender : IAsyncDisposable
 
                 if (partitionResponse is null)
                 {
-                    // No response — retriable: schedule retry (fire-and-forget)
+                    // No response — retriable: schedule retry (fire-and-forget, tracked for shutdown)
                     _logger?.LogWarning(
                         "[BrokerSender] No response for {Topic}-{Partition}",
                         expectedTopic, expectedPartition);
-                    _ = ScheduleRetryAsync(batch, gates[i], ErrorCode.NetworkException, cancellationToken);
+                    TrackRetryTask(ScheduleRetryAsync(batch, gates[i], ErrorCode.NetworkException, cancellationToken));
                     batches[i] = null!; // Mark as handed off
                     gates[i] = null!;
                     continue;
@@ -434,7 +441,7 @@ internal sealed class BrokerSender : IAsyncDisposable
                 {
                     if (partitionResponse.ErrorCode.IsRetriable())
                     {
-                        _ = ScheduleRetryAsync(batch, gates[i], partitionResponse.ErrorCode, cancellationToken);
+                        TrackRetryTask(ScheduleRetryAsync(batch, gates[i], partitionResponse.ErrorCode, cancellationToken));
                         batches[i] = null!;
                         gates[i] = null!;
                         continue;
@@ -495,7 +502,7 @@ internal sealed class BrokerSender : IAsyncDisposable
     /// Schedules a retry for a batch: performs backoff/OOSN coordination, releases the partition
     /// gate, then re-enqueues the batch to the appropriate BrokerSender (self or rerouted).
     /// This ensures retries go through the send loop's single-threaded path, preserving wire-order.
-    /// Fire-and-forget from HandleResponseAsync.
+    /// Fire-and-forget from HandleResponseAsync — tracked in _inFlightResponses for clean shutdown.
     /// </summary>
     private async Task ScheduleRetryAsync(
         ReadyBatch batch,
@@ -503,6 +510,8 @@ internal sealed class BrokerSender : IAsyncDisposable
         ErrorCode errorCode,
         CancellationToken cancellationToken)
     {
+        var gateReleased = false;
+
         try
         {
             var deliveryDeadlineTicks = Stopwatch.GetTimestamp() +
@@ -554,6 +563,7 @@ internal sealed class BrokerSender : IAsyncDisposable
             _statisticsCollector.RecordRetry();
 
             // Release partition gate before re-enqueue so the send loop can acquire it
+            gateReleased = true;
             ReleaseGate(partitionGate);
 
             // Re-resolve leader — may have changed
@@ -595,7 +605,8 @@ internal sealed class BrokerSender : IAsyncDisposable
             catch { /* Observe */ }
             _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
                 batch.CompletionSourcesCount, ex);
-            ReleaseGate(partitionGate);
+            if (!gateReleased)
+                ReleaseGate(partitionGate);
             CleanupBatch(batch);
         }
     }
@@ -699,6 +710,31 @@ internal sealed class BrokerSender : IAsyncDisposable
         {
             _inflightTracker?.Complete(entry);
             batch.InflightEntry = null;
+        }
+    }
+
+    /// <summary>
+    /// Tracks a retry task in _inFlightResponses so DisposeAsync waits for it.
+    /// Auto-removes when complete.
+    /// </summary>
+    private void TrackRetryTask(Task retryTask)
+    {
+        _inFlightResponses.TryAdd(retryTask, 0);
+
+        if (retryTask.IsCompleted)
+        {
+            _inFlightResponses.TryRemove(retryTask, out _);
+        }
+        else
+        {
+            _ = retryTask.ContinueWith(static (t, state) =>
+            {
+                var dict = (ConcurrentDictionary<Task, byte>)state!;
+                dict.TryRemove(t, out _);
+            }, _inFlightResponses,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
         }
     }
 
