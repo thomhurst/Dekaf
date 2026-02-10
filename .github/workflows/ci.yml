@@ -78,7 +78,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        category: [Producer, Consumer, ConsumerGroup, Transaction, Admin, Serialization, Resilience, Messaging]
+        category: [Producer, MultiInFlightProducer, Consumer, ConsumerGroup, Transaction, Admin, Serialization, Resilience, Messaging]
       fail-fast: false
 
     steps:

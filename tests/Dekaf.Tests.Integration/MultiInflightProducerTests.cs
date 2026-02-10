@@ -9,7 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// per-partition ordering, deliver all messages, and that non-idempotent
 /// producers retain single in-flight behavior.
 /// </summary>
-[Category("Producer")]
+[Category("MultiInFlightProducer")]
 public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
