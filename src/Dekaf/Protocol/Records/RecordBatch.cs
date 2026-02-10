@@ -110,6 +110,32 @@ public sealed class RecordBatch : IDisposable
     }
 
     /// <summary>
+    /// Creates a new RecordBatch with updated producer state (PID, epoch, base sequence).
+    /// All other fields are copied from this instance. Records reference is shared (immutable).
+    /// CRC is recomputed automatically during Write().
+    /// Used during epoch bump recovery to rewrite stale batches with new sequence numbers.
+    /// </summary>
+    internal RecordBatch WithProducerState(long producerId, short producerEpoch, int baseSequence)
+    {
+        return new RecordBatch
+        {
+            BaseOffset = BaseOffset,
+            BatchLength = BatchLength,
+            PartitionLeaderEpoch = PartitionLeaderEpoch,
+            Magic = Magic,
+            Crc = 0, // Will be recomputed during Write()
+            Attributes = Attributes,
+            LastOffsetDelta = LastOffsetDelta,
+            BaseTimestamp = BaseTimestamp,
+            MaxTimestamp = MaxTimestamp,
+            ProducerId = producerId,
+            ProducerEpoch = producerEpoch,
+            BaseSequence = baseSequence,
+            Records = Records
+        };
+    }
+
+    /// <summary>
     /// Writes the record batch to the output buffer.
     /// </summary>
     public void Write(IBufferWriter<byte> output, CompressionType compression = CompressionType.None, CompressionCodecRegistry? codecs = null)

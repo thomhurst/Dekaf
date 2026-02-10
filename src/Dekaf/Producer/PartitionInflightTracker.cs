@@ -303,6 +303,24 @@ internal sealed class PartitionInflightTracker
     }
 
     /// <summary>
+    /// Returns true if the entry is head-of-line (no predecessor) for its partition.
+    /// Must be checked under the partition state lock for consistency.
+    /// Used by epoch bump recovery to determine if a batch can trigger the bump.
+    /// </summary>
+    public bool IsHeadOfLine(InflightEntry entry)
+    {
+        if (!_partitions.TryGetValue(entry.TopicPartition, out var state))
+        {
+            return true; // Not tracked — treat as head-of-line
+        }
+
+        lock (state.Lock)
+        {
+            return entry.Previous is null;
+        }
+    }
+
+    /// <summary>
     /// Gets the number of in-flight batches for a partition. Diagnostic/testing only.
     /// </summary>
     public int GetInflightCount(TopicPartition topicPartition)

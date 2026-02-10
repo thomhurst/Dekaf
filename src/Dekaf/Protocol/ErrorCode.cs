@@ -156,11 +156,11 @@ public static class ErrorCodeExtensions
         ErrorCode.FetchSessionIdNotFound => true,
         ErrorCode.InvalidFetchSessionEpoch => true,
         ErrorCode.FencedLeaderEpoch => true,
+        ErrorCode.UnknownLeaderEpoch => true,
         ErrorCode.OffsetNotAvailable => true,
         ErrorCode.PreferredLeaderNotAvailable => true,
         ErrorCode.EligibleLeadersNotAvailable => true,
         ErrorCode.UnstableOffsetCommit => true,
-        ErrorCode.OutOfOrderSequenceNumber => true,
         ErrorCode.ThrottlingQuotaExceeded => true,
         _ => false
     };

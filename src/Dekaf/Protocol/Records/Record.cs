@@ -12,7 +12,7 @@ public readonly record struct Record
 {
     public int Length { get; init; }
     public byte Attributes { get; init; }
-    public int TimestampDelta { get; init; }
+    public long TimestampDelta { get; init; }
     public int OffsetDelta { get; init; }
     public ReadOnlyMemory<byte> Key { get; init; }
     public ReadOnlyMemory<byte> Value { get; init; }
@@ -42,8 +42,8 @@ public readonly record struct Record
         // Write attributes (always 0 for now)
         writer.WriteInt8((sbyte)Attributes);
 
-        // Write timestamp delta as varint
-        writer.WriteVarInt(TimestampDelta);
+        // Write timestamp delta as varlong (per Kafka spec)
+        writer.WriteVarLong(TimestampDelta);
 
         // Write offset delta as varint
         writer.WriteVarInt(OffsetDelta);
@@ -91,7 +91,7 @@ public readonly record struct Record
     {
         var length = reader.ReadVarInt();
         var attributes = (byte)reader.ReadInt8();
-        var timestampDelta = reader.ReadVarInt();
+        var timestampDelta = reader.ReadVarLong();
         var offsetDelta = reader.ReadVarInt();
 
         var keyLength = reader.ReadVarInt();
@@ -133,7 +133,7 @@ public readonly record struct Record
     {
         var size = 1; // attributes
 
-        size += VarIntSize(TimestampDelta);
+        size += VarLongSize(TimestampDelta);
         size += VarIntSize(OffsetDelta);
 
         if (IsKeyNull)
@@ -176,7 +176,24 @@ public readonly record struct Record
         return VarUIntSize(zigzag);
     }
 
+    internal static int VarLongSize(long value)
+    {
+        var zigzag = (ulong)((value << 1) ^ (value >> 63));
+        return VarULongSize(zigzag);
+    }
+
     internal static int VarUIntSize(uint value)
+    {
+        var size = 1;
+        while (value >= 0x80)
+        {
+            size++;
+            value >>= 7;
+        }
+        return size;
+    }
+
+    internal static int VarULongSize(ulong value)
     {
         var size = 1;
         while (value >= 0x80)

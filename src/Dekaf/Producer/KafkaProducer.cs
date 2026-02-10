@@ -2315,6 +2315,10 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     /// </summary>
     private BrokerSender GetOrCreateBrokerSender(int brokerId)
     {
+        // Epoch bump recovery is only for idempotent non-transactional producers.
+        // Transactional producers manage epochs via InitTransactionsAsync.
+        var isIdempotentNonTransactional = _options.EnableIdempotence && _options.TransactionalId is null;
+
         return _brokerSenders.GetOrAdd(brokerId, id => new BrokerSender(
             id,
             _connectionPool,
@@ -2330,6 +2334,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             version => Interlocked.CompareExchange(ref _produceApiVersion, version, -1),
             () => _accumulator.IsTransactional,
             EnsurePartitionInTransactionAsync,
+            bumpEpoch: isIdempotentNonTransactional ? BumpEpochAsync : null,
+            getCurrentEpoch: isIdempotentNonTransactional ? () => _producerEpoch : null,
             RerouteBatchToCurrentLeader,
             _interceptors is not null ? InvokeOnAcknowledgementForBatch : null,
             _logger));
@@ -2586,6 +2592,94 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
                 _logger?.LogDebug(
                     "InitProducerId returned retriable error {ErrorCode}, retrying in {DelayMs}ms",
+                    response.ErrorCode, retryDelayMs);
+
+                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                retryDelayMs = Math.Min(retryDelayMs * 2, _options.RetryBackoffMaxMs);
+            }
+        }
+        finally
+        {
+            _transactionLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Bumps the producer epoch by calling InitProducerId with the current PID/epoch.
+    /// The broker returns the same PID with an incremented epoch. Resets all partition
+    /// sequence numbers to 0 so subsequent batches use the new epoch.
+    /// Serialized by _transactionLock. The expectedEpoch parameter prevents redundant bumps
+    /// when multiple partitions fail in the same produce response — if another thread already
+    /// bumped the epoch, this returns the current state immediately.
+    /// </summary>
+    internal async ValueTask<(long ProducerId, short ProducerEpoch)> BumpEpochAsync(
+        short expectedEpoch, CancellationToken cancellationToken)
+    {
+        await _transactionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Another thread already bumped — return current state
+            if (_producerEpoch != expectedEpoch)
+            {
+                return (_producerId, _producerEpoch);
+            }
+
+            var initProducerIdVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.InitProducerId,
+                InitProducerIdRequest.LowestSupportedVersion,
+                InitProducerIdRequest.HighestSupportedVersion);
+
+            var retryDelayMs = _options.RetryBackoffMs;
+
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var brokers = _metadataManager.Metadata.GetBrokers();
+                if (brokers.Count == 0)
+                {
+                    throw new InvalidOperationException("No brokers available for epoch bump");
+                }
+
+                var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken)
+                    .ConfigureAwait(false);
+
+                var request = new InitProducerIdRequest
+                {
+                    TransactionalId = null,
+                    TransactionTimeoutMs = -1,
+                    ProducerId = _producerId,
+                    ProducerEpoch = _producerEpoch
+                };
+
+                var response = (InitProducerIdResponse)await connection
+                    .SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                        request, initProducerIdVersion, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (response.ErrorCode == ErrorCode.None)
+                {
+                    _producerId = response.ProducerId;
+                    _producerEpoch = response.ProducerEpoch;
+
+                    _accumulator.ProducerId = _producerId;
+                    _accumulator.ProducerEpoch = _producerEpoch;
+                    _accumulator.ResetSequenceNumbers();
+
+                    _logger?.LogDebug(
+                        "Bumped producer epoch: ProducerId={ProducerId}, Epoch={Epoch}",
+                        _producerId, _producerEpoch);
+                    return (_producerId, _producerEpoch);
+                }
+
+                if (!response.ErrorCode.IsRetriable())
+                {
+                    throw new KafkaException(response.ErrorCode,
+                        $"Failed to bump producer epoch: {response.ErrorCode}");
+                }
+
+                _logger?.LogDebug(
+                    "BumpEpoch InitProducerId returned retriable error {ErrorCode}, retrying in {DelayMs}ms",
                     response.ErrorCode, retryDelayMs);
 
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);

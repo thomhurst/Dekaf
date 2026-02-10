@@ -39,6 +39,8 @@ internal sealed class BrokerSender : IAsyncDisposable
     private readonly Func<SemaphoreSlim> _createPartitionGate;
     private readonly Action<ReadyBatch>? _rerouteBatch;
     private readonly Action<TopicPartition, long, DateTimeOffset, int, Exception?>? _onAcknowledgement;
+    private readonly Func<short, CancellationToken, ValueTask<(long ProducerId, short ProducerEpoch)>>? _bumpEpoch;
+    private readonly Func<short>? _getCurrentEpoch;
     private readonly ILogger? _logger;
 
     private readonly Channel<ReadyBatch> _batchChannel;
@@ -72,6 +74,8 @@ internal sealed class BrokerSender : IAsyncDisposable
         Action<int> setProduceApiVersion,
         Func<bool> isTransactional,
         Func<TopicPartition, CancellationToken, ValueTask>? ensurePartitionInTransaction,
+        Func<short, CancellationToken, ValueTask<(long ProducerId, short ProducerEpoch)>>? bumpEpoch,
+        Func<short>? getCurrentEpoch,
         Action<ReadyBatch>? rerouteBatch,
         Action<TopicPartition, long, DateTimeOffset, int, Exception?>? onAcknowledgement,
         ILogger? logger)
@@ -90,6 +94,8 @@ internal sealed class BrokerSender : IAsyncDisposable
         _setProduceApiVersion = setProduceApiVersion;
         _isTransactional = isTransactional;
         _ensurePartitionInTransaction = ensurePartitionInTransaction;
+        _bumpEpoch = bumpEpoch;
+        _getCurrentEpoch = getCurrentEpoch;
         _rerouteBatch = rerouteBatch;
         _onAcknowledgement = onAcknowledgement;
         _logger = logger;
@@ -380,6 +386,39 @@ internal sealed class BrokerSender : IAsyncDisposable
 
         try
         {
+            // Lazy epoch check: batches sealed in the channel before an epoch bump have stale
+            // producer epoch/sequence. Rewrite them before sending. The epoch comparison is a
+            // short compare (essentially free) — the rewrite branch only executes during recovery.
+            if (_getCurrentEpoch is not null)
+            {
+                var currentEpoch = _getCurrentEpoch();
+                for (var i = 0; i < count; i++)
+                {
+                    var batch = batches[i];
+                    var batchEpoch = batch.RecordBatch.ProducerEpoch;
+
+                    if (batchEpoch >= 0 && batchEpoch != currentEpoch)
+                    {
+                        // Stale batch — rewrite with current epoch and fresh sequence
+                        CompleteInflightEntry(batch);
+
+                        var tp = batch.TopicPartition;
+                        var recordCount = batch.RecordBatch.Records.Count;
+                        var newSeq = _accumulator.GetAndIncrementSequence(tp, recordCount);
+                        // Read producerId from accumulator (updated atomically with epoch)
+                        var currentPid = _accumulator.ProducerId;
+                        batch.RewriteRecordBatch(
+                            batch.RecordBatch.WithProducerState(currentPid, currentEpoch, newSeq));
+
+                        // Re-register with inflight tracker
+                        if (_inflightTracker is not null)
+                        {
+                            batch.InflightEntry = _inflightTracker.Register(tp, newSeq, recordCount);
+                        }
+                    }
+                }
+            }
+
             var connection = await _connectionPool.GetConnectionAsync(_brokerId, cancellationToken)
                 .ConfigureAwait(false);
 
@@ -537,7 +576,10 @@ internal sealed class BrokerSender : IAsyncDisposable
                 }
                 else if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
-                    if (partitionResponse.ErrorCode.IsRetriable())
+                    if (partitionResponse.ErrorCode.IsRetriable()
+                        || partitionResponse.ErrorCode == ErrorCode.OutOfOrderSequenceNumber
+                        || partitionResponse.ErrorCode == ErrorCode.InvalidProducerEpoch
+                        || partitionResponse.ErrorCode == ErrorCode.UnknownProducerId)
                     {
                         retryTasks ??= [];
                         retryTasks.Add(ScheduleRetryAsync(batch, gates[i], partitionResponse.ErrorCode, cancellationToken));
@@ -637,18 +679,73 @@ internal sealed class BrokerSender : IAsyncDisposable
                     (errorCode != ErrorCode.None ? $" (last error: {errorCode})" : ""));
             }
 
-            // Coordinated retry for OutOfOrderSequenceNumber
-            if (errorCode == ErrorCode.OutOfOrderSequenceNumber
+            // Epoch bump recovery for OOSN/InvalidProducerEpoch/UnknownProducerId
+            var isEpochBumpError = errorCode is ErrorCode.OutOfOrderSequenceNumber
+                or ErrorCode.InvalidProducerEpoch or ErrorCode.UnknownProducerId;
+
+            if (isEpochBumpError && _bumpEpoch is not null
                 && batch.InflightEntry is { } inflightEntry
                 && _inflightTracker is not null)
             {
+                var isHead = _inflightTracker.IsHeadOfLine(inflightEntry);
+
+                if (isHead)
+                {
+                    _logger?.LogDebug(
+                        "[BrokerSender] {ErrorCode} for {Topic}-{Partition} seq={Seq}, bumping epoch",
+                        errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
+                        inflightEntry.BaseSequence);
+
+                    // Bump epoch — serialized across all partitions by _transactionLock
+                    var (newPid, newEpoch) = await _bumpEpoch(
+                        batch.RecordBatch.ProducerEpoch, cancellationToken).ConfigureAwait(false);
+
+                    // Remove old inflight entry (stale sequence)
+                    CompleteInflightEntry(batch);
+
+                    // Assign new sequence and rewrite the record batch
+                    var tp = batch.TopicPartition;
+                    var recordCount = batch.RecordBatch.Records.Count;
+                    var newSeq = _accumulator.GetAndIncrementSequence(tp, recordCount);
+                    batch.RewriteRecordBatch(
+                        batch.RecordBatch.WithProducerState(newPid, newEpoch, newSeq));
+
+                    // Re-register with inflight tracker under new sequence
+                    batch.InflightEntry = _inflightTracker.Register(tp, newSeq, recordCount);
+                }
+                else
+                {
+                    // Not head-of-line — wait for predecessor (OOSN caused by predecessor failure)
+                    _logger?.LogDebug(
+                        "[BrokerSender] {ErrorCode} for {Topic}-{Partition} seq={Seq}, waiting for predecessor",
+                        errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
+                        inflightEntry.BaseSequence);
+
+                    try
+                    {
+                        await _inflightTracker.WaitForPredecessorAsync(inflightEntry, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception predecessorEx) when (predecessorEx is not OperationCanceledException)
+                    {
+                        _logger?.LogDebug(predecessorEx,
+                            "[BrokerSender] Predecessor failed for {Topic}-{Partition}, retrying",
+                            batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+                    }
+                }
+            }
+            else if (isEpochBumpError && _bumpEpoch is null
+                && batch.InflightEntry is { } txnInflightEntry
+                && _inflightTracker is not null)
+            {
+                // Transactional producer — no epoch bump, wait for predecessor (existing behavior)
                 _logger?.LogDebug(
-                    "[BrokerSender] OOSN for {Topic}-{Partition} seq={Seq}, waiting for predecessor",
-                    batch.TopicPartition.Topic, batch.TopicPartition.Partition, inflightEntry.BaseSequence);
+                    "[BrokerSender] OOSN for {Topic}-{Partition} seq={Seq}, waiting for predecessor (transactional)",
+                    batch.TopicPartition.Topic, batch.TopicPartition.Partition, txnInflightEntry.BaseSequence);
 
                 try
                 {
-                    await _inflightTracker.WaitForPredecessorAsync(inflightEntry, cancellationToken)
+                    await _inflightTracker.WaitForPredecessorAsync(txnInflightEntry, cancellationToken)
                         .ConfigureAwait(false);
                 }
                 catch (Exception predecessorEx) when (predecessorEx is not OperationCanceledException)

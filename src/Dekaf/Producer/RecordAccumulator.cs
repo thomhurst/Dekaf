@@ -2767,7 +2767,7 @@ internal sealed class PartitionBatch
             _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
         }
 
-        var timestampDelta = (int)(timestamp - _baseTimestamp);
+        var timestampDelta = timestamp - _baseTimestamp;
         var record = new Record
         {
             TimestampDelta = timestampDelta,
@@ -2976,7 +2976,7 @@ internal sealed class PartitionBatch
             _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
         }
 
-        var timestampDelta = (int)(timestamp - _baseTimestamp);
+        var timestampDelta = timestamp - _baseTimestamp;
         var record = new Record
         {
             TimestampDelta = timestampDelta,
@@ -3098,7 +3098,7 @@ internal sealed class PartitionBatch
             _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
         }
 
-        var timestampDelta = (int)(timestamp - _baseTimestamp);
+        var timestampDelta = timestamp - _baseTimestamp;
         var record = new Record
         {
             TimestampDelta = timestampDelta,
@@ -3197,7 +3197,7 @@ internal sealed class PartitionBatch
         // Create record with Memory referencing the arena buffer
         // Key and value data is already in the arena, we just store the slice info
         var arena = _arena!;
-        var timestampDelta = (int)(timestamp - _baseTimestamp);
+        var timestampDelta = timestamp - _baseTimestamp;
         var record = new Record
         {
             TimestampDelta = timestampDelta,
@@ -3338,7 +3338,7 @@ internal sealed class PartitionBatch
 
         // Create record with Memory referencing the arena buffer
         var arena = _arena!;
-        var timestampDelta = (int)(timestamp - _baseTimestamp);
+        var timestampDelta = timestamp - _baseTimestamp;
         var record = new Record
         {
             TimestampDelta = timestampDelta,
@@ -3511,7 +3511,7 @@ internal sealed class PartitionBatch
                     _pooledHeaderArrays[_pooledHeaderArrayCount++] = item.PooledHeaderArray;
                 }
 
-                var timestampDelta = (int)(item.Timestamp - _baseTimestamp);
+                var timestampDelta = item.Timestamp - _baseTimestamp;
                 _records[_recordCount] = new Record
                 {
                     TimestampDelta = timestampDelta,
@@ -3859,6 +3859,12 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     // In-flight tracker entry for coordinated retry with multiple in-flight batches per partition.
     // Set by KafkaProducer when registering with PartitionInflightTracker, cleared in Reset().
     internal InflightEntry? InflightEntry { get; set; }
+
+    /// <summary>
+    /// Replaces the record batch with a rewritten one (updated PID/epoch/sequence).
+    /// Only called during epoch bump recovery — not in the hot path.
+    /// </summary>
+    internal void RewriteRecordBatch(RecordBatch newRecordBatch) => _recordBatch = newRecordBatch;
 
     /// <summary>
     /// When true, this batch is a same-broker retry that already holds its partition gate.
