@@ -68,9 +68,8 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
         var arguments = new List<string>
         {
             "--",
-            "--timeout", "25m",
             "--hangdump",
-            "--hangdump-timeout", "15m", // Dump well before timeout — needs ~7m headroom for dump capture via IPC
+            "--hangdump-timeout", "20m", // Module timeout (30m) is the hard backstop
             "--log-level", "Trace",
             "--output", "Detailed",
             "--treenode-filter", $"/**[Category={Category}]"
