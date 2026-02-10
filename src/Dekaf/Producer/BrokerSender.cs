@@ -57,6 +57,10 @@ internal sealed class BrokerSender : IAsyncDisposable
     private readonly Func<bool> _isTransactional;
     private readonly Func<TopicPartition, CancellationToken, ValueTask>? _ensurePartitionInTransaction;
 
+    // Signalled by ReleaseGate so the send loop can wake up when a partition gate becomes free,
+    // without acquiring the gate itself (avoids phantom-waiter accumulation on the SemaphoreSlim).
+    private volatile TaskCompletionSource? _gateReleasedSignal;
+
     private volatile bool _disposed;
 
     public BrokerSender(
@@ -204,6 +208,14 @@ internal sealed class BrokerSender : IAsyncDisposable
                 if (drainCount == 0)
                     continue;
 
+                // Register gate-release signal BEFORE Phase 2 gate checks. This prevents a
+                // race where ReleaseGate fires between our gate check (Phase 2) and the wait
+                // (Phase 3), which would miss the notification and deadlock.
+                // The signal is only consumed when coalescedCount == 0 (all gates busy).
+                // In the common case (coalescedCount > 0), the signal is harmlessly orphaned.
+                var gateSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                Volatile.Write(ref _gateReleasedSignal, gateSignal);
+
                 // Phase 2: Coalesce — at most one batch per partition per request
                 coalescedPartitions.Clear();
                 List<ReadyBatch>? newCarryOver = null;
@@ -266,40 +278,16 @@ internal sealed class BrokerSender : IAsyncDisposable
                     ArrayPool<SemaphoreSlim>.Shared.Return(coalescedGates, clearArray: true);
 
                     // All carry-over batches have busy gates. Wait for either:
-                    // 1. A gate to free up (in-flight batch completes successfully), or
+                    // 1. A gate to free up (ReleaseGate sets _gateReleasedSignal), or
                     // 2. New channel data arrives (retry batch with pre-acquired gate).
-                    // Using WhenAny prevents deadlock when a failed batch retries with its
-                    // gate held (IsRetry=true) — in that case the gate won't be released
-                    // until the retry batch is processed by the send loop.
-                    var blockedGate = _partitionSendGates.GetOrAdd(
-                        newCarryOver![0].TopicPartition, _ => _createPartitionGate());
-
-                    var gateWaitTask = blockedGate.WaitAsync(cancellationToken);
-                    if (gateWaitTask.IsCompletedSuccessfully)
-                    {
-                        blockedGate.Release();
-                    }
-                    else
-                    {
-                        var channelWaitTask = channelReader.WaitToReadAsync(cancellationToken).AsTask();
-                        await Task.WhenAny(gateWaitTask, channelWaitTask).ConfigureAwait(false);
-
-                        if (gateWaitTask.IsCompletedSuccessfully)
-                        {
-                            blockedGate.Release();
-                        }
-                        else if (!gateWaitTask.IsCompleted)
-                        {
-                            // Channel data arrived first (likely a retry batch).
-                            // The pending gate wait will eventually complete — release it then.
-                            _ = gateWaitTask.ContinueWith(static (_, state) =>
-                            {
-                                try { ((SemaphoreSlim)state!).Release(); }
-                                catch { /* Disposal race */ }
-                            }, blockedGate, CancellationToken.None,
-                            TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
-                        }
-                    }
+                    //
+                    // We use a TaskCompletionSource signal instead of SemaphoreSlim.WaitAsync
+                    // to avoid acquiring the gate. WaitAsync caused a livelock: each iteration
+                    // queued a pending waiter on the semaphore, and when the gate was finally
+                    // released, each Release() fed a pending waiter instead of incrementing the
+                    // count — keeping the gate permanently at 0.
+                    var channelWaitTask = channelReader.WaitToReadAsync(cancellationToken).AsTask();
+                    await Task.WhenAny(gateSignal.Task, channelWaitTask).ConfigureAwait(false);
                 }
 
                 // Merge new carry-over into persistent list for next iteration
@@ -648,15 +636,16 @@ internal sealed class BrokerSender : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            // Entire send failed — fail all remaining batches
+            // Entire send failed — fail all remaining batches.
+            // Release gates BEFORE cleanup to prevent gate leaks if FailAndCleanupBatch throws.
             _logger?.LogError(ex, "BrokerSender[{BrokerId}] response handling failed", _brokerId);
 
             for (var i = 0; i < count; i++)
             {
                 if (batches[i] is null) continue; // Already handled
-                FailAndCleanupBatch(batches[i], ex);
                 if (gates[i] is not null)
                     ReleaseGate(gates[i]);
+                FailAndCleanupBatch(batches[i], ex);
             }
         }
         finally
@@ -958,10 +947,13 @@ internal sealed class BrokerSender : IAsyncDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ReleaseGate(SemaphoreSlim gate)
+    private void ReleaseGate(SemaphoreSlim gate)
     {
         try { gate.Release(); }
         catch (ObjectDisposedException) { /* Disposal race */ }
+
+        // Wake the send loop if it's waiting for a gate to become available.
+        Interlocked.Exchange(ref _gateReleasedSignal, null)?.TrySetResult();
     }
 
     /// <summary>
