@@ -397,10 +397,26 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
         }
         else
         {
-            // No more messages means auto-commit worked and we've consumed everything
-            var committed = await consumer2.GetCommittedOffsetAsync(new TopicPartition(topic, 0)).ConfigureAwait(false);
-            await Assert.That(committed).IsNotNull();
-            await Assert.That(committed!.Value).IsGreaterThanOrEqualTo(3);
+            // No more messages means auto-commit worked and we've consumed everything.
+            // Retry GetCommittedOffsetAsync to handle transient IOException from connection
+            // churn after consumer1 disposal (coordinator may be mid-rebalance).
+            long? committedValue = null;
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                try
+                {
+                    var committed = await consumer2.GetCommittedOffsetAsync(new TopicPartition(topic, 0)).ConfigureAwait(false);
+                    committedValue = committed;
+                    break;
+                }
+                catch (IOException) when (attempt < 2)
+                {
+                    await Task.Delay(1000).ConfigureAwait(false);
+                }
+            }
+
+            await Assert.That(committedValue).IsNotNull();
+            await Assert.That(committedValue!.Value).IsGreaterThanOrEqualTo(3);
         }
     }
 }

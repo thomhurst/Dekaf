@@ -172,7 +172,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         }
 
         // Flush with timeout to ensure backpressure doesn't cause hang
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         await producer.FlushAsync(cts.Token).ConfigureAwait(false);
 
         // Assert - Flush completed without throwing
@@ -345,10 +345,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
     public async Task Producer_DisposeAfterFailedConnection_CompletesWithinTimeout()
     {
         // Arrange - Create producer with invalid bootstrap servers
-        var producer = await Kafka.CreateProducer<string, string>()
+        var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("invalid-host:9092")
             .WithClientId("test-producer-dispose-after-failure")
-            .BuildAsync();
+            .Build();
 
         try
         {

@@ -130,10 +130,10 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
     public async Task InvalidBootstrapServers_ProduceAsync_ThrowsWithContext()
     {
         // Arrange - invalid host that won't resolve
-        var producer = await Kafka.CreateProducer<string, string>()
+        var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("invalid-host-that-does-not-exist:9092")
             .WithClientId("test-invalid-bootstrap")
-            .BuildAsync();
+            .Build();
 
         try
         {

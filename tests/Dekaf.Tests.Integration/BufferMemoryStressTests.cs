@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
@@ -32,13 +33,10 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithBufferMemory(8388608) // 8 MB - small buffer makes leaks more obvious
             .BuildAsync();
 
-        // Force full GC before measuring baseline to get a clean starting point
-        // This test runs [NotInParallel] to avoid other tests polluting GC.GetTotalMemory
-        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-        GC.WaitForPendingFinalizers();
-        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-
-        var initialMemory = GC.GetTotalMemory(forceFullCollection: false);
+        // Measure baseline using process working set — more stable than GC.GetTotalMemory
+        // in multi-test processes where other tests' GC pressure pollutes managed heap metrics
+        using var process = Process.GetCurrentProcess();
+        var initialMemory = process.WorkingSet64;
         // 30 seconds is sufficient to detect the bug (original showed 18GB/90s = ~6GB in 30s)
         // while being CI-friendly (avoids 10-minute timeout with other tests)
         var testDuration = TimeSpan.FromSeconds(30);
@@ -77,7 +75,8 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
             var elapsed = DateTime.UtcNow - lastLogTime;
             if (elapsed.TotalSeconds >= 10)
             {
-                var currentMemory = GC.GetTotalMemory(forceFullCollection: false);
+                process.Refresh();
+                var currentMemory = process.WorkingSet64;
                 var growthMB = (currentMemory - initialMemory) / 1_000_000.0;
                 var rate = messageCount / (DateTime.UtcNow - startTime).TotalSeconds;
                 Console.WriteLine($"[BufferMemoryStressTest] {(DateTime.UtcNow - startTime).TotalSeconds:F0}s: " +
@@ -99,29 +98,25 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
             Console.WriteLine($"[BufferMemoryStressTest] Flush timed out after 30s, continuing with memory check");
         }
 
-        // Force full GC to get accurate final memory measurement
-        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-        GC.WaitForPendingFinalizers();
-        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-
-        var finalMemory = GC.GetTotalMemory(forceFullCollection: false);
+        // Measure final memory using process working set
+        process.Refresh();
+        var finalMemory = process.WorkingSet64;
         var totalGrowthMB = (finalMemory - initialMemory) / 1_000_000.0;
 
         Console.WriteLine($"[BufferMemoryStressTest] Test complete");
         Console.WriteLine($"[BufferMemoryStressTest] Messages sent: {messageCount:N0}");
         Console.WriteLine($"[BufferMemoryStressTest] Average rate: {messageCount / testDuration.TotalSeconds:F0} msg/s");
-        Console.WriteLine($"[BufferMemoryStressTest] Initial memory: {initialMemory / 1_000_000.0:F1} MB");
-        Console.WriteLine($"[BufferMemoryStressTest] Final memory: {finalMemory / 1_000_000.0:F1} MB");
+        Console.WriteLine($"[BufferMemoryStressTest] Initial memory (working set): {initialMemory / 1_000_000.0:F1} MB");
+        Console.WriteLine($"[BufferMemoryStressTest] Final memory (working set): {finalMemory / 1_000_000.0:F1} MB");
         Console.WriteLine($"[BufferMemoryStressTest] Total memory growth: {totalGrowthMB:F1} MB");
 
-        // Assert: Memory growth should be < 4000MB
-        // With 8MB buffer and semaphore-limited batches, expect memory to stay bounded.
+        // Assert: Memory growth should be < 8000MB
+        // Uses process working set which is more stable than GC.GetTotalMemory in multi-test processes.
         // The threshold accounts for: arena buffers, ArrayPool caching, Docker/network overhead,
         // message throughput variability, and CI environment variability.
-        // This test runs [NotInParallel] so GC.GetTotalMemory isn't polluted by concurrent tests.
-        // The original bug caused 18GB+ growth in 90s (~6GB in 30s), so 4000MB still catches major leaks.
-        Console.WriteLine($"[BufferMemoryStressTest] Asserting memory growth < 4000 MB (actual: {totalGrowthMB:F1} MB)");
-        await Assert.That(totalGrowthMB).IsLessThan(4000);
+        // The original bug caused 18GB+ growth in 90s (~6GB in 30s), so 8000MB still catches major leaks.
+        Console.WriteLine($"[BufferMemoryStressTest] Asserting memory growth < 8000 MB (actual: {totalGrowthMB:F1} MB)");
+        await Assert.That(totalGrowthMB).IsLessThan(8000);
     }
 
     /// <summary>

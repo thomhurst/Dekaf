@@ -609,7 +609,7 @@ public sealed class MetadataManager : IAsyncDisposable
         {
             try
             {
-                await _backgroundRefreshTask.ConfigureAwait(false);
+                await _backgroundRefreshTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch
             {
