@@ -69,7 +69,7 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
         {
             "--",
             "--hangdump",
-            "--hangdump-timeout", "20m", // Module timeout (30m) is the hard backstop
+            "--hangdump-timeout", "15m", // Module timeout (30m) is the hard backstop
             "--log-level", "Trace",
             "--output", "Detailed",
             "--treenode-filter", $"/**[Category={Category}]"
