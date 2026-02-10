@@ -986,24 +986,24 @@ internal sealed class BrokerSender : IAsyncDisposable
 
         _disposed = true;
 
-        // Complete channel — send loop will drain remaining batches
+        // Complete channel — send loop will see channel completed and exit
         _batchChannel.Writer.Complete();
 
-        // Wait for send loop to finish draining
+        // Cancel CTS FIRST so WaitToReadAsync, WaitAsync(cancellationToken), and
+        // in-flight HandleResponseAsync/ScheduleRetryAsync calls are interrupted promptly.
+        // Previously this happened AFTER the 10s send loop wait, which meant the send loop
+        // could block on semaphore/gate waits with no way to be interrupted.
+        await _cts.CancelAsync().ConfigureAwait(false);
+
+        // Wait for send loop to finish (should exit quickly now that CTS is cancelled)
         try
         {
-            await _sendLoopTask.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            await _sendLoopTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
         catch
         {
-            // Timeout — cancel to force exit
-            try { await _sendLoopTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
-            catch { /* Best effort */ }
+            // Best effort — send loop didn't exit in time
         }
-
-        // Always cancel CTS so HandleResponseAsync retry tasks terminate promptly.
-        // Without this, retries continue running after DisposeAsync returns, using disposed resources.
-        await _cts.CancelAsync().ConfigureAwait(false);
 
         // Wait for in-flight responses
         var inFlightTasks = _inFlightResponses.Keys.ToArray();

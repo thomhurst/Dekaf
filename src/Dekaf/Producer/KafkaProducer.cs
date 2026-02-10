@@ -2349,6 +2349,20 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     {
         try
         {
+            // During disposal, don't create new BrokerSenders — fail the batch instead.
+            // Without this guard, retries that discover leader changes create new senders
+            // via GetOrCreateBrokerSender after the disposal loop has already snapshotted
+            // _brokerSenders, leaving orphaned send loops that prevent process exit.
+            if (_disposed)
+            {
+                CompleteInflightEntry(batch);
+                try { batch.Fail(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>))); }
+                catch { /* Observe */ }
+                _accumulator.ReturnReadyBatch(batch);
+                _accumulator.OnBatchExitsPipeline();
+                return;
+            }
+
             var leader = _metadataManager.Metadata.GetPartitionLeader(
                 batch.TopicPartition.Topic, batch.TopicPartition.Partition);
 
@@ -2859,18 +2873,26 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // Ignore
         }
 
-        // Dispose all per-broker senders (drains channels, waits for in-flight responses)
-        foreach (var (_, sender) in _brokerSenders)
+        // Dispose all per-broker senders (drains channels, waits for in-flight responses).
+        // Loop until no new senders were created during the iteration — a retry's
+        // RerouteBatchToCurrentLeader callback could race with the _disposed guard and
+        // create a new sender after we've started iterating.
+        int previousCount;
+        do
         {
-            try
+            previousCount = _brokerSenders.Count;
+            foreach (var (_, sender) in _brokerSenders)
             {
-                await sender.DisposeAsync().ConfigureAwait(false);
+                try
+                {
+                    await sender.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogError(ex, "Failed to dispose broker sender");
+                }
             }
-            catch (Exception ex)
-            {
-                _logger?.LogError(ex, "Failed to dispose broker sender");
-            }
-        }
+        } while (_brokerSenders.Count > previousCount);
         _brokerSenders.Clear();
 
         _senderCts.Dispose();
