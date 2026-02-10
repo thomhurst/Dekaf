@@ -127,7 +127,6 @@ jobs:
           name: hangdump-artifacts-${{ matrix.category }}
           path: |
             **/*.dmp
-            **/hangdump*
           if-no-files-found: ignore
           retention-days: 7
 
