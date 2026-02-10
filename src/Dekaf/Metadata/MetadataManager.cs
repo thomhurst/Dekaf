@@ -106,10 +106,27 @@ public sealed class MetadataManager : IAsyncDisposable
 
     /// <summary>
     /// Initializes the metadata manager by fetching initial metadata.
+    /// Retries with exponential backoff matching Java client's reconnect.backoff behavior.
     /// </summary>
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
-        await RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+        var backoffMs = _options.RetryBackoffMs;
+
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+                break;
+            }
+            catch (Exception ex) when (attempt < _options.MaxInitRetries && !cancellationToken.IsCancellationRequested)
+            {
+                _logger?.LogWarning(ex, "Metadata initialization attempt {Attempt} failed, retrying in {BackoffMs}ms",
+                    attempt + 1, backoffMs);
+                await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false);
+                backoffMs = Math.Min(backoffMs * 2, _options.RetryBackoffMaxMs);
+            }
+        }
 
         if (_options.EnableBackgroundRefresh)
         {
@@ -657,4 +674,22 @@ public sealed class MetadataOptions
     /// Default is 300000 (5 minutes).
     /// </summary>
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
+
+    /// <summary>
+    /// Initial retry backoff in milliseconds for metadata initialization.
+    /// Matches Java client's reconnect.backoff.ms. Default is 100ms.
+    /// </summary>
+    public int RetryBackoffMs { get; init; } = 100;
+
+    /// <summary>
+    /// Maximum retry backoff in milliseconds for metadata initialization.
+    /// Matches Java client's reconnect.backoff.max.ms. Default is 1000ms.
+    /// </summary>
+    public int RetryBackoffMaxMs { get; init; } = 1000;
+
+    /// <summary>
+    /// Maximum number of retries for initial metadata fetch.
+    /// Default is 3 (matching Kafka convention).
+    /// </summary>
+    public int MaxInitRetries { get; init; } = 3;
 }

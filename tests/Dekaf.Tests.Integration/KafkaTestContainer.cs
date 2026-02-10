@@ -128,31 +128,18 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 
     private async Task CreateTopicViaAdminClientAsync(string topicName, int partitions, int replicationFactor)
     {
-        for (var attempt = 0; attempt < 3; attempt++)
-        {
-            try
-            {
-                await using var adminClient = Kafka.CreateAdminClient()
-                    .WithBootstrapServers(BootstrapServers)
-                    .Build();
+        await using var adminClient = Kafka.CreateAdminClient()
+            .WithBootstrapServers(BootstrapServers)
+            .Build();
 
-                await adminClient.CreateTopicsAsync([
-                    new NewTopic
-                    {
-                        Name = topicName,
-                        NumPartitions = partitions,
-                        ReplicationFactor = (short)replicationFactor
-                    }
-                ]).ConfigureAwait(false);
-
-                return;
-            }
-            catch (Exception) when (attempt < 2)
+        await adminClient.CreateTopicsAsync([
+            new NewTopic
             {
-                Console.WriteLine($"[KafkaTestContainer] Topic creation attempt {attempt + 1} failed for '{topicName}', retrying...");
-                await Task.Delay(2000).ConfigureAwait(false);
+                Name = topicName,
+                NumPartitions = partitions,
+                ReplicationFactor = (short)replicationFactor
             }
-        }
+        ]).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()
