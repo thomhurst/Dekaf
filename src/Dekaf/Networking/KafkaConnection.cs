@@ -1456,7 +1456,7 @@ public sealed class KafkaConnection : IKafkaConnection
         {
             try
             {
-                await _receiveTask.ConfigureAwait(false);
+                await _receiveTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch
             {

@@ -1037,7 +1037,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         {
             try
             {
-                await _heartbeatTask.ConfigureAwait(false);
+                await _heartbeatTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch
             {
@@ -1063,7 +1063,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         {
             try
             {
-                await _heartbeatTask.ConfigureAwait(false);
+                await _heartbeatTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch
             {

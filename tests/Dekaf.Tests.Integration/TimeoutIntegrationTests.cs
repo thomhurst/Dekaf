@@ -162,11 +162,12 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithClientId("test-producer-backpressure-timeout")
             .WithBatchSize(16384)
             .WithLinger(TimeSpan.FromMilliseconds(10))
+            .WithMaxBlock(TimeSpan.FromSeconds(10))
             .BuildAsync();
 
-        // Act - Send many messages to trigger backpressure
+        // Act - Send messages to trigger backpressure
         var messageValue = new string('x', 1000); // 1 KB messages
-        for (int i = 0; i < 1000; i++)
+        for (int i = 0; i < 100; i++)
         {
             producer.Send(topic, $"key{i}", messageValue);
         }

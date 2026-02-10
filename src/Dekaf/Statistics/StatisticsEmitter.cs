@@ -57,7 +57,7 @@ internal sealed class StatisticsEmitter<TStatistics> : IAsyncDisposable
 
         try
         {
-            await _emitTask.ConfigureAwait(false);
+            await _emitTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
         catch
         {
