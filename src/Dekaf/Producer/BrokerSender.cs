@@ -168,6 +168,12 @@ internal sealed class BrokerSender : IAsyncDisposable
         {
             while (true)
             {
+                // Must check cancellation at every iteration — when carry-over batches exist
+                // with busy gates (coalescedCount==0), the WhenAny path below completes without
+                // propagating the OCE from the cancelled token. Without this check the loop
+                // spins indefinitely, preventing process exit after disposal.
+                cancellationToken.ThrowIfCancellationRequested();
+
                 // Phase 1: Fill drain buffer — carry-over first (ordering), then channel
                 var drainCount = 0;
 
