@@ -425,6 +425,28 @@ internal sealed class BrokerSender : IAsyncDisposable
                 }
             }
 
+            // Register fresh batches with inflight tracker at send time (not drain time).
+            // Retry batches already have entries from ScheduleRetryAsync; stale batches were
+            // re-registered above. Only fresh batches (InflightEntry == null) need registration.
+            //
+            // Registration at send time prevents a deadlock where queued-but-not-sent batches
+            // appear as predecessors of retry batches in WaitForPredecessorAsync but can never
+            // complete because the retry batch holds the partition gate.
+            if (_inflightTracker is not null)
+            {
+                for (var i = 0; i < count; i++)
+                {
+                    var batch = batches[i];
+                    if (batch.InflightEntry is null && batch.RecordBatch.BaseSequence >= 0)
+                    {
+                        batch.InflightEntry = _inflightTracker.Register(
+                            batch.TopicPartition,
+                            batch.RecordBatch.BaseSequence,
+                            batch.CompletionSourcesCount);
+                    }
+                }
+            }
+
             var connection = await _connectionPool.GetConnectionAsync(_brokerId, cancellationToken)
                 .ConfigureAwait(false);
 

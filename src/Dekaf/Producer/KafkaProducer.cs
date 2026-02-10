@@ -2201,15 +2201,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     // Complete delivery task (fire-and-forget semantic: batch is "ready")
                     batch.CompleteDelivery();
 
-                    // Register with inflight tracker for coordinated retry (idempotent producers only).
-                    // Single-threaded drain context guarantees registration order matches sequence order.
-                    if (_inflightTracker is not null && batch.RecordBatch.BaseSequence >= 0)
-                    {
-                        batch.InflightEntry = _inflightTracker.Register(
-                            batch.TopicPartition,
-                            batch.RecordBatch.BaseSequence,
-                            batch.CompletionSourcesCount);
-                    }
+                    // NOTE: Inflight tracker registration is deferred to BrokerSender.SendCoalescedAsync
+                    // (send time) rather than here (drain time). Registering at drain time caused a
+                    // deadlock: queued-but-not-sent batches appeared as predecessors of retry batches
+                    // in the inflight list, but could never complete because the retry batch held the
+                    // partition gate. Moving registration to send time ensures only batches actually
+                    // hitting the wire are tracked.
 
                     // Release buffer memory as soon as the sender dequeues the batch.
                     _accumulator.ReleaseMemory(batch.DataSize);
