@@ -7,7 +7,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Integration tests for backpressure and flow control behavior.
 /// Verifies buffer memory limits, MaxBlock timeouts, and consumer pause/resume functionality.
 /// </summary>
-[Category("Producer")]
+[Category("Backpressure")]
 public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

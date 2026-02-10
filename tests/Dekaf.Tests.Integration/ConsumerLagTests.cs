@@ -6,7 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for consumer lag tracking via watermark offsets and position.
 /// </summary>
-[Category("Consumer")]
+[Category("ConsumerLag")]
 public sealed class ConsumerLagTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

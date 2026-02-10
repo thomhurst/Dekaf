@@ -6,7 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for watermark offsets functionality.
 /// </summary>
-[Category("Messaging")]
+[Category("Offsets")]
 public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

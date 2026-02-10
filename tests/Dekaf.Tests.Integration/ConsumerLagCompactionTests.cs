@@ -9,7 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// Log compaction removes older records with duplicate keys, which can affect watermark offsets
 /// and lag calculations. These tests ensure the client correctly reports lag in compacted topics.
 /// </summary>
-[Category("Consumer")]
+[Category("ConsumerLag")]
 public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     /// <summary>

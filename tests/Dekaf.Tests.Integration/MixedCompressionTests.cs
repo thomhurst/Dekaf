@@ -10,7 +10,7 @@ namespace Dekaf.Tests.Integration;
 /// mixing compressed and uncompressed batches, all-codec interoperability,
 /// and large compressed batch decompression.
 /// </summary>
-[Category("Messaging")]
+[Category("Compression")]
 public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

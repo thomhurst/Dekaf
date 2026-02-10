@@ -9,7 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for producing with Zstd compression and consuming, verifying data integrity.
 /// Codec registration is handled by <see cref="GlobalTestSetup"/>.
 /// </summary>
-[Category("Messaging")]
+[Category("Compression")]
 public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

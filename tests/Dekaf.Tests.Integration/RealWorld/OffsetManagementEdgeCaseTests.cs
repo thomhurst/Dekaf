@@ -9,7 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies out-of-order commits, commit-ahead-of-consumed, AutoOffsetReset.None behavior,
 /// empty commit list handling, and uncommitted offset retrieval.
 /// </summary>
-[Category("Messaging")]
+[Category("Offsets")]
 public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
