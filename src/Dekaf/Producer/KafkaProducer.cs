@@ -1665,8 +1665,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     };
                 }
 
-                if (response.ErrorCode == ErrorCode.CoordinatorLoadInProgress ||
-                    response.ErrorCode == ErrorCode.CoordinatorNotAvailable)
+                if (response.ErrorCode is ErrorCode.CoordinatorLoadInProgress
+                    or ErrorCode.CoordinatorNotAvailable
+                    or ErrorCode.ConcurrentTransactions)
                 {
                     _logger?.LogDebug(
                         "InitProducerId retriable error ({ErrorCode}, attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
