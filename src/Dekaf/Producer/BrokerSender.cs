@@ -87,7 +87,7 @@ internal sealed class BrokerSender : IAsyncDisposable
     // when OutOfOrderSequenceNumber is received. The single-threaded send loop checks
     // this before coalescing and bumps the epoch if needed, eliminating all races
     // between concurrent response handlers. Value is the stale epoch (-1 = no bump needed).
-    private volatile int _epochBumpRequestedForEpoch = -1;
+    private int _epochBumpRequestedForEpoch = -1;
 
     private volatile bool _disposed;
 
