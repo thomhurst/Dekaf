@@ -709,6 +709,14 @@ internal sealed class BrokerSender : IAsyncDisposable
                     // Remove old inflight entry (stale sequence)
                     CompleteInflightEntry(batch);
 
+                    // Signal ALL remaining in-flight entries for this partition to wake up.
+                    // After epoch bump, all successors have stale epoch/sequence and will be
+                    // re-sequenced by SendCoalescedAsync's stale epoch check when re-sent.
+                    // Aligned with Java Kafka's Sender.completeOutstandingBatches().
+                    _inflightTracker.FailAll(batch.TopicPartition,
+                        new KafkaException(ErrorCode.OutOfOrderSequenceNumber,
+                            "Epoch bumped, re-sequencing required"));
+
                     // Assign new sequence and rewrite the record batch
                     var tp = batch.TopicPartition;
                     var recordCount = batch.RecordBatch.Records.Count;
@@ -721,45 +729,33 @@ internal sealed class BrokerSender : IAsyncDisposable
                 }
                 else
                 {
-                    // Not head-of-line — wait for predecessor (OOSN caused by predecessor failure)
+                    // Not head-of-line — the head will bump epoch and call FailAll, which
+                    // clears all inflight entries for the partition. No need to wait for
+                    // predecessor: the send loop's stale epoch check (SendCoalescedAsync)
+                    // will resequence this batch with fresh PID/epoch/sequence when re-sent.
+                    // The mute set prevents out-of-order sends in the meantime.
                     _logger?.LogDebug(
-                        "[BrokerSender] {ErrorCode} for {Topic}-{Partition} seq={Seq}, waiting for predecessor",
+                        "[BrokerSender] {ErrorCode} for {Topic}-{Partition} seq={Seq}, re-enqueueing (not head-of-line)",
                         errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
                         inflightEntry.BaseSequence);
 
-                    try
-                    {
-                        await _inflightTracker.WaitForPredecessorAsync(inflightEntry, cancellationToken)
-                            .ConfigureAwait(false);
-                    }
-                    catch (Exception predecessorEx) when (predecessorEx is not OperationCanceledException)
-                    {
-                        _logger?.LogDebug(predecessorEx,
-                            "[BrokerSender] Predecessor failed for {Topic}-{Partition}, retrying",
-                            batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                    }
+                    // Clear stale inflight entry — FailAll will remove it from the tracker.
+                    batch.InflightEntry = null;
                 }
             }
             else if (isEpochBumpError && _bumpEpoch is null
                 && batch.InflightEntry is { } txnInflightEntry
                 && _inflightTracker is not null)
             {
-                // Transactional producer — no epoch bump, wait for predecessor (existing behavior)
+                // Transactional producer — no epoch bump. MaxInFlight=1 for transactional,
+                // so no predecessor chain. Just clear entry and re-enqueue.
                 _logger?.LogDebug(
-                    "[BrokerSender] OOSN for {Topic}-{Partition} seq={Seq}, waiting for predecessor (transactional)",
+                    "[BrokerSender] OOSN for {Topic}-{Partition} seq={Seq}, re-enqueueing (transactional)",
                     batch.TopicPartition.Topic, batch.TopicPartition.Partition, txnInflightEntry.BaseSequence);
 
-                try
-                {
-                    await _inflightTracker.WaitForPredecessorAsync(txnInflightEntry, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch (Exception predecessorEx) when (predecessorEx is not OperationCanceledException)
-                {
-                    _logger?.LogDebug(predecessorEx,
-                        "[BrokerSender] Predecessor failed for {Topic}-{Partition}, retrying",
-                        batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                }
+                // Complete inflight entry so successor batches can proceed.
+                CompleteInflightEntry(batch);
+                batch.InflightEntry = null;
             }
             else
             {

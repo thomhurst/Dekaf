@@ -243,6 +243,14 @@ internal sealed class PartitionInflightTracker
 
         lock (state.Lock)
         {
+            // If the entry was removed by FailAll (e.g. epoch bump cleared
+            // all entries), return immediately. Without this check, entry.Previous
+            // could reference a pooled/reset entry whose TCS would never be signaled.
+            if (!entry.InList)
+            {
+                return;
+            }
+
             var predecessor = entry.Previous;
             if (predecessor is null)
             {
