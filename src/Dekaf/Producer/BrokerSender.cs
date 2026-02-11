@@ -278,33 +278,26 @@ internal sealed class BrokerSender : IAsyncDisposable
                     coalescedCount++;
                 }
 
-                // Phase 3: Send coalesced batches (non-blocking capacity check)
-                if (coalescedCount > 0 && Volatile.Read(ref _inFlightCount) < _maxInFlight)
+                // Phase 3: Send coalesced batches or wait
+                if (coalescedCount > 0)
                 {
-                    // Capacity available — increment count and send.
-                    // Increment here (single-threaded send loop) rather than in SendCoalescedAsync
-                    // to keep the count accurate before any async work begins.
+                    // Wait in place for in-flight capacity if needed.
+                    // Double-check pattern: register signal, re-check condition, then wait.
+                    // This avoids the carry-over livelock where batches endlessly cycle
+                    // without ever being sent.
+                    while (Volatile.Read(ref _inFlightCount) >= _maxInFlight)
+                    {
+                        var waitSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                        Volatile.Write(ref _inFlightSlotAvailable, waitSignal);
+
+                        // Re-check after registering — slot may have freed between check and register
+                        if (Volatile.Read(ref _inFlightCount) >= _maxInFlight)
+                            await waitSignal.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    }
+
                     Interlocked.Increment(ref _inFlightCount);
                     await SendCoalescedAsync(
                         coalescedBatches, coalescedCount, cancellationToken).ConfigureAwait(false);
-                }
-                else if (coalescedCount > 0)
-                {
-                    // At in-flight capacity — return coalesced batches to carry-over.
-                    // Coalesced batches go first (they were ready to send), then any
-                    // already-carried-over batches preserve their relative order.
-                    var capacityCarryOver = new List<ReadyBatch>(coalescedCount + (newCarryOver?.Count ?? 0));
-                    for (var i = 0; i < coalescedCount; i++)
-                        capacityCarryOver.Add(coalescedBatches[i]);
-                    if (newCarryOver is { Count: > 0 })
-                        capacityCarryOver.AddRange(newCarryOver);
-                    newCarryOver = capacityCarryOver;
-
-                    ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
-
-                    // Wait for a slot to open or new channel data
-                    var channelWaitTask = channelReader.WaitToReadAsync(cancellationToken).AsTask();
-                    await Task.WhenAny(inFlightSignal.Task, channelWaitTask).ConfigureAwait(false);
                 }
                 else
                 {
