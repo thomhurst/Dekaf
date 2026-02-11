@@ -24,6 +24,10 @@ namespace Dekaf.Producer;
 /// can be sent until the retry completes. Retry batches (IsRetry=true) unmute the
 /// partition when coalesced, ensuring they are sent before any waiting batches.
 ///
+/// Epoch recovery for OutOfOrderSequenceNumber uses the Java Kafka Sender pattern:
+/// response handlers signal a flag, and the single-threaded send loop bumps the epoch
+/// before the next send. This eliminates all races between concurrent handlers.
+///
 /// In-flight request limiting uses a non-blocking counter (aligned with Java Kafka's
 /// InFlightRequests.canSendMore()): the send loop checks capacity before sending
 /// and waits for a TaskCompletionSource signal when at max. No SemaphoreSlim.
@@ -78,6 +82,12 @@ internal sealed class BrokerSender : IAsyncDisposable
     // Signalled when a partition is unmuted so the send loop can wake up,
     // without polling (avoids busy-wait when all carry-over partitions are muted).
     private TaskCompletionSource? _unmuteSignal;
+
+    // Epoch bump recovery flag (Java Kafka Sender pattern): set by response handlers
+    // when OutOfOrderSequenceNumber is received. The single-threaded send loop checks
+    // this before coalescing and bumps the epoch if needed, eliminating all races
+    // between concurrent response handlers. Value is the stale epoch (-1 = no bump needed).
+    private volatile int _epochBumpRequestedForEpoch = -1;
 
     private volatile bool _disposed;
 
@@ -203,6 +213,39 @@ internal sealed class BrokerSender : IAsyncDisposable
                 Volatile.Write(ref _inFlightSlotAvailable, inFlightSignal);
                 var unmuteSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 Volatile.Write(ref _unmuteSignal, unmuteSignal);
+
+                // Epoch bump recovery (Java Kafka Sender pattern): if any response handler
+                // flagged an epoch-bump error, bump the epoch here in the single-threaded
+                // send loop. This guarantees the bump completes BEFORE any batch is sent.
+                // SendCoalescedAsync's stale-epoch check then re-sequences all batches.
+                var staleEpoch = Volatile.Read(ref _epochBumpRequestedForEpoch);
+                if (staleEpoch >= 0 && _bumpEpoch is not null)
+                {
+                    try
+                    {
+                        var currentEpoch = _getCurrentEpoch?.Invoke() ?? -1;
+                        if (currentEpoch >= 0 && currentEpoch <= (short)staleEpoch)
+                        {
+                            await _bumpEpoch((short)staleEpoch, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+
+                        // Clear only the epoch we attempted. If a new epoch was requested
+                        // concurrently, the CAS fails and the flag stays set for next iteration.
+                        Interlocked.CompareExchange(ref _epochBumpRequestedForEpoch, -1, staleEpoch);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogWarning(ex,
+                            "[BrokerSender] Epoch bump failed for stale epoch {Epoch}, will retry next iteration",
+                            staleEpoch);
+                        // Flag stays set — retry next iteration.
+                    }
+                }
 
                 // Coalesce: at most one batch per partition per request.
                 // Carry-over first (preserves ordering), then channel (prevents starvation).
@@ -657,9 +700,9 @@ internal sealed class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Schedules a retry for a batch: performs backoff/OOSN coordination, then re-enqueues the
-    /// batch to the appropriate BrokerSender (self or rerouted). The partition is muted by the
-    /// caller (HandleResponseAsync) before this method is invoked.
+    /// Schedules a retry for a batch: signals epoch bump if needed, performs backoff, then
+    /// re-enqueues the batch to the appropriate BrokerSender (self or rerouted). The partition
+    /// is muted by the caller (HandleResponseAsync) before this method is invoked.
     /// This ensures retries go through the send loop's single-threaded path, preserving wire-order.
     /// Fire-and-forget from HandleResponseAsync — tracked in _inFlightResponses for clean shutdown.
     /// </summary>
@@ -685,63 +728,29 @@ internal sealed class BrokerSender : IAsyncDisposable
                     (errorCode != ErrorCode.None ? $" (last error: {errorCode})" : ""));
             }
 
-            // Epoch bump recovery for OOSN/InvalidProducerEpoch/UnknownProducerId
+            // Epoch bump recovery for OOSN/InvalidProducerEpoch/UnknownProducerId.
+            // Java Kafka Sender pattern: instead of bumping the epoch here (which races
+            // with concurrent response handlers), signal the single-threaded send loop
+            // to perform the bump before the next send. This eliminates head-of-line
+            // detection, WaitForPredecessorAsync, FailAll, and all associated races.
             var isEpochBumpError = errorCode is ErrorCode.OutOfOrderSequenceNumber
                 or ErrorCode.InvalidProducerEpoch or ErrorCode.UnknownProducerId;
 
-            if (isEpochBumpError && _bumpEpoch is not null
-                && batch.InflightEntry is { } inflightEntry
-                && _inflightTracker is not null)
+            if (isEpochBumpError && _bumpEpoch is not null)
             {
-                var isHead = _inflightTracker.IsHeadOfLine(inflightEntry);
+                _logger?.LogDebug(
+                    "[BrokerSender] {ErrorCode} for {Topic}-{Partition} seq={Seq}, signaling epoch bump to send loop",
+                    errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
+                    batch.RecordBatch.BaseSequence);
 
-                if (isHead)
-                {
-                    _logger?.LogDebug(
-                        "[BrokerSender] {ErrorCode} for {Topic}-{Partition} seq={Seq}, bumping epoch",
-                        errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
-                        inflightEntry.BaseSequence);
+                // Signal the send loop to bump the epoch. CAS ensures only the first
+                // writer wins; concurrent handlers for the same stale epoch are no-ops.
+                Interlocked.CompareExchange(ref _epochBumpRequestedForEpoch,
+                    (int)batch.RecordBatch.ProducerEpoch, -1);
 
-                    // Bump epoch — serialized across all partitions by _transactionLock
-                    var (newPid, newEpoch) = await _bumpEpoch(
-                        batch.RecordBatch.ProducerEpoch, cancellationToken).ConfigureAwait(false);
-
-                    // Remove old inflight entry (stale sequence)
-                    CompleteInflightEntry(batch);
-
-                    // Signal ALL remaining in-flight entries for this partition to wake up.
-                    // After epoch bump, all successors have stale epoch/sequence and will be
-                    // re-sequenced by SendCoalescedAsync's stale epoch check when re-sent.
-                    // Aligned with Java Kafka's Sender.completeOutstandingBatches().
-                    _inflightTracker.FailAll(batch.TopicPartition,
-                        new KafkaException(ErrorCode.OutOfOrderSequenceNumber,
-                            "Epoch bumped, re-sequencing required"));
-
-                    // Assign new sequence and rewrite the record batch
-                    var tp = batch.TopicPartition;
-                    var recordCount = batch.RecordBatch.Records.Count;
-                    var newSeq = _accumulator.GetAndIncrementSequence(tp, recordCount);
-                    batch.RewriteRecordBatch(
-                        batch.RecordBatch.WithProducerState(newPid, newEpoch, newSeq));
-
-                    // Re-register with inflight tracker under new sequence
-                    batch.InflightEntry = _inflightTracker.Register(tp, newSeq, recordCount);
-                }
-                else
-                {
-                    // Not head-of-line — the head will bump epoch and call FailAll, which
-                    // clears all inflight entries for the partition. No need to wait for
-                    // predecessor: the send loop's stale epoch check (SendCoalescedAsync)
-                    // will resequence this batch with fresh PID/epoch/sequence when re-sent.
-                    // The mute set prevents out-of-order sends in the meantime.
-                    _logger?.LogDebug(
-                        "[BrokerSender] {ErrorCode} for {Topic}-{Partition} seq={Seq}, re-enqueueing (not head-of-line)",
-                        errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
-                        inflightEntry.BaseSequence);
-
-                    // Clear stale inflight entry — FailAll will remove it from the tracker.
-                    batch.InflightEntry = null;
-                }
+                // Complete inflight entry — the batch will be re-registered by
+                // SendCoalescedAsync's stale-epoch check after the epoch is bumped.
+                CompleteInflightEntry(batch);
             }
             else if (isEpochBumpError && _bumpEpoch is null
                 && batch.InflightEntry is { } txnInflightEntry
