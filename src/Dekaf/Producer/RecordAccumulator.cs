@@ -1754,16 +1754,13 @@ public sealed class RecordAccumulator : IAsyncDisposable
             return false;
         }
 
-        // Track actual memory used for proper accounting
-        var memoryUsed = 0;
+        var startIndex = 0;
 
         try
         {
             // Get or create TopicPartition (cached)
             var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
             var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
-
-            var startIndex = 0;
 
             // Loop until all records are appended
             while (startIndex < items.Length)
@@ -1822,10 +1819,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                             // Track delivery task for FlushAsync
                             OnBatchEntersPipeline();
 
-                            // Track memory for this batch - it will be released when sent or on failure
-                            memoryUsed += readyBatch.DataSize;
-
-                            // BUG FIX: Wrap in try-catch to ensure ReadyBatch cleanup if exception occurs
+                            // Wrap in try-catch to ensure ReadyBatch cleanup if exception occurs
                             // between Complete() and successful channel write
                             try
                             {
@@ -1834,10 +1828,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
                                     readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
                                     OnBatchExitsPipeline(); // Decrement counter on failure
                                     // Release the batch's buffer memory since it won't go through producer
-                                    // Note: This releases the actual batch memory, not from our reserved pool
                                     ReleaseMemory(readyBatch.DataSize);
-                                    // Subtract from our tracking since we released it
-                                    memoryUsed -= readyBatch.DataSize;
                                     t_cachedBatch = null;
                                     return false;
                                 }
@@ -1854,10 +1845,6 @@ public sealed class RecordAccumulator : IAsyncDisposable
                                 OnBatchExitsPipeline(); // Decrement counter on failure
                                 // Release the batch memory here since it won't reach SendBatchAsync
                                 ReleaseMemory(readyBatch.DataSize);
-                                // NOTE: Don't decrement memoryUsed - this keeps the accounting correct:
-                                // - Catch releases: readyBatch.DataSize (actual batch)
-                                // - Finally releases: totalEstimatedSize - memoryUsed (overestimate portion)
-                                // - Together they equal totalEstimatedSize (correct accounting)
                                 throw;
                             }
                         }
@@ -1870,14 +1857,19 @@ public sealed class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
-            // CRITICAL: Release any unused reserved memory
-            // We reserved totalEstimatedSize but only used memoryUsed (actual batch sizes)
-            // The difference must be released to prevent permanent memory leak
-            // Note: memoryUsed batches will be released by SendBatchAsync when sent
-            var unusedMemory = totalEstimatedSize - memoryUsed;
-            if (unusedMemory > 0)
+            // Release memory only for records that were NOT appended to any batch (error case).
+            // Memory for successfully appended records stays reserved in _bufferedBytes and will
+            // be released when their containing batch is completed by the sender or during disposal.
+            if (startIndex < items.Length)
             {
-                ReleaseMemory(unusedMemory);
+                var unappendedMemory = 0;
+                for (var i = startIndex; i < items.Length; i++)
+                {
+                    ref readonly var item = ref items[i];
+                    unappendedMemory += PartitionBatch.EstimateRecordSize(item.Key.Length, item.Value.Length, item.Headers);
+                }
+                if (unappendedMemory > 0)
+                    ReleaseMemory(unappendedMemory);
             }
         }
     }

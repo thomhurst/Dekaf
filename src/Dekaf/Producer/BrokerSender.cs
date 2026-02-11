@@ -59,7 +59,7 @@ internal sealed class BrokerSender : IAsyncDisposable
 
     // Signalled by ReleaseGate so the send loop can wake up when a partition gate becomes free,
     // without acquiring the gate itself (avoids phantom-waiter accumulation on the SemaphoreSlim).
-    private volatile TaskCompletionSource? _gateReleasedSignal;
+    private TaskCompletionSource? _gateReleasedSignal;
 
     private volatile bool _disposed;
 

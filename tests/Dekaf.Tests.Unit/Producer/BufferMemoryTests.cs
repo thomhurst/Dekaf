@@ -93,7 +93,14 @@ public class BufferMemoryTests
             {
                 var batchSize = batch!.EstimatedSize;
 
-                // Simulate the batch being sent - release the memory
+                // Simulate the batch being sent - release the memory.
+                // In production, the batch is removed from _batches before sending.
+                // We must do the same to prevent DisposeAsync from double-releasing.
+                var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                ((System.Collections.IDictionary)batchesField!.GetValue(accumulator)!).Remove(
+                    new TopicPartition("test-topic", 0));
+
                 accumulator.ReleaseMemory(batchSize);
 
                 // Assert: Verify memory was released
@@ -224,9 +231,15 @@ public class BufferMemoryTests
             var bufferedAfterSecond = accumulator.BufferedBytes;
             await Assert.That(bufferedAfterSecond).IsGreaterThan(bufferedAfterFirst);
 
-            // Release first batch
+            // Release first batch - also remove from _batches to prevent double-release
+            // during disposal (in production, batches are removed before sending)
             if (accumulator.TryGetBatch("test-topic", 0, out var batch1))
             {
+                var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                ((System.Collections.IDictionary)batchesField!.GetValue(accumulator)!).Remove(
+                    new TopicPartition("test-topic", 0));
+
                 accumulator.ReleaseMemory(batch1!.EstimatedSize);
             }
 
