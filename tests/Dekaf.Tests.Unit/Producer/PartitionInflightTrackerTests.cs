@@ -177,13 +177,17 @@ public sealed class PartitionInflightTrackerTests
         var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
 
         var completed = false;
+        var waitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var waitTask = Task.Run(async () =>
         {
+            waitStarted.SetResult();
             await tracker.WaitForPredecessorAsync(entry2, CancellationToken.None);
             completed = true;
         });
 
-        // Give time for task to start waiting
+        // Wait for the task to actually start executing (not just scheduled)
+        await waitStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // Small yield to let the task reach the await inside WaitForPredecessorAsync
         await Task.Delay(50);
         await Assert.That(completed).IsFalse();
 
