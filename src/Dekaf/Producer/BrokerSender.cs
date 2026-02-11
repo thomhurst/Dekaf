@@ -212,9 +212,10 @@ internal sealed class BrokerSender : IAsyncDisposable
                 var coalescedBatches = ArrayPool<ReadyBatch>.Shared.Rent(maxCoalesce);
 
                 // Scan carry-over: retry batches unmute and coalesce; muted/duplicate carry over.
-                if (pendingCarryOver is { Count: > 0 })
+                var hadCarryOver = pendingCarryOver is { Count: > 0 };
+                if (hadCarryOver)
                 {
-                    for (var i = 0; i < pendingCarryOver.Count; i++)
+                    for (var i = 0; i < pendingCarryOver!.Count; i++)
                     {
                         CoalesceBatch(pendingCarryOver[i], coalescedBatches, ref coalescedCount,
                             coalescedPartitions, ref newCarryOver);
@@ -223,15 +224,23 @@ internal sealed class BrokerSender : IAsyncDisposable
                     pendingCarryOver = null;
                 }
 
-                // Scan channel (non-blocking). Always runs even when carry-over was present.
-                // This is the key fix: retry batches in the channel can always reach the
-                // coalescer, even when carry-over is full of muted batches.
-                var channelReads = 0;
-                while (channelReads < maxCoalesce && channelReader.TryRead(out var channelBatch))
+                // Scan channel (non-blocking). Two cases:
+                // 1. No carry-over: normal fast path — read freely for maximum throughput.
+                // 2. Carry-over was all muted (coalescedCount==0): read to find retry batches
+                //    that unmute partitions — this prevents the starvation livelock.
+                // When carry-over produced a coalesced batch, skip channel reads to prevent
+                // carry-over growth. Carry-over drains by 1 per iteration; reading more from
+                // the channel (duplicate-partition for single-partition workloads) would cause
+                // unbounded growth and O(n²) scanning.
+                if (!hadCarryOver || coalescedCount == 0)
                 {
-                    channelReads++;
-                    CoalesceBatch(channelBatch, coalescedBatches, ref coalescedCount,
-                        coalescedPartitions, ref newCarryOver);
+                    var channelReads = 0;
+                    while (channelReads < maxCoalesce && channelReader.TryRead(out var channelBatch))
+                    {
+                        channelReads++;
+                        CoalesceBatch(channelBatch, coalescedBatches, ref coalescedCount,
+                            coalescedPartitions, ref newCarryOver);
+                    }
                 }
 
                 // Send or wait
