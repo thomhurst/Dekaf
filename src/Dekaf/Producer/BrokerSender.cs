@@ -24,6 +24,10 @@ namespace Dekaf.Producer;
 /// can be sent until the retry completes. Retry batches (IsRetry=true) unmute the
 /// partition when coalesced, ensuring they are sent before any waiting batches.
 ///
+/// In-flight request limiting uses a non-blocking counter (aligned with Java Kafka's
+/// InFlightRequests.canSendMore()): the send loop checks capacity before sending
+/// and waits for a TaskCompletionSource signal when at max. No SemaphoreSlim.
+///
 /// All writes go through the send loop — there are no out-of-loop write paths.
 /// </summary>
 internal sealed class BrokerSender : IAsyncDisposable
@@ -45,8 +49,16 @@ internal sealed class BrokerSender : IAsyncDisposable
     private readonly Channel<ReadyBatch> _batchChannel;
     private readonly Task _sendLoopTask;
     private readonly CancellationTokenSource _cts;
-    private readonly SemaphoreSlim _inFlightSemaphore;
     private readonly ConcurrentDictionary<Task, byte> _inFlightResponses = new();
+
+    // Non-blocking in-flight request limiter (replaces SemaphoreSlim).
+    // Aligned with Java Kafka's InFlightRequests.canSendMore(): the send loop checks
+    // capacity before sending, and waits for a signal when at max. No blocking primitives.
+    // _inFlightCount is only incremented by the single-threaded send loop;
+    // decremented by HandleResponseAsync on the thread pool via Interlocked.
+    private readonly int _maxInFlight;
+    private int _inFlightCount;
+    private TaskCompletionSource? _inFlightSlotAvailable;
 
     // Per-producer shared API version (read via volatile, written via Interlocked)
     private readonly Func<int> _getProduceApiVersion;
@@ -112,9 +124,7 @@ internal sealed class BrokerSender : IAsyncDisposable
             SingleWriter = false
         });
 
-        _inFlightSemaphore = new SemaphoreSlim(
-            options.MaxInFlightRequestsPerConnection,
-            options.MaxInFlightRequestsPerConnection);
+        _maxInFlight = options.MaxInFlightRequestsPerConnection;
 
         _cts = new CancellationTokenSource();
         _sendLoopTask = SendLoopAsync(_cts.Token);
@@ -207,11 +217,12 @@ internal sealed class BrokerSender : IAsyncDisposable
                 if (drainCount == 0)
                     continue;
 
-                // Register unmute signal BEFORE Phase 2 mute checks. This prevents a race where
-                // UnmutePartition fires between our mute check (Phase 2) and the wait (Phase 3),
-                // which would miss the notification and deadlock.
-                // The signal is only consumed when coalescedCount == 0 (all partitions muted).
-                // In the common case (coalescedCount > 0), the signal is harmlessly orphaned.
+                // Register signals BEFORE Phase 2 checks. This prevents a race where a signal
+                // fires between our state checks (Phase 2) and the wait (Phase 3), which would
+                // miss the notification and deadlock. In the common fast path (coalescedCount > 0
+                // and capacity available), the signals are harmlessly orphaned.
+                var inFlightSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                Volatile.Write(ref _inFlightSlotAvailable, inFlightSignal);
                 var unmuteSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 Volatile.Write(ref _unmuteSignal, unmuteSignal);
 
@@ -267,11 +278,33 @@ internal sealed class BrokerSender : IAsyncDisposable
                     coalescedCount++;
                 }
 
-                // Phase 3: Send coalesced batches
-                if (coalescedCount > 0)
+                // Phase 3: Send coalesced batches (non-blocking capacity check)
+                if (coalescedCount > 0 && Volatile.Read(ref _inFlightCount) < _maxInFlight)
                 {
+                    // Capacity available — increment count and send.
+                    // Increment here (single-threaded send loop) rather than in SendCoalescedAsync
+                    // to keep the count accurate before any async work begins.
+                    Interlocked.Increment(ref _inFlightCount);
                     await SendCoalescedAsync(
                         coalescedBatches, coalescedCount, cancellationToken).ConfigureAwait(false);
+                }
+                else if (coalescedCount > 0)
+                {
+                    // At in-flight capacity — return coalesced batches to carry-over.
+                    // Coalesced batches go first (they were ready to send), then any
+                    // already-carried-over batches preserve their relative order.
+                    var capacityCarryOver = new List<ReadyBatch>(coalescedCount + (newCarryOver?.Count ?? 0));
+                    for (var i = 0; i < coalescedCount; i++)
+                        capacityCarryOver.Add(coalescedBatches[i]);
+                    if (newCarryOver is { Count: > 0 })
+                        capacityCarryOver.AddRange(newCarryOver);
+                    newCarryOver = capacityCarryOver;
+
+                    ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
+
+                    // Wait for a slot to open or new channel data
+                    var channelWaitTask = channelReader.WaitToReadAsync(cancellationToken).AsTask();
+                    await Task.WhenAny(inFlightSignal.Task, channelWaitTask).ConfigureAwait(false);
                 }
                 else
                 {
@@ -280,8 +313,9 @@ internal sealed class BrokerSender : IAsyncDisposable
                     // All carry-over batches are for muted partitions. Wait for either:
                     // 1. A partition to be unmuted (retry completed), or
                     // 2. New channel data arrives (may contain retry batch with IsRetry=true).
+                    // 3. An in-flight slot opens (may have been at capacity previously).
                     var channelWaitTask = channelReader.WaitToReadAsync(cancellationToken).AsTask();
-                    await Task.WhenAny(unmuteSignal.Task, channelWaitTask).ConfigureAwait(false);
+                    await Task.WhenAny(unmuteSignal.Task, inFlightSignal.Task, channelWaitTask).ConfigureAwait(false);
                 }
 
                 // Merge new carry-over into persistent list for next iteration
@@ -347,29 +381,13 @@ internal sealed class BrokerSender : IAsyncDisposable
 
     /// <summary>
     /// Sends coalesced batches (one per partition) as a single ProduceRequest.
+    /// The in-flight count was already incremented by the send loop before calling this method.
     /// </summary>
     private async ValueTask SendCoalescedAsync(
         ReadyBatch[] batches,
         int count,
         CancellationToken cancellationToken)
     {
-        try
-        {
-            // Acquire in-flight semaphore (limits pipelined requests per broker)
-            await _inFlightSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch
-        {
-            // Failed to acquire — fail batches
-            for (var i = 0; i < count; i++)
-            {
-                FailAndCleanupBatch(batches[i], new OperationCanceledException(cancellationToken));
-            }
-
-            ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
-            return;
-        }
-
         try
         {
             // Lazy epoch check: batches sealed in the channel before an epoch bump have stale
@@ -465,7 +483,7 @@ internal sealed class BrokerSender : IAsyncDisposable
                 }
 
                 // Release everything synchronously (no pipelined response)
-                ReleaseInFlightSemaphore();
+                ReleaseInFlightSlot();
                 for (var i = 0; i < count; i++)
                 {
                     CleanupBatch(batches[i]);
@@ -493,7 +511,7 @@ internal sealed class BrokerSender : IAsyncDisposable
         catch (Exception ex)
         {
             // Send failed — release everything
-            ReleaseInFlightSemaphore();
+            ReleaseInFlightSlot();
             for (var i = 0; i < count; i++)
             {
                 FailAndCleanupBatch(batches[i], ex);
@@ -523,10 +541,10 @@ internal sealed class BrokerSender : IAsyncDisposable
         {
             var response = await responseTask.ConfigureAwait(false);
 
-            // Response received — release in-flight semaphore immediately so the send loop
+            // Response received — release in-flight slot immediately so the send loop
             // can pipeline new requests while we process results.
             inFlightReleased = true;
-            ReleaseInFlightSemaphore();
+            ReleaseInFlightSlot();
 
             var elapsedTicks = Stopwatch.GetTimestamp() - requestStartTime;
             var latencyMs = (long)(elapsedTicks * 1000.0 / Stopwatch.Frequency);
@@ -631,7 +649,7 @@ internal sealed class BrokerSender : IAsyncDisposable
         finally
         {
             if (!inFlightReleased)
-                ReleaseInFlightSemaphore();
+                ReleaseInFlightSlot();
             ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
 
             // Await any spawned retry tasks so this Task stays alive until all retries complete.
@@ -928,10 +946,10 @@ internal sealed class BrokerSender : IAsyncDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void ReleaseInFlightSemaphore()
+    private void ReleaseInFlightSlot()
     {
-        try { _inFlightSemaphore.Release(); }
-        catch (ObjectDisposedException) { /* Disposal race */ }
+        Interlocked.Decrement(ref _inFlightCount);
+        Interlocked.Exchange(ref _inFlightSlotAvailable, null)?.TrySetResult();
     }
 
     private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)
@@ -966,7 +984,7 @@ internal sealed class BrokerSender : IAsyncDisposable
         // Complete channel — send loop will see channel completed and exit
         _batchChannel.Writer.Complete();
 
-        // Cancel CTS FIRST so WaitToReadAsync, WaitAsync(cancellationToken), and
+        // Cancel CTS FIRST so WaitToReadAsync and
         // in-flight HandleResponseAsync/ScheduleRetryAsync calls are interrupted promptly.
         await _cts.CancelAsync().ConfigureAwait(false);
 
@@ -995,6 +1013,5 @@ internal sealed class BrokerSender : IAsyncDisposable
         }
 
         _cts.Dispose();
-        _inFlightSemaphore.Dispose();
     }
 }

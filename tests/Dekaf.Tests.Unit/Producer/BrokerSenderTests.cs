@@ -104,38 +104,6 @@ public sealed class BrokerSenderTests
     }
 
     [Test]
-    public async Task InFlightSemaphore_LimitsMaxPipelinedRequests()
-    {
-        // Verify the in-flight semaphore limits concurrent requests correctly
-        var maxInflight = 3;
-        var semaphore = new SemaphoreSlim(maxInflight, maxInflight);
-
-        // Acquire all slots
-        for (var i = 0; i < maxInflight; i++)
-        {
-            var acquired = await semaphore.WaitAsync(0);
-            await Assert.That(acquired).IsTrue();
-        }
-
-        // Next acquire should timeout (non-blocking)
-        var extra = await semaphore.WaitAsync(0);
-        await Assert.That(extra).IsFalse();
-
-        // Release one — should now be acquirable
-        semaphore.Release();
-        var afterRelease = await semaphore.WaitAsync(0);
-        await Assert.That(afterRelease).IsTrue();
-
-        // Cleanup
-        for (var i = 0; i < maxInflight; i++)
-        {
-            semaphore.Release();
-        }
-
-        semaphore.Dispose();
-    }
-
-    [Test]
     public async Task BrokerSender_ConstructsWithIdempotentTracker()
     {
         var connectionPool = Substitute.For<IConnectionPool>();
