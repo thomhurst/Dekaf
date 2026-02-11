@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -34,7 +33,6 @@ public sealed class BrokerSenderTests
         var accumulator = new RecordAccumulator(options);
         var metadataManager = new MetadataManager(connectionPool, options.BootstrapServers);
         var statisticsCollector = new ProducerStatisticsCollector();
-        var gates = new ConcurrentDictionary<TopicPartition, SemaphoreSlim>();
 
         var sender = new BrokerSender(
             brokerId: 1,
@@ -45,8 +43,6 @@ public sealed class BrokerSenderTests
             new CompressionCodecRegistry(),
             inflightTracker: null,
             statisticsCollector,
-            gates,
-            createPartitionGate: () => new SemaphoreSlim(1, 1),
             getProduceApiVersion: () => -1,
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
@@ -75,7 +71,6 @@ public sealed class BrokerSenderTests
         var accumulator = new RecordAccumulator(options);
         var metadataManager = new MetadataManager(connectionPool, options.BootstrapServers);
         var statisticsCollector = new ProducerStatisticsCollector();
-        var gates = new ConcurrentDictionary<TopicPartition, SemaphoreSlim>();
 
         var sender = new BrokerSender(
             brokerId: 1,
@@ -86,8 +81,6 @@ public sealed class BrokerSenderTests
             new CompressionCodecRegistry(),
             inflightTracker: null,
             statisticsCollector,
-            gates,
-            createPartitionGate: () => new SemaphoreSlim(1, 1),
             getProduceApiVersion: () => -1,
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
@@ -108,50 +101,6 @@ public sealed class BrokerSenderTests
 
         await accumulator.DisposeAsync();
         await metadataManager.DisposeAsync();
-    }
-
-    [Test]
-    public async Task PartitionGate_NonIdempotent_SingleInflight()
-    {
-        // Non-idempotent should use SemaphoreSlim(1,1)
-        var gate = new SemaphoreSlim(1, 1);
-
-        var firstAcquired = gate.Wait(0);
-        await Assert.That(firstAcquired).IsTrue();
-
-        var secondAcquired = gate.Wait(0);
-        await Assert.That(secondAcquired).IsFalse();
-
-        gate.Release();
-        gate.Dispose();
-    }
-
-    [Test]
-    public async Task PartitionGate_IdempotentProducer_AllowsNInFlight()
-    {
-        // Idempotent producers use SemaphoreSlim(N,N) since all writes go through
-        // the BrokerSender's single-threaded send loop (no out-of-loop write paths)
-        var maxInflight = 5;
-        var gate = new SemaphoreSlim(maxInflight, maxInflight);
-
-        // Should be able to acquire N slots
-        for (var i = 0; i < maxInflight; i++)
-        {
-            var acquired = gate.Wait(0);
-            await Assert.That(acquired).IsTrue();
-        }
-
-        // N+1 should fail
-        var extra = gate.Wait(0);
-        await Assert.That(extra).IsFalse();
-
-        // Cleanup
-        for (var i = 0; i < maxInflight; i++)
-        {
-            gate.Release();
-        }
-
-        gate.Dispose();
     }
 
     [Test]
@@ -194,10 +143,8 @@ public sealed class BrokerSenderTests
         var accumulator = new RecordAccumulator(options);
         var metadataManager = new MetadataManager(connectionPool, options.BootstrapServers);
         var statisticsCollector = new ProducerStatisticsCollector();
-        var gates = new ConcurrentDictionary<TopicPartition, SemaphoreSlim>();
         var tracker = new PartitionInflightTracker();
 
-        // Partition gates always use capacity 1 to prevent OOSN cascades
         var sender = new BrokerSender(
             brokerId: 1,
             connectionPool,
@@ -207,8 +154,6 @@ public sealed class BrokerSenderTests
             new CompressionCodecRegistry(),
             inflightTracker: tracker,
             statisticsCollector,
-            gates,
-            createPartitionGate: () => new SemaphoreSlim(1, 1),
             getProduceApiVersion: () => 9,
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
@@ -232,7 +177,6 @@ public sealed class BrokerSenderTests
         var accumulator = new RecordAccumulator(options);
         var metadataManager = new MetadataManager(connectionPool, options.BootstrapServers);
         var statisticsCollector = new ProducerStatisticsCollector();
-        var gates = new ConcurrentDictionary<TopicPartition, SemaphoreSlim>();
 
         var transactionCalled = false;
         var sender = new BrokerSender(
@@ -244,8 +188,6 @@ public sealed class BrokerSenderTests
             new CompressionCodecRegistry(),
             inflightTracker: null,
             statisticsCollector,
-            gates,
-            createPartitionGate: () => new SemaphoreSlim(1, 1),
             getProduceApiVersion: () => 9,
             setProduceApiVersion: _ => { },
             isTransactional: () => true,
@@ -262,26 +204,5 @@ public sealed class BrokerSenderTests
 
         // Transaction callback should not have been called (no batches enqueued)
         await Assert.That(transactionCalled).IsFalse();
-    }
-
-    [Test]
-    public async Task MultipleGates_DifferentPartitions_IndependentSemaphores()
-    {
-        var gates = new ConcurrentDictionary<TopicPartition, SemaphoreSlim>();
-        var tp0 = new TopicPartition("test", 0);
-        var tp1 = new TopicPartition("test", 1);
-
-        var gate0 = gates.GetOrAdd(tp0, _ => new SemaphoreSlim(1, 1));
-        var gate1 = gates.GetOrAdd(tp1, _ => new SemaphoreSlim(1, 1));
-
-        // Acquiring gate for partition 0 should not affect partition 1
-        gate0.Wait(0);
-        var canAcquireGate1 = gate1.Wait(0);
-        await Assert.That(canAcquireGate1).IsTrue();
-
-        gate0.Release();
-        gate1.Release();
-        gate0.Dispose();
-        gate1.Dispose();
     }
 }

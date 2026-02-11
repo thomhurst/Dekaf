@@ -414,7 +414,6 @@ public sealed class EpochBumpRecoveryTests
         var entry = new InflightEntry();
         entry.Initialize(Tp0, 0, 1);
         batch.InflightEntry = entry;
-        batch.IsRetry = true;
 
         // Rewrite
         var newBatch = originalBatch.WithProducerState(producerId: 100, producerEpoch: 2, baseSequence: 0);
@@ -422,7 +421,6 @@ public sealed class EpochBumpRecoveryTests
 
         // Other properties should be unaffected
         await Assert.That(batch.InflightEntry).IsSameReferenceAs(entry);
-        await Assert.That(batch.IsRetry).IsTrue();
     }
 
     #endregion
@@ -1303,20 +1301,6 @@ public sealed class EpochBumpRecoveryTests
     #endregion
 
     #region ReadyBatch Reset and Pool Tests
-
-    [Test]
-    public async Task ReadyBatch_Reset_ClearsIsRetryFlag()
-    {
-        var pool = new ReadyBatchPool();
-        var batch = pool.Rent();
-
-        batch.IsRetry = true;
-        await Assert.That(batch.IsRetry).IsTrue();
-
-        pool.Return(batch); // Return calls Reset()
-
-        await Assert.That(batch.IsRetry).IsFalse();
-    }
 
     [Test]
     public async Task ReadyBatch_Reset_ClearsInflightEntry()

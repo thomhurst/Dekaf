@@ -345,26 +345,6 @@ public sealed class PartitionInflightTrackerTests
     }
 
     [Test]
-    public async Task CreatePartitionGate_AlwaysSingleInflight()
-    {
-        // Gate is always SemaphoreSlim(1, 1) to preserve per-partition ordering.
-        // The inflight tracker provides coordinated retry for edge-case OOSN,
-        // but the gate stays single-permit because Dekaf's fire-and-forget
-        // send model doesn't guarantee wire-order with concurrent sends.
-        var gate = new SemaphoreSlim(1, 1);
-
-        // First should succeed
-        var firstAcquired = gate.Wait(0);
-        await Assert.That(firstAcquired).IsTrue();
-
-        // Second should fail (non-blocking)
-        var secondAcquired = gate.Wait(0);
-        await Assert.That(secondAcquired).IsFalse();
-
-        gate.Release();
-    }
-
-    [Test]
     public async Task ReadyBatch_Reset_ClearsInflightEntry()
     {
         var pool = new ReadyBatchPool();

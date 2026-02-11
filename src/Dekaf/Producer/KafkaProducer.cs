@@ -37,10 +37,9 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly PeriodicTimer _lingerTimer;
 
     // Per-broker sender threads: each broker gets a dedicated BrokerSender with its own
-    // channel and send loop. Partition gates (capacity=1) serialize sends per partition,
-    // while the per-broker in-flight semaphore enables pipelining across different partitions.
+    // channel and send loop. The per-broker in-flight semaphore enables pipelining across
+    // different partitions. Ordering relies on broker idempotent producer support.
     private readonly ConcurrentDictionary<int, BrokerSender> _brokerSenders = new();
-    private readonly ConcurrentDictionary<TopicPartition, SemaphoreSlim> _partitionSendGates = new();
 
 
     // Explicit initialization: users must call InitializeAsync() or use BuildAsync() before producing.
@@ -66,7 +65,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
     // In-flight batch tracker for coordinated retry with multiple in-flight batches per partition.
     // Only initialized when idempotence is enabled (sequence numbers guarantee ordering at broker).
-    // When null, partition gates use SemaphoreSlim(1,1) for single in-flight batch per partition.
     private readonly PartitionInflightTracker? _inflightTracker;
 
     // Statistics collection
@@ -2183,12 +2181,12 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     {
         // PER-BROKER SENDER ARCHITECTURE: Each broker gets a dedicated BrokerSender with its own
         // channel and single-threaded send loop. This guarantees wire-order for same-partition
-        // batches. Partition gates (capacity=1) serialize sends per partition, while the
-        // per-broker in-flight semaphore enables pipelining across different partitions.
+        // batches. The per-broker in-flight semaphore enables pipelining across different partitions.
+        // Ordering across retries relies on broker idempotent producer support (sequence numbers + epoch).
         //
         // SenderLoopAsync is now a simple router: drain batches, look up leader, enqueue to
-        // the appropriate BrokerSender. BrokerSender handles coalescing, partition gate management,
-        // retry, and in-flight limiting internally.
+        // the appropriate BrokerSender. BrokerSender handles coalescing, retry, and in-flight
+        // limiting internally.
 
         var channelReader = _accumulator.ReadyBatches;
 
@@ -2204,9 +2202,8 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     // NOTE: Inflight tracker registration is deferred to BrokerSender.SendCoalescedAsync
                     // (send time) rather than here (drain time). Registering at drain time caused a
                     // deadlock: queued-but-not-sent batches appeared as predecessors of retry batches
-                    // in the inflight list, but could never complete because the retry batch held the
-                    // partition gate. Moving registration to send time ensures only batches actually
-                    // hitting the wire are tracked.
+                    // in the inflight list but could never complete. Moving registration to send time
+                    // ensures only batches actually hitting the wire are tracked.
 
                     // Release buffer memory as soon as the sender dequeues the batch.
                     _accumulator.ReleaseMemory(batch.DataSize);
@@ -2293,20 +2290,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     }
 
     /// <summary>
-    /// Creates a partition gate with capacity 1. This serializes sends per partition:
-    /// at most one batch per partition is in-flight at a time. Combined with the
-    /// IsRetry mechanism in BrokerSender, this prevents OutOfOrderSequenceNumber cascades
-    /// where retry batches are overtaken by newer batches during the gate-release → re-enqueue window.
-    ///
-    /// Cross-partition throughput is unaffected: multiple partitions can still be pipelined
-    /// up to MaxInFlightRequestsPerConnection, which is where the real throughput benefit lies.
-    /// </summary>
-    private static SemaphoreSlim CreatePartitionGate()
-    {
-        return new SemaphoreSlim(1, 1);
-    }
-
-    /// <summary>
     /// Gets or creates a BrokerSender for the given broker ID.
     /// Each broker gets a dedicated sender with its own channel and single-threaded send loop.
     /// </summary>
@@ -2325,8 +2308,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             _compressionCodecs,
             _inflightTracker,
             _statisticsCollector,
-            _partitionSendGates,
-            CreatePartitionGate,
             () => _produceApiVersion,
             version => Interlocked.CompareExchange(ref _produceApiVersion, version, -1),
             () => _accumulator.IsTransactional,
@@ -2896,12 +2877,6 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _lingerTimer.Dispose();
         _transactionLock.Dispose();
         _initLock.Dispose();
-
-        foreach (var gate in _partitionSendGates.Values)
-        {
-            gate.Dispose();
-        }
-        _partitionSendGates.Clear();
 
         // Dispose statistics emitter
         if (_statisticsEmitter is not null)
