@@ -153,28 +153,31 @@ internal sealed class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Main send loop: drains batches from channel, coalesces by partition, and sends pipelined requests.
+    /// Main send loop: coalesces batches by partition and sends pipelined requests.
     /// Single-threaded: coalescing is deterministically FIFO.
     ///
-    /// Batches for muted partitions (retry in progress) or same-partition collisions are carried over
-    /// to the next iteration in a persistent local list. Retry batches (IsRetry=true) unmute their
+    /// Inspired by Java Kafka's Sender: instead of draining all batches into a fixed-size
+    /// buffer (which can starve channel reads when carry-over fills the buffer), carry-over
+    /// and channel are scanned directly during coalescing. The channel is ALWAYS scanned
+    /// after carry-over, ensuring retry batches (which unmute partitions) can always reach
+    /// the coalescer — eliminating the carry-over starvation livelock.
+    ///
+    /// Batches for muted partitions (retry in progress) or same-partition collisions are
+    /// carried over to the next iteration. Retry batches (IsRetry=true) unmute their
     /// partition and are coalesced immediately, ensuring they go before any waiting batches.
     /// </summary>
     private async Task SendLoopAsync(CancellationToken cancellationToken)
     {
         var channelReader = _batchChannel.Reader;
-        // Max batches per drain = MaxInFlight * 4 (same as old SenderLoopAsync)
-        var maxDrain = _options.MaxInFlightRequestsPerConnection * 4;
-        var drainBuffer = ArrayPool<ReadyBatch>.Shared.Rent(maxDrain);
+        // Max partitions per coalesced request — limits channel reads per iteration.
+        var maxCoalesce = _options.MaxInFlightRequestsPerConnection * 4;
 
         // Reusable collections for coalescing (single-threaded, no contention)
         var coalescedPartitions = new HashSet<TopicPartition>();
 
         // Persistent carry-over list across iterations. Kept LOCAL instead of re-enqueued to the
         // channel to preserve batch ordering. Re-enqueueing puts batches at the back of the channel,
-        // allowing new batches from SenderLoopAsync to jump ahead and be sent out of order.
-        // This causes ordering violations for non-idempotent producers and OOSN errors + hangs
-        // for idempotent producers.
+        // allowing new batches to jump ahead and be sent out of order.
         List<ReadyBatch>? pendingCarryOver = null;
 
         try
@@ -183,114 +186,64 @@ internal sealed class BrokerSender : IAsyncDisposable
             {
                 // Must check cancellation at every iteration — when carry-over batches exist
                 // with muted partitions (coalescedCount==0), the WhenAny path below completes
-                // without propagating the OCE from the cancelled token. Without this check the
-                // loop spins indefinitely, preventing process exit after disposal.
+                // without propagating the OCE from the cancelled token.
                 cancellationToken.ThrowIfCancellationRequested();
 
-                // Phase 1: Fill drain buffer — carry-over first (ordering), then channel
-                var drainCount = 0;
-
-                if (pendingCarryOver is { Count: > 0 })
+                // Wait for data: carry-over or channel
+                if (pendingCarryOver is not { Count: > 0 })
                 {
-                    // Carry-over batches from previous iteration get priority to maintain ordering
-                    var take = Math.Min(pendingCarryOver.Count, maxDrain);
-                    for (var i = 0; i < take; i++)
-                    {
-                        drainBuffer[drainCount++] = pendingCarryOver[i];
-                    }
-                    pendingCarryOver.RemoveRange(0, take);
-                }
-
-                if (drainCount == 0)
-                {
-                    // No carry-over: wait for channel data
                     if (!await channelReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
                         break;
                 }
 
-                // Fill remaining drain capacity from channel
-                while (drainCount < maxDrain && channelReader.TryRead(out var channelBatch))
-                {
-                    drainBuffer[drainCount++] = channelBatch;
-                }
-
-                if (drainCount == 0)
-                    continue;
-
-                // Register signals BEFORE Phase 2 checks. This prevents a race where a signal
-                // fires between our state checks (Phase 2) and the wait (Phase 3), which would
-                // miss the notification and deadlock. In the common fast path (coalescedCount > 0
-                // and capacity available), the signals are harmlessly orphaned.
+                // Register signals BEFORE coalescing checks. This prevents a race where
+                // a signal fires between our state checks and the wait, which would miss
+                // the notification. In the fast path, signals are harmlessly orphaned.
                 var inFlightSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 Volatile.Write(ref _inFlightSlotAvailable, inFlightSignal);
                 var unmuteSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 Volatile.Write(ref _unmuteSignal, unmuteSignal);
 
-                // Phase 2: Coalesce — at most one batch per partition per request
+                // Coalesce: at most one batch per partition per request.
+                // Carry-over first (preserves ordering), then channel (prevents starvation).
                 coalescedPartitions.Clear();
                 List<ReadyBatch>? newCarryOver = null;
-
                 var coalescedCount = 0;
-                var coalescedBatches = ArrayPool<ReadyBatch>.Shared.Rent(drainCount);
+                var coalescedBatches = ArrayPool<ReadyBatch>.Shared.Rent(maxCoalesce);
 
-                for (var i = 0; i < drainCount; i++)
+                // Scan carry-over: retry batches unmute and coalesce; muted/duplicate carry over.
+                if (pendingCarryOver is { Count: > 0 })
                 {
-                    var batch = drainBuffer[i];
-
-                    if (batch.IsRetry)
+                    for (var i = 0; i < pendingCarryOver.Count; i++)
                     {
-                        // Retry batch: unmute the partition and coalesce it ahead of newer batches.
-                        // This ensures the retry goes before any waiting batches for this partition.
-                        batch.IsRetry = false;
-                        _mutedPartitions.TryRemove(batch.TopicPartition, out _);
-
-                        if (!coalescedPartitions.Add(batch.TopicPartition))
-                        {
-                            // Same partition already in this request (shouldn't happen — only one
-                            // retry per partition at a time). Carry over as safety net.
-                            newCarryOver ??= [];
-                            newCarryOver.Add(batch);
-                            continue;
-                        }
-
-                        coalescedBatches[coalescedCount] = batch;
-                        coalescedCount++;
-                        continue;
+                        CoalesceBatch(pendingCarryOver[i], coalescedBatches, ref coalescedCount,
+                            coalescedPartitions, ref newCarryOver);
                     }
 
-                    // Normal batch: skip muted partitions (retry in progress)
-                    if (_mutedPartitions.ContainsKey(batch.TopicPartition))
-                    {
-                        newCarryOver ??= [];
-                        newCarryOver.Add(batch);
-                        continue;
-                    }
-
-                    // Ensure at most one batch per partition per coalesced request
-                    if (!coalescedPartitions.Add(batch.TopicPartition))
-                    {
-                        newCarryOver ??= [];
-                        newCarryOver.Add(batch);
-                        continue;
-                    }
-
-                    coalescedBatches[coalescedCount] = batch;
-                    coalescedCount++;
+                    pendingCarryOver = null;
                 }
 
-                // Phase 3: Send coalesced batches or wait
+                // Scan channel (non-blocking). Always runs even when carry-over was present.
+                // This is the key fix: retry batches in the channel can always reach the
+                // coalescer, even when carry-over is full of muted batches.
+                var channelReads = 0;
+                while (channelReads < maxCoalesce && channelReader.TryRead(out var channelBatch))
+                {
+                    channelReads++;
+                    CoalesceBatch(channelBatch, coalescedBatches, ref coalescedCount,
+                        coalescedPartitions, ref newCarryOver);
+                }
+
+                // Send or wait
                 if (coalescedCount > 0)
                 {
                     // Wait in place for in-flight capacity if needed.
                     // Double-check pattern: register signal, re-check condition, then wait.
-                    // This avoids the carry-over livelock where batches endlessly cycle
-                    // without ever being sent.
                     while (Volatile.Read(ref _inFlightCount) >= _maxInFlight)
                     {
                         var waitSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                         Volatile.Write(ref _inFlightSlotAvailable, waitSignal);
 
-                        // Re-check after registering — slot may have freed between check and register
                         if (Volatile.Read(ref _inFlightCount) >= _maxInFlight)
                             await waitSignal.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
                     }
@@ -303,28 +256,16 @@ internal sealed class BrokerSender : IAsyncDisposable
                 {
                     ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
 
-                    // All carry-over batches are for muted partitions. Wait for either:
+                    // All batches are for muted partitions. Wait for either:
                     // 1. A partition to be unmuted (retry completed), or
                     // 2. New channel data arrives (may contain retry batch with IsRetry=true).
-                    // 3. An in-flight slot opens (may have been at capacity previously).
+                    // 3. An in-flight slot opens.
                     var channelWaitTask = channelReader.WaitToReadAsync(cancellationToken).AsTask();
                     await Task.WhenAny(unmuteSignal.Task, inFlightSignal.Task, channelWaitTask).ConfigureAwait(false);
                 }
 
-                // Merge new carry-over into persistent list for next iteration
-                if (newCarryOver is { Count: > 0 })
-                {
-                    if (pendingCarryOver is { Count: > 0 })
-                    {
-                        // Prepend remaining old carry-over (already at front) before new carry-over
-                        // to maintain overall ordering
-                        pendingCarryOver.AddRange(newCarryOver);
-                    }
-                    else
-                    {
-                        pendingCarryOver = newCarryOver;
-                    }
-                }
+                // Set carry-over for next iteration
+                pendingCarryOver = newCarryOver;
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -341,8 +282,6 @@ internal sealed class BrokerSender : IAsyncDisposable
         }
         finally
         {
-            ArrayPool<ReadyBatch>.Shared.Return(drainBuffer, clearArray: true);
-
             // Fail any carry-over batches that couldn't be sent.
             // Must complete inflight entries so successors in WaitForPredecessorAsync don't hang.
             if (pendingCarryOver is { Count: > 0 })
@@ -370,6 +309,59 @@ internal sealed class BrokerSender : IAsyncDisposable
                 CleanupBatch(remaining);
             }
         }
+    }
+
+    /// <summary>
+    /// Processes a single batch for coalescing. Retry batches unmute their partition and are
+    /// coalesced ahead of normal batches. Muted or duplicate-partition batches are carried over.
+    /// Extracted to avoid duplicating the logic for carry-over and channel sources.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void CoalesceBatch(
+        ReadyBatch batch,
+        ReadyBatch[] coalescedBatches,
+        ref int coalescedCount,
+        HashSet<TopicPartition> coalescedPartitions,
+        ref List<ReadyBatch>? newCarryOver)
+    {
+        if (batch.IsRetry)
+        {
+            // Retry batch: unmute the partition and coalesce it ahead of newer batches.
+            batch.IsRetry = false;
+            _mutedPartitions.TryRemove(batch.TopicPartition, out _);
+
+            if (!coalescedPartitions.Add(batch.TopicPartition))
+            {
+                // Same partition already in this request (shouldn't happen — only one
+                // retry per partition at a time). Carry over as safety net.
+                newCarryOver ??= [];
+                newCarryOver.Add(batch);
+                return;
+            }
+
+            coalescedBatches[coalescedCount] = batch;
+            coalescedCount++;
+            return;
+        }
+
+        // Normal batch: skip muted partitions (retry in progress)
+        if (_mutedPartitions.ContainsKey(batch.TopicPartition))
+        {
+            newCarryOver ??= [];
+            newCarryOver.Add(batch);
+            return;
+        }
+
+        // Ensure at most one batch per partition per coalesced request
+        if (!coalescedPartitions.Add(batch.TopicPartition))
+        {
+            newCarryOver ??= [];
+            newCarryOver.Add(batch);
+            return;
+        }
+
+        coalescedBatches[coalescedCount] = batch;
+        coalescedCount++;
     }
 
     /// <summary>
