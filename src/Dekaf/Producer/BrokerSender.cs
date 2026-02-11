@@ -17,8 +17,12 @@ namespace Dekaf.Producer;
 /// Per-broker sender that serializes all writes to a single broker connection.
 /// A single-threaded send loop drains batches from a channel, coalesces them into
 /// ProduceRequests, and sends them via pipelined writes. This guarantees wire-order
-/// for same-partition batches. Ordering across retries relies on the broker's idempotent
-/// producer support (sequence numbers + epoch), aligned with the Java/Confluent approach.
+/// for same-partition batches.
+///
+/// Per-partition ordering during retries uses a mute set (aligned with the Java Kafka
+/// producer): when a batch enters retry, its partition is muted so no newer batches
+/// can be sent until the retry completes. Retry batches (IsRetry=true) unmute the
+/// partition when coalesced, ensuring they are sent before any waiting batches.
 ///
 /// All writes go through the send loop — there are no out-of-loop write paths.
 /// </summary>
@@ -51,6 +55,17 @@ internal sealed class BrokerSender : IAsyncDisposable
     // Transaction support
     private readonly Func<bool> _isTransactional;
     private readonly Func<TopicPartition, CancellationToken, ValueTask>? _ensurePartitionInTransaction;
+
+    // Muted partitions: partitions with a retry in progress. Prevents newer batches from
+    // being sent while a retry is in-flight, maintaining per-partition ordering.
+    // Aligned with the Java Kafka producer's mute mechanism (RecordAccumulator.muted).
+    // Uses ConcurrentDictionary as a thread-safe HashSet (written by HandleResponseAsync/
+    // ScheduleRetryAsync on thread pool, read by the single-threaded send loop).
+    private readonly ConcurrentDictionary<TopicPartition, byte> _mutedPartitions = new();
+
+    // Signalled when a partition is unmuted so the send loop can wake up,
+    // without polling (avoids busy-wait when all carry-over partitions are muted).
+    private TaskCompletionSource? _unmuteSignal;
 
     private volatile bool _disposed;
 
@@ -115,6 +130,12 @@ internal sealed class BrokerSender : IAsyncDisposable
         {
             // Channel is completed (disposal in progress) — fail the batch.
             // Must complete inflight entry so successors in WaitForPredecessorAsync don't hang.
+            // If the batch is a retry, unmute its partition.
+            if (batch.IsRetry)
+            {
+                batch.IsRetry = false;
+                UnmutePartition(batch.TopicPartition);
+            }
             CompleteInflightEntry(batch);
             batch.Fail(new ObjectDisposedException(nameof(BrokerSender)));
             CleanupBatch(batch);
@@ -125,8 +146,9 @@ internal sealed class BrokerSender : IAsyncDisposable
     /// Main send loop: drains batches from channel, coalesces by partition, and sends pipelined requests.
     /// Single-threaded: coalescing is deterministically FIFO.
     ///
-    /// Batches that collide on the same partition within a single coalesced request are carried over
-    /// to the next iteration in a persistent local list.
+    /// Batches for muted partitions (retry in progress) or same-partition collisions are carried over
+    /// to the next iteration in a persistent local list. Retry batches (IsRetry=true) unmute their
+    /// partition and are coalesced immediately, ensuring they go before any waiting batches.
     /// </summary>
     private async Task SendLoopAsync(CancellationToken cancellationToken)
     {
@@ -149,6 +171,10 @@ internal sealed class BrokerSender : IAsyncDisposable
         {
             while (true)
             {
+                // Must check cancellation at every iteration — when carry-over batches exist
+                // with muted partitions (coalescedCount==0), the WhenAny path below completes
+                // without propagating the OCE from the cancelled token. Without this check the
+                // loop spins indefinitely, preventing process exit after disposal.
                 cancellationToken.ThrowIfCancellationRequested();
 
                 // Phase 1: Fill drain buffer — carry-over first (ordering), then channel
@@ -181,6 +207,14 @@ internal sealed class BrokerSender : IAsyncDisposable
                 if (drainCount == 0)
                     continue;
 
+                // Register unmute signal BEFORE Phase 2 mute checks. This prevents a race where
+                // UnmutePartition fires between our mute check (Phase 2) and the wait (Phase 3),
+                // which would miss the notification and deadlock.
+                // The signal is only consumed when coalescedCount == 0 (all partitions muted).
+                // In the common case (coalescedCount > 0), the signal is harmlessly orphaned.
+                var unmuteSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                Volatile.Write(ref _unmuteSignal, unmuteSignal);
+
                 // Phase 2: Coalesce — at most one batch per partition per request
                 coalescedPartitions.Clear();
                 List<ReadyBatch>? newCarryOver = null;
@@ -191,6 +225,35 @@ internal sealed class BrokerSender : IAsyncDisposable
                 for (var i = 0; i < drainCount; i++)
                 {
                     var batch = drainBuffer[i];
+
+                    if (batch.IsRetry)
+                    {
+                        // Retry batch: unmute the partition and coalesce it ahead of newer batches.
+                        // This ensures the retry goes before any waiting batches for this partition.
+                        batch.IsRetry = false;
+                        _mutedPartitions.TryRemove(batch.TopicPartition, out _);
+
+                        if (!coalescedPartitions.Add(batch.TopicPartition))
+                        {
+                            // Same partition already in this request (shouldn't happen — only one
+                            // retry per partition at a time). Carry over as safety net.
+                            newCarryOver ??= [];
+                            newCarryOver.Add(batch);
+                            continue;
+                        }
+
+                        coalescedBatches[coalescedCount] = batch;
+                        coalescedCount++;
+                        continue;
+                    }
+
+                    // Normal batch: skip muted partitions (retry in progress)
+                    if (_mutedPartitions.ContainsKey(batch.TopicPartition))
+                    {
+                        newCarryOver ??= [];
+                        newCarryOver.Add(batch);
+                        continue;
+                    }
 
                     // Ensure at most one batch per partition per coalesced request
                     if (!coalescedPartitions.Add(batch.TopicPartition))
@@ -205,10 +268,21 @@ internal sealed class BrokerSender : IAsyncDisposable
                 }
 
                 // Phase 3: Send coalesced batches
-                // coalescedCount is always > 0 here: the first batch in drainBuffer always
-                // passes the coalescedPartitions.Add check since the set starts empty.
-                await SendCoalescedAsync(
-                    coalescedBatches, coalescedCount, cancellationToken).ConfigureAwait(false);
+                if (coalescedCount > 0)
+                {
+                    await SendCoalescedAsync(
+                        coalescedBatches, coalescedCount, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
+
+                    // All carry-over batches are for muted partitions. Wait for either:
+                    // 1. A partition to be unmuted (retry completed), or
+                    // 2. New channel data arrives (may contain retry batch with IsRetry=true).
+                    var channelWaitTask = channelReader.WaitToReadAsync(cancellationToken).AsTask();
+                    await Task.WhenAny(unmuteSignal.Task, channelWaitTask).ConfigureAwait(false);
+                }
 
                 // Merge new carry-over into persistent list for next iteration
                 if (newCarryOver is { Count: > 0 })
@@ -258,6 +332,11 @@ internal sealed class BrokerSender : IAsyncDisposable
             // Drain any remaining batches from channel and fail them
             while (channelReader.TryRead(out var remaining))
             {
+                if (remaining.IsRetry)
+                {
+                    remaining.IsRetry = false;
+                    _mutedPartitions.TryRemove(remaining.TopicPartition, out _);
+                }
                 CompleteInflightEntry(remaining);
                 try { remaining.Fail(new ObjectDisposedException(nameof(BrokerSender))); }
                 catch { /* Observe */ }
@@ -476,10 +555,12 @@ internal sealed class BrokerSender : IAsyncDisposable
 
                 if (partitionResponse is null)
                 {
-                    // No response — retriable
+                    // No response — retriable. Mute the partition to prevent newer batches
+                    // from being sent while the retry is in progress.
                     _logger?.LogWarning(
                         "[BrokerSender] No response for {Topic}-{Partition}",
                         expectedTopic, expectedPartition);
+                    _mutedPartitions.TryAdd(batch.TopicPartition, 0);
                     retryTasks ??= [];
                     retryTasks.Add(ScheduleRetryAsync(batch, ErrorCode.NetworkException, cancellationToken));
                     batches[i] = null!; // Mark as handed off
@@ -500,6 +581,8 @@ internal sealed class BrokerSender : IAsyncDisposable
                         || partitionResponse.ErrorCode == ErrorCode.InvalidProducerEpoch
                         || partitionResponse.ErrorCode == ErrorCode.UnknownProducerId)
                     {
+                        // Mute the partition to prevent newer batches from jumping ahead.
+                        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
                         retryTasks ??= [];
                         retryTasks.Add(ScheduleRetryAsync(batch, partitionResponse.ErrorCode, cancellationToken));
                         batches[i] = null!;
@@ -535,11 +618,13 @@ internal sealed class BrokerSender : IAsyncDisposable
         catch (Exception ex)
         {
             // Entire send failed — fail all remaining batches.
+            // Unmute any partitions that were muted but whose retry wasn't started.
             _logger?.LogError(ex, "BrokerSender[{BrokerId}] response handling failed", _brokerId);
 
             for (var i = 0; i < count; i++)
             {
                 if (batches[i] is null) continue; // Already handled
+                _mutedPartitions.TryRemove(batches[i].TopicPartition, out _);
                 FailAndCleanupBatch(batches[i], ex);
             }
         }
@@ -561,7 +646,8 @@ internal sealed class BrokerSender : IAsyncDisposable
 
     /// <summary>
     /// Schedules a retry for a batch: performs backoff/OOSN coordination, then re-enqueues the
-    /// batch to the appropriate BrokerSender (self or rerouted).
+    /// batch to the appropriate BrokerSender (self or rerouted). The partition is muted by the
+    /// caller (HandleResponseAsync) before this method is invoked.
     /// This ensures retries go through the send loop's single-threaded path, preserving wire-order.
     /// Fire-and-forget from HandleResponseAsync — tracked in _inFlightResponses for clean shutdown.
     /// </summary>
@@ -685,6 +771,7 @@ internal sealed class BrokerSender : IAsyncDisposable
 
             if (leader is null)
             {
+                UnmutePartition(batch.TopicPartition);
                 FailAndCleanupBatch(batch,
                     new KafkaException(ErrorCode.LeaderNotAvailable,
                         $"No leader available for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}"));
@@ -693,22 +780,27 @@ internal sealed class BrokerSender : IAsyncDisposable
 
             if (leader.NodeId == _brokerId)
             {
-                // Same broker — re-enqueue for retry
+                // Same broker — mark as retry and re-enqueue. The send loop will unmute the
+                // partition when it coalesces this batch, ensuring it goes before newer batches.
+                batch.IsRetry = true;
                 Enqueue(batch);
             }
             else if (_rerouteBatch is not null)
             {
-                // Leader moved to different broker — reroute
+                // Leader moved to different broker — unmute at this broker and reroute.
+                UnmutePartition(batch.TopicPartition);
                 _rerouteBatch(batch);
             }
             else
             {
-                // No reroute callback — re-enqueue to self (best effort)
+                // No reroute callback — mark as retry and re-enqueue to self (best effort)
+                batch.IsRetry = true;
                 Enqueue(batch);
             }
         }
         catch (Exception ex)
         {
+            UnmutePartition(batch.TopicPartition);
             CompleteInflightEntry(batch);
             _logger?.LogError(ex, "[BrokerSender] Retry scheduling failed for {Topic}-{Partition}",
                 batch.TopicPartition.Topic, batch.TopicPartition.Partition);
@@ -821,6 +913,18 @@ internal sealed class BrokerSender : IAsyncDisposable
             _inflightTracker?.Complete(entry);
             batch.InflightEntry = null;
         }
+    }
+
+    /// <summary>
+    /// Removes a partition from the muted set and signals the send loop.
+    /// Called when a retry completes (reroute, permanent failure, or catch block).
+    /// Idempotent: safe to call even if the partition was not muted.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void UnmutePartition(TopicPartition tp)
+    {
+        _mutedPartitions.TryRemove(tp, out _);
+        Interlocked.Exchange(ref _unmuteSignal, null)?.TrySetResult();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

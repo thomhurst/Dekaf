@@ -376,8 +376,10 @@ public sealed class EpochBumpRecoveryTests
         };
 
         recordBatchField!.SetValue(batch, originalBatch);
+        batch.IsRetry = true;
         await Assert.That(batch.RecordBatch.ProducerEpoch).IsEqualTo((short)1);
         await Assert.That(batch.RecordBatch.BaseSequence).IsEqualTo(5);
+        await Assert.That(batch.IsRetry).IsTrue();
 
         // Rewrite
         var newRecordBatch = originalBatch.WithProducerState(producerId: 100, producerEpoch: 2, baseSequence: 0);
@@ -386,6 +388,7 @@ public sealed class EpochBumpRecoveryTests
         await Assert.That(batch.RecordBatch).IsSameReferenceAs(newRecordBatch);
         await Assert.That(batch.RecordBatch.ProducerEpoch).IsEqualTo((short)2);
         await Assert.That(batch.RecordBatch.BaseSequence).IsEqualTo(0);
+        await Assert.That(batch.IsRetry).IsTrue(); // IsRetry preserved across rewrite
     }
 
     [Test]
@@ -1301,6 +1304,20 @@ public sealed class EpochBumpRecoveryTests
     #endregion
 
     #region ReadyBatch Reset and Pool Tests
+
+    [Test]
+    public async Task ReadyBatch_Reset_ClearsIsRetryFlag()
+    {
+        var pool = new ReadyBatchPool();
+        var batch = pool.Rent();
+
+        batch.IsRetry = true;
+        await Assert.That(batch.IsRetry).IsTrue();
+
+        pool.Return(batch); // Return calls Reset()
+
+        await Assert.That(batch.IsRetry).IsFalse();
+    }
 
     [Test]
     public async Task ReadyBatch_Reset_ClearsInflightEntry()

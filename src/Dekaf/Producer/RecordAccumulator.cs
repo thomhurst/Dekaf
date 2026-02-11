@@ -3859,6 +3859,13 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     internal void RewriteRecordBatch(RecordBatch newRecordBatch) => _recordBatch = newRecordBatch;
 
     /// <summary>
+    /// When true, this batch is a same-broker retry. The send loop unmutes the partition
+    /// when coalescing a retry batch, ensuring it is sent before newer batches for the
+    /// same partition. Set by ScheduleRetryAsync, cleared during coalescing or in Reset().
+    /// </summary>
+    internal bool IsRetry { get; set; }
+
+    /// <summary>
     /// Stopwatch timestamp when this batch was initialized. Used for absolute delivery deadline
     /// computation in ScheduleRetryAsync (prevents infinite retries with relative deadlines).
     /// </summary>
@@ -3941,6 +3948,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _callbacks = null;
         _callbackCount = 0;
         InflightEntry = null;
+        IsRetry = false;
 
         // Reset state flags
         Volatile.Write(ref _cleanedUp, 0);
