@@ -464,10 +464,6 @@ internal sealed class BrokerSender : IAsyncDisposable
                         batch.RecordBatch.ProducerEpoch = currentEpoch;
                         batch.RecordBatch.BaseSequence = newSeq;
 
-                        _logger?.LogWarning(
-                            "[BrokerSender] SEQ-ASSIGN stale {Topic}-{Partition} seq={Seq} count={Count} epoch={Epoch} pid={Pid}",
-                            tp.Topic, tp.Partition, newSeq, recordCount, currentEpoch, currentPid);
-
                         // Re-register with inflight tracker
                         if (_inflightTracker is not null)
                         {
@@ -479,19 +475,10 @@ internal sealed class BrokerSender : IAsyncDisposable
                         // Fresh batch: assign sequence (epoch/PID are already correct)
                         var newSeq = _accumulator.GetAndIncrementSequence(tp, recordCount);
                         batch.RecordBatch.BaseSequence = newSeq;
-
-                        _logger?.LogWarning(
-                            "[BrokerSender] SEQ-ASSIGN fresh {Topic}-{Partition} seq={Seq} count={Count} epoch={Epoch} pid={Pid}",
-                            tp.Topic, tp.Partition, newSeq, recordCount,
-                            batch.RecordBatch.ProducerEpoch, batch.RecordBatch.ProducerId);
                     }
                     else
                     {
                         // Retry batch with correct epoch — keeps its original sequence
-                        _logger?.LogWarning(
-                            "[BrokerSender] SEQ-ASSIGN retry {Topic}-{Partition} seq={Seq} count={Count} epoch={Epoch} pid={Pid}",
-                            tp.Topic, tp.Partition, batch.RecordBatch.BaseSequence, recordCount,
-                            batch.RecordBatch.ProducerEpoch, batch.RecordBatch.ProducerId);
                     }
                 }
             }
@@ -672,8 +659,8 @@ internal sealed class BrokerSender : IAsyncDisposable
                         || partitionResponse.ErrorCode == ErrorCode.InvalidProducerEpoch
                         || partitionResponse.ErrorCode == ErrorCode.UnknownProducerId)
                     {
-                        _logger?.LogWarning(
-                            "[BrokerSender] RESPONSE-ERR {ErrorCode} for {Topic}-{Partition} seq={Seq} count={Count} epoch={Epoch} pid={Pid}",
+                        _logger?.LogDebug(
+                            "Retriable error {ErrorCode} for {Topic}-{Partition} seq={Seq} count={Count} epoch={Epoch} pid={Pid}",
                             partitionResponse.ErrorCode, expectedTopic, expectedPartition,
                             batch.RecordBatch.BaseSequence, batch.RecordBatch.Records.Count,
                             batch.RecordBatch.ProducerEpoch, batch.RecordBatch.ProducerId);

@@ -6,7 +6,7 @@ namespace Dekaf.Tests.Integration;
 
 /// <summary>
 /// Targeted diagnostic tests to isolate producer hang issues.
-/// Each test has a short timeout (15s) and tests a specific scenario.
+/// Each test has a timeout (60s, accounting for container startup) and tests a specific scenario.
 /// If a specific test hangs, it narrows down the root cause.
 /// </summary>
 [Category("Producer")]
@@ -15,7 +15,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     // ===== PHASE 1: Does single-message produce work? =====
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(60_000)]
     public async Task Diag01_ProduceAsync_SingleMessage_NonIdempotent(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -35,7 +35,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     }
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(60_000)]
     public async Task Diag02_ProduceAsync_SingleMessage_Idempotent(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -58,7 +58,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     // ===== PHASE 2: Does Send + FlushAsync work for a single message? =====
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(60_000)]
     public async Task Diag03_SendAndFlush_SingleMessage_NonIdempotent(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -78,7 +78,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     }
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(60_000)]
     public async Task Diag04_SendAndFlush_SingleMessage_Idempotent(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -101,7 +101,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     // ===== PHASE 3: Multiple messages with ProduceAsync (awaited, no flush needed) =====
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(60_000)]
     public async Task Diag05_ProduceAsync_10Messages_NonIdempotent(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -122,7 +122,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     }
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(60_000)]
     public async Task Diag06_ProduceAsync_10Messages_Idempotent(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -146,7 +146,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     // ===== PHASE 4: Send + Flush with increasing message counts =====
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(60_000)]
     public async Task Diag07_SendAndFlush_10Messages_NonIdempotent(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -169,7 +169,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     }
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(60_000)]
     public async Task Diag08_SendAndFlush_10Messages_Idempotent(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -193,7 +193,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     }
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(60_000)]
     public async Task Diag09_SendAndFlush_100Messages_NonIdempotent(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -216,7 +216,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     }
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(60_000)]
     public async Task Diag10_SendAndFlush_100Messages_Idempotent(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -242,7 +242,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     // ===== PHASE 5: Small batch sizes (force many batches through BrokerSender) =====
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(60_000)]
     public async Task Diag11_SendAndFlush_SmallBatch_50Messages_NonIdempotent(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -267,7 +267,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     }
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(60_000)]
     public async Task Diag12_SendAndFlush_SmallBatch_50Messages_Idempotent(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -295,7 +295,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     // ===== PHASE 6: Multiple partitions (tests coalescing) =====
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(60_000)]
     public async Task Diag13_SendAndFlush_MultiPartition_NonIdempotent(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
@@ -322,7 +322,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     }
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(60_000)]
     public async Task Diag14_SendAndFlush_MultiPartition_Idempotent(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
@@ -352,7 +352,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     // ===== PHASE 7: High volume with flush timeout diagnostic =====
 
     [Test]
-    [Timeout(30_000)]
+    [Timeout(60_000)]
     public async Task Diag15_SendAndFlush_500Messages_SmallBatch_Idempotent_WithDiagnostics(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -413,7 +413,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
     // ===== PHASE 8: Acks.None (fire-and-forget at protocol level - bypasses response path) =====
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(60_000)]
     public async Task Diag16_SendAndFlush_AcksNone_100Messages(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
