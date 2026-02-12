@@ -6,16 +6,17 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for producer transactions.
 /// </summary>
+[Category("Transaction")]
 public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
     public async Task InitTransactions_SetsProducerIdAndEpoch()
     {
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId($"txn-init-{Guid.NewGuid():N}")
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         // Should not throw
         await producer.InitTransactionsAsync();
@@ -27,11 +28,11 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var txnId = $"txn-commit-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await producer.InitTransactionsAsync();
 
@@ -48,12 +49,12 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         }
 
         // Consume the message - it should be visible after commit
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"txn-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -70,11 +71,11 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var txnId = $"txn-abort-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await producer.InitTransactionsAsync();
 
@@ -104,12 +105,12 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         }
 
         // Consume with read_committed - should only see the committed message
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"txn-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -126,11 +127,11 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var txnId = $"txn-multi-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await producer.InitTransactionsAsync();
 
@@ -150,12 +151,12 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         }
 
         // Consume all 5 messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"txn-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -178,11 +179,11 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var txnId = $"txn-multi-txn-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         await producer.InitTransactionsAsync();
 
@@ -211,12 +212,12 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         }
 
         // Both messages should be visible
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"txn-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

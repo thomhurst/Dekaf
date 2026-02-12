@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration;
 /// message ordering under various conditions including high concurrency,
 /// multi-partition scenarios, and flush boundaries.
 /// </summary>
+[Category("Producer")]
 public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -20,12 +21,12 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 100;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-strict-ordering")
             .WithAcks(Acks.All)
             .EnableIdempotence()
-            .Build();
+            .BuildAsync();
 
         // Produce sequentially to guarantee append order
         for (var i = 0; i < messageCount; i++)
@@ -39,10 +40,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         }
 
         // Consume and verify strict ordering
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -80,13 +81,13 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 500;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-high-throughput-ordering")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithLinger(TimeSpan.FromMilliseconds(2))
-            .Build();
+            .BuildAsync();
 
         // Fire all produces rapidly to stress pipelining
         for (var i = 0; i < messageCount; i++)
@@ -102,10 +103,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await producer.FlushAsync();
 
         // Consume and verify ordering
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -138,14 +139,14 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 200;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-single-partition-ordering")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithBatchSize(512) // Very small to force many batches in flight
             .WithLinger(TimeSpan.FromMilliseconds(2))
-            .Build();
+            .BuildAsync();
 
         // Fire-and-forget all messages then flush
         for (var i = 0; i < messageCount; i++)
@@ -161,10 +162,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await producer.FlushAsync();
 
         // Consume all and verify strict ordering
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -195,13 +196,13 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
         const int messagesPerPartition = 50;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-partition-ordering")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithLinger(TimeSpan.FromMilliseconds(2))
-            .Build();
+            .BuildAsync();
 
         // Produce to all partitions rapidly using explicit partition assignment
         for (var p = 0; p < 4; p++)
@@ -221,10 +222,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await producer.FlushAsync();
 
         // Consume from all partitions using Assign (no consumer group = no rebalance duplicates)
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(Enumerable.Range(0, 4).Select(p => new TopicPartition(topic, p)).ToArray());
 
@@ -275,12 +276,12 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
 
         var tasks = Enumerable.Range(0, producerCount).Select(async producerId =>
         {
-            await using var producer = Kafka.CreateProducer<string, string>()
+            await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId($"test-concurrent-flush-{producerId}")
                 .WithAcks(Acks.All)
                 .EnableIdempotence()
-                .Build();
+                .BuildAsync();
 
             for (var i = 0; i < messagesPerProducer; i++)
             {
@@ -302,10 +303,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await Assert.That(allMetadata.Count).IsEqualTo(producerCount * messagesPerProducer);
 
         // Consume all messages using Assign (no consumer group = no rebalance duplicates)
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(Enumerable.Range(0, 3).Select(p => new TopicPartition(topic, p)).ToArray());
 
@@ -353,14 +354,14 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 8);
         const int messagesPerPartition = 500;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-coalesced-ordering")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithBatchSize(1024) // Small to force many batches
             .WithLinger(TimeSpan.FromMilliseconds(2))
-            .Build();
+            .BuildAsync();
 
         // Fire-and-forget to all 8 partitions rapidly to stress the coalescing path
         for (var p = 0; p < 8; p++)
@@ -380,10 +381,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await producer.FlushAsync();
 
         // Consume from all partitions using Assign (no consumer group = no rebalance duplicates)
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(Enumerable.Range(0, 8).Select(p => new TopicPartition(topic, p)).ToArray());
 
@@ -432,14 +433,14 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 1000;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-deferred-chain")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithBatchSize(256) // Tiny: ~10 messages per batch → ~100 batches for 1000 messages
             .WithLinger(TimeSpan.FromMilliseconds(2))
-            .Build();
+            .BuildAsync();
 
         // Fire-and-forget all messages — forces many batches into the same drain
         for (var i = 0; i < messageCount; i++)
@@ -455,10 +456,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await producer.FlushAsync();
 
         // Consume and verify strict ordering
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -490,14 +491,14 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         const int wavesCount = 5;
         const int messagesPerWave = 200;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-drain")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithBatchSize(512) // Small to create many batches per wave
             .WithLinger(TimeSpan.FromMilliseconds(2))
-            .Build();
+            .BuildAsync();
 
         // Produce in waves with flushes between to create distinct drain cycles
         for (var wave = 0; wave < wavesCount; wave++)
@@ -518,10 +519,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         }
 
         // Consume and verify per-partition ordering using Assign (no consumer group = no rebalance duplicates)
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(Enumerable.Range(0, 4).Select(p => new TopicPartition(topic, p)).ToArray());
 
@@ -569,14 +570,14 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
         const int messageCount = 600;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-rapid-fire-forget")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithBatchSize(512)
             .WithLinger(TimeSpan.FromMilliseconds(2))
-            .Build();
+            .BuildAsync();
 
         // Fire-and-forget to both partitions rapidly
         for (var i = 0; i < messageCount; i++)
@@ -594,10 +595,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await producer.FlushAsync();
 
         // Consume and verify ordering using Assign (no consumer group = no rebalance duplicates)
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(Enumerable.Range(0, 2).Select(p => new TopicPartition(topic, p)).ToArray());
 
@@ -638,14 +639,14 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
         const int messagesPerPartition = 400;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-interleaved-deferred")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithBatchSize(256) // Tiny: forces many batches
             .WithLinger(TimeSpan.FromMilliseconds(2))
-            .Build();
+            .BuildAsync();
 
         // Interleave: p0, p1, p0, p1, ... — this creates alternating batches that
         // will be grouped into deferred chains for each partition
@@ -672,10 +673,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await producer.FlushAsync();
 
         // Consume and verify per-partition ordering using Assign (no consumer group = no rebalance duplicates)
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(Enumerable.Range(0, 2).Select(p => new TopicPartition(topic, p)).ToArray());
 
@@ -715,14 +716,14 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 16);
         const int messagesPerPartition = 100;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-high-partition-count")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithBatchSize(512)
             .WithLinger(TimeSpan.FromMilliseconds(2))
-            .Build();
+            .BuildAsync();
 
         for (var p = 0; p < 16; p++)
         {
@@ -740,10 +741,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
 
         await producer.FlushAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(Enumerable.Range(0, 16).Select(p => new TopicPartition(topic, p)).ToArray());
 
@@ -787,14 +788,14 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 300;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-mixed-produce-send")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithBatchSize(512)
             .WithLinger(TimeSpan.FromMilliseconds(2))
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -809,10 +810,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await producer.FlushAsync();
 
         // Consume and verify strict ordering
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -845,14 +846,14 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         const int waves = 10;
         const int messagesPerWave = 100;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-sustained")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithBatchSize(512)
             .WithLinger(TimeSpan.FromMilliseconds(2))
-            .Build();
+            .BuildAsync();
 
         // Track per-partition sequence counters
         var partitionSeq = new int[4];
@@ -879,10 +880,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         await producer.FlushAsync();
 
         // Consume and verify using Assign (no consumer group = no rebalance duplicates)
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(Enumerable.Range(0, 4).Select(p => new TopicPartition(topic, p)).ToArray());
 
@@ -936,14 +937,14 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         const int waves = 20;
         const int messagesPerWave = 80; // 10 per partition per wave
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-pool-recycling")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithBatchSize(256) // Tiny: forces very frequent batch rotation
             .WithLinger(TimeSpan.FromMilliseconds(1)) // Aggressive linger timer
-            .Build();
+            .BuildAsync();
 
         var partitionSeq = new int[8];
 
@@ -970,10 +971,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
 
         await producer.FlushAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(Enumerable.Range(0, 8).Select(p => new TopicPartition(topic, p)).ToArray());
 
@@ -1018,14 +1019,14 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
         const int messagesPerPartition = 300;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-linger-recycling")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithBatchSize(65536) // Large: batches never fill up from size alone
             .WithLinger(TimeSpan.FromMilliseconds(1)) // Very short: linger timer always fires first
-            .Build();
+            .BuildAsync();
 
         // Produce in bursts with small gaps to let the linger timer fire between bursts
         for (var burst = 0; burst < 10; burst++)
@@ -1051,10 +1052,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
 
         await producer.FlushAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(Enumerable.Range(0, 4).Select(p => new TopicPartition(topic, p)).ToArray());
 
@@ -1095,14 +1096,14 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 16);
         const int messagesPerPartition = 100;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-many-partitions-rotation")
             .WithAcks(Acks.All)
             .EnableIdempotence()
             .WithBatchSize(256)
             .WithLinger(TimeSpan.FromMilliseconds(1))
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messagesPerPartition; i++)
         {
@@ -1124,10 +1125,10 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
 
         await producer.FlushAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(Enumerable.Range(0, 16).Select(p => new TopicPartition(topic, p)).ToArray());
 

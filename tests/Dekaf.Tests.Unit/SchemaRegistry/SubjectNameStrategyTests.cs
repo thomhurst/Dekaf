@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Buffers.Binary;
 using Avro.Generic;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;

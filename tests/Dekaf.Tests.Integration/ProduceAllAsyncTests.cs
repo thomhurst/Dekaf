@@ -3,6 +3,7 @@ using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
 
+[Category("Producer")]
 public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -10,9 +11,9 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         var messages = Enumerable.Range(0, 10).Select(i => new ProducerMessage<string, string>
         {
@@ -38,9 +39,9 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         var messages = Enumerable.Range(0, 5)
             .Select(i => ((string?)$"key-{i}", $"value-{i}"))
@@ -60,9 +61,9 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     [Test]
     public async Task ProduceAllAsync_EmptyList_ReturnsEmptyResults()
     {
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         var results = await producer.ProduceAllAsync(Array.Empty<ProducerMessage<string, string>>());
 
@@ -75,9 +76,9 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         var messages = Enumerable.Range(0, 5).Select(i => new ProducerMessage<string, string>
         {
@@ -89,11 +90,11 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         await producer.ProduceAllAsync(messages);
 
         // Consume all messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

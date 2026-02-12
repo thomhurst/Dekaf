@@ -3,7 +3,6 @@ using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
-using DekafLib = Dekaf;
 
 namespace Dekaf.StressTests.Scenarios;
 

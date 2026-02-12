@@ -6,16 +6,18 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests verifying the BufferMemory fix prevents unbounded memory growth
 /// under sustained load. This is a regression test for the arena fast path bypass bug.
 /// </summary>
+[Category("Resilience")]
 public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     /// <summary>
     /// Regression test for the BufferMemory arena bypass bug.
     /// Verifies that sustained message production to the same partition does not cause
     /// unbounded memory growth. The original bug caused 18GB+ growth in 90 seconds.
-    /// This test runs for 30 seconds (enough to detect multi-GB leaks) and ensures memory
+    /// This test runs for 15 seconds (enough to detect multi-GB leaks) and ensures memory
     /// growth stays under reasonable bounds.
     /// </summary>
     [Test]
+    [NotInParallel]
     public async Task SustainedLoad_DoesNotCauseUnboundedMemoryGrowth()
     {
         // Arrange
@@ -23,31 +25,30 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
 
         // Use small 8MB buffer to make the test more sensitive to leaks
         // Smaller buffer = leak more obvious relative to expected memory footprint
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("memory-stress-test")
             .WithAcks(Acks.Leader)
             .WithBufferMemory(8388608) // 8 MB - small buffer makes leaks more obvious
-            .Build();
+            .BuildAsync();
 
-        // Force full GC before measuring baseline
-        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-        GC.WaitForPendingFinalizers();
-        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-
-        var initialMemory = GC.GetTotalMemory(forceFullCollection: false);
-        // 30 seconds is sufficient to detect the bug (original showed 18GB/90s = ~6GB in 30s)
-        // while being CI-friendly (avoids 10-minute timeout with other tests)
-        var testDuration = TimeSpan.FromSeconds(30);
+        // Force full GC and measure managed heap baseline. Using GC.GetTotalMemory instead of
+        // Process.WorkingSet64 because working set captures memory from ALL concurrent tests
+        // (32 parallel threads), causing false positives of 14GB+ "growth" when other tests
+        // allocate heavily. Managed heap with forced collection isolates this test's allocations.
+        var initialMemory = GC.GetTotalMemory(forceFullCollection: true);
+        // 15 seconds is sufficient to detect the bug (original showed 18GB/90s = ~3GB in 15s)
+        // while being CI-friendly (reduces resource pressure with other Resilience tests)
+        var testDuration = TimeSpan.FromSeconds(15);
         var startTime = DateTime.UtcNow;
         var messageCount = 0;
         var lastLogTime = startTime;
 
         Console.WriteLine($"[BufferMemoryStressTest] Starting sustained load test");
-        Console.WriteLine($"[BufferMemoryStressTest] Initial memory: {initialMemory / 1_000_000.0:F1} MB");
+        Console.WriteLine($"[BufferMemoryStressTest] Initial memory (managed heap): {initialMemory / 1_000_000.0:F1} MB");
         Console.WriteLine($"[BufferMemoryStressTest] Test duration: {testDuration.TotalSeconds} seconds");
 
-        // Act: Send messages continuously for 30 seconds using fire-and-forget
+        // Act: Send messages continuously for 15 seconds using fire-and-forget
         // Using the same key ensures messages go to the same partition, triggering the arena fast path
         // Use Send() (fire-and-forget) instead of ProduceAsync to avoid blocking on network I/O
         // This matches real high-throughput producer patterns and allows clean test termination
@@ -96,28 +97,22 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
             Console.WriteLine($"[BufferMemoryStressTest] Flush timed out after 30s, continuing with memory check");
         }
 
-        // Force full GC to get accurate final memory measurement
-        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-        GC.WaitForPendingFinalizers();
-        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-
-        var finalMemory = GC.GetTotalMemory(forceFullCollection: false);
+        // Force full GC and measure final managed heap
+        var finalMemory = GC.GetTotalMemory(forceFullCollection: true);
         var totalGrowthMB = (finalMemory - initialMemory) / 1_000_000.0;
 
         Console.WriteLine($"[BufferMemoryStressTest] Test complete");
         Console.WriteLine($"[BufferMemoryStressTest] Messages sent: {messageCount:N0}");
         Console.WriteLine($"[BufferMemoryStressTest] Average rate: {messageCount / testDuration.TotalSeconds:F0} msg/s");
-        Console.WriteLine($"[BufferMemoryStressTest] Initial memory: {initialMemory / 1_000_000.0:F1} MB");
-        Console.WriteLine($"[BufferMemoryStressTest] Final memory: {finalMemory / 1_000_000.0:F1} MB");
+        Console.WriteLine($"[BufferMemoryStressTest] Initial memory (managed heap): {initialMemory / 1_000_000.0:F1} MB");
+        Console.WriteLine($"[BufferMemoryStressTest] Final memory (managed heap): {finalMemory / 1_000_000.0:F1} MB");
         Console.WriteLine($"[BufferMemoryStressTest] Total memory growth: {totalGrowthMB:F1} MB");
 
-        // Assert: Memory growth should be < 2000MB
-        // With 8MB buffer and semaphore-limited batches, expect memory to stay bounded.
-        // The threshold accounts for: arena buffers, ArrayPool caching, Docker/network overhead,
-        // message throughput variability, and CI environment variability.
-        // The original bug caused 4.5GB+ growth, so 2000MB still catches major leaks.
-        // Threshold raised to 2000MB for CI reliability — constrained CI runners with high
-        // parallelism can see ~1000-1100MB from ArrayPool retention and concurrent test pressure.
+        // Assert: Managed heap growth should be < 2000MB
+        // Uses GC.GetTotalMemory(forceFullCollection: true) to isolate managed allocations from
+        // concurrent test noise. The original bug caused 18GB+ growth in 90s on managed heap.
+        // With BufferMemory working correctly, growth should be well under 100MB.
+        // 2000MB threshold accounts for GC generational overhead and CI variability.
         Console.WriteLine($"[BufferMemoryStressTest] Asserting memory growth < 2000 MB (actual: {totalGrowthMB:F1} MB)");
         await Assert.That(totalGrowthMB).IsLessThan(2000);
     }
@@ -127,17 +122,18 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
     /// Sends messages and verifies they complete within a reasonable time.
     /// </summary>
     [Test]
+    [NotInParallel]
     public async Task BufferedBytes_StaysWithinReasonableBounds_UnderLoad()
     {
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4).ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("buffered-bytes-test")
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(50)) // Short linger for faster batching
-            .Build();
+            .BuildAsync();
 
         var messageValue = new string('x', 1000); // 1KB messages
         var messageCount = 100; // Reduced from 1000 - enough to test without being slow

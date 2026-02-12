@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for producer delivery guarantees across different acks levels,
 /// flush semantics, and callback-based production patterns.
 /// </summary>
+[Category("Producer")]
 public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -15,10 +16,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -31,10 +32,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Verify message is readable
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, metadata.Partition));
 
@@ -50,10 +51,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.None)
-            .Build();
+            .BuildAsync();
 
         // AcksNone doesn't wait for broker confirmation
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -66,10 +67,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         await producer.FlushAsync();
 
         // Message should still be there (single broker, no failure)
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -85,10 +86,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithLinger(TimeSpan.FromMilliseconds(50)) // Aggregate messages
-            .Build();
+            .BuildAsync();
 
         const int messageCount = 500;
         for (var i = 0; i < messageCount; i++)
@@ -105,10 +106,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         await producer.FlushAsync();
 
         // Verify all messages were delivered
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -129,10 +130,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithLinger(TimeSpan.FromMilliseconds(100))
-            .Build();
+            .BuildAsync();
 
         const int messageCount = 50;
         for (var i = 0; i < messageCount; i++)
@@ -150,10 +151,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         await producer.FlushAsync();
 
         // All messages should be delivered
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -174,9 +175,9 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         const int messageCount = 20;
         var callbackResults = new ConcurrentBag<(RecordMetadata Metadata, Exception? Error)>();
@@ -222,9 +223,9 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Batch 1
         for (var i = 0; i < 10; i++)
@@ -256,10 +257,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         await producer.FlushAsync();
 
         // Should have exactly 20 messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -281,10 +282,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         // Use a producer that will be disposed with in-flight messages
-        await using (var producer = Kafka.CreateProducer<string, string>()
+        await using (var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithLinger(TimeSpan.FromMilliseconds(50))
-            .Build())
+            .BuildAsync())
         {
             for (var i = 0; i < 30; i++)
             {
@@ -299,10 +300,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         }
 
         // Verify messages arrived
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -325,9 +326,9 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         var topic2 = await KafkaContainer.CreateTestTopicAsync();
         var topic3 = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce to all three topics
         for (var i = 0; i < 10; i++)
@@ -349,10 +350,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         // Verify each topic
         foreach (var (topic, prefix) in new[] { (topic1, "t1"), (topic2, "t2"), (topic3, "t3") })
         {
-            await using var consumer = Kafka.CreateConsumer<string, string>()
+            await using var consumer = await Kafka.CreateConsumer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .Build();
+                .BuildAsync();
 
             consumer.Assign(new TopicPartition(topic, 0));
 
@@ -375,9 +376,9 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         var timestamp = DateTimeOffset.UtcNow;
 
@@ -389,10 +390,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
             Timestamp = timestamp
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 

@@ -19,12 +19,11 @@ public class ConsumerBuilderValidationTests
     [Test]
     public async Task Build_WithBootstrapServers_Succeeds()
     {
-        var builder = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers("localhost:9092");
+        await using var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
 
-        var act = () => builder.Build();
-
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(consumer).IsNotNull();
     }
 
     [Test]
@@ -230,23 +229,23 @@ public class ConsumerBuilderValidationTests
     [Test]
     public async Task ForHighThroughput_ThenBuild_Succeeds()
     {
-        var act = () => Kafka.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .ForHighThroughput()
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(consumer).IsNotNull();
     }
 
     [Test]
     public async Task ForLowLatency_ThenBuild_Succeeds()
     {
-        var act = () => Kafka.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .ForLowLatency()
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(consumer).IsNotNull();
     }
 
     #endregion

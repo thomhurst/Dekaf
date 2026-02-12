@@ -65,36 +65,36 @@ public sealed class MetadataMaxAgeBuilderTests
     [Test]
     public async Task ProducerBuilder_WithMetadataMaxAge_ThenBuild_Succeeds()
     {
-        var act = () => Kafka.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataMaxAge(TimeSpan.FromMinutes(5))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(producer).IsNotNull();
     }
 
     [Test]
     public async Task ProducerBuilder_WithMetadataMaxAge_Milliseconds_ThenBuild_Succeeds()
     {
-        var act = () => Kafka.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataMaxAge(TimeSpan.FromMilliseconds(60000))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(producer).IsNotNull();
     }
 
     [Test]
     public async Task ProducerBuilder_WithMetadataMaxAge_ChainsWithOtherMethods()
     {
-        var act = () => Kafka.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithClientId("test")
             .WithMetadataMaxAge(TimeSpan.FromMinutes(5))
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(producer).IsNotNull();
     }
 
     #endregion
@@ -160,36 +160,36 @@ public sealed class MetadataMaxAgeBuilderTests
     [Test]
     public async Task ConsumerBuilder_WithMetadataMaxAge_ThenBuild_Succeeds()
     {
-        var act = () => Kafka.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataMaxAge(TimeSpan.FromMinutes(5))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(consumer).IsNotNull();
     }
 
     [Test]
     public async Task ConsumerBuilder_WithMetadataMaxAge_Milliseconds_ThenBuild_Succeeds()
     {
-        var act = () => Kafka.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataMaxAge(TimeSpan.FromMilliseconds(60000))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(consumer).IsNotNull();
     }
 
     [Test]
     public async Task ConsumerBuilder_WithMetadataMaxAge_ChainsWithOtherMethods()
     {
-        var act = () => Kafka.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithGroupId("test-group")
             .WithMetadataMaxAge(TimeSpan.FromMinutes(5))
             .WithMaxPollRecords(100)
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(consumer).IsNotNull();
     }
 
     #endregion
@@ -255,35 +255,35 @@ public sealed class MetadataMaxAgeBuilderTests
     [Test]
     public async Task AdminClientBuilder_WithMetadataMaxAge_ThenBuild_Succeeds()
     {
-        var act = () => new AdminClientBuilder()
+        await using var client = new AdminClientBuilder()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataMaxAge(TimeSpan.FromMinutes(5))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(client).IsNotNull();
     }
 
     [Test]
     public async Task AdminClientBuilder_WithMetadataMaxAge_Milliseconds_ThenBuild_Succeeds()
     {
-        var act = () => new AdminClientBuilder()
+        await using var client = new AdminClientBuilder()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataMaxAge(TimeSpan.FromMilliseconds(60000))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(client).IsNotNull();
     }
 
     [Test]
     public async Task AdminClientBuilder_WithMetadataMaxAge_ChainsWithOtherMethods()
     {
-        var act = () => new AdminClientBuilder()
+        await using var client = new AdminClientBuilder()
             .WithBootstrapServers("localhost:9092")
             .WithClientId("test")
             .WithMetadataMaxAge(TimeSpan.FromMinutes(5))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(client).IsNotNull();
     }
 
     #endregion

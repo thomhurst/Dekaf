@@ -87,9 +87,9 @@ public sealed class RecordBatch : IDisposable
     public int LastOffsetDelta { get; init; }
     public long BaseTimestamp { get; init; }
     public long MaxTimestamp { get; init; }
-    public long ProducerId { get; init; } = -1;
-    public short ProducerEpoch { get; init; } = -1;
-    public int BaseSequence { get; init; } = -1;
+    public long ProducerId { get; set; } = -1;
+    public short ProducerEpoch { get; set; } = -1;
+    public int BaseSequence { get; set; } = -1;
 
     /// <summary>
     /// The records in this batch. For batches created via Read(), records are parsed lazily
@@ -107,6 +107,32 @@ public sealed class RecordBatch : IDisposable
         {
             disposable.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Creates a new RecordBatch with updated producer state (PID, epoch, base sequence).
+    /// All other fields are copied from this instance. Records reference is shared (immutable).
+    /// CRC is recomputed automatically during Write().
+    /// Used during epoch bump recovery to rewrite stale batches with new sequence numbers.
+    /// </summary>
+    internal RecordBatch WithProducerState(long producerId, short producerEpoch, int baseSequence)
+    {
+        return new RecordBatch
+        {
+            BaseOffset = BaseOffset,
+            BatchLength = BatchLength,
+            PartitionLeaderEpoch = PartitionLeaderEpoch,
+            Magic = Magic,
+            Crc = 0, // Will be recomputed during Write()
+            Attributes = Attributes,
+            LastOffsetDelta = LastOffsetDelta,
+            BaseTimestamp = BaseTimestamp,
+            MaxTimestamp = MaxTimestamp,
+            ProducerId = producerId,
+            ProducerEpoch = producerEpoch,
+            BaseSequence = baseSequence,
+            Records = Records
+        };
     }
 
     /// <summary>

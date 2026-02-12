@@ -106,10 +106,27 @@ public sealed class MetadataManager : IAsyncDisposable
 
     /// <summary>
     /// Initializes the metadata manager by fetching initial metadata.
+    /// Retries with exponential backoff matching Java client's reconnect.backoff behavior.
     /// </summary>
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
-        await RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+        var backoffMs = _options.RetryBackoffMs;
+
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+                break;
+            }
+            catch (Exception ex) when (attempt < _options.MaxInitRetries && !cancellationToken.IsCancellationRequested)
+            {
+                _logger?.LogWarning(ex, "Metadata initialization attempt {Attempt} failed, retrying in {BackoffMs}ms",
+                    attempt + 1, backoffMs);
+                await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false);
+                backoffMs = Math.Min(backoffMs * 2, _options.RetryBackoffMaxMs);
+            }
+        }
 
         if (_options.EnableBackgroundRefresh)
         {
@@ -190,6 +207,14 @@ public sealed class MetadataManager : IAsyncDisposable
 
         return topic;
     }
+
+    /// <summary>
+    /// Gets the cached leader for a partition without triggering a metadata refresh.
+    /// Thread-safe and allocation-free — reads from an immutable snapshot.
+    /// Returns null if the partition leader is unknown (metadata not yet fetched or stale).
+    /// </summary>
+    public BrokerNode? TryGetCachedPartitionLeader(string topicName, int partition)
+        => _metadata.GetPartitionLeader(topicName, partition);
 
     /// <summary>
     /// Gets the leader for a partition.
@@ -402,7 +427,10 @@ public sealed class MetadataManager : IAsyncDisposable
         {
             try
             {
-                var addresses = await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
+                // Apply a per-host timeout to prevent DNS hangs from blocking rebootstrap
+                using var dnsCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                dnsCts.CancelAfter(TimeSpan.FromSeconds(5));
+                var addresses = await Dns.GetHostAddressesAsync(host, dnsCts.Token).ConfigureAwait(false);
                 foreach (var address in addresses)
                 {
                     var endpoint = (address.ToString(), port);
@@ -606,7 +634,7 @@ public sealed class MetadataManager : IAsyncDisposable
         {
             try
             {
-                await _backgroundRefreshTask.ConfigureAwait(false);
+                await _backgroundRefreshTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch
             {
@@ -654,4 +682,22 @@ public sealed class MetadataOptions
     /// Default is 300000 (5 minutes).
     /// </summary>
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
+
+    /// <summary>
+    /// Initial retry backoff in milliseconds for metadata initialization.
+    /// Matches Java client's reconnect.backoff.ms. Default is 100ms.
+    /// </summary>
+    public int RetryBackoffMs { get; init; } = 100;
+
+    /// <summary>
+    /// Maximum retry backoff in milliseconds for metadata initialization.
+    /// Matches Java client's reconnect.backoff.max.ms. Default is 1000ms.
+    /// </summary>
+    public int RetryBackoffMaxMs { get; init; } = 1000;
+
+    /// <summary>
+    /// Maximum number of retries for initial metadata fetch.
+    /// Default is 3 (matching Kafka convention).
+    /// </summary>
+    public int MaxInitRetries { get; init; } = 3;
 }

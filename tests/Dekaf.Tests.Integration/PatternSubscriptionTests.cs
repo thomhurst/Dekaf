@@ -5,6 +5,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for consumer pattern subscription (Subscribe with topic filter).
 /// </summary>
+[Category("ConsumerGroup")]
 public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -20,9 +21,9 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
         await KafkaContainer.CreateTopicAsync(unrelatedTopic);
 
         // Produce a message to each matching topic
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -41,11 +42,11 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
         await producer.FlushAsync();
 
         // Subscribe with a filter matching the prefix
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"pattern-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic => topic.StartsWith(prefix, StringComparison.Ordinal));
 
@@ -74,9 +75,9 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
         await KafkaContainer.CreateTopicAsync(matchingTopic);
         await KafkaContainer.CreateTopicAsync(excludedTopic);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -94,11 +95,11 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
 
         await producer.FlushAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"pattern-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic => topic.StartsWith(prefix, StringComparison.Ordinal));
 
@@ -114,9 +115,9 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -127,11 +128,11 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
 
         await producer.FlushAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"pattern-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         // Start with pattern subscription
         consumer.Subscribe(t => t.Contains("nonexistent-pattern"));
@@ -153,11 +154,11 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"pattern-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(t => t == topic);
 

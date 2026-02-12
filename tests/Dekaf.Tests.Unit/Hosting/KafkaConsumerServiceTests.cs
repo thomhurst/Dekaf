@@ -1,7 +1,5 @@
 using System.Runtime.CompilerServices;
 using Dekaf.Consumer;
-using Dekaf.Serialization;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 

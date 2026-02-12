@@ -1,7 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
-using System.Runtime.CompilerServices;
 using Avro.Generic;
 using Avro.IO;
 using Avro.Specific;

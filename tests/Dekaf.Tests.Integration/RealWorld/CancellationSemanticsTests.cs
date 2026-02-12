@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// - After append: caller gets OperationCanceledException but message IS delivered
 /// - Flush cancellation: wait stops but batches continue sending
 /// </summary>
+[Category("Producer")]
 public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -18,10 +19,10 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-before-metadata")
-            .Build();
+            .BuildAsync();
 
         // Act - cancel immediately before any work happens
         using var cts = new CancellationTokenSource();
@@ -38,11 +39,11 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         }).Throws<OperationCanceledException>();
 
         // Verify the message was NOT sent by consuming
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-verify-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -58,11 +59,11 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         // Arrange - use long linger so message sits in batch
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-after-append")
             .WithLinger(TimeSpan.FromMilliseconds(5000))
-            .Build();
+            .BuildAsync();
 
         // Warm up metadata cache
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -101,11 +102,11 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         await producer.FlushAsync().ConfigureAwait(false);
 
         // Verify the message WAS delivered despite cancellation
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-verify-delivery")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -129,11 +130,11 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-mixed-batch")
             .WithLinger(TimeSpan.FromMilliseconds(5000))
-            .Build();
+            .BuildAsync();
 
         // Warm up
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -189,11 +190,11 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         // Flush and verify all messages were delivered regardless of cancellation
         await producer.FlushAsync().ConfigureAwait(false);
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-mixed-verify")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -225,11 +226,11 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-flush-cancel-continues")
             .WithLinger(TimeSpan.FromMilliseconds(2000))
-            .Build();
+            .BuildAsync();
 
         // Send messages via fire-and-forget
         for (var i = 0; i < 20; i++)
@@ -257,11 +258,11 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         await producer.FlushAsync().ConfigureAwait(false);
 
         // Verify all messages were delivered despite flush cancellation
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-flush-cancel-verify")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -283,10 +284,10 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consume-cancel-producer")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 5; i++)
         {
@@ -298,11 +299,11 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consume-cancel-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -337,11 +338,11 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         // Arrange - empty topic, no messages to consume
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consume-timeout-null")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -359,10 +360,10 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         // Arrange - Send() has no cancellation token parameter
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-send-no-cancel")
-            .Build();
+            .BuildAsync();
 
         // Act - fire-and-forget messages
         const int messageCount = 50;
@@ -379,11 +380,11 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         await producer.FlushAsync().ConfigureAwait(false);
 
         // Verify all messages delivered
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-send-no-cancel-verify")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 

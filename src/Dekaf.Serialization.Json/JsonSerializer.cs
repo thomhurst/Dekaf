@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Text.Json;
-using Dekaf.Serialization;
 
 namespace Dekaf.Serialization.Json;
 

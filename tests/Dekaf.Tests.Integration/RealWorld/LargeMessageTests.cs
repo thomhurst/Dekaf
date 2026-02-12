@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies that large headers, many small messages, multi-partition distribution, and unicode
 /// all round-trip correctly through produce/consume.
 /// </summary>
+[Category("Resilience")]
 public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -19,10 +20,10 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-50-headers")
-            .Build();
+            .BuildAsync();
 
         var headers = new Headers();
         for (var i = 0; i < 50; i++)
@@ -40,12 +41,12 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         }).ConfigureAwait(false);
 
         // Consume back
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-50-headers")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -74,10 +75,10 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         var groupId = $"test-group-{Guid.NewGuid():N}";
         var largeHeaderValue = new string('H', 10_000); // 10KB
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-large-header")
-            .Build();
+            .BuildAsync();
 
         var headers = new Headers
         {
@@ -94,12 +95,12 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         }).ConfigureAwait(false);
 
         // Consume
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-large-header")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -121,12 +122,12 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         var groupId = $"test-group-{Guid.NewGuid():N}";
         const int messageCount = 2_000;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-10k")
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(10))
-            .Build();
+            .BuildAsync();
 
         // Act - produce 10K small messages using fire-and-forget for speed
         for (var i = 0; i < messageCount; i++)
@@ -137,12 +138,12 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         await producer.FlushAsync().ConfigureAwait(false);
 
         // Consume all back
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-10k")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -166,10 +167,10 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 20).ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-20-partitions")
-            .Build();
+            .BuildAsync();
 
         // Produce to each partition explicitly
         for (var partition = 0; partition < 20; partition++)
@@ -184,12 +185,12 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         }
 
         // Act - consume all
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-20-partitions")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -219,10 +220,10 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         var unicodeValue = "值-Значение-値-قيمة-값-🎉🚀💡🌍🎶";
         var unicodeHeaderValue = "Заголовок-ヘッダー-رأس-헤더";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-unicode")
-            .Build();
+            .BuildAsync();
 
         var headers = new Headers
         {
@@ -239,12 +240,12 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         }).ConfigureAwait(false);
 
         // Consume
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-unicode")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

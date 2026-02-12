@@ -223,34 +223,34 @@ public sealed class MetadataRecoveryStrategyTests
     [Test]
     public async Task ProducerBuilder_WithMetadataRecoveryStrategy_ThenBuild_Succeeds()
     {
-        var act = () => Kafka.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.Rebootstrap)
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(producer).IsNotNull();
     }
 
     [Test]
     public async Task ProducerBuilder_WithMetadataRecoveryStrategy_None_ThenBuild_Succeeds()
     {
-        var act = () => Kafka.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None)
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(producer).IsNotNull();
     }
 
     [Test]
     public async Task ProducerBuilder_WithMetadataRecoveryRebootstrapTrigger_ThenBuild_Succeeds()
     {
-        var act = () => Kafka.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(60000))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(producer).IsNotNull();
     }
 
     #endregion
@@ -276,23 +276,23 @@ public sealed class MetadataRecoveryStrategyTests
     [Test]
     public async Task ConsumerBuilder_WithMetadataRecoveryStrategy_ThenBuild_Succeeds()
     {
-        var act = () => Kafka.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.Rebootstrap)
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(consumer).IsNotNull();
     }
 
     [Test]
     public async Task ConsumerBuilder_WithMetadataRecoveryStrategy_None_ThenBuild_Succeeds()
     {
-        var act = () => Kafka.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.None)
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(consumer).IsNotNull();
     }
 
     #endregion
@@ -506,37 +506,37 @@ public sealed class MetadataRecoveryStrategyTests
     [Test]
     public async Task ProducerBuilder_FullChainWithMetadataRecovery_Succeeds()
     {
-        var act = () => Kafka.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.Rebootstrap)
             .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(60000))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(producer).IsNotNull();
     }
 
     [Test]
     public async Task ConsumerBuilder_FullChainWithMetadataRecovery_Succeeds()
     {
-        var act = () => Kafka.CreateConsumer<string, string>()
+        await using var consumer = Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.Rebootstrap)
             .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(60000))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(consumer).IsNotNull();
     }
 
     [Test]
     public async Task AdminClientBuilder_FullChainWithMetadataRecovery_Succeeds()
     {
-        var act = () => new Dekaf.Admin.AdminClientBuilder()
+        await using var client = new Dekaf.Admin.AdminClientBuilder()
             .WithBootstrapServers("localhost:9092")
             .WithMetadataRecoveryStrategy(MetadataRecoveryStrategy.Rebootstrap)
             .WithMetadataRecoveryRebootstrapTrigger(TimeSpan.FromMilliseconds(60000))
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(client).IsNotNull();
     }
 
     #endregion

@@ -8,7 +8,7 @@ namespace Dekaf.Consumer;
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public interface IKafkaConsumer<TKey, TValue> : IAsyncDisposable
+public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyncDisposable
 {
     /// <summary>
     /// Gets the current subscription.

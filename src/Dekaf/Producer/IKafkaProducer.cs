@@ -7,7 +7,7 @@ namespace Dekaf.Producer;
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public interface IKafkaProducer<TKey, TValue> : IAsyncDisposable
+public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyncDisposable
 {
     /// <summary>
     /// Produces a message to Kafka.

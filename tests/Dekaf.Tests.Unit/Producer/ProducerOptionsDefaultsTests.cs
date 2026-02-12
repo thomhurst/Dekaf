@@ -1,4 +1,3 @@
-using Dekaf.Compression;
 using Dekaf.Producer;
 using Dekaf.Protocol.Records;
 using Dekaf.Security.Sasl;

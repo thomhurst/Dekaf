@@ -12,6 +12,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for KafkaConsumerService hosted service.
 /// </summary>
+[Category("Messaging")]
 public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -47,9 +48,9 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         await Task.Delay(3000).ConfigureAwait(false);
 
         // Produce messages
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {

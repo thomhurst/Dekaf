@@ -1,6 +1,5 @@
 using Dekaf.Consumer;
 using Dekaf.Producer;
-using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Consumer;

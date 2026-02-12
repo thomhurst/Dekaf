@@ -6,6 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for watermark offsets functionality.
 /// </summary>
+[Category("Offsets")]
 public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -14,10 +15,10 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -36,10 +37,10 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         // Produce some messages first
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 5; i++)
         {
@@ -52,11 +53,11 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         }
 
         // Act - consume messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -82,10 +83,10 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         // Produce some messages
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 10; i++)
         {
@@ -98,10 +99,10 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         }
 
         // Act - query watermarks directly from cluster
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         var watermarks = await consumer.QueryWatermarkOffsetsAsync(tp);
@@ -117,10 +118,10 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         // Arrange - create topic but don't produce any messages
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
 
@@ -138,10 +139,10 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce 3 messages
         for (var i = 0; i < 3; i++)
@@ -154,10 +155,10 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
 
@@ -193,10 +194,10 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -205,10 +206,10 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
             Value = "value"
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
 
@@ -232,10 +233,10 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         // Arrange - create topic with multiple partitions
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce different amounts to different partitions
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -257,10 +258,10 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp0 = new TopicPartition(topic, 0);
         var tp1 = new TopicPartition(topic, 1);

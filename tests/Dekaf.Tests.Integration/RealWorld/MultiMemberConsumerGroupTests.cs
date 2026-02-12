@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies partition distribution, rebalancing on join/leave, rebalance listener callbacks,
 /// and group stability across member restarts.
 /// </summary>
+[Category("ConsumerGroup")]
 public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -19,10 +20,10 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 6);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-multi-group")
-            .Build();
+            .BuildAsync();
 
         // Produce one message per partition so consumers have data to fetch
         for (var p = 0; p < 6; p++)
@@ -42,13 +43,13 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         {
             for (var i = 0; i < 3; i++)
             {
-                var consumer = Kafka.CreateConsumer<string, string>()
+                var consumer = await Kafka.CreateConsumer<string, string>()
                     .WithBootstrapServers(KafkaContainer.BootstrapServers)
                     .WithClientId($"test-consumer-{i}")
                     .WithGroupId(groupId)
                     .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
                     .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                    .Build();
+                    .BuildAsync();
 
                 consumer.Subscribe(topic);
                 consumers.Add(consumer);
@@ -94,10 +95,10 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-join-midstream")
-            .Build();
+            .BuildAsync();
 
         for (var p = 0; p < 4; p++)
         {
@@ -111,13 +112,13 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         }
 
         // Start first consumer - should get all 4 partitions
-        await using var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer1.Subscribe(topic);
 
@@ -131,13 +132,13 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         await Assert.That(initialAssignment.Count).IsEqualTo(4);
 
         // Act - start second consumer, triggering rebalance
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -183,10 +184,10 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-leave")
-            .Build();
+            .BuildAsync();
 
         for (var p = 0; p < 4; p++)
         {
@@ -200,26 +201,26 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         }
 
         // Start two consumers
-        await using var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-stay")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer1.Subscribe(topic);
 
         using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts1.Token);
 
-        var consumer2 = Kafka.CreateConsumer<string, string>()
+        var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-leave")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -283,10 +284,10 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         var groupId = $"test-group-{Guid.NewGuid():N}";
         var listener = new TrackingRebalanceListener();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-rebalance-listener")
-            .Build();
+            .BuildAsync();
 
         for (var p = 0; p < 3; p++)
         {
@@ -300,14 +301,14 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         }
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-rebalance-listener")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -337,10 +338,10 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         var groupId = $"test-group-{Guid.NewGuid():N}";
         var listener = new TrackingRebalanceListener();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-revoke-listener")
-            .Build();
+            .BuildAsync();
 
         for (var p = 0; p < 4; p++)
         {
@@ -354,14 +355,14 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         }
 
         // Consumer1 with rebalance listener - gets all 4 partitions initially
-        await using var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-revoke-listener-1")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener)
-            .Build();
+            .BuildAsync();
 
         consumer1.Subscribe(topic);
 
@@ -372,13 +373,13 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         await Assert.That(listener.AssignedPartitions.Count).IsGreaterThanOrEqualTo(1);
 
         // Act - second consumer joins, forcing a rebalance that revokes partitions from consumer1
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-revoke-listener-2")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -418,10 +419,10 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-resume-committed")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 10; i++)
         {
@@ -434,14 +435,14 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         }
 
         // First consumer: consume 5 messages and commit
-        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-first")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build())
+            .BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -460,14 +461,14 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         // All consumers have left - group is empty
 
         // Act - new consumer joins with same group ID
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-resume")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -488,10 +489,10 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         var groupId = $"test-group-{Guid.NewGuid():N}";
         const int messageCount = 100;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-no-loss")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -507,21 +508,21 @@ public sealed class MultiMemberConsumerGroupTests(KafkaTestContainer kafka) : Ka
         var allMessages = new ConcurrentBag<ConsumeResult<string, string>>();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
-        var consumer1 = Kafka.CreateConsumer<string, string>()
+        var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-no-loss-1")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
-        var consumer2 = Kafka.CreateConsumer<string, string>()
+        var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-no-loss-2")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         Task task1 = Task.CompletedTask, task2 = Task.CompletedTask;
         try

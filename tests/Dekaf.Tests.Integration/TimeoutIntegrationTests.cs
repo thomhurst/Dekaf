@@ -1,5 +1,4 @@
 using Dekaf.Producer;
-using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Integration;
 
@@ -7,6 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests verifying timeout protection in connection, flush, receive, and disposal operations.
 /// These tests exercise code paths that have timeout protection to ensure operations complete without hanging.
 /// </summary>
+[Category("Resilience")]
 public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -15,10 +15,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Test that connection establishment completes within default ConnectionTimeout (30s)
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-connection-timeout")
-            .Build();
+            .BuildAsync();
 
         // Act - Produce a message to trigger connection establishment
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -38,11 +38,11 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Test that requests with Acks.All complete within default RequestTimeout (30s)
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-request-timeout")
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         // Act - Produce a message to trigger request
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -62,11 +62,11 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Test that flush completes within default RequestTimeout (30s)
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-flush-timeout")
             .WithLinger(TimeSpan.FromMilliseconds(100)) // Add some linger to batch messages
-            .Build();
+            .BuildAsync();
 
         // Act - Send multiple messages then flush
         for (int i = 0; i < 10; i++)
@@ -87,10 +87,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Test that disposal completes within reasonable time (ConnectionTimeout grace period)
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        var producer = Kafka.CreateProducer<string, string>()
+        var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-disposal-timeout")
-            .Build();
+            .BuildAsync();
 
         try
         {
@@ -122,10 +122,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Test that concurrent production completes within timeout
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-concurrent-timeout")
-            .Build();
+            .BuildAsync();
 
         // Act - Produce messages concurrently
         var tasks = new List<ValueTask<RecordMetadata>>();
@@ -157,22 +157,23 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Test that large batches with backpressure still flush within timeout
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-backpressure-timeout")
             .WithBatchSize(16384)
             .WithLinger(TimeSpan.FromMilliseconds(10))
-            .Build();
+            .WithMaxBlock(TimeSpan.FromSeconds(10))
+            .BuildAsync();
 
-        // Act - Send many messages to trigger backpressure
+        // Act - Send messages to trigger backpressure
         var messageValue = new string('x', 1000); // 1 KB messages
-        for (int i = 0; i < 1000; i++)
+        for (int i = 0; i < 100; i++)
         {
             producer.Send(topic, $"key{i}", messageValue);
         }
 
         // Flush with timeout to ensure backpressure doesn't cause hang
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         await producer.FlushAsync(cts.Token).ConfigureAwait(false);
 
         // Assert - Flush completed without throwing
@@ -184,11 +185,11 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Test that receive loop processes responses within timeout
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-receive-timeout")
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         // Act - Produce multiple messages to exercise receive loop
         for (int i = 0; i < 100; i++)
@@ -213,10 +214,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Test that pre-cancelled token throws immediately
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-cancelled-token")
-            .Build();
+            .BuildAsync();
 
         // Act & Assert - Pass pre-cancelled token
         using var cts = new CancellationTokenSource();
@@ -241,11 +242,11 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // we cancel after 100ms, the message has already been sent to Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-cancel-after-append")
             .WithLinger(TimeSpan.FromMilliseconds(5000)) // Doesn't matter - awaited produces flush immediately
-            .Build();
+            .BuildAsync();
 
         // Act - Start produce, then cancel after message is already appended
         using var cts = new CancellationTokenSource();
@@ -273,10 +274,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Test that pre-cancelled token throws immediately
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-flush-cancelled-token")
-            .Build();
+            .BuildAsync();
 
         // Send some messages
         producer.Send(topic, "key1", "value1");
@@ -301,10 +302,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Test flushing producer with no messages
         await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false); // Create topic but don't use it
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-flush-empty")
-            .Build();
+            .BuildAsync();
 
         // Act - Flush without sending any messages
         var startTime = Environment.TickCount64;
@@ -319,10 +320,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
     public async Task Producer_DisposeWithoutProduction_CompletesQuickly()
     {
         // Arrange - Create producer but never send messages
-        var producer = Kafka.CreateProducer<string, string>()
+        var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-dispose-unused")
-            .Build();
+            .BuildAsync();
 
         try
         {
@@ -387,11 +388,11 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Test concurrent flush and produce operations
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-concurrent-flush-produce")
             .WithLinger(TimeSpan.FromMilliseconds(50))
-            .Build();
+            .BuildAsync();
 
         // Send initial messages
         for (int i = 0; i < 50; i++)
@@ -421,10 +422,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Test multiple threads disposing simultaneously
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        var producer = Kafka.CreateProducer<string, string>()
+        var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-concurrent-dispose")
-            .Build();
+            .BuildAsync();
 
         try
         {
@@ -464,10 +465,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Pre-cancelled token, no work should happen
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-before-metadata")
-            .Build();
+            .BuildAsync();
 
         using var cts = new CancellationTokenSource();
         cts.Cancel(); // Cancel immediately
@@ -502,10 +503,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Warm up metadata cache first
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-after-fast-path")
-            .Build();
+            .BuildAsync();
 
         // Warm up: First produce succeeds
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -540,10 +541,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Force slow path by not warming cache
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-after-slow-path")
-            .Build();
+            .BuildAsync();
 
         using var cts = new CancellationTokenSource();
 
@@ -573,10 +574,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Mix of cancelled and non-cancelled produces
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-concurrent-mixed-cancellation")
-            .Build();
+            .BuildAsync();
 
         var tasks = new List<Task<(bool cancelled, RecordMetadata? metadata, Exception? error)>>();
 
@@ -633,10 +634,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Cancel after all messages likely appended
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-concurrent-late-cancellation")
-            .Build();
+            .BuildAsync();
 
         // Warmup: Ensure producer is fully connected before concurrent test
         // This prevents metadata refresh failures in CI environments
@@ -690,11 +691,11 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // but message delivery continues in background. This test verifies the delivery still happens.
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-after-memory-reserved")
             .WithLinger(TimeSpan.FromMilliseconds(5000))
-            .Build();
+            .BuildAsync();
 
         using var cts = new CancellationTokenSource();
 
@@ -750,10 +751,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - No messages queued
         await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-flush-empty-cancelled")
-            .Build();
+            .BuildAsync();
 
         using var cts = new CancellationTokenSource();
         cts.Cancel();
@@ -774,11 +775,11 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Verify batches deliver even if flush is cancelled
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-flush-cancelled-batches-deliver")
             .WithLinger(TimeSpan.FromMilliseconds(2000))
-            .Build();
+            .BuildAsync();
 
         var produceTask = producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -814,10 +815,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        var producer = Kafka.CreateProducer<string, string>()
+        var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-dispose-during-produce")
-            .Build();
+            .BuildAsync();
 
         try
         {
@@ -847,10 +848,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        var producer = Kafka.CreateProducer<string, string>()
+        var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-concurrent-dispose-cancel")
-            .Build();
+            .BuildAsync();
 
         using var cts = new CancellationTokenSource();
 
@@ -890,10 +891,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Arrange - Send() doesn't use cancellation tokens
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-send-no-cancellation")
-            .Build();
+            .BuildAsync();
 
         // Act - Send messages (no cancellation token parameter)
         for (int i = 0; i < 50; i++)

@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// Tests timestamp-based offset lookup boundaries, unassigned partition commits,
 /// concurrent offset commits, and seeking beyond the high watermark.
 /// </summary>
+[Category("Offsets")]
 public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -18,10 +19,10 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
 
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-before-first")
-            .Build();
+            .BuildAsync();
 
         // Produce some messages
         for (var i = 0; i < 5; i++)
@@ -35,10 +36,10 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
         }
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-before-first")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -58,10 +59,10 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-after-last")
-            .Build();
+            .BuildAsync();
 
         // Produce some messages
         for (var i = 0; i < 5; i++)
@@ -79,10 +80,10 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
         var timestampAfterMessages = DateTimeOffset.UtcNow.AddMinutes(10);
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-after-last")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -106,10 +107,10 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-exact-ts")
-            .Build();
+            .BuildAsync();
 
         // Produce messages with delays to get distinct timestamps
         for (var i = 0; i < 5; i++)
@@ -128,11 +129,11 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
         }
 
         // Act - look up offset for the timestamp of the third message (index 2)
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-exact-ts")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -175,10 +176,10 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-unassigned")
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -187,14 +188,14 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
             Value = "value"
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-unassigned")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -232,10 +233,10 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-concurrent")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 10; i++)
         {
@@ -248,14 +249,14 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
         }
 
         // Consumer 1: consumes and commits offset 3
-        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-concurrent-1")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build())
+            .BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -273,14 +274,14 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
         }
 
         // Consumer 2 (same group): consumes at least one message and commits offset 7
-        await using (var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-concurrent-2")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build())
+            .BuildAsync())
         {
             consumer2.Subscribe(topic);
 
@@ -293,14 +294,14 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
         }
 
         // Act - new consumer should start from the last committed offset (7)
-        await using var consumer3 = Kafka.CreateConsumer<string, string>()
+        await using var consumer3 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-concurrent-3")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         consumer3.Subscribe(topic);
 
@@ -319,10 +320,10 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-seek-beyond")
-            .Build();
+            .BuildAsync();
 
         // Produce 5 messages (offsets 0-4, high watermark = 5)
         for (var i = 0; i < 5; i++)
@@ -335,11 +336,11 @@ public sealed class OffsetEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegra
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-seek-beyond")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);

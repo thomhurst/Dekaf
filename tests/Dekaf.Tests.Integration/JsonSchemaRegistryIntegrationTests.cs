@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for JSON Schema Registry serialization.
 /// </summary>
+[Category("Serialization")]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
@@ -47,10 +48,10 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             Amount = 99.99m
         };
 
-        await using var producer = Kafka.CreateProducer<string, TestOrder>()
+        await using var producer = await Kafka.CreateProducer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseJsonSchemaRegistry(registryClient, TestOrderSchema)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
         {
@@ -59,12 +60,12 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             Value = order
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, TestOrder>()
+        await using var consumer = await Kafka.CreateConsumer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"json-sr-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseJsonSchemaRegistry(registryClient)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -94,10 +95,10 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             Url = testInfra.RegistryUrl
         });
 
-        await using var producer = Kafka.CreateProducer<string, TestOrder>()
+        await using var producer = await Kafka.CreateProducer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseJsonSchemaRegistry(registryClient, TestOrderSchema)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -116,12 +117,12 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
 
         await producer.FlushAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, TestOrder>()
+        await using var consumer = await Kafka.CreateConsumer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"json-sr-multi-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseJsonSchemaRegistry(registryClient)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -154,10 +155,10 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             Url = testInfra.RegistryUrl
         });
 
-        await using var producer = Kafka.CreateProducer<string, TestOrder>()
+        await using var producer = await Kafka.CreateProducer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseJsonSchemaRegistry(registryClient, TestOrderSchema)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
         {
@@ -192,10 +193,10 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             Amount = 150.00m
         };
 
-        await using var producer = Kafka.CreateProducer<string, TestOrder>()
+        await using var producer = await Kafka.CreateProducer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseJsonSchemaRegistry(registryClient, TestOrderSchema, jsonOptions)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, TestOrder>
         {
@@ -204,12 +205,12 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             Value = order
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, TestOrder>()
+        await using var consumer = await Kafka.CreateConsumer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"json-sr-options-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseJsonSchemaRegistry(registryClient, jsonOptions)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

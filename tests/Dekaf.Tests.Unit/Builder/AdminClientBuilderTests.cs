@@ -19,12 +19,11 @@ public class AdminClientBuilderTests
     [Test]
     public async Task Build_WithBootstrapServers_Succeeds()
     {
-        var builder = new AdminClientBuilder()
-            .WithBootstrapServers("localhost:9092");
+        await using var client = new AdminClientBuilder()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
 
-        var act = () => builder.Build();
-
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(client).IsNotNull();
     }
 
     #endregion
@@ -82,14 +81,14 @@ public class AdminClientBuilderTests
     [Test]
     public async Task AllMethods_CanBeChained()
     {
-        var act = () => new AdminClientBuilder()
+        await using var client = new AdminClientBuilder()
             .WithBootstrapServers("localhost:9092")
             .WithClientId("admin")
             .UseTls()
             .WithSaslPlain("user", "pass")
             .Build();
 
-        await Assert.That(act).ThrowsNothing();
+        await Assert.That(client).IsNotNull();
     }
 
     #endregion

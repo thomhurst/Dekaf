@@ -22,6 +22,29 @@ namespace Dekaf.Networking;
 /// </summary>
 internal static class ConnectionHelper
 {
+    /// <summary>
+    /// Reads a variable-length unsigned integer from a span using Kafka's varint encoding.
+    /// Shared by KafkaConnection and PooledPendingRequest for tagged field parsing.
+    /// </summary>
+    public static (int value, int bytesRead) ReadUnsignedVarInt(ReadOnlySpan<byte> span)
+    {
+        var result = 0;
+        var shift = 0;
+        var bytesRead = 0;
+
+        while (bytesRead < span.Length && shift < 35)
+        {
+            var b = span[bytesRead++];
+            result |= (b & 0x7F) << shift;
+
+            if ((b & 0x80) == 0)
+                return (result, bytesRead);
+
+            shift += 7;
+        }
+
+        return (result, bytesRead);
+    }
     // Minimum pause threshold for pipeline backpressure (16 MB)
     private const long MinimumPauseThresholdBytes = 16L * 1024 * 1024;
 
@@ -107,8 +130,6 @@ public sealed class KafkaConnection : IKafkaConnection
     private readonly PendingRequestPool _pendingRequestPool = new();
     private readonly CancellationTokenSourcePool _timeoutCtsPool = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
-    private static int s_connectionCounter;
-    private readonly int _connectionInstanceId = Interlocked.Increment(ref s_connectionCounter);
     private Task? _receiveTask;
     private CancellationTokenSource? _receiveCts;
     private OAuthBearerTokenProvider? _ownedTokenProvider;
@@ -132,11 +153,6 @@ public sealed class KafkaConnection : IKafkaConnection
     public string Host => _host;
     public int Port => _port;
     public bool IsConnected => !_disposed && (_socket?.Connected ?? false);
-
-    /// <summary>
-    /// Unique identifier for this connection instance (for debugging).
-    /// </summary>
-    public int ConnectionInstanceId => _connectionInstanceId;
 
     /// <summary>
     /// Gets the current SASL session state, if SASL authentication was performed.
@@ -271,147 +287,36 @@ public sealed class KafkaConnection : IKafkaConnection
         pending.Initialize(responseHeaderVersion, cancellationToken);
         _pendingRequests[correlationId] = pending;
 
+        // Write phase
+        _logger?.LogDebug("Sending {ApiKey} request (correlation {CorrelationId}, version {Version}) to {Host}:{Port}",
+            TRequest.ApiKey, correlationId, apiVersion, _host, _port);
+
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            _logger?.LogDebug("Sending {ApiKey} request (correlation {CorrelationId}, version {Version}) to {Host}:{Port}",
-                TRequest.ApiKey, correlationId, apiVersion, _host, _port);
-
-            await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
+            await WriteRequestAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            // Write failed — clean up pending request before propagating
+            if (_pendingRequests.TryRemove(correlationId, out var removed))
             {
-                await WriteRequestAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            finally
-            {
-                _writeLock.Release();
+                _pendingRequestPool.Return(removed);
             }
 
-            _logger?.LogDebug("Request sent, waiting for response (correlation {CorrelationId})", correlationId);
-
-            // Apply request timeout with pooling for the common case (no user cancellation token)
-            PooledResponseBuffer pooledBuffer;
-            if (!cancellationToken.CanBeCanceled)
-            {
-                // Fast path: pool CTS for timeout only
-                var timeoutCts = _timeoutCtsPool.Rent();
-                try
-                {
-                    timeoutCts.CancelAfter(_options.RequestTimeout);
-                    pending.RegisterCancellation(timeoutCts.Token);
-
-                    try
-                    {
-                        // Zero-allocation await via IValueTaskSource
-                        pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
-                    {
-                        throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
-                    }
-                }
-                finally
-                {
-                    // CRITICAL: Dispose registration BEFORE returning CTS to pool
-                    // This prevents stale callbacks from firing on reused CTS tokens
-                    pending.DisposeRegistration();
-                    _timeoutCtsPool.Return(timeoutCts);
-                }
-            }
-            else
-            {
-                // Slow path: pool CTS + register outer cancellation token
-                var timeoutCts = _timeoutCtsPool.Rent();
-                try
-                {
-                    timeoutCts.CancelAfter(_options.RequestTimeout);
-                    using var reg = cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts);
-                    pending.RegisterCancellation(timeoutCts.Token);
-
-                    try
-                    {
-                        // Zero-allocation await via IValueTaskSource
-                        pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                    {
-                        throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
-                    }
-                }
-                finally
-                {
-                    pending.DisposeRegistration();
-                    _timeoutCtsPool.Return(timeoutCts);
-                }
-            }
-
-            _logger?.LogDebug("Response received for correlation {CorrelationId}", correlationId);
-
-            // Check if this is a FetchResponse - if so, use zero-copy parsing
-            // by transferring buffer ownership to the response
-            var isFetchResponse = TRequest.ApiKey == ApiKey.Fetch;
-
-            if (isFetchResponse)
-            {
-                // Transfer ownership to the response via parsing context
-                var memoryOwner = pooledBuffer.TransferOwnership();
-                Protocol.ResponseParsingContext.SetPooledMemory(memoryOwner);
-                try
-                {
-                    var reader = new KafkaProtocolReader(pooledBuffer.Data);
-                    var response = (TResponse)TResponse.Read(ref reader, apiVersion);
-
-                    // If memory was used by any batch, attach it to the FetchResponse
-                    // The consumer will take it and dispose after iterating through records
-                    if (Protocol.ResponseParsingContext.WasMemoryUsed)
-                    {
-                        var takenMemory = Protocol.ResponseParsingContext.TakePooledMemory();
-                        if (response is Protocol.Messages.FetchResponse fetchResponse && takenMemory is not null)
-                        {
-                            fetchResponse.PooledMemoryOwner = takenMemory;
-                        }
-                        else
-                        {
-                            // Shouldn't happen, but dispose to avoid leak
-                            takenMemory?.Dispose();
-                        }
-                    }
-                    else
-                    {
-                        // No batches used pooled memory (e.g., empty response or all compressed)
-                        memoryOwner.Dispose();
-                    }
-
-                    return response;
-                }
-                finally
-                {
-                    Protocol.ResponseParsingContext.Reset();
-                }
-            }
-            else
-            {
-                // Non-fetch response - use normal parsing and dispose buffer after
-                try
-                {
-                    var reader = new KafkaProtocolReader(pooledBuffer.Data);
-                    return (TResponse)TResponse.Read(ref reader, apiVersion);
-                }
-                finally
-                {
-                    // Return buffer to pool after deserialization
-                    pooledBuffer.Dispose();
-                }
-            }
+            throw;
         }
         finally
         {
-            if (_pendingRequests.TryRemove(correlationId, out var removed))
-            {
-                // Return pending request to pool (handles cleanup and reset)
-                _pendingRequestPool.Return(removed);
-            }
+            _writeLock.Release();
         }
+
+        _logger?.LogDebug("Request sent, waiting for response (correlation {CorrelationId})", correlationId);
+
+        // Response phase: await response with timeout and parse
+        return await AwaitAndParseResponseAsync<TRequest, TResponse>(
+            pending, correlationId, apiVersion, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
@@ -447,6 +352,181 @@ public sealed class KafkaConnection : IKafkaConnection
         }
 
         _logger?.LogDebug("Fire-and-forget request sent (correlation {CorrelationId})", correlationId);
+    }
+
+    public async Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken = default)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(KafkaConnection));
+
+        if (!IsConnected)
+            throw new InvalidOperationException("Not connected");
+
+        var correlationId = Interlocked.Increment(ref s_globalCorrelationId);
+        var headerVersion = TRequest.GetRequestHeaderVersion(apiVersion);
+        var responseHeaderVersion = TRequest.GetResponseHeaderVersion(apiVersion);
+
+        var pending = _pendingRequestPool.Rent();
+        pending.Initialize(responseHeaderVersion, cancellationToken);
+        _pendingRequests[correlationId] = pending;
+
+        try
+        {
+            // Write phase: serialize and send the request under write lock
+            await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await WriteRequestAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
+
+            // Response phase: await response with timeout, then parse
+            return await AwaitAndParseResponseAsync<TRequest, TResponse>(
+                pending, correlationId, apiVersion, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // On failure, ensure we clean up the pending request
+            if (_pendingRequests.TryRemove(correlationId, out var removed))
+            {
+                _pendingRequestPool.Return(removed);
+            }
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Awaits the response for a pending request, applies timeout, and parses the response.
+    /// Shared between SendAsync and SendPipelinedAsync.
+    /// </summary>
+    private async Task<TResponse> AwaitAndParseResponseAsync<TRequest, TResponse>(
+        PooledPendingRequest pending,
+        int correlationId,
+        short apiVersion,
+        CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+    {
+        try
+        {
+            _logger?.LogDebug("Waiting for response (correlation {CorrelationId})", correlationId);
+
+            PooledResponseBuffer pooledBuffer;
+            if (!cancellationToken.CanBeCanceled)
+            {
+                var timeoutCts = _timeoutCtsPool.Rent();
+                try
+                {
+                    timeoutCts.CancelAfter(_options.RequestTimeout);
+                    pending.RegisterCancellation(timeoutCts.Token);
+
+                    try
+                    {
+                        pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+                    {
+                        throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
+                    }
+                }
+                finally
+                {
+                    pending.DisposeRegistration();
+                    _timeoutCtsPool.Return(timeoutCts);
+                }
+            }
+            else
+            {
+                var timeoutCts = _timeoutCtsPool.Rent();
+                try
+                {
+                    timeoutCts.CancelAfter(_options.RequestTimeout);
+                    using var reg = cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts);
+                    pending.RegisterCancellation(timeoutCts.Token);
+
+                    try
+                    {
+                        pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                    {
+                        throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
+                    }
+                }
+                finally
+                {
+                    pending.DisposeRegistration();
+                    _timeoutCtsPool.Return(timeoutCts);
+                }
+            }
+
+            _logger?.LogDebug("Response received for correlation {CorrelationId}", correlationId);
+
+            var isFetchResponse = TRequest.ApiKey == ApiKey.Fetch;
+
+            if (isFetchResponse)
+            {
+                var memoryOwner = pooledBuffer.TransferOwnership();
+                Protocol.ResponseParsingContext.SetPooledMemory(memoryOwner);
+                try
+                {
+                    var reader = new KafkaProtocolReader(pooledBuffer.Data);
+                    var response = (TResponse)TResponse.Read(ref reader, apiVersion);
+
+                    if (Protocol.ResponseParsingContext.WasMemoryUsed)
+                    {
+                        var takenMemory = Protocol.ResponseParsingContext.TakePooledMemory();
+                        if (response is Protocol.Messages.FetchResponse fetchResponse && takenMemory is not null)
+                        {
+                            fetchResponse.PooledMemoryOwner = takenMemory;
+                        }
+                        else
+                        {
+                            takenMemory?.Dispose();
+                        }
+                    }
+                    else
+                    {
+                        memoryOwner.Dispose();
+                    }
+
+                    return response;
+                }
+                finally
+                {
+                    Protocol.ResponseParsingContext.Reset();
+                }
+            }
+            else
+            {
+                try
+                {
+                    var reader = new KafkaProtocolReader(pooledBuffer.Data);
+                    return (TResponse)TResponse.Read(ref reader, apiVersion);
+                }
+                finally
+                {
+                    pooledBuffer.Dispose();
+                }
+            }
+        }
+        finally
+        {
+            if (_pendingRequests.TryRemove(correlationId, out var removed))
+            {
+                _pendingRequestPool.Return(removed);
+            }
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -616,7 +696,8 @@ public sealed class KafkaConnection : IKafkaConnection
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Expected during shutdown
+            // Expected during shutdown — fail any pending requests so callers don't hang
+            FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
         }
         catch (Exception ex)
         {
@@ -1320,17 +1401,17 @@ public sealed class KafkaConnection : IKafkaConnection
                 {
                     // Skip tagged fields
                     var span = responseBuffer.AsSpan(offset);
-                    var (tagCount, bytesRead) = ReadUnsignedVarInt(span);
+                    var (tagCount, bytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
                     offset += bytesRead;
 
                     for (var i = 0; i < tagCount; i++)
                     {
                         span = responseBuffer.AsSpan(offset);
-                        var (_, tagBytesRead) = ReadUnsignedVarInt(span);
+                        var (_, tagBytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
                         offset += tagBytesRead;
 
                         span = responseBuffer.AsSpan(offset);
-                        var (size, sizeBytesRead) = ReadUnsignedVarInt(span);
+                        var (size, sizeBytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
                         offset += sizeBytesRead + size;
                     }
                 }
@@ -1362,26 +1443,6 @@ public sealed class KafkaConnection : IKafkaConnection
         }
     }
 
-    private static (int value, int bytesRead) ReadUnsignedVarInt(ReadOnlySpan<byte> span)
-    {
-        var result = 0;
-        var shift = 0;
-        var bytesRead = 0;
-
-        while (bytesRead < span.Length && shift < 35)
-        {
-            var b = span[bytesRead++];
-            result |= (b & 0x7F) << shift;
-
-            if ((b & 0x80) == 0)
-                return (result, bytesRead);
-
-            shift += 7;
-        }
-
-        return (result, bytesRead);
-    }
-
     public async ValueTask DisposeAsync()
     {
         if (_disposed)
@@ -1395,7 +1456,7 @@ public sealed class KafkaConnection : IKafkaConnection
         {
             try
             {
-                await _receiveTask.ConfigureAwait(false);
+                await _receiveTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch
             {
@@ -1859,7 +1920,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
             }
 
             var span = pooledBuffer.Data.Span[offset..];
-            var (tagCount, bytesRead) = ReadUnsignedVarInt(span);
+            var (tagCount, bytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
             offset += bytesRead;
 
             // Sanity check: tag count should be reasonable (< 1000)
@@ -1876,7 +1937,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
                 }
 
                 span = pooledBuffer.Data.Span[offset..];
-                var (_, tagBytesRead) = ReadUnsignedVarInt(span);
+                var (_, tagBytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
                 offset += tagBytesRead;
 
                 if (offset >= bufferLength)
@@ -1885,7 +1946,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
                 }
 
                 span = pooledBuffer.Data.Span[offset..];
-                var (size, sizeBytesRead) = ReadUnsignedVarInt(span);
+                var (size, sizeBytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
                 offset += sizeBytesRead + size;
 
                 if (offset > bufferLength)
@@ -1902,26 +1963,6 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         }
 
         return pooledBuffer.Slice(offset);
-    }
-
-    private static (int value, int bytesRead) ReadUnsignedVarInt(ReadOnlySpan<byte> span)
-    {
-        var result = 0;
-        var shift = 0;
-        var bytesRead = 0;
-
-        while (bytesRead < span.Length && shift < 35)
-        {
-            var b = span[bytesRead++];
-            result |= (b & 0x7F) << shift;
-
-            if ((b & 0x80) == 0)
-                return (result, bytesRead);
-
-            shift += 7;
-        }
-
-        return (result, bytesRead);
     }
 
     /// <summary>

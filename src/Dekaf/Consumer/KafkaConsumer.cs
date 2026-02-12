@@ -307,6 +307,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private int _fetchApiVersion = -1;
     private volatile bool _disposed;
     private volatile bool _closed;
+    private volatile bool _initialized;
+    private readonly SemaphoreSlim _initLock = new(1, 1);
     private bool _prefetchEnabled;
 
     // CancellationTokenSource pool to avoid allocations in hot paths
@@ -605,7 +607,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfNotInitialized();
 
         // Start auto-commit if enabled (only in Auto mode)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null)
@@ -1406,7 +1408,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfNotInitialized();
 
         var connection = await GetPartitionLeaderConnectionAsync(topicPartition, cancellationToken).ConfigureAwait(false);
         if (connection is null)
@@ -1531,12 +1533,47 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         return watermarks;
     }
 
-    private async ValueTask EnsureInitializedAsync(CancellationToken cancellationToken)
+    /// <inheritdoc />
+    public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
-        if (_metadataManager.Metadata.LastRefreshed == default)
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
+
+        // Fast path: already initialized (volatile read provides acquire semantics)
+        if (_initialized)
+            return;
+
+        await _initLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
+            // Double-check after acquiring lock
+            if (_initialized)
+                return;
+
             await _metadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            _initialized = true;
         }
+        finally
+        {
+            _initLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Throws <see cref="InvalidOperationException"/> if the consumer has not been initialized.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ThrowIfNotInitialized()
+    {
+        if (!_initialized)
+            ThrowNotInitialized();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ThrowNotInitialized()
+    {
+        throw new InvalidOperationException(
+            "Call InitializeAsync() or use BuildAsync() before consuming messages.");
     }
 
     /// <summary>
@@ -2478,7 +2515,13 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Auto-commit failed");
+                _logger?.LogWarning(ex, "Auto-commit failed, retrying once");
+                try
+                {
+                    await Task.Delay(200, cancellationToken).ConfigureAwait(false);
+                    await CommitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch { /* Best effort — will retry on next interval */ }
             }
         }
     }
@@ -2531,14 +2574,25 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         // Step 4: Commit pending offsets (if auto-commit enabled and we have a coordinator)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null && !_positions.IsEmpty)
         {
-            try
+            for (var attempt = 0; attempt < 3; attempt++)
             {
-                await CommitAsync(cancellationToken).ConfigureAwait(false);
-                _logger?.LogDebug("Committed pending offsets during close");
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogWarning(ex, "Failed to commit offsets during close");
+                try
+                {
+                    await CommitAsync(cancellationToken).ConfigureAwait(false);
+                    _logger?.LogDebug("Committed pending offsets during close");
+                    break;
+                }
+                catch (OperationCanceledException)
+                {
+                    break; // Caller cancelled — don't retry
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex,
+                        "Failed to commit offsets during close (attempt {Attempt}/3)", attempt + 1);
+                    if (attempt < 2)
+                        await Task.Delay(200, cancellationToken).ConfigureAwait(false);
+                }
             }
         }
 
@@ -2581,7 +2635,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaConsumer<TKey, TValue>));
 
-        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfNotInitialized();
 
         // Group partitions by broker leader for efficient batch requests
         var partitionsByBroker = new Dictionary<int, List<TopicPartitionTimestamp>>();
@@ -2707,12 +2761,13 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         _disposed = true;
 
-        // If not already closed, perform graceful close first (but with a short timeout)
+        // If not already closed, perform graceful close first
+        // Use 30 seconds to allow CommitAsync (which may take up to RequestTimeoutMs=30s) to complete
         if (!_closed)
         {
             try
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
                 await CloseAsync(cts.Token).ConfigureAwait(false);
             }
             catch
@@ -2729,11 +2784,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             try
             {
-                await _autoCommitTask.ConfigureAwait(false);
+                await _autoCommitTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch
             {
-                // Ignore
+                // Ignore — task may not exit promptly after cancellation
             }
         }
 
@@ -2741,11 +2796,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             try
             {
-                await _prefetchTask.ConfigureAwait(false);
+                await _prefetchTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch
             {
-                // Ignore
+                // Ignore — task may not exit promptly after cancellation
             }
         }
 
@@ -2769,6 +2824,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
 
         _assignmentLock.Dispose();
+        _initLock.Dispose();
 
         // Dispose statistics emitter
         if (_statisticsEmitter is not null)

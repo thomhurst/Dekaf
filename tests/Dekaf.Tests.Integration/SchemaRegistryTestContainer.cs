@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
@@ -19,7 +20,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
     private bool _externalRegistry;
     private string _bootstrapServers = string.Empty;
     private string _registryUrl = string.Empty;
-    private readonly HashSet<string> _createdTopics = [];
+    private readonly ConcurrentDictionary<string, byte> _createdTopics = new();
 
     /// <summary>
     /// The Kafka bootstrap servers connection string.
@@ -63,6 +64,11 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         _kafkaContainer = new KafkaBuilder("confluentinc/cp-kafka:7.5.0")
             .WithNetwork(_network)
             .WithNetworkAliases("kafka")
+            .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")
+            .WithEnvironment("KAFKA_LOG_RETENTION_MS", "30000")
+            .WithEnvironment("KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS", "10000")
+            .WithEnvironment("KAFKA_LOG_SEGMENT_BYTES", "1048576")
+            .WithEnvironment("KAFKA_LOG_CLEANUP_POLICY", "delete")
             .Build();
 
         await _kafkaContainer.StartAsync().ConfigureAwait(false);
@@ -144,7 +150,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
     /// </summary>
     public async Task CreateTopicAsync(string topicName, int partitions = 1, int replicationFactor = 1)
     {
-        if (_createdTopics.Contains(topicName))
+        if (_createdTopics.ContainsKey(topicName))
         {
             return;
         }
@@ -167,7 +173,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
             ]).ConfigureAwait(false);
         }
 
-        _createdTopics.Add(topicName);
+        _createdTopics.TryAdd(topicName, 0);
         await Task.Delay(500).ConfigureAwait(false);
         Console.WriteLine($"[KafkaWithSchemaRegistry] Topic '{topicName}' created");
     }

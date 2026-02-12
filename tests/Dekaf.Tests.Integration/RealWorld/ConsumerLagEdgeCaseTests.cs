@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests lag during pause/resume, concurrent production,
 /// multi-partition scenarios, and committed vs position-based lag.
 /// </summary>
+[Category("ConsumerLag")]
 public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -15,9 +16,9 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce initial messages
         for (var i = 0; i < 5; i++)
@@ -30,10 +31,10 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -97,9 +98,9 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce initial batch
         for (var i = 0; i < 10; i++)
@@ -112,10 +113,10 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -157,9 +158,9 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"lag-commit-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 20; i++)
         {
@@ -171,12 +172,12 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -218,10 +219,10 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -240,9 +241,9 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce uneven amounts: p0=20, p1=5, p2=10
         for (var i = 0; i < 20; i++)
@@ -267,10 +268,10 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         // Assign and consume partially from each
         consumer.Assign(

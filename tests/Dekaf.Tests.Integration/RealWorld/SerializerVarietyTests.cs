@@ -1,6 +1,5 @@
 using Dekaf.Consumer;
 using Dekaf.Producer;
-using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Integration.RealWorld;
 
@@ -8,6 +7,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for different serializer type combinations commonly used in production.
 /// Real applications use various key/value types beyond just string/string.
 /// </summary>
+[Category("Serialization")]
 public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -16,9 +16,9 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
         // Common pattern: numeric IDs as keys
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<int, string>()
+        await using var producer = await Kafka.CreateProducer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<int, string>
         {
@@ -27,11 +27,11 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             Value = "answer-to-everything"
         });
 
-        await using var consumer = Kafka.CreateConsumer<int, string>()
+        await using var consumer = await Kafka.CreateConsumer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"int-key-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -50,9 +50,9 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var key = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-        await using var producer = Kafka.CreateProducer<long, string>()
+        await using var producer = await Kafka.CreateProducer<long, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<long, string>
         {
@@ -61,11 +61,11 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             Value = "timestamp-keyed-event"
         });
 
-        await using var consumer = Kafka.CreateConsumer<long, string>()
+        await using var consumer = await Kafka.CreateConsumer<long, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"long-key-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -84,9 +84,9 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var key = Guid.NewGuid();
 
-        await using var producer = Kafka.CreateProducer<Guid, string>()
+        await using var producer = await Kafka.CreateProducer<Guid, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<Guid, string>
         {
@@ -95,11 +95,11 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             Value = "guid-keyed-event"
         });
 
-        await using var consumer = Kafka.CreateConsumer<Guid, string>()
+        await using var consumer = await Kafka.CreateConsumer<Guid, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"guid-key-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -118,9 +118,9 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var payload = new byte[] { 0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD };
 
-        await using var producer = Kafka.CreateProducer<string, byte[]>()
+        await using var producer = await Kafka.CreateProducer<string, byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, byte[]>
         {
@@ -129,11 +129,11 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             Value = payload
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, byte[]>()
+        await using var consumer = await Kafka.CreateConsumer<string, byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"bytes-value-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -153,9 +153,9 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
         var key = new byte[] { 0xCA, 0xFE };
         var value = new byte[] { 0xDE, 0xAD, 0xBE, 0xEF };
 
-        await using var producer = Kafka.CreateProducer<byte[], byte[]>()
+        await using var producer = await Kafka.CreateProducer<byte[], byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<byte[], byte[]>
         {
@@ -164,11 +164,11 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             Value = value
         });
 
-        await using var consumer = Kafka.CreateConsumer<byte[], byte[]>()
+        await using var consumer = await Kafka.CreateConsumer<byte[], byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"binary-binary-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -186,9 +186,9 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
         // Verify that integer keys provide consistent partitioning
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
-        await using var producer = Kafka.CreateProducer<int, string>()
+        await using var producer = await Kafka.CreateProducer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Same key should always go to the same partition
         var results = new List<RecordMetadata>();
@@ -214,9 +214,9 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var fixedGuid = Guid.NewGuid();
 
-        await using var producer = Kafka.CreateProducer<Guid, string>()
+        await using var producer = await Kafka.CreateProducer<Guid, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         var results = new List<RecordMetadata>();
         for (var i = 0; i < 5; i++)
@@ -243,9 +243,9 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
         var payload = new byte[] { 1, 2, 3, 4, 5 };
         ReadOnlyMemory<byte> memoryPayload = payload;
 
-        await using var producer = Kafka.CreateProducer<string, ReadOnlyMemory<byte>>()
+        await using var producer = await Kafka.CreateProducer<string, ReadOnlyMemory<byte>>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, ReadOnlyMemory<byte>>
         {
@@ -254,11 +254,11 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             Value = memoryPayload
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, ReadOnlyMemory<byte>>()
+        await using var consumer = await Kafka.CreateConsumer<string, ReadOnlyMemory<byte>>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"raw-bytes-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -279,19 +279,19 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
         var bytesTopic = await KafkaContainer.CreateTestTopicAsync();
 
         // Int-keyed producer
-        await using var intProducer = Kafka.CreateProducer<int, string>()
+        await using var intProducer = await Kafka.CreateProducer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Guid-keyed producer
-        await using var guidProducer = Kafka.CreateProducer<Guid, string>()
+        await using var guidProducer = await Kafka.CreateProducer<Guid, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Bytes producer
-        await using var bytesProducer = Kafka.CreateProducer<string, byte[]>()
+        await using var bytesProducer = await Kafka.CreateProducer<string, byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce to all topics concurrently
         var guidKey = Guid.NewGuid();
@@ -313,11 +313,11 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
         await bytesTask;
 
         // Consume and verify each independently
-        await using var intConsumer = Kafka.CreateConsumer<int, string>()
+        await using var intConsumer = await Kafka.CreateConsumer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"int-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         intConsumer.Subscribe(intTopic);
 
@@ -326,11 +326,11 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
         await Assert.That(intResult).IsNotNull();
         await Assert.That(intResult!.Value.Key).IsEqualTo(100);
 
-        await using var guidConsumer = Kafka.CreateConsumer<Guid, string>()
+        await using var guidConsumer = await Kafka.CreateConsumer<Guid, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"guid-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         guidConsumer.Subscribe(guidTopic);
 
@@ -338,11 +338,11 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
         await Assert.That(guidResult).IsNotNull();
         await Assert.That(guidResult!.Value.Key).IsEqualTo(guidKey);
 
-        await using var bytesConsumer = Kafka.CreateConsumer<string, byte[]>()
+        await using var bytesConsumer = await Kafka.CreateConsumer<string, byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"bytes-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         bytesConsumer.Subscribe(bytesTopic);
 

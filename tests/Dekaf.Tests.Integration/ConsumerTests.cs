@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for the Kafka consumer.
 /// </summary>
+[Category("Consumer")]
 public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -18,10 +19,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Produce a message first
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -31,12 +32,12 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         });
 
         // Act - consume
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -59,10 +60,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Produce messages first
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 3; i++)
         {
@@ -75,12 +76,12 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         }
 
         // Act - new consumer with earliest should see all messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -106,10 +107,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
         // Produce messages to specific partitions
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -120,11 +121,11 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         });
 
         // Act - manually assign only partition 1
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 1));
 
@@ -146,10 +147,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Produce multiple messages
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 5; i++)
         {
@@ -162,12 +163,12 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         }
 
         // Act - seek to offset 3
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
         consumer.Seek(new TopicPartitionOffset(topic, 0, 3));
@@ -189,10 +190,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         // Produce messages
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 3; i++)
         {
@@ -205,10 +206,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         }
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -230,10 +231,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Produce message
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -243,14 +244,14 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         });
 
         // Act - consume and commit
-        await using var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000)) // Short timeout for faster rebalance
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         consumer1.Subscribe(topic);
 
@@ -273,14 +274,14 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         });
 
         // Act - new consumer should start after committed offset
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000)) // Short timeout for faster rebalance
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -300,10 +301,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Produce messages
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 5; i++)
         {
@@ -316,13 +317,13 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         }
 
         // Act - consume some and commit specific offset
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -353,10 +354,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Produce message with headers
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         var headers = new Headers
         {
@@ -373,12 +374,12 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         });
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -402,10 +403,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -414,10 +415,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Value = "value1"
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -442,11 +443,11 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
-            .Build();
+            .BuildAsync();
 
         // Act
         consumer.Subscribe(topic);
@@ -466,10 +467,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var topic2 = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -486,12 +487,12 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         });
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic1, topic2);
 
@@ -518,10 +519,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -531,12 +532,12 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         });
 
         // Act
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -556,10 +557,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         // Arrange - produce messages first
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 5; i++)
         {
@@ -573,11 +574,11 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
 
         // Act - create consumer, assign, and use AutoOffsetReset.Latest
         // This tests that with Latest, we only get new messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Latest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -628,10 +629,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce 5 messages
         for (var i = 0; i < 5; i++)
@@ -644,13 +645,13 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -693,10 +694,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce 10 messages
         for (var i = 0; i < 10; i++)
@@ -709,10 +710,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -759,10 +760,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce old messages
         for (var i = 0; i < 3; i++)
@@ -776,12 +777,12 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         }
 
         // Act - create consumer with Latest offset reset
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Latest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -841,10 +842,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce 5 messages
         for (var i = 0; i < 5; i++)
@@ -858,14 +859,14 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         }
 
         // First consumer: consume all and commit
-        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build())
+            .BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -882,13 +883,13 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         }
 
         // Second consumer: same group, but seek back to offset 1
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer2.Assign(tp);
@@ -912,10 +913,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 10; i++)
         {
@@ -927,10 +928,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -958,10 +959,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 6);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce messages to all 6 partitions
         const int messagesPerPartition = 100;
@@ -982,12 +983,12 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await producer.FlushAsync();
 
         // Act - consume with prefetching enabled (default)
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -1019,12 +1020,12 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithBatchSize(65536)
-            .Build();
+            .BuildAsync();
 
         // Produce a batch of messages
         const int totalMessages = 1000;
@@ -1036,12 +1037,12 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await producer.FlushAsync();
 
         // Act - consume with prefetching (default QueuedMinMessages = 100000)
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -1072,10 +1073,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         // it recovers by resetting to earliest when AutoOffsetReset.Earliest is configured
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce 3 messages (offsets 0, 1, 2)
         for (var i = 0; i < 3; i++)
@@ -1088,11 +1089,11 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -1118,10 +1119,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         // the consumer resets to the end and only receives new messages
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce 3 old messages
         for (var i = 0; i < 3; i++)
@@ -1134,11 +1135,11 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Latest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -1189,10 +1190,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         // the consumer throws a KafkaException
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce a message
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -1202,11 +1203,11 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             Value = "value"
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.None)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -1232,10 +1233,10 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         // This test verifies parallel fetching with manual partition assignment
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce messages to each partition
         const int messagesPerPartition = 50;
@@ -1256,11 +1257,11 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await producer.FlushAsync();
 
         // Act - manually assign all 4 partitions
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         // Assign all partitions
         consumer.Assign(

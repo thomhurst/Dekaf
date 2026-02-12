@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// Tests scenarios around listener exceptions, slow consumers, offset commits
 /// during rebalance, rapid join/leave cycles, and poll timeouts.
 /// </summary>
+[Category("ConsumerGroup")]
 public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -18,9 +19,9 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         var groupId = $"test-group-{Guid.NewGuid():N}";
         var listener = new ThrowingRebalanceListener();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages to ensure the consumer has data
         for (var i = 0; i < 3; i++)
@@ -34,12 +35,12 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         }
 
         // Act - consumer with a throwing listener should still be able to consume
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -68,9 +69,9 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         var listener1 = new TrackingRebalanceListener();
         var listener2 = new TrackingRebalanceListener();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages to all partitions
         for (var p = 0; p < 4; p++)
@@ -86,13 +87,13 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
 
         // Consumer 1 - will be the "slow" consumer that leaves the group
         // Not using 'await using' because we manually dispose consumer1 mid-test
-        var consumer1 = Kafka.CreateConsumer<string, string>()
+        var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromSeconds(10))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener1)
-            .Build();
+            .BuildAsync();
 
         consumer1.Subscribe(topic);
 
@@ -103,13 +104,13 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         await Assert.That(listener1.AssignedCallCount).IsGreaterThanOrEqualTo(1);
 
         // Consumer 2 joins the group, triggering rebalance
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromSeconds(10))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener2)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -184,9 +185,9 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages
         for (var p = 0; p < 4; p++)
@@ -204,13 +205,13 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         var committedOffsets = new List<TopicPartitionOffset>();
         var commitListener = new CommittingRebalanceListener(committedOffsets);
 
-        await using var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(commitListener)
-            .Build();
+            .BuildAsync();
 
         // Store the consumer reference in the listener so it can commit
         commitListener.Consumer = consumer1;
@@ -239,12 +240,12 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
 
         // Now add a second consumer to trigger rebalance (which will invoke OnPartitionsRevoked)
         var listener2 = new TrackingRebalanceListener();
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener2)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -266,12 +267,12 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
             pollInterval: TimeSpan.FromMilliseconds(500));
 
         // Verify the committed offsets are preserved by checking with a new consumer
-        await using var verifier = Kafka.CreateConsumer<string, string>()
+        await using var verifier = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         verifier.Subscribe(topic);
 
@@ -305,9 +306,9 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages
         for (var i = 0; i < 5; i++)
@@ -323,12 +324,12 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         // Rapidly create and dispose consumers to stress the group coordinator
         for (var round = 0; round < 3; round++)
         {
-            var tempConsumer = Kafka.CreateConsumer<string, string>()
+            var tempConsumer = await Kafka.CreateConsumer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithSessionTimeout(TimeSpan.FromSeconds(10))
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .Build();
+                .BuildAsync();
 
             try
             {
@@ -362,12 +363,12 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
 
         // Now create a stable consumer and verify it can consume normally
         var stableListener = new TrackingRebalanceListener();
-        await using var stableConsumer = Kafka.CreateConsumer<string, string>()
+        await using var stableConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(stableListener)
-            .Build();
+            .BuildAsync();
 
         stableConsumer.Subscribe(topic);
 
@@ -394,9 +395,9 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         var groupId = $"test-group-{Guid.NewGuid():N}";
         var listener1 = new TrackingRebalanceListener();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages to all partitions
         for (var p = 0; p < 4; p++)
@@ -411,13 +412,13 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
         }
 
         // Consumer 1 joins and starts consuming
-        await using var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromSeconds(10))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener1)
-            .Build();
+            .BuildAsync();
 
         consumer1.Subscribe(topic);
 
@@ -431,13 +432,13 @@ public sealed class RebalanceEdgeCaseTests(KafkaTestContainer kafka) : KafkaInte
 
         // Consumer 2 joins, triggering a rebalance while consumer 1 is consuming
         var listener2 = new TrackingRebalanceListener();
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromSeconds(10))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener2)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 

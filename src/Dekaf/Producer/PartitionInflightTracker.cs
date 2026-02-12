@@ -243,6 +243,14 @@ internal sealed class PartitionInflightTracker
 
         lock (state.Lock)
         {
+            // If the entry was removed by FailAll (e.g. epoch bump cleared
+            // all entries), return immediately. Without this check, entry.Previous
+            // could reference a pooled/reset entry whose TCS would never be signaled.
+            if (!entry.InList)
+            {
+                return;
+            }
+
             var predecessor = entry.Previous;
             if (predecessor is null)
             {
@@ -299,6 +307,24 @@ internal sealed class PartitionInflightTracker
         {
             entry.SignalFailed(exception);
             _pool.Return(entry);
+        }
+    }
+
+    /// <summary>
+    /// Returns true if the entry is head-of-line (no predecessor) for its partition.
+    /// Must be checked under the partition state lock for consistency.
+    /// Used by epoch bump recovery to determine if a batch can trigger the bump.
+    /// </summary>
+    public bool IsHeadOfLine(InflightEntry entry)
+    {
+        if (!_partitions.TryGetValue(entry.TopicPartition, out var state))
+        {
+            return true; // Not tracked — treat as head-of-line
+        }
+
+        lock (state.Lock)
+        {
+            return entry.Previous is null;
         }
     }
 

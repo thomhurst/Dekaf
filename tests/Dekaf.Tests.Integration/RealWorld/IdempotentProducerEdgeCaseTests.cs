@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies that idempotent producers correctly deduplicate messages,
 /// handle concurrent access, and maintain ordering guarantees.
 /// </summary>
+[Category("Producer")]
 public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -16,10 +17,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         const int messageCount = 50;
         var offsets = new List<long>();
@@ -42,10 +43,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         }
 
         // Verify all messages are consumable
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -67,10 +68,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         const int tasksCount = 5;
         const int messagesPerTask = 20;
@@ -97,10 +98,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         await Assert.That(uniqueOffsets).Count().IsEqualTo(tasksCount * messagesPerTask);
 
         // Verify exact message count via consumer
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -126,10 +127,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         const int messageCount = 200;
         for (var i = 0; i < messageCount; i++)
@@ -145,10 +146,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         await producer.FlushAsync();
 
         // Consume and verify no duplicates
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -173,10 +174,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         const int messagesPerPartition = 25;
         for (var p = 0; p < 4; p++)
@@ -193,11 +194,11 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
             }
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"idempotent-mp-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -233,10 +234,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         // First producer - produce some messages
-        await using (var producer1 = Kafka.CreateProducer<string, string>()
+        await using (var producer1 = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
-            .Build())
+            .BuildAsync())
         {
             for (var i = 0; i < 10; i++)
             {
@@ -250,10 +251,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         }
 
         // Second producer - should produce successfully after first is disposed
-        await using (var producer2 = Kafka.CreateProducer<string, string>()
+        await using (var producer2 = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
-            .Build())
+            .BuildAsync())
         {
             for (var i = 10; i < 20; i++)
             {
@@ -267,10 +268,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         }
 
         // Consume all 20 messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -299,12 +300,12 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         // Use very small batch size to force many batches
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
             .WithBatchSize(256) // Very small - each message will be its own batch
             .WithLinger(TimeSpan.FromMilliseconds(0))
-            .Build();
+            .BuildAsync();
 
         const int messageCount = 30;
         for (var i = 0; i < messageCount; i++)
@@ -317,10 +318,10 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
             });
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);

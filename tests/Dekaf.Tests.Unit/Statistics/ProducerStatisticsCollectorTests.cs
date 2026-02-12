@@ -50,12 +50,12 @@ public class ProducerStatisticsCollectorTests
     }
 
     [Test]
-    public async Task RecordMessageDelivered_UpdatesDeliveryCounters()
+    public async Task RecordBatchDelivered_SingleMessage_UpdatesDeliveryCounters()
     {
         var collector = new ProducerStatisticsCollector();
 
         collector.RecordMessageProduced("test-topic", 0, 100);
-        collector.RecordMessageDelivered("test-topic", 0, 100);
+        collector.RecordBatchDelivered("test-topic", 0, 1);
 
         var (_, messagesDelivered, _, _, _, _, _, _) = collector.GetGlobalStats();
         await Assert.That(messagesDelivered).IsEqualTo(1);
@@ -89,12 +89,12 @@ public class ProducerStatisticsCollectorTests
     }
 
     [Test]
-    public async Task RecordMessageFailed_UpdatesFailureCounters()
+    public async Task RecordBatchFailed_SingleMessage_UpdatesFailureCounters()
     {
         var collector = new ProducerStatisticsCollector();
 
         collector.RecordMessageProduced("test-topic", 0, 100);
-        collector.RecordMessageFailed("test-topic", 0);
+        collector.RecordBatchFailed("test-topic", 0, 1);
 
         var (_, _, messagesFailed, _, _, _, _, _) = collector.GetGlobalStats();
         await Assert.That(messagesFailed).IsEqualTo(1);

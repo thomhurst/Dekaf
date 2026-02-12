@@ -1,7 +1,5 @@
 using System.Buffers;
 using System.Runtime.CompilerServices;
-using Dekaf;
-using Dekaf.Compression;
 using Dekaf.Protocol.Records;
 using ZstdSharp;
 

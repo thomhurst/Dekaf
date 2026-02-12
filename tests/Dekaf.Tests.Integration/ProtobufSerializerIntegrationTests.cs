@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for Protobuf serializer with Kafka and Schema Registry.
 /// </summary>
+[Category("Serialization")]
 [ClassDataSource<KafkaWithSchemaRegistryContainer>(Shared = SharedType.PerTestSession)]
 public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryContainer testInfra)
 {
@@ -29,10 +30,10 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
             Email = "test@example.com"
         };
 
-        await using var producer = Kafka.CreateProducer<string, TestPerson>()
+        await using var producer = await Kafka.CreateProducer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseProtobufSchemaRegistry(registryClient)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, TestPerson>
         {
@@ -41,12 +42,12 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
             Value = person
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, TestPerson>()
+        await using var consumer = await Kafka.CreateConsumer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"proto-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseProtobufSchemaRegistry(registryClient)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -76,10 +77,10 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
             Url = testInfra.RegistryUrl
         });
 
-        await using var producer = Kafka.CreateProducer<string, TestPerson>()
+        await using var producer = await Kafka.CreateProducer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseProtobufSchemaRegistry(registryClient)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -98,12 +99,12 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
 
         await producer.FlushAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, TestPerson>()
+        await using var consumer = await Kafka.CreateConsumer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"proto-multi-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseProtobufSchemaRegistry(registryClient)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -137,10 +138,10 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
             Url = testInfra.RegistryUrl
         });
 
-        await using var producer = Kafka.CreateProducer<string, TestPerson>()
+        await using var producer = await Kafka.CreateProducer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseProtobufSchemaRegistry(registryClient)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, TestPerson>
         {
@@ -171,10 +172,10 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
             Email = ""
         };
 
-        await using var producer = Kafka.CreateProducer<string, TestPerson>()
+        await using var producer = await Kafka.CreateProducer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .UseProtobufSchemaRegistry(registryClient)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, TestPerson>
         {
@@ -183,12 +184,12 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
             Value = person
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, TestPerson>()
+        await using var consumer = await Kafka.CreateConsumer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithGroupId($"proto-default-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseProtobufSchemaRegistry(registryClient)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

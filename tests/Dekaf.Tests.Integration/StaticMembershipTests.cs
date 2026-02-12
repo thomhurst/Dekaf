@@ -1,5 +1,4 @@
 using Dekaf.Consumer;
-using Dekaf.Errors;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
@@ -9,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// Static membership allows consumers to rejoin a group without triggering a rebalance,
 /// as long as they rejoin within the session timeout using the same group.instance.id.
 /// </summary>
+[Category("ConsumerGroup")]
 public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -19,9 +19,9 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         var groupId = $"static-retain-{Guid.NewGuid():N}";
         var instanceId = $"static-instance-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages to all partitions
         for (var p = 0; p < 4; p++)
@@ -37,7 +37,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
 
         // First consumer with static membership - record the partition assignment
         HashSet<int> firstAssignment;
-        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("static-consumer-1")
             .WithGroupId(groupId)
@@ -45,7 +45,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithSessionTimeout(TimeSpan.FromSeconds(30))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build())
+            .BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -78,7 +78,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         }
 
         // Second consumer with same group.instance.id should get the same partitions
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("static-consumer-2")
             .WithGroupId(groupId)
@@ -86,7 +86,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithSessionTimeout(TimeSpan.FromSeconds(30))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -111,9 +111,9 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         var listener1 = new TrackingRebalanceListener();
         var listener2 = new TrackingRebalanceListener();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages
         for (var p = 0; p < 3; p++)
@@ -128,7 +128,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         }
 
         // First consumer with static membership and long session timeout
-        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("static-consumer-1")
             .WithGroupId(groupId)
@@ -137,7 +137,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(listener1)
-            .Build())
+            .BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -166,7 +166,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         // Rejoin quickly with the same instance ID (within the 30s session timeout)
         // Since this is a static member, the broker should recognize the instance ID
         // and skip the rebalance protocol
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("static-consumer-2")
             .WithGroupId(groupId)
@@ -175,7 +175,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(listener2)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -200,9 +200,9 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         var instanceId = $"static-instance-{Guid.NewGuid():N}";
         var otherListener = new TrackingRebalanceListener();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages
         for (var p = 0; p < 2; p++)
@@ -217,7 +217,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         }
 
         // Static member consumer with short session timeout
-        await using (var staticConsumer = Kafka.CreateConsumer<string, string>()
+        await using (var staticConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("static-consumer")
             .WithGroupId(groupId)
@@ -225,7 +225,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithSessionTimeout(TimeSpan.FromSeconds(6))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build())
+            .BuildAsync())
         {
             staticConsumer.Subscribe(topic);
 
@@ -239,14 +239,14 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
 
         // Now a new dynamic consumer joining the same group should trigger a rebalance
         // because the static member's session has expired
-        await using var dynamicConsumer = Kafka.CreateConsumer<string, string>()
+        await using var dynamicConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("dynamic-consumer")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromSeconds(10))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(otherListener)
-            .Build();
+            .BuildAsync();
 
         dynamicConsumer.Subscribe(topic);
 
@@ -282,9 +282,9 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         var groupId = $"static-fencing-{Guid.NewGuid():N}";
         var instanceId = $"static-instance-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages
         for (var p = 0; p < 2; p++)
@@ -299,7 +299,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         }
 
         // First consumer with static membership
-        await using var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("static-consumer-1")
             .WithGroupId(groupId)
@@ -307,7 +307,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithSessionTimeout(TimeSpan.FromSeconds(30))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         consumer1.Subscribe(topic);
 
@@ -320,7 +320,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         // 2. Throw an exception itself
         // In Kafka, the second JoinGroup with the same instance ID will fence the first consumer.
         // The second consumer should successfully join, replacing the first.
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("static-consumer-2")
             .WithGroupId(groupId)
@@ -328,7 +328,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithSessionTimeout(TimeSpan.FromSeconds(30))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -364,9 +364,9 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         var staticListener = new TrackingRebalanceListener();
         var dynamicListener = new TrackingRebalanceListener();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages to all partitions
         for (var p = 0; p < 4; p++)
@@ -381,7 +381,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         }
 
         // Static member consumer
-        await using var staticConsumer = Kafka.CreateConsumer<string, string>()
+        await using var staticConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("static-consumer")
             .WithGroupId(groupId)
@@ -390,7 +390,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(staticListener)
-            .Build();
+            .BuildAsync();
 
         staticConsumer.Subscribe(topic);
 
@@ -403,7 +403,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         await Assert.That(staticConsumer.Assignment.ToArray()).Count().IsEqualTo(4);
 
         // Dynamic member consumer joins the same group
-        await using var dynamicConsumer = Kafka.CreateConsumer<string, string>()
+        await using var dynamicConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("dynamic-consumer")
             .WithGroupId(groupId)
@@ -411,7 +411,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(dynamicListener)
-            .Build();
+            .BuildAsync();
 
         dynamicConsumer.Subscribe(topic);
 
@@ -457,9 +457,9 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         var instanceId = $"static-instance-{Guid.NewGuid():N}";
         var listener = new TrackingRebalanceListener();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce messages to all partitions
         for (var p = 0; p < 3; p++)
@@ -474,7 +474,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
         }
 
         // Static member with cooperative sticky (default strategy)
-        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("static-coop-consumer-1")
             .WithGroupId(groupId)
@@ -483,7 +483,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(listener)
-            .Build())
+            .BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -520,7 +520,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
 
         // Rejoin with same static ID - cooperative sticky should preserve assignments
         var listener2 = new TrackingRebalanceListener();
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("static-coop-consumer-2")
             .WithGroupId(groupId)
@@ -529,7 +529,7 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(listener2)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 

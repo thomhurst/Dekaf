@@ -39,6 +39,13 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
     public string Topic { get; }
 
     /// <inheritdoc />
+    public ValueTask InitializeAsync(CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        return _producer.InitializeAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
     public ValueTask<RecordMetadata> ProduceAsync(
         TKey? key,
         TValue value,

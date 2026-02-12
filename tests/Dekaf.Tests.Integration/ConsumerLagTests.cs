@@ -6,6 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for consumer lag tracking via watermark offsets and position.
 /// </summary>
+[Category("ConsumerLag")]
 public sealed class ConsumerLagTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -16,9 +17,9 @@ public sealed class ConsumerLagTests(KafkaTestContainer kafka) : KafkaIntegratio
         const int consumeCount = 10;
 
         // Produce messages
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < totalMessages; i++)
         {
@@ -31,10 +32,10 @@ public sealed class ConsumerLagTests(KafkaTestContainer kafka) : KafkaIntegratio
         }
 
         // Consume only half
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -69,9 +70,9 @@ public sealed class ConsumerLagTests(KafkaTestContainer kafka) : KafkaIntegratio
         const int totalMessages = 5;
 
         // Produce messages
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < totalMessages; i++)
         {
@@ -84,10 +85,10 @@ public sealed class ConsumerLagTests(KafkaTestContainer kafka) : KafkaIntegratio
         }
 
         // Consume all messages
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -114,9 +115,9 @@ public sealed class ConsumerLagTests(KafkaTestContainer kafka) : KafkaIntegratio
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
         // Produce different amounts to each partition
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // 5 messages to partition 0
         for (var i = 0; i < 5; i++)
@@ -155,10 +156,10 @@ public sealed class ConsumerLagTests(KafkaTestContainer kafka) : KafkaIntegratio
         }
 
         // Consume only from partitions 0 and 1, partially
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp0 = new TopicPartition(topic, 0);
         var tp1 = new TopicPartition(topic, 1);

@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for producing with LZ4 compression and consuming, verifying data integrity.
 /// Codec registration is handled by <see cref="GlobalTestSetup"/>.
 /// </summary>
+[Category("Compression")]
 public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -16,10 +17,10 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseLz4Compression()
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -28,11 +29,11 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
             Value = "lz4-compressed-value"
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"lz4-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -50,11 +51,11 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 50;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseLz4Compression()
             .WithLinger(TimeSpan.FromMilliseconds(10))
-            .Build();
+            .BuildAsync();
 
         var pendingTasks = new List<ValueTask<RecordMetadata>>();
         for (var i = 0; i < messageCount; i++)
@@ -72,11 +73,11 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
             await task;
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"lz4-batch-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -106,10 +107,10 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var largeValue = new string('A', 100_000);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseLz4Compression()
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -118,11 +119,11 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
             Value = largeValue
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"lz4-large-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -139,11 +140,11 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseLz4Compression()
             .WithLinger(TimeSpan.FromMilliseconds(50))
-            .Build();
+            .BuildAsync();
 
         var expectedMessages = new Dictionary<string, string>
         {
@@ -170,11 +171,11 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
             await task;
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"lz4-mixed-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -201,10 +202,10 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseLz4Compression()
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -213,11 +214,11 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
             Value = "null-key-compressed"
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"lz4-null-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -234,10 +235,10 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseLz4Compression()
-            .Build();
+            .BuildAsync();
 
         var headers = new Headers
         {
@@ -254,11 +255,11 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
             Headers = headers
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"lz4-headers-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -280,11 +281,11 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
         const int messageCount = 10;
 
         // Produce messages with one producer instance
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("lz4-producer-client")
             .UseLz4Compression()
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -297,12 +298,12 @@ public sealed class Lz4CompressionRoundTripTests(KafkaTestContainer kafka) : Kaf
         }
 
         // Consume messages with a separate consumer instance
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("lz4-consumer-client")
             .WithGroupId($"lz4-cross-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

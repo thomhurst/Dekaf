@@ -177,13 +177,17 @@ public sealed class PartitionInflightTrackerTests
         var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
 
         var completed = false;
+        var waitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var waitTask = Task.Run(async () =>
         {
+            waitStarted.SetResult();
             await tracker.WaitForPredecessorAsync(entry2, CancellationToken.None);
             completed = true;
         });
 
-        // Give time for task to start waiting
+        // Wait for the task to actually start executing (not just scheduled)
+        await waitStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // Small yield to let the task reach the await inside WaitForPredecessorAsync
         await Task.Delay(50);
         await Assert.That(completed).IsFalse();
 
@@ -342,26 +346,6 @@ public sealed class PartitionInflightTrackerTests
                   || ReferenceEquals(rented2, entry2) || ReferenceEquals(rented2, entry1);
 
         await Assert.That(reused).IsTrue();
-    }
-
-    [Test]
-    public async Task CreatePartitionGate_AlwaysSingleInflight()
-    {
-        // Gate is always SemaphoreSlim(1, 1) to preserve per-partition ordering.
-        // The inflight tracker provides coordinated retry for edge-case OOSN,
-        // but the gate stays single-permit because Dekaf's fire-and-forget
-        // send model doesn't guarantee wire-order with concurrent sends.
-        var gate = new SemaphoreSlim(1, 1);
-
-        // First should succeed
-        var firstAcquired = gate.Wait(0);
-        await Assert.That(firstAcquired).IsTrue();
-
-        // Second should fail (non-blocking)
-        var secondAcquired = gate.Wait(0);
-        await Assert.That(secondAcquired).IsFalse();
-
-        gate.Release();
     }
 
     [Test]

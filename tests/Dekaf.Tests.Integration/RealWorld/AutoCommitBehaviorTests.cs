@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies that auto-commit works correctly with various intervals,
 /// that it fires on close/dispose, and that committed offsets are respected on restart.
 /// </summary>
+[Category("Consumer")]
 public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -16,9 +17,9 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"auto-commit-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 10; i++)
         {
@@ -31,14 +32,14 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // First consumer with short auto-commit interval
-        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Auto)
             .WithAutoCommitInterval(TimeSpan.FromMilliseconds(100))
-            .Build())
+            .BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -57,13 +58,13 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // Second consumer should resume from committed offset
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -81,9 +82,9 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"auto-close-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 10; i++)
         {
@@ -96,14 +97,14 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // Consumer with long auto-commit interval - commits should happen on close
-        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Auto)
             .WithAutoCommitInterval(TimeSpan.FromMinutes(10)) // Very long - won't fire during test
-            .Build())
+            .BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -120,13 +121,13 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // Verify committed offset
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -146,9 +147,9 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"manual-only-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 5; i++)
         {
@@ -161,13 +162,13 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // First consumer: consume all but don't commit
-        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build())
+            .BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -184,13 +185,13 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // Second consumer should get all messages (nothing was committed)
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -213,9 +214,9 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"partial-auto-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var i = 0; i < 20; i++)
         {
@@ -228,14 +229,14 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // Consume only 8 messages with auto-commit
-        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Auto)
             .WithAutoCommitInterval(TimeSpan.FromMilliseconds(100))
-            .Build())
+            .BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -251,13 +252,13 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // Second consumer should resume from around offset 8
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -281,9 +282,9 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var groupId = $"auto-multi-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         // Produce to all 3 partitions
         for (var p = 0; p < 3; p++)
@@ -301,14 +302,14 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // Consume all 15 messages with auto-commit
-        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Auto)
             .WithAutoCommitInterval(TimeSpan.FromMilliseconds(100))
-            .Build())
+            .BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -324,13 +325,13 @@ public sealed class AutoCommitBehaviorTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // Second consumer should have no messages to read
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 

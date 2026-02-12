@@ -1,10 +1,8 @@
 using System.Buffers;
 using System.Runtime.CompilerServices;
-using Dekaf;
 using Dekaf.Compression;
 using Dekaf.Protocol.Records;
 using K4os.Compression.LZ4;
-using K4os.Compression.LZ4.Encoders;
 using K4os.Compression.LZ4.Streams;
 
 namespace Dekaf.Compression.Lz4;
@@ -161,100 +159,4 @@ public static class Lz4CompressionExtensions
 
         return registry;
     }
-}
-
-/// <summary>
-/// Stream wrapper for IBufferWriter.
-/// </summary>
-internal sealed class BufferWriterStream : Stream
-{
-    private readonly IBufferWriter<byte> _writer;
-
-    public BufferWriterStream(IBufferWriter<byte> writer)
-    {
-        _writer = writer;
-    }
-
-    public override bool CanRead => false;
-    public override bool CanSeek => false;
-    public override bool CanWrite => true;
-    public override long Length => throw new NotSupportedException();
-    public override long Position
-    {
-        get => throw new NotSupportedException();
-        set => throw new NotSupportedException();
-    }
-
-    public override void Flush() { }
-
-    public override int Read(byte[] buffer, int offset, int count)
-        => throw new NotSupportedException();
-
-    public override long Seek(long offset, SeekOrigin origin)
-        => throw new NotSupportedException();
-
-    public override void SetLength(long value)
-        => throw new NotSupportedException();
-
-    public override void Write(byte[] buffer, int offset, int count)
-    {
-        var span = _writer.GetSpan(count);
-        buffer.AsSpan(offset, count).CopyTo(span);
-        _writer.Advance(count);
-    }
-
-    public override void Write(ReadOnlySpan<byte> buffer)
-    {
-        var span = _writer.GetSpan(buffer.Length);
-        buffer.CopyTo(span);
-        _writer.Advance(buffer.Length);
-    }
-}
-
-/// <summary>
-/// Stream wrapper for ReadOnlySequence.
-/// </summary>
-internal sealed class ReadOnlySequenceStream : Stream
-{
-    private ReadOnlySequence<byte> _sequence;
-    private SequencePosition _position;
-
-    public ReadOnlySequenceStream(ReadOnlySequence<byte> sequence)
-    {
-        _sequence = sequence;
-        _position = sequence.Start;
-    }
-
-    public override bool CanRead => true;
-    public override bool CanSeek => false;
-    public override bool CanWrite => false;
-    public override long Length => _sequence.Length;
-    public override long Position
-    {
-        get => _sequence.Slice(_sequence.Start, _position).Length;
-        set => throw new NotSupportedException();
-    }
-
-    public override void Flush() { }
-
-    public override int Read(byte[] buffer, int offset, int count)
-    {
-        var remaining = _sequence.Slice(_position);
-        if (remaining.IsEmpty)
-            return 0;
-
-        var toRead = (int)Math.Min(count, remaining.Length);
-        remaining.Slice(0, toRead).CopyTo(buffer.AsSpan(offset));
-        _position = _sequence.GetPosition(toRead, _position);
-        return toRead;
-    }
-
-    public override long Seek(long offset, SeekOrigin origin)
-        => throw new NotSupportedException();
-
-    public override void SetLength(long value)
-        => throw new NotSupportedException();
-
-    public override void Write(byte[] buffer, int offset, int count)
-        => throw new NotSupportedException();
 }

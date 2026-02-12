@@ -1,5 +1,3 @@
-using Dekaf.Consumer;
-
 namespace Dekaf.Tests.Unit.Consumer;
 
 /// <summary>

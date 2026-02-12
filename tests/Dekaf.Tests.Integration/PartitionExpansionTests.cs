@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for consumer behavior when partitions are added to a topic
 /// while the consumer is actively consuming.
 /// </summary>
+[Category("ConsumerGroup")]
 public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     private IAdminClient CreateAdminClient()
@@ -63,10 +64,10 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         var groupId = $"test-group-{Guid.NewGuid():N}";
         var listener = new PartitionTrackingRebalanceListener();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce messages to original partitions
         for (var p = 0; p < 2; p++)
@@ -81,7 +82,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // First consumer: subscribe, consume, commit, then dispose with short session
-        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
@@ -89,7 +90,7 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithRebalanceListener(listener)
-            .Build())
+            .BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -123,14 +124,14 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
 
         // Create a new consumer in the same group - it should discover the expanded partitions
         var listener2 = new PartitionTrackingRebalanceListener();
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener2)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -152,10 +153,10 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce messages to original partitions
         for (var p = 0; p < 2; p++)
@@ -170,14 +171,14 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // First consumer establishes the group and commits
-        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build())
+            .BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -212,14 +213,14 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
 
         // New consumer joining the same group should get all 4 partitions
         var listener = new PartitionTrackingRebalanceListener();
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -260,10 +261,10 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce initial messages
         for (var p = 0; p < 2; p++)
@@ -278,14 +279,14 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // First consumer consumes and commits original messages
-        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build())
+            .BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -324,13 +325,13 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // New consumer should consume messages from new partitions
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -369,10 +370,10 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         // Arrange - create topic with 2 partitions
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2).ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce to original partitions
         for (var p = 0; p < 2; p++)
@@ -387,11 +388,11 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // Manually assign only partition 0 and 1 (no group ID, no subscription)
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(
             new TopicPartition(topic, 0),
@@ -465,10 +466,10 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         var topic = $"{topicPrefix}-main";
         await KafkaContainer.CreateTopicAsync(topic, partitions: 2).ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         // Produce to original partitions
         for (var p = 0; p < 2; p++)
@@ -485,14 +486,14 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // First consumer with pattern subscription consumes initial messages
-        await using (var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using (var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-1")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .Build())
+            .BuildAsync())
         {
             consumer1.Subscribe(t => t.StartsWith(topicPrefix, StringComparison.Ordinal));
 
@@ -528,13 +529,13 @@ public sealed class PartitionExpansionTests(KafkaTestContainer kafka) : KafkaInt
         }
 
         // New consumer with pattern subscription should discover new partitions
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-2")
             .WithGroupId(groupId)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(t => t.StartsWith(topicPrefix, StringComparison.Ordinal));
 

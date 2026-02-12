@@ -12,6 +12,7 @@ namespace Dekaf.Tests.Integration;
 /// Verifies that producers and consumers handle throttle responses gracefully, and that
 /// high-throughput operations work correctly with default (unthrottled) broker configuration.
 /// </summary>
+[Category("Resilience")]
 public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     private IAdminClient CreateAdminClient()
@@ -106,12 +107,12 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
             // Allow quota config to propagate
             await Task.Delay(2000);
 
-            await using var producer = Kafka.CreateProducer<string, string>()
+            await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-producer-throttle")
                 .WithLinger(TimeSpan.FromMilliseconds(5))
                 .WithAcks(Acks.Leader)
-                .Build();
+                .BuildAsync();
 
             // Act - produce messages that exceed the quota
             const int messageCount = 20;
@@ -172,10 +173,10 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
             brokerId = cluster.Nodes[0].NodeId;
 
             // Produce messages before setting the quota
-            await using var producer = Kafka.CreateProducer<string, string>()
+            await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-producer-for-consumer-throttle")
-                .Build();
+                .BuildAsync();
 
             const int messageCount = 30;
             var messageValue = new string('x', 500);
@@ -198,12 +199,12 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
             await Task.Delay(2000);
 
             // Act - consume messages under tight quota
-            await using var consumer = Kafka.CreateConsumer<string, string>()
+            await using var consumer = await Kafka.CreateConsumer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-consumer-throttle")
                 .WithGroupId($"test-group-throttle-{Guid.NewGuid():N}")
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .Build();
+                .BuildAsync();
 
             consumer.Subscribe(topic);
 
@@ -257,12 +258,12 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
             brokerId = cluster.Nodes[0].NodeId;
 
             // First, measure baseline throughput without quota
-            await using var baselineProducer = Kafka.CreateProducer<string, string>()
+            await using var baselineProducer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-producer-baseline")
                 .WithLinger(TimeSpan.FromMilliseconds(5))
                 .WithAcks(Acks.Leader)
-                .Build();
+                .BuildAsync();
 
             var baselineSw = Stopwatch.StartNew();
             for (var i = 0; i < messageCount; i++)
@@ -287,12 +288,12 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
 
             var throttledTopic = await KafkaContainer.CreateTestTopicAsync();
 
-            await using var throttledProducer = Kafka.CreateProducer<string, string>()
+            await using var throttledProducer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-producer-throttled")
                 .WithLinger(TimeSpan.FromMilliseconds(5))
                 .WithAcks(Acks.Leader)
-                .Build();
+                .BuildAsync();
 
             var throttledSw = Stopwatch.StartNew();
             var results = new List<RecordMetadata>();
@@ -351,14 +352,14 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
 
         var stats = new ConcurrentBag<ProducerStatistics>();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-no-throttle")
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithAcks(Acks.Leader)
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
             .WithStatisticsHandler(s => stats.Add(s))
-            .Build();
+            .BuildAsync();
 
         // Act - produce a burst of messages
         const int messageCount = 500;

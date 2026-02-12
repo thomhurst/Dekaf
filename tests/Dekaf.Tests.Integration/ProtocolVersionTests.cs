@@ -1,5 +1,4 @@
 using Dekaf.Consumer;
-using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -11,6 +10,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for protocol version negotiation and compatibility.
 /// </summary>
+[Category("Admin")]
 public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -217,10 +217,10 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         // and can produce messages using the negotiated version
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-version")
-            .Build();
+            .BuildAsync();
 
         // Act - producing should negotiate version automatically
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -242,10 +242,10 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -255,12 +255,12 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         });
 
         // Act - consumer should negotiate versions automatically
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-version")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -280,10 +280,10 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-flexible")
-            .Build();
+            .BuildAsync();
 
         // Produce with headers (uses flexible protocol features)
         var headers = new Headers
@@ -300,12 +300,12 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         });
 
         // Consume
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-flexible")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -326,10 +326,10 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-batch")
-            .Build();
+            .BuildAsync();
 
         // Produce multiple messages (will be batched)
         var messagesToProduce = 5;
@@ -344,12 +344,12 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         }
 
         // Consume all
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-batch")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

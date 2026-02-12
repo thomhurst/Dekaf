@@ -1,5 +1,4 @@
 using Dekaf.Consumer;
-using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 
@@ -10,6 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Verifies behavior with null values (tombstones), empty strings, large messages,
 /// use-after-dispose, and fire-and-forget callbacks.
 /// </summary>
+[Category("Producer")]
 public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -19,10 +19,10 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         // The producer skips serialization for null values, producing a proper null record
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string?>()
+        await using var producer = await Kafka.CreateProducer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-null-value")
-            .Build();
+            .BuildAsync();
 
         // Act
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string?>
@@ -38,13 +38,13 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
 
         // Verify by consuming - use Serializers.Null for deserialization since the value is null
         var nullSerde = Serializers.Null<string>();
-        await using var consumer = Kafka.CreateConsumer<string, string?>()
+        await using var consumer = await Kafka.CreateConsumer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-null-value")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(nullSerde)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -62,10 +62,10 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-empty")
-            .Build();
+            .BuildAsync();
 
         // Act
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -80,12 +80,12 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Verify round-trip
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-empty")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -104,10 +104,10 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var largeValue = new string('x', 900_000); // ~900KB to stay under 1MB with overhead
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-large-1mb")
-            .Build();
+            .BuildAsync();
 
         // Act
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -122,12 +122,12 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Verify by consuming
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-large-1mb")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -144,10 +144,10 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
-        var producer = Kafka.CreateProducer<string, string>()
+        var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-disposed")
-            .Build();
+            .BuildAsync();
 
         await producer.DisposeAsync().ConfigureAwait(false);
 
@@ -170,11 +170,11 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
         var callbackInvoked = new TaskCompletionSource<(RecordMetadata Metadata, Exception? Error)>();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-callback")
             .WithAcks(Acks.Leader)
-            .Build();
+            .BuildAsync();
 
         // Act - send with delivery callback
         producer.Send(

@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration;
 /// Covers scenarios like non-existent topics, oversized messages, and offset out of range recovery.
 /// Closes #211
 /// </summary>
+[Category("Admin")]
 public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -22,12 +23,12 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
         // cannot find it. With a short timeout, this should surface as a KafkaException.
         var nonExistentTopic = $"non-existent-topic-{Guid.NewGuid():N}";
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-no-topic")
             .WithAcks(Acks.All)
             .WithMaxBlock(TimeSpan.FromSeconds(10))
-            .Build();
+            .BuildAsync();
 
         // Act & Assert - producing to a non-existent topic should eventually throw.
         // The error may manifest as a KafkaException (UnknownTopicOrPartition) or a timeout
@@ -85,11 +86,11 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
         // Wait for topic metadata to propagate
         await Task.Delay(3000);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-msg-too-large")
             .WithAcks(Acks.All)
-            .Build();
+            .BuildAsync();
 
         // Create a message that clearly exceeds the topic's 512-byte max.message.bytes
         var oversizedValue = new string('X', 4096);
@@ -128,10 +129,10 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
         // With AutoOffsetReset.Earliest, the consumer should recover and start from offset 0.
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-offset-reset-earliest")
-            .Build();
+            .BuildAsync();
 
         // Produce 3 messages
         for (var i = 0; i < 3; i++)
@@ -147,11 +148,11 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
         await producer.FlushAsync();
 
         // Create consumer with AutoOffsetReset.Earliest and manual assignment
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-offset-reset-earliest")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -181,10 +182,10 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
         // Both are valid broker error code handling behaviors.
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-offset-reset-latest")
-            .Build();
+            .BuildAsync();
 
         // Produce 3 messages before consumer starts
         for (var i = 0; i < 3; i++)
@@ -200,11 +201,11 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
         await producer.FlushAsync();
 
         // Create consumer with AutoOffsetReset.Latest and manual assignment
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-offset-reset-latest")
             .WithAutoOffsetReset(AutoOffsetReset.Latest)
-            .Build();
+            .BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -253,12 +254,12 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
         // a clear exception, but not crash or hang indefinitely.
         var nonExistentTopic = $"does-not-exist-{Guid.NewGuid():N}";
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-no-topic")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(nonExistentTopic);
 

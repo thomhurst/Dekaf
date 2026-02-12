@@ -44,6 +44,8 @@ public abstract class KafkaConsumerService<TKey, TValue> : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        await _consumer.InitializeAsync(stoppingToken).ConfigureAwait(false);
+
         _consumer.Subscribe(Topics.ToArray());
 
         _logger.LogInformation("Started consuming from topics: {Topics}", string.Join(", ", Topics));

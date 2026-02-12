@@ -9,6 +9,8 @@
   <ItemGroup>
     <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0-preview.*" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.0-preview.*" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0-preview.*" />
   </ItemGroup>
 
 </Project>

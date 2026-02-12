@@ -2,6 +2,7 @@ using Dekaf.Compression;
 using Dekaf.Compression.Lz4;
 using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
+using TUnit.Core.Helpers;
 
 namespace Dekaf.Tests.Integration;
 

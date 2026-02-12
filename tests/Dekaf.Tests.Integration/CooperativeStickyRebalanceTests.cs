@@ -6,6 +6,7 @@ namespace Dekaf.Tests.Integration;
 /// <summary>
 /// Integration tests for cooperative sticky rebalancing and incremental assign/unassign.
 /// </summary>
+[Category("ConsumerGroup")]
 public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -13,10 +14,10 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         // Initially assign 2 partitions
         consumer.Assign(
@@ -30,9 +31,9 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         ]);
 
         // Produce to all 4 partitions
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var p = 0; p < 4; p++)
         {
@@ -66,10 +67,10 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         // Assign all 4 partitions
         consumer.Assign(
@@ -85,9 +86,9 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         ]);
 
         // Produce to partitions 0 and 1 only
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var p = 0; p < 2; p++)
         {
@@ -127,9 +128,9 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         var listener2 = new TestRebalanceListener();
 
         // Produce messages to all partitions
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         for (var p = 0; p < 4; p++)
         {
@@ -144,12 +145,12 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
 
         // First consumer joins
         // CooperativeSticky is the default partition assignment strategy
-        await using var consumer1 = Kafka.CreateConsumer<string, string>()
+        await using var consumer1 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener1)
-            .Build();
+            .BuildAsync();
 
         consumer1.Subscribe(topic);
 
@@ -161,12 +162,12 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         await Assert.That(listener1.AssignedCallCount).IsGreaterThanOrEqualTo(1);
 
         // Second consumer joins the same group
-        await using var consumer2 = Kafka.CreateConsumer<string, string>()
+        await using var consumer2 = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithRebalanceListener(listener2)
-            .Build();
+            .BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -197,9 +198,9 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
         var listener = new TestRebalanceListener();
 
         // Produce a message
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -208,13 +209,13 @@ public sealed class CooperativeStickyRebalanceTests(KafkaTestContainer kafka) : 
             Value = "value"
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(6000))
             .WithRebalanceListener(listener)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

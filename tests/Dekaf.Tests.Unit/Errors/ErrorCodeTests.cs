@@ -67,6 +67,7 @@ public class ErrorCodeTests
         yield return ErrorCode.FetchSessionIdNotFound;
         yield return ErrorCode.InvalidFetchSessionEpoch;
         yield return ErrorCode.FencedLeaderEpoch;
+        yield return ErrorCode.UnknownLeaderEpoch;
         yield return ErrorCode.OffsetNotAvailable;
         yield return ErrorCode.PreferredLeaderNotAvailable;
         yield return ErrorCode.EligibleLeadersNotAvailable;
@@ -90,6 +91,7 @@ public class ErrorCodeTests
         yield return ErrorCode.InvalidTimestamp;
         yield return ErrorCode.UnsupportedVersion;
         yield return ErrorCode.PolicyViolation;
+        yield return ErrorCode.OutOfOrderSequenceNumber;
     }
 
     [Test]
