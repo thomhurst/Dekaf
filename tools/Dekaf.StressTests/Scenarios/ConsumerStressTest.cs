@@ -20,13 +20,13 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         var messageValue = new string('x', options.MessageSizeBytes);
 
         // Create producer to feed messages to the consumer
-        var producer = Kafka.CreateProducer<string, string>()
+        var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-consumer-feeder-dekaf")
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize)
-            .Build();
+            .BuildAsync(cancellationToken);
 
         // Pre-seed messages before starting consumer measurement
         Console.WriteLine($"  Pre-seeding messages for consumer test...");
@@ -38,13 +38,13 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         await producer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
         Console.WriteLine($"  Pre-seeded {preseedCount:N0} messages");
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-consumer-dekaf")
             .WithGroupId($"stress-group-dekaf-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .ForHighThroughput()
-            .Build();
+            .BuildAsync(cancellationToken);
 
         consumer.Subscribe(options.Topic);
 

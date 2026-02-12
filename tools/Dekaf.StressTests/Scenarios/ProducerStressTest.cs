@@ -20,13 +20,13 @@ internal sealed class ProducerStressTest : IStressTestScenario
         var latency = new LatencyTracker();
         var startedAt = DateTime.UtcNow;
 
-        var producer = Kafka.CreateProducer<string, string>()
+        var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-producer-dekaf")
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize)
-            .Build();
+            .BuildAsync(cancellationToken);
 
         Console.WriteLine($"  Warming up Dekaf producer...");
         for (var i = 0; i < 1000; i++)

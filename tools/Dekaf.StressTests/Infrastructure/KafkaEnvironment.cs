@@ -63,11 +63,11 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         {
             try
             {
-                await using var producer = Kafka.CreateProducer<string, string>()
+                await using var producer = await Kafka.CreateProducer<string, string>()
                     .WithBootstrapServers(bootstrapServers)
                     .WithClientId("kafka-ready-check")
                     .WithAcks(Producer.Acks.Leader)
-                    .Build();
+                    .BuildAsync();
 
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                 await producer.ProduceAsync(new Producer.ProducerMessage<string, string>
