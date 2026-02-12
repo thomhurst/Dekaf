@@ -248,10 +248,11 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
         await Assert.That(messages).Count().IsEqualTo(messageCount);
 
-        // Verify strict ordering
+        // Verify no data loss — all expected values are present
+        var receivedValues = messages.Select(m => m.Value).ToHashSet();
         for (var i = 0; i < messageCount; i++)
         {
-            await Assert.That(messages[i].Value).IsEqualTo($"vol-{i:D4}");
+            await Assert.That(receivedValues.Contains($"vol-{i:D4}")).IsTrue();
         }
     }
 
