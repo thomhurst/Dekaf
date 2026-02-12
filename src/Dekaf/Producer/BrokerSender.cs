@@ -89,6 +89,12 @@ internal sealed class BrokerSender : IAsyncDisposable
     // between concurrent response handlers. Value is the stale epoch (-1 = no bump needed).
     private int _epochBumpRequestedForEpoch = -1;
 
+    // Pinned connection: the send loop reuses a single connection to preserve wire order.
+    // With multiple connections per broker (round-robin pool), requests on different
+    // TCP connections can arrive at the broker out of order, causing OOSN. By pinning
+    // one connection, all produce requests are pipelined on the same TCP stream.
+    private IKafkaConnection? _pinnedConnection;
+
     private volatile bool _disposed;
 
     public BrokerSender(
@@ -508,7 +514,7 @@ internal sealed class BrokerSender : IAsyncDisposable
                 }
             }
 
-            var connection = await _connectionPool.GetConnectionAsync(_brokerId, cancellationToken)
+            var connection = await GetPinnedConnectionAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             var apiVersion = EnsureApiVersion();
@@ -956,6 +962,24 @@ internal sealed class BrokerSender : IAsyncDisposable
             version = _getProduceApiVersion();
         }
         return version;
+    }
+
+    /// <summary>
+    /// Returns the pinned connection for this BrokerSender. The send loop reuses a single
+    /// connection to ensure all produce requests are pipelined on the same TCP stream.
+    /// With round-robin connection pools (ConnectionsPerBroker > 1), using different connections
+    /// per request causes the broker to process requests out of order, leading to OOSN.
+    /// </summary>
+    private async ValueTask<IKafkaConnection> GetPinnedConnectionAsync(CancellationToken cancellationToken)
+    {
+        var conn = _pinnedConnection;
+        if (conn is not null && conn.IsConnected)
+            return conn;
+
+        conn = await _connectionPool.GetConnectionAsync(_brokerId, cancellationToken)
+            .ConfigureAwait(false);
+        _pinnedConnection = conn;
+        return conn;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
