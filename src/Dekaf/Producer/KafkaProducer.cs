@@ -184,7 +184,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             options: metadataOptions,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
-        _accumulator = new RecordAccumulator(options);
+        _accumulator = new RecordAccumulator(options, loggerFactory?.CreateLogger<RecordAccumulator>());
         _compressionCodecs = CreateCompressionCodecRegistry(options);
 
         // Initialize inflight tracker for idempotent producers to enable multiple in-flight
@@ -2203,6 +2203,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                         {
                             // No leader cached — do async lookup with timeout to prevent
                             // hanging the sender loop if metadata refresh is blocked
+                            LogNoLeaderCached(batch.TopicPartition.Topic, batch.TopicPartition.Partition);
                             using var metadataCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                             metadataCts.CancelAfter(TimeSpan.FromSeconds(30));
                             try
@@ -2222,6 +2223,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                         if (leader is null)
                         {
                             // Still no leader — fail the batch
+                            LogLeaderStillUnavailable(batch.TopicPartition.Topic, batch.TopicPartition.Partition);
                             CompleteInflightEntry(batch);
                             try { batch.Fail(new KafkaException(ErrorCode.LeaderNotAvailable, "No leader available")); }
                             catch { /* Observe */ }
@@ -2231,6 +2233,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                         }
 
                         var brokerSender = GetOrCreateBrokerSender(leader.NodeId);
+                        LogBatchRouted(batch.TopicPartition.Topic, batch.TopicPartition.Partition, leader.NodeId);
                         brokerSender.Enqueue(batch);
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -2317,6 +2320,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // _brokerSenders, leaving orphaned send loops that prevent process exit.
             if (_disposed)
             {
+                LogRerouteBlockedByDisposal(batch.TopicPartition.Topic, batch.TopicPartition.Partition);
                 CompleteInflightEntry(batch);
                 try { batch.Fail(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>))); }
                 catch { /* Observe */ }
@@ -2338,6 +2342,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 return;
             }
 
+            LogReroutedBatch(batch.TopicPartition.Topic, batch.TopicPartition.Partition, leader.NodeId);
             GetOrCreateBrokerSender(leader.NodeId).Enqueue(batch);
         }
         catch (Exception ex)
@@ -2593,6 +2598,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // Another thread already bumped — return current state
             if (_producerEpoch != expectedEpoch)
             {
+                LogEpochAlreadyBumped(expectedEpoch, _producerEpoch);
                 return (_producerId, _producerEpoch);
             }
 
@@ -2764,6 +2770,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             return;
 
         _disposed = true;
+        LogProducerDisposing();
 
         // Graceful shutdown: flush all pending messages to Kafka before closing.
         // CloseTimeoutMs controls how long to wait (0 = no timeout, wait indefinitely).
@@ -2831,6 +2838,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Loop until no new senders were created during the iteration — a retry's
         // RerouteBatchToCurrentLeader callback could race with the _disposed guard and
         // create a new sender after we've started iterating.
+        LogDisposingBrokerSenders(_brokerSenders.Count);
         int previousCount;
         do
         {
@@ -2928,6 +2936,30 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Failed to dispose broker sender")]
     private partial void LogDisposeBrokerSenderFailed(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Batch routed: {Topic}-{Partition} -> broker {BrokerId}")]
+    private partial void LogBatchRouted(string topic, int partition, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "No leader cached for {Topic}-{Partition}, triggering metadata lookup")]
+    private partial void LogNoLeaderCached(string topic, int partition);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Leader still unavailable for {Topic}-{Partition} after metadata lookup")]
+    private partial void LogLeaderStillUnavailable(string topic, int partition);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Rerouted batch {Topic}-{Partition} to broker {BrokerId}")]
+    private partial void LogReroutedBatch(string topic, int partition, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Reroute blocked by disposal for {Topic}-{Partition}")]
+    private partial void LogRerouteBlockedByDisposal(string topic, int partition);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Epoch already bumped by another thread: expected={ExpectedEpoch}, current={CurrentEpoch}")]
+    private partial void LogEpochAlreadyBumped(short expectedEpoch, short currentEpoch);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Producer disposing: beginning graceful shutdown")]
+    private partial void LogProducerDisposing();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Disposing {Count} broker senders")]
+    private partial void LogDisposingBrokerSenders(int count);
 
     #endregion
 }

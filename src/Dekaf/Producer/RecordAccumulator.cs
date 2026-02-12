@@ -6,6 +6,7 @@ using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
+using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Producer;
 
@@ -506,7 +507,7 @@ internal ref struct ArenaBufferWriter : IBufferWriter<byte>
 /// Provides backpressure through bounded channel capacity (similar to librdkafka's queue.buffering.max.messages).
 /// Simple, reliable, and uses modern C# primitives.
 /// </summary>
-public sealed class RecordAccumulator : IAsyncDisposable
+public sealed partial class RecordAccumulator : IAsyncDisposable
 {
     private readonly ProducerOptions _options;
     private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
@@ -538,6 +539,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
     // but before it writes to _readyBatches, FlushAsync snapshots _batches (missing batch-0),
     // seals batch-1, and writes it to _readyBatches first — reversing batch ordering.
     private readonly SemaphoreSlim _flushLingerLock = new(1, 1);
+
+    private readonly ILogger _logger;
 
     private volatile bool _disposed;
     private volatile bool _closed;
@@ -646,8 +649,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
     // allocation elimination in the critical produce path.
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, TopicPartition>> _topicPartitionCache = new();
 
-    public RecordAccumulator(ProducerOptions options)
+    public RecordAccumulator(ProducerOptions options, ILogger? logger = null)
     {
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
         _options = options;
         _readyBatchPool = new ReadyBatchPool();
         _batchPool = new PartitionBatchPool(options);
@@ -750,6 +754,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
         // Slow path: wait for space to become available with timeout protection
         // Use MaxBlockMs to limit how long we block waiting for buffer space (equivalent to Kafka's max.block.ms)
         // Protect against overflow if MaxBlockMs is configured to a very large value
+        var currentBufferedBytes = Volatile.Read(ref _bufferedBytes);
+        LogBufferMemoryWaiting(recordSize, currentBufferedBytes, _maxBufferMemory);
         var currentTicks = Environment.TickCount64;
         var deadline = (long.MaxValue - currentTicks > _options.MaxBlockMs)
             ? currentTicks + _options.MaxBlockMs
@@ -878,6 +884,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
     internal void ReleaseMemory(int batchSize)
     {
         var newValue = Interlocked.Add(ref _bufferedBytes, -batchSize);
+        LogBufferMemoryReleased(batchSize, newValue);
 
         // DEFENSIVE: Detect accounting bugs early
         if (newValue < 0)
@@ -1932,6 +1939,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
         if (readyBatch is null)
             return false;
 
+        LogBatchSealed(batch.TopicPartition.Topic, batch.TopicPartition.Partition, batch.RecordCount, readyBatch.DataSize);
+
         // Decrement pending awaited produce count by the number of completion sources in this batch
         if (readyBatch.CompletionSourcesCount > 0)
             Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
@@ -2177,6 +2186,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
     private async ValueTask FlushAsyncCore(CancellationToken cancellationToken)
     {
+        var pendingBatchCount = _batches.Count;
+        var inFlightCount = Volatile.Read(ref _inFlightBatchCount);
+        LogFlushStarted(pendingBatchCount, inFlightCount);
+
         ProducerDebugCounters.RecordFlushCall();
         await SealBatchesAsync(sealAll: true, cancellationToken).ConfigureAwait(false);
 
@@ -2187,6 +2200,8 @@ public sealed class RecordAccumulator : IAsyncDisposable
         {
             await WaitForAllBatchesCompleteAsync(cancellationToken).ConfigureAwait(false);
         }
+
+        LogFlushCompleted();
     }
 
     /// <summary>
@@ -2228,6 +2243,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
         if (_disposed || _closed)
             return;
 
+        LogCloseStarted(_batches.Count);
         _closed = true;
 
         // Flush all pending batches to the ready channel
@@ -2235,6 +2251,7 @@ public sealed class RecordAccumulator : IAsyncDisposable
 
         // Complete the channel - sender will drain remaining batches and exit
         _readyBatches.Writer.Complete();
+        LogClosedChannelCompleted();
     }
 
     public async ValueTask DisposeAsync()
@@ -2242,6 +2259,9 @@ public sealed class RecordAccumulator : IAsyncDisposable
         if (_disposed)
             return;
 
+        var pendingBatches = _batches.Count;
+        var inFlightBatches = Volatile.Read(ref _inFlightBatchCount);
+        LogDisposeStarted(pendingBatches, inFlightBatches);
         _disposed = true;
 
         // Invalidate thread-local caches if they point to this accumulator
@@ -2299,6 +2319,10 @@ public sealed class RecordAccumulator : IAsyncDisposable
         }
 
         // NOW fail any remaining batches that couldn't be sent during graceful shutdown
+        var remainingBatches = _batches.Count;
+        if (remainingBatches > 0)
+            LogDisposalFailingRemainingBatches(remainingBatches);
+
         var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
 
         // Fail incomplete batches still in the dictionary (weren't flushed in time)
@@ -2378,6 +2402,37 @@ public sealed class RecordAccumulator : IAsyncDisposable
         _flushLingerLock.Dispose();
         // _flushTcs doesn't need disposal - it's a TaskCompletionSource
     }
+
+    #region Logging
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Buffer memory backpressure: waiting for {RequestedBytes} bytes (current: {CurrentBytes}/{MaxBytes})")]
+    private partial void LogBufferMemoryWaiting(int requestedBytes, long currentBytes, ulong maxBytes);
+
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Released {ReleasedBytes} bytes of buffer memory (remaining: {RemainingBytes})")]
+    private partial void LogBufferMemoryReleased(int releasedBytes, long remainingBytes);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Batch sealed for {Topic}-{Partition}: {RecordCount} records, {DataSize} bytes")]
+    private partial void LogBatchSealed(string topic, int partition, int recordCount, int dataSize);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Flush started: {PendingBatchCount} pending batches, {InFlightCount} in-flight")]
+    private partial void LogFlushStarted(int pendingBatchCount, long inFlightCount);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Flush completed: all batches delivered")]
+    private partial void LogFlushCompleted();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Closing accumulator: {PendingBatchCount} pending batches")]
+    private partial void LogCloseStarted(int pendingBatchCount);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Accumulator closed: ready channel completed")]
+    private partial void LogClosedChannelCompleted();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Disposing accumulator: {PendingBatchCount} pending batches, {InFlightCount} in-flight")]
+    private partial void LogDisposeStarted(int pendingBatchCount, long inFlightCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failing {RemainingBatchCount} batches during disposal")]
+    private partial void LogDisposalFailingRemainingBatches(int remainingBatchCount);
+
+    #endregion
 }
 
 /// <summary>

@@ -226,9 +226,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
         var leader = _metadata.GetPartitionLeader(topicName, partition);
         if (leader is not null)
         {
+            LogMetadataCacheHit(topicName, partition);
             return leader;
         }
 
+        LogMetadataCacheMiss(topicName, partition);
         await RefreshMetadataAsync([topicName], cancellationToken).ConfigureAwait(false);
         return _metadata.GetPartitionLeader(topicName, partition);
     }
@@ -249,6 +251,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
         if (_disposed)
             throw new ObjectDisposedException(nameof(MetadataManager));
 
+        LogMetadataRefreshRequested();
         await _refreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -577,6 +580,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private async Task BackgroundRefreshLoopAsync(CancellationToken cancellationToken)
     {
         var consecutiveFailures = 0;
+        LogBackgroundRefreshStarted((int)_options.MetadataRefreshInterval.TotalMilliseconds);
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -677,7 +681,19 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private partial void LogNegotiatedApiVersion(short version);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Background metadata refresh failed (attempt {Attempt}), continuing with existing metadata")]
-    private partial void LogBackgroundMetadataRefreshFailed(Exception ex, int attempt);
+    private partial void LogBackgroundMetadataRefreshFailed(Exception exception, int attempt);
+
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Metadata cache hit for {Topic}-{Partition}")]
+    private partial void LogMetadataCacheHit(string topic, int partition);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Metadata cache miss for {Topic}-{Partition}, triggering refresh")]
+    private partial void LogMetadataCacheMiss(string topic, int partition);
+
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Metadata refresh requested")]
+    private partial void LogMetadataRefreshRequested();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Background metadata refresh loop started with interval {IntervalMs}ms")]
+    private partial void LogBackgroundRefreshStarted(int intervalMs);
 
     #endregion
 }

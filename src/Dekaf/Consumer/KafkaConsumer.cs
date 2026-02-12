@@ -799,6 +799,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     if (Interlocked.Read(ref _prefetchedBytes) >= maxBytes)
                     {
                         // Wait for consumer to catch up
+                        var currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
+                        LogPrefetchMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
                         await Task.Delay(50, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
@@ -1186,6 +1188,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             if (offsetCount == 0)
                 return;
 
+            LogCommitStarted(offsetCount);
+
             // Rent array from pool to avoid List allocation
             offsetsArray = ArrayPool<TopicPartitionOffset>.Shared.Rent(offsetCount);
             try
@@ -1261,6 +1265,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     public IKafkaConsumer<TKey, TValue> Seek(TopicPartitionOffset offset)
     {
+        LogSeek(offset.Topic, offset.Partition, offset.Offset);
         var tp = new TopicPartition(offset.Topic, offset.Partition);
         // Update positions (thread-safe with ConcurrentDictionary)
         _positions[tp] = offset.Offset;
@@ -1674,6 +1679,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 // Track rebalance if assignment changed
                 var assignmentChanged = _assignment.Count != _coordinator.Assignment.Count ||
                                         newPartitions.Count > 0;
+
+                if (newPartitions.Count > 0)
+                    LogPartitionsAdded(newPartitions.Count);
+                if (removedPartitions.Count > 0)
+                    LogPartitionsRemoved(removedPartitions.Count);
 
                 // Update assignment from coordinator
                 _assignment.Clear();
@@ -2750,6 +2760,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             return;
 
         _disposed = true;
+        LogConsumerDisposing();
 
         // If not already closed, perform graceful close first
         // Use 30 seconds to allow CommitAsync (which may take up to RequestTimeoutMs=30s) to complete
@@ -2890,6 +2901,24 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "ListOffsets error for {Topic}-{Partition}: {Error}")]
     private partial void LogListOffsetsError(string topic, int partition, ErrorCode error);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Prefetch paused: memory limit reached ({CurrentBytes}/{MaxBytes} bytes)")]
+    private partial void LogPrefetchMemoryLimitPaused(long currentBytes, long maxBytes);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Assignment change: {Count} partitions added")]
+    private partial void LogPartitionsAdded(int count);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Assignment change: {Count} partitions removed")]
+    private partial void LogPartitionsRemoved(int count);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Committing offsets for {PartitionCount} partitions")]
+    private partial void LogCommitStarted(int partitionCount);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Seeking {Topic}-{Partition} to offset {Offset}")]
+    private partial void LogSeek(string topic, int partition, long offset);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Consumer disposing: beginning shutdown")]
+    private partial void LogConsumerDisposing();
 
     #endregion
 }

@@ -83,6 +83,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             if (_state == CoordinatorState.Stable)
                 return;
 
+            LogEnsureActiveGroupStarted(_options.GroupId!, _state);
             var deadline = DateTime.UtcNow.AddMilliseconds(_options.RebalanceTimeoutMs);
             var retryDelayMs = 200;
 
@@ -104,10 +105,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     // Join group
                     _state = CoordinatorState.Joining;
+                    LogCoordinatorStateTransition(CoordinatorState.Joining);
                     await JoinGroupAsync(topics, cancellationToken).ConfigureAwait(false);
 
                     // Sync group - returns partition changes for rebalance listener
                     _state = CoordinatorState.Syncing;
+                    LogCoordinatorStateTransition(CoordinatorState.Syncing);
                     syncResult = await SyncGroupAsync(topics, cancellationToken).ConfigureAwait(false);
 
                     _state = CoordinatorState.Stable;
@@ -151,11 +154,13 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             if (syncResult.Revoked is { Count: > 0 })
             {
+                LogRebalanceListenerCall("OnPartitionsRevoked", syncResult.Revoked.Count);
                 await _rebalanceListener.OnPartitionsRevokedAsync(syncResult.Revoked, cancellationToken).ConfigureAwait(false);
             }
 
             if (syncResult.Assigned is { Count: > 0 })
             {
+                LogRebalanceListenerCall("OnPartitionsAssigned", syncResult.Assigned.Count);
                 await _rebalanceListener.OnPartitionsAssignedAsync(syncResult.Assigned, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -320,6 +325,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             // Retry with assigned member ID
             _memberId = ((JoinGroupResponse)response).MemberId;
+            LogJoinGroupMemberIdRequired(_memberId!);
             await JoinGroupAsync(topics, cancellationToken).ConfigureAwait(false);
             return;
         }
@@ -438,6 +444,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     private void StartHeartbeat()
     {
+        LogHeartbeatStarted(_options.HeartbeatIntervalMs);
         _heartbeatCts?.Cancel();
         _heartbeatCts = new CancellationTokenSource();
         _heartbeatTask = HeartbeatLoopAsync(_heartbeatCts.Token);
@@ -521,6 +528,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
+        LogCommitOffsetsStarted(_options.GroupId!);
         await _commitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -1053,6 +1061,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             return;
 
         _disposed = true;
+        LogCoordinatorDisposing();
 
         _heartbeatCts?.Cancel();
 
@@ -1114,6 +1123,27 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to send LeaveGroup request")]
     private partial void LogLeaveGroupRequestFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "EnsureActiveGroup: group={GroupId}, current state={State}")]
+    private partial void LogEnsureActiveGroupStarted(string groupId, CoordinatorState state);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator state transition to {NewState}")]
+    private partial void LogCoordinatorStateTransition(CoordinatorState newState);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Rebalance listener {CallbackName}: {PartitionCount} partitions")]
+    private partial void LogRebalanceListenerCall(string callbackName, int partitionCount);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "JoinGroup: MemberIdRequired, assigned memberId={MemberId}")]
+    private partial void LogJoinGroupMemberIdRequired(string memberId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Heartbeat loop started with interval {IntervalMs}ms")]
+    private partial void LogHeartbeatStarted(int intervalMs);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "CommitOffsets started for group {GroupId}")]
+    private partial void LogCommitOffsetsStarted(string groupId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator disposing")]
+    private partial void LogCoordinatorDisposing();
 
     #endregion
 }

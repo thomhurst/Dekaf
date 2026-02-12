@@ -71,6 +71,7 @@ public sealed partial class ConnectionPool : IConnectionPool
         // Try to get existing connection
         if (_connectionsById.TryGetValue(brokerId, out var existing) && existing.IsConnected)
         {
+            LogConnectionAcquired(brokerId);
             return existing;
         }
 
@@ -105,6 +106,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             }
 
             // Connection at this index is invalid, try to replace it
+            LogConnectionReplacement(brokerId, (int)index);
             return await ReplaceConnectionInGroupAsync(brokerId, brokerInfo, (int)index, cancellationToken).ConfigureAwait(false);
         }
 
@@ -503,6 +505,12 @@ public sealed partial class ConnectionPool : IConnectionPool
 
     [LoggerMessage(Level = LogLevel.Information, Message = "All connections closed")]
     private partial void LogAllConnectionsClosed();
+
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Connection acquired for broker {BrokerId}")]
+    private partial void LogConnectionAcquired(int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Replacing connection {Index} for broker {BrokerId}")]
+    private partial void LogConnectionReplacement(int brokerId, int index);
 
     #endregion
 

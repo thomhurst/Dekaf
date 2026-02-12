@@ -1426,6 +1426,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             return;
 
         _disposed = true;
+        LogConnectionDisposing(BrokerId, _pendingRequests.Count);
 
         _receiveCts?.Cancel();
 
@@ -1550,6 +1551,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
     [LoggerMessage(Level = LogLevel.Error, Message = "SASL re-authentication failed for broker {BrokerId}. Connection may be terminated by the broker when the session expires")]
     private partial void LogSaslReauthenticationFailed(Exception ex, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Disposing connection to broker {BrokerId}: {PendingRequestCount} pending requests")]
+    private partial void LogConnectionDisposing(int brokerId, int pendingRequestCount);
 
     #endregion
 }
