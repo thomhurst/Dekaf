@@ -3862,13 +3862,20 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// <summary>
     /// When true, this batch is a same-broker retry. The send loop unmutes the partition
     /// when coalescing a retry batch, ensuring it is sent before newer batches for the
-    /// same partition. Set by ScheduleRetryAsync, cleared during coalescing or in Reset().
+    /// same partition. Set by ProcessCompletedResponses, cleared during coalescing or in Reset().
     /// </summary>
     internal bool IsRetry { get; set; }
 
     /// <summary>
+    /// Stopwatch timestamp before which this retry batch should not be sent (backoff).
+    /// Set by ProcessCompletedResponses when a retriable error occurs. The send loop
+    /// skips batches where the backoff hasn't elapsed. 0 means no backoff.
+    /// </summary>
+    internal long RetryNotBefore { get; set; }
+
+    /// <summary>
     /// Stopwatch timestamp when this batch was initialized. Used for absolute delivery deadline
-    /// computation in ScheduleRetryAsync (prevents infinite retries with relative deadlines).
+    /// computation in ProcessCompletedResponses (prevents infinite retries with relative deadlines).
     /// </summary>
     internal long StopwatchCreatedTicks { get; private set; }
 
@@ -3950,6 +3957,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _callbackCount = 0;
         InflightEntry = null;
         IsRetry = false;
+        RetryNotBefore = 0;
 
         // Reset state flags
         Volatile.Write(ref _cleanedUp, 0);

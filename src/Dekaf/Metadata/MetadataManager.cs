@@ -209,6 +209,14 @@ public sealed class MetadataManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// Gets the cached leader for a partition without triggering a metadata refresh.
+    /// Thread-safe and allocation-free — reads from an immutable snapshot.
+    /// Returns null if the partition leader is unknown (metadata not yet fetched or stale).
+    /// </summary>
+    public BrokerNode? TryGetCachedPartitionLeader(string topicName, int partition)
+        => _metadata.GetPartitionLeader(topicName, partition);
+
+    /// <summary>
     /// Gets the leader for a partition.
     /// </summary>
     public async ValueTask<BrokerNode?> GetPartitionLeaderAsync(
