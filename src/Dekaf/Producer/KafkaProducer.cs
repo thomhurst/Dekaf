@@ -2190,7 +2190,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     // ensures only batches actually hitting the wire are tracked.
 
                     // Release buffer memory as soon as the sender dequeues the batch.
-                    _accumulator.ReleaseMemory(batch.DataSize);
+                    // The batch data stays alive (held by ReadyBatch's arena/pooled arrays),
+                    // but the buffer memory accounting is freed to unblock waiting producers.
+                    // Retry batches already have MemoryReleased=true, so this is a no-op for them.
+                    if (!batch.MemoryReleased)
+                    {
+                        _accumulator.ReleaseMemory(batch.DataSize);
+                        batch.MemoryReleased = true;
+                    }
 
                     // Look up leader and route to the appropriate broker sender
                     try
@@ -2227,6 +2234,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                             CompleteInflightEntry(batch);
                             try { batch.Fail(new KafkaException(ErrorCode.LeaderNotAvailable, "No leader available")); }
                             catch { /* Observe */ }
+                            if (!batch.MemoryReleased)
+                            {
+                                _accumulator.ReleaseMemory(batch.DataSize);
+                                batch.MemoryReleased = true;
+                            }
                             _accumulator.ReturnReadyBatch(batch);
                             _accumulator.OnBatchExitsPipeline();
                             continue;
@@ -2241,6 +2253,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                         CompleteInflightEntry(batch);
                         try { batch.Fail(new OperationCanceledException(cancellationToken)); }
                         catch { /* Observe */ }
+                        if (!batch.MemoryReleased)
+                        {
+                            _accumulator.ReleaseMemory(batch.DataSize);
+                            batch.MemoryReleased = true;
+                        }
                         _accumulator.ReturnReadyBatch(batch);
                         _accumulator.OnBatchExitsPipeline();
                         throw;
@@ -2250,6 +2267,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                         CompleteInflightEntry(batch);
                         try { batch.Fail(ex); }
                         catch { /* Observe */ }
+                        if (!batch.MemoryReleased)
+                        {
+                            _accumulator.ReleaseMemory(batch.DataSize);
+                            batch.MemoryReleased = true;
+                        }
                         _accumulator.ReturnReadyBatch(batch);
                         _accumulator.OnBatchExitsPipeline();
                     }
@@ -2324,6 +2346,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 CompleteInflightEntry(batch);
                 try { batch.Fail(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>))); }
                 catch { /* Observe */ }
+                if (!batch.MemoryReleased)
+                {
+                    _accumulator.ReleaseMemory(batch.DataSize);
+                    batch.MemoryReleased = true;
+                }
                 _accumulator.ReturnReadyBatch(batch);
                 _accumulator.OnBatchExitsPipeline();
                 return;
@@ -2337,6 +2364,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 CompleteInflightEntry(batch);
                 try { batch.Fail(new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader available for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}")); }
                 catch { /* Observe */ }
+                if (!batch.MemoryReleased)
+                {
+                    _accumulator.ReleaseMemory(batch.DataSize);
+                    batch.MemoryReleased = true;
+                }
                 _accumulator.ReturnReadyBatch(batch);
                 _accumulator.OnBatchExitsPipeline();
                 return;
@@ -2350,6 +2382,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             CompleteInflightEntry(batch);
             try { batch.Fail(ex); }
             catch { /* Observe */ }
+            if (!batch.MemoryReleased)
+            {
+                _accumulator.ReleaseMemory(batch.DataSize);
+                batch.MemoryReleased = true;
+            }
             _accumulator.ReturnReadyBatch(batch);
             _accumulator.OnBatchExitsPipeline();
         }

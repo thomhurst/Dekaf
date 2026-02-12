@@ -66,6 +66,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly List<PendingResponse> _pendingResponses = new();
     private TaskCompletionSource? _responseReadySignal;
 
+    // Batches that failed during SendCoalescedAsync (connection error, etc.) and need retry.
+    // Set by the catch block, consumed by the send loop at the top of each iteration.
+    // Single-threaded: only accessed by the send loop.
+    private List<ReadyBatch>? _sendFailedRetries;
+
     // Non-blocking in-flight request limiter (replaces SemaphoreSlim).
     // Aligned with Java Kafka's InFlightRequests.canSendMore(): the send loop checks
     // capacity before sending, and waits for a signal when at max. No blocking primitives.
@@ -83,9 +88,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Func<bool> _isTransactional;
     private readonly Func<TopicPartition, CancellationToken, ValueTask>? _ensurePartitionInTransaction;
 
-    // Muted partitions: partitions with a retry in progress. Prevents newer batches from
-    // being sent while a retry is in-flight, maintaining per-partition ordering.
-    // Aligned with the Java Kafka producer's mute mechanism (RecordAccumulator.muted).
+    // Ordering guarantee flag (aligned with Java Kafka's guaranteeMessageOrder).
+    // When true, partitions are muted at send time and unmuted on response, ensuring
+    // at most one batch per partition in-flight. Prevents reordering on connection drops.
+    // Enabled for idempotent producers or when MaxInFlight == 1.
+    private readonly bool _guaranteeMessageOrder;
+
+    // Muted partitions: partitions with a batch in-flight (when _guaranteeMessageOrder)
+    // or a retry in progress. Prevents newer batches from being sent, maintaining
+    // per-partition ordering. Aligned with Java Kafka producer's mute mechanism.
     // Written and read by the single-threaded send loop (ProcessCompletedResponses/CoalesceBatch).
     private readonly ConcurrentDictionary<TopicPartition, byte> _mutedPartitions = new();
 
@@ -152,6 +163,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         _maxInFlight = options.MaxInFlightRequestsPerConnection;
 
+        // Aligned with Java Kafka's guaranteeMessageOrder:
+        // mute partitions at send time to ensure at most one batch per partition in-flight.
+        // Required for idempotent producers (any maxInFlight) and non-idempotent with maxInFlight=1.
+        _guaranteeMessageOrder = inflightTracker is not null || _maxInFlight <= 1;
+
         _cts = new CancellationTokenSource();
         _sendLoopTask = SendLoopAsync(_cts.Token);
     }
@@ -216,6 +232,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 cancellationToken.ThrowIfCancellationRequested();
 
                 LogSendLoopIteration(_brokerId, pendingCarryOver?.Count ?? 0, _pendingResponses.Count);
+
+                // Pick up batches that failed during SendCoalescedAsync (connection errors, etc.)
+                // and need retry. These are treated as carry-over for the next coalescing pass.
+                if (_sendFailedRetries is { Count: > 0 })
+                {
+                    pendingCarryOver ??= [];
+                    pendingCarryOver.AddRange(_sendFailedRetries);
+                    _sendFailedRetries = null;
+                }
 
                 // Process completed responses inline (like Java's NetworkClient.poll()).
                 // Retry batches are added to pendingCarryOver in deterministic send order.
@@ -569,15 +594,23 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             if (pending.ResponseTask.IsFaulted || pending.ResponseTask.IsCanceled)
             {
-                // Entire request failed — fail all batches
+                // Entire request failed (connection drop, timeout, etc.) — retry all batches.
+                // Aligned with Java Kafka's Sender: request-level failures cause reenqueue,
+                // not permanent failure. Batches retry until DeliveryTimeoutMs expires.
                 var ex = pending.ResponseTask.Exception?.InnerException
                     ?? new OperationCanceledException();
                 LogResponseFailed(ex, _brokerId);
 
+                // Invalidate the pinned connection since it likely failed
+                _pinnedConnection = null;
+
                 for (var j = 0; j < pending.Count; j++)
                 {
                     if (pending.Batches[j] is not null)
-                        FailAndCleanupBatch(pending.Batches[j], ex);
+                    {
+                        HandleRetriableBatch(pending.Batches[j], ErrorCode.NetworkException,
+                            ref pendingCarryOver, cancellationToken);
+                    }
                 }
 
                 ArrayPool<ReadyBatch>.Shared.Return(pending.Batches, clearArray: true);
@@ -643,7 +676,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         continue;
                     }
 
-                    // Non-retriable error
+                    // Non-retriable error — unmute so subsequent batches can proceed
+                    if (_guaranteeMessageOrder)
+                        UnmutePartition(batch.TopicPartition);
                     CompleteInflightEntry(batch);
                     _statisticsCollector.RecordBatchFailed(expectedTopic, expectedPartition,
                         batch.CompletionSourcesCount);
@@ -666,7 +701,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     continue;
                 }
 
-                // Success
+                // Success — unmute so the next batch for this partition can be sent
+                if (_guaranteeMessageOrder)
+                    UnmutePartition(batch.TopicPartition);
                 LogBatchCompleted(_brokerId, expectedTopic, expectedPartition, partitionResponse.BaseOffset);
                 _statisticsCollector.RecordBatchDelivered(expectedTopic, expectedPartition,
                     batch.CompletionSourcesCount);
@@ -708,6 +745,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
         {
             LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+            if (_guaranteeMessageOrder)
+                UnmutePartition(batch.TopicPartition);
             var ex = new TimeoutException(
                 $"Delivery timeout exceeded for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}" +
                 (errorCode != ErrorCode.None ? $" (last error: {errorCode})" : ""));
@@ -715,8 +754,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
         }
 
-        // Mute partition
-        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
+        // Mute partition so no newer batches overtake the retry (ordering guarantee).
+        // Non-ordered producers skip muting: normal batches can proceed freely during retry.
+        if (_guaranteeMessageOrder)
+            _mutedPartitions.TryAdd(batch.TopicPartition, 0);
 
         var isEpochBumpError = errorCode is ErrorCode.OutOfOrderSequenceNumber
             or ErrorCode.InvalidProducerEpoch or ErrorCode.UnknownProducerId;
@@ -908,7 +949,31 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var responseTask = connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
                 request, (short)apiVersion, cancellationToken);
 
+            // Release buffer memory now that data is written to TCP.
+            // This unblocks producers waiting for BufferMemory while the response is in flight.
+            // Arena buffers are still held (for potential retries) but BufferMemory flow control
+            // is released — the pipeline depth is bounded by MaxInFlightRequestsPerConnection.
+            for (var i = 0; i < count; i++)
+            {
+                if (!batches[i].MemoryReleased)
+                {
+                    _accumulator.ReleaseMemory(batches[i].DataSize);
+                    batches[i].MemoryReleased = true;
+                }
+            }
+
             _pendingResponses.Add(new PendingResponse(responseTask, batches, count, requestStartTime));
+
+            // Mute partitions at send time (aligned with Java Kafka's guaranteeMessageOrder).
+            // This ensures at most one batch per partition in-flight across all requests.
+            // Without this, connection drops allow newer batches on a new connection to commit
+            // before older batches on the broken connection, causing ordering violations.
+            if (_guaranteeMessageOrder)
+            {
+                for (var i = 0; i < count; i++)
+                    _mutedPartitions.TryAdd(batches[i].TopicPartition, 0);
+            }
+
             LogPipelinedSend(_brokerId, count, _pendingResponses.Count);
 
             // Release the in-flight slot and signal the send loop when the response completes.
@@ -924,13 +989,60 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }, self, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
         }
-        catch (Exception ex)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Send failed — release everything
+            // Shutdown — fail batches permanently (no point retrying)
             ReleaseInFlightSlot();
             for (var i = 0; i < count; i++)
+                FailAndCleanupBatch(batches[i], new ObjectDisposedException(nameof(BrokerSender)));
+
+            ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+        }
+        catch (Exception ex)
+        {
+            // Send failed (connection error, etc.) — retry batches instead of permanently failing.
+            // Aligned with Java Kafka's Sender: transient failures cause reenqueue for retry.
+            ReleaseInFlightSlot();
+            _pinnedConnection = null; // Invalidate broken connection
+            LogResponseFailed(ex, _brokerId);
+
+            _sendFailedRetries ??= [];
+            for (var i = 0; i < count; i++)
             {
-                FailAndCleanupBatch(batches[i], ex);
+                var batch = batches[i];
+
+                // Release buffer memory before retry — prevents memory leak when
+                // SendCoalescedAsync fails before reaching the TCP send memory release.
+                // The arena data stays valid for re-serialization during retry.
+                if (!batch.MemoryReleased)
+                {
+                    _accumulator.ReleaseMemory(batch.DataSize);
+                    batch.MemoryReleased = true;
+                }
+
+                // Check delivery deadline before retrying
+                var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
+                    (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+
+                if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
+                {
+                    if (_guaranteeMessageOrder)
+                        UnmutePartition(batch.TopicPartition);
+                    FailAndCleanupBatch(batch, new TimeoutException(
+                        $"Delivery timeout exceeded for {batch.TopicPartition}"));
+                }
+                else
+                {
+                    // Mute partition (ordering guarantee) and queue for retry.
+                    // Non-ordered producers skip muting: normal batches proceed freely.
+                    if (_guaranteeMessageOrder)
+                        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
+                    batch.IsRetry = true;
+                    batch.RetryNotBefore = Stopwatch.GetTimestamp() +
+                        (long)(_options.RetryBackoffMs * (Stopwatch.Frequency / 1000.0));
+                    _sendFailedRetries.Add(batch);
+                    _statisticsCollector.RecordRetry();
+                }
             }
 
             ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
@@ -1094,6 +1206,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void CleanupBatch(ReadyBatch batch)
     {
+        // Release buffer memory if not already released at TCP send time.
+        // Normal path: memory is released in SendCoalescedAsync after the batch is written to TCP.
+        // Error paths (before TCP send): memory has NOT been released and must be freed here.
+        if (!batch.MemoryReleased)
+        {
+            _accumulator.ReleaseMemory(batch.DataSize);
+            batch.MemoryReleased = true;
+        }
         _accumulator.ReturnReadyBatch(batch);
         _accumulator.OnBatchExitsPipeline();
     }
