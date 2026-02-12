@@ -176,26 +176,18 @@ public sealed class PartitionInflightTrackerTests
         var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
         var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
 
-        var completed = false;
-        var waitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var waitTask = Task.Run(async () =>
-        {
-            waitStarted.SetResult();
-            await tracker.WaitForPredecessorAsync(entry2, CancellationToken.None);
-            completed = true;
-        });
+        // WaitForPredecessorAsync enters the lock synchronously, finds the predecessor,
+        // gets its TCS task, then hits the first real await — so the returned ValueTask
+        // is guaranteed to be incomplete at this point (predecessor hasn't been completed).
+        var waitTask = tracker.WaitForPredecessorAsync(entry2, CancellationToken.None);
 
-        // Wait for the task to actually start executing (not just scheduled)
-        await waitStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        // Small yield to let the task reach the await inside WaitForPredecessorAsync
-        await Task.Delay(50);
-        await Assert.That(completed).IsFalse();
+        await Assert.That(waitTask.IsCompleted).IsFalse();
 
-        // Complete predecessor
+        // Complete predecessor — signals the TCS, which unblocks the wait
         tracker.Complete(entry1);
 
-        await waitTask.WaitAsync(TimeSpan.FromSeconds(5));
-        await Assert.That(completed).IsTrue();
+        // Should complete promptly now
+        await waitTask.AsTask().WaitAsync(TimeSpan.FromSeconds(30));
     }
 
     [Test]
