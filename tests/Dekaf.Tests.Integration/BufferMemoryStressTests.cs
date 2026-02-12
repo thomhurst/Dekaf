@@ -37,9 +37,9 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
         // in multi-test processes where other tests' GC pressure pollutes managed heap metrics
         using var process = Process.GetCurrentProcess();
         var initialMemory = process.WorkingSet64;
-        // 30 seconds is sufficient to detect the bug (original showed 18GB/90s = ~6GB in 30s)
-        // while being CI-friendly (avoids 10-minute timeout with other tests)
-        var testDuration = TimeSpan.FromSeconds(30);
+        // 15 seconds is sufficient to detect the bug (original showed 18GB/90s = ~3GB in 15s)
+        // while being CI-friendly (reduces resource pressure with other Resilience tests)
+        var testDuration = TimeSpan.FromSeconds(15);
         var startTime = DateTime.UtcNow;
         var messageCount = 0;
         var lastLogTime = startTime;
@@ -48,7 +48,7 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
         Console.WriteLine($"[BufferMemoryStressTest] Initial memory: {initialMemory / 1_000_000.0:F1} MB");
         Console.WriteLine($"[BufferMemoryStressTest] Test duration: {testDuration.TotalSeconds} seconds");
 
-        // Act: Send messages continuously for 30 seconds using fire-and-forget
+        // Act: Send messages continuously for 15 seconds using fire-and-forget
         // Using the same key ensures messages go to the same partition, triggering the arena fast path
         // Use Send() (fire-and-forget) instead of ProduceAsync to avoid blocking on network I/O
         // This matches real high-throughput producer patterns and allows clean test termination

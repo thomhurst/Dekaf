@@ -68,6 +68,7 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
         var arguments = new List<string>
         {
             "--",
+            "--timeout", "10m", // Per-test timeout — prevents individual test hangs
             "--hangdump",
             "--hangdump-timeout", "15m", // Module timeout (30m) is the hard backstop
             "--log-level", "Trace",
@@ -77,26 +78,38 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
 
         context.Logger.LogInformation("Running integration tests for category: {Category}", Category);
 
-        var testResult = await context.DotNet().Run(
-            new DotNetRunOptions
-            {
-                NoBuild = true,
-                Configuration = "Release",
-                Framework = "net10.0",
-                Arguments = arguments
-            },
-            new CommandExecutionOptions
-            {
-                WorkingDirectory = project.Folder!.Path,
-                EnvironmentVariables = new Dictionary<string, string?>
-                {
-                    ["NET_VERSION"] = "net10.0",
-                    ["DOTNET_GCConserveMemory"] = "9", // Aggressive GC to reduce memory pressure on CI
-                }
-            },
-            cancellationToken);
+        // Process-level timeout as safety fallback (matches TestBaseModule pattern)
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
-        results.Add(testResult);
+        try
+        {
+            var testResult = await context.DotNet().Run(
+                new DotNetRunOptions
+                {
+                    NoBuild = true,
+                    Configuration = "Release",
+                    Framework = "net10.0",
+                    Arguments = arguments
+                },
+                new CommandExecutionOptions
+                {
+                    WorkingDirectory = project.Folder!.Path,
+                    EnvironmentVariables = new Dictionary<string, string?>
+                    {
+                        ["NET_VERSION"] = "net10.0",
+                        ["DOTNET_GCConserveMemory"] = "9", // Aggressive GC to reduce memory pressure on CI
+                    }
+                },
+                linkedCts.Token);
+
+            results.Add(testResult);
+        }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Integration tests for category '{Category}' exceeded 20 minute process timeout");
+        }
 
         return results;
     }
