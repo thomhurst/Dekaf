@@ -1011,6 +1011,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var batch = batches[i];
 
+                // Release buffer memory before retry — prevents memory leak when
+                // SendCoalescedAsync fails before reaching the TCP send memory release.
+                // The arena data stays valid for re-serialization during retry.
+                if (!batch.MemoryReleased)
+                {
+                    _accumulator.ReleaseMemory(batch.DataSize);
+                    batch.MemoryReleased = true;
+                }
+
                 // Check delivery deadline before retrying
                 var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
                     (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
