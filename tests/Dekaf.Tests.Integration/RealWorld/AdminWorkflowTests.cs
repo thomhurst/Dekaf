@@ -1,5 +1,6 @@
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration.RealWorld;
@@ -584,9 +585,10 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 {
                     await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), cts.Token).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException)
+                catch
                 {
-                    // Expected
+                    // Expected — OperationCanceledException (timeout), GroupException (UnknownMemberId), etc.
+                    // The consumer only needs to register the group, not successfully consume.
                 }
             }
 

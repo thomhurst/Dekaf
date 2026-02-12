@@ -105,12 +105,12 @@ internal static class ConnectionHelper
 /// <summary>
 /// A multiplexed connection to a Kafka broker using System.IO.Pipelines.
 /// </summary>
-public sealed class KafkaConnection : IKafkaConnection
+public sealed partial class KafkaConnection : IKafkaConnection
 {
     private readonly string _host;
     private readonly int _port;
     private readonly string? _clientId;
-    private readonly ILogger<KafkaConnection>? _logger;
+    private readonly ILogger _logger;
     private readonly ConnectionOptions _options;
     private readonly ulong _bufferMemory;
     private readonly int _connectionsPerBroker;
@@ -173,7 +173,7 @@ public sealed class KafkaConnection : IKafkaConnection
         _port = port;
         _clientId = clientId;
         _options = options ?? new ConnectionOptions();
-        _logger = logger;
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConnection>.Instance;
         _bufferMemory = bufferMemory;
         _connectionsPerBroker = connectionsPerBroker;
     }
@@ -200,7 +200,7 @@ public sealed class KafkaConnection : IKafkaConnection
         if (IsConnected)
             return;
 
-        _logger?.LogDebug("Connecting to {Host}:{Port}", _host, _port);
+        LogConnecting(_host, _port);
 
         _socket = new Socket(SocketType.Stream, ProtocolType.Tcp)
         {
@@ -238,9 +238,7 @@ public sealed class KafkaConnection : IKafkaConnection
             _bufferMemory,
             _connectionsPerBroker);
 
-        _logger?.LogDebug(
-            "Configuring pipe for broker {BrokerId}: pauseThreshold={PauseThreshold} bytes, resumeThreshold={ResumeThreshold} bytes",
-            BrokerId, pauseThreshold, resumeThreshold);
+        LogConfiguringPipe(BrokerId, pauseThreshold, resumeThreshold);
 
         var pipe = new Pipe(new PipeOptions(
             pool: MemoryPool<byte>.Shared,
@@ -263,7 +261,7 @@ public sealed class KafkaConnection : IKafkaConnection
         _receiveCts = new CancellationTokenSource();
         _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
 
-        _logger?.LogDebug("Connected to {Host}:{Port}", _host, _port);
+        LogConnected(_host, _port);
     }
 
     public async ValueTask<TResponse> SendAsync<TRequest, TResponse>(
@@ -288,8 +286,7 @@ public sealed class KafkaConnection : IKafkaConnection
         _pendingRequests[correlationId] = pending;
 
         // Write phase
-        _logger?.LogDebug("Sending {ApiKey} request (correlation {CorrelationId}, version {Version}) to {Host}:{Port}",
-            TRequest.ApiKey, correlationId, apiVersion, _host, _port);
+        LogSendingRequest(TRequest.ApiKey, correlationId, apiVersion, _host, _port);
 
         await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -312,7 +309,7 @@ public sealed class KafkaConnection : IKafkaConnection
             _writeLock.Release();
         }
 
-        _logger?.LogDebug("Request sent, waiting for response (correlation {CorrelationId})", correlationId);
+        LogRequestSentWaitingForResponse(correlationId);
 
         // Response phase: await response with timeout and parse
         return await AwaitAndParseResponseAsync<TRequest, TResponse>(
@@ -337,8 +334,7 @@ public sealed class KafkaConnection : IKafkaConnection
 
         // Don't register a pending request - we won't receive a response
 
-        _logger?.LogDebug("Sending fire-and-forget {ApiKey} request (correlation {CorrelationId}, version {Version}) to {Host}:{Port}",
-            TRequest.ApiKey, correlationId, apiVersion, _host, _port);
+        LogSendingFireAndForgetRequest(TRequest.ApiKey, correlationId, apiVersion, _host, _port);
 
         await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -351,7 +347,7 @@ public sealed class KafkaConnection : IKafkaConnection
             _writeLock.Release();
         }
 
-        _logger?.LogDebug("Fire-and-forget request sent (correlation {CorrelationId})", correlationId);
+        LogFireAndForgetRequestSent(correlationId);
     }
 
     public async Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
@@ -419,7 +415,7 @@ public sealed class KafkaConnection : IKafkaConnection
     {
         try
         {
-            _logger?.LogDebug("Waiting for response (correlation {CorrelationId})", correlationId);
+            LogWaitingForResponse(correlationId);
 
             PooledResponseBuffer pooledBuffer;
             if (!cancellationToken.CanBeCanceled)
@@ -470,7 +466,7 @@ public sealed class KafkaConnection : IKafkaConnection
                 }
             }
 
-            _logger?.LogDebug("Response received for correlation {CorrelationId}", correlationId);
+            LogResponseReceived(correlationId);
 
             var isFetchResponse = TRequest.ApiKey == ApiKey.Fetch;
 
@@ -600,9 +596,7 @@ public sealed class KafkaConnection : IKafkaConnection
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
-                _logger?.LogError(
-                    "Flush timeout after {Timeout}ms for request {CorrelationId} to broker {BrokerId}",
-                    _options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
+                LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
                 throw new KafkaException(
                     $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
@@ -624,7 +618,7 @@ public sealed class KafkaConnection : IKafkaConnection
         if (_reader is null)
             return;
 
-        _logger?.LogDebug("Receive loop started for {Host}:{Port}", _host, _port);
+        LogReceiveLoopStarted(_host, _port);
 
         try
         {
@@ -645,9 +639,7 @@ public sealed class KafkaConnection : IKafkaConnection
                     }
                     catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                     {
-                        _logger?.LogError(
-                            "Receive timeout after {Timeout}ms on broker {BrokerId} - marking connection as failed",
-                            _options.RequestTimeout.TotalMilliseconds, BrokerId);
+                        LogReceiveTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
 
                         // Mark connection as failed to trigger reconnection
                         _disposed = true;
@@ -658,11 +650,11 @@ public sealed class KafkaConnection : IKafkaConnection
 
                     var buffer = result.Buffer;
 
-                    _logger?.LogTrace("Received {Length} bytes from {Host}:{Port}", buffer.Length, _host, _port);
+                    LogReceivedBytes(buffer.Length, _host, _port);
 
                     while (TryReadResponse(ref buffer, out var correlationId, out var responseData))
                     {
-                        _logger?.LogDebug("Received response for correlation ID {CorrelationId}, {Length} bytes", correlationId, responseData.Length);
+                        LogReceivedResponse(correlationId, responseData.Length);
 
                         if (_pendingRequests.TryGetValue(correlationId, out var pending))
                         {
@@ -674,7 +666,7 @@ public sealed class KafkaConnection : IKafkaConnection
                         }
                         else
                         {
-                            _logger?.LogWarning("Received response for unknown correlation ID {CorrelationId}", correlationId);
+                            LogUnknownCorrelationId(correlationId);
                             // No pending request - dispose the buffer
                             responseData.Dispose();
                         }
@@ -684,7 +676,7 @@ public sealed class KafkaConnection : IKafkaConnection
 
                     if (result.IsCompleted)
                     {
-                        _logger?.LogDebug("Receive loop completed (connection closed) for {Host}:{Port}", _host, _port);
+                        LogReceiveLoopCompleted(_host, _port);
                         break;
                     }
                 }
@@ -701,7 +693,7 @@ public sealed class KafkaConnection : IKafkaConnection
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "Error in receive loop");
+            LogReceiveLoopError(ex);
             FailAllPendingRequests(ex);
         }
     }
@@ -1004,11 +996,11 @@ public sealed class KafkaConnection : IKafkaConnection
         if (_stream is null)
             throw new InvalidOperationException("Not connected");
 
-        _logger?.LogDebug("Starting SASL authentication with mechanism {Mechanism}", _options.SaslMechanism);
+        LogStartingSaslAuthentication(_options.SaslMechanism);
 
         var sessionLifetimeMs = await PerformSaslExchangeAsync(cancellationToken).ConfigureAwait(false);
 
-        _logger?.LogInformation("SASL authentication successful with mechanism {Mechanism}", _options.SaslMechanism);
+        LogSaslAuthenticationSuccessful(_options.SaslMechanism);
 
         // Schedule re-authentication if the broker reported a session lifetime (KIP-368)
         ScheduleReauthentication(sessionLifetimeMs);
@@ -1040,7 +1032,7 @@ public sealed class KafkaConnection : IKafkaConnection
                     $"Supported mechanisms: {string.Join(", ", handshakeResponse.Mechanisms)}");
             }
 
-            _logger?.LogDebug("SASL handshake successful, starting authentication");
+            LogSaslHandshakeSuccessful();
 
             // Step 2: Perform authentication exchanges
             // For OAUTHBEARER, ensure token is fetched before getting initial response
@@ -1118,7 +1110,7 @@ public sealed class KafkaConnection : IKafkaConnection
 
         if (!reauthConfig.Enabled)
         {
-            _logger?.LogDebug("SASL re-authentication is disabled");
+            LogSaslReauthenticationDisabled();
             return;
         }
 
@@ -1126,21 +1118,13 @@ public sealed class KafkaConnection : IKafkaConnection
 
         if (!_saslSessionState.RequiresReauthentication)
         {
-            _logger?.LogDebug(
-                "SASL re-authentication not needed: sessionLifetimeMs={SessionLifetimeMs}",
-                sessionLifetimeMs);
+            LogSaslReauthenticationNotNeeded(sessionLifetimeMs);
             return;
         }
 
         var delayMs = _saslSessionState.ReauthenticationDelayMs;
 
-        _logger?.LogInformation(
-            "SASL session lifetime is {SessionLifetimeMs}ms. Scheduling re-authentication in {DelayMs}ms " +
-            "(at {ReauthTime:O}) for broker {BrokerId}",
-            sessionLifetimeMs,
-            delayMs,
-            _saslSessionState.ReauthenticationDeadline,
-            BrokerId);
+        LogSchedulingReauthentication(sessionLifetimeMs, delayMs, _saslSessionState.ReauthenticationDeadline, BrokerId);
 
         // Replace existing timer, disposing old one AFTER assignment to avoid race window
         var oldTimer = _reauthTimer;
@@ -1192,9 +1176,7 @@ public sealed class KafkaConnection : IKafkaConnection
         {
             _reauthenticating = true;
 
-            _logger?.LogInformation(
-                "Starting SASL re-authentication for broker {BrokerId} at {Host}:{Port}",
-                BrokerId, _host, _port);
+            LogStartingSaslReauthentication(BrokerId, _host, _port);
 
             // Use a timeout for re-authentication to prevent indefinite blocking
             using var timeoutCts = new CancellationTokenSource(_options.RequestTimeout);
@@ -1202,19 +1184,14 @@ public sealed class KafkaConnection : IKafkaConnection
             var sessionLifetimeMs = await PerformSaslReauthExchangeAsync(timeoutCts.Token)
                 .ConfigureAwait(false);
 
-            _logger?.LogInformation(
-                "SASL re-authentication successful for broker {BrokerId}. New session lifetime: {SessionLifetimeMs}ms",
-                BrokerId, sessionLifetimeMs);
+            LogSaslReauthenticationSuccessful(BrokerId, sessionLifetimeMs);
 
             // Schedule the next re-authentication
             ScheduleReauthentication(sessionLifetimeMs);
         }
         catch (Exception ex) when (!_disposed)
         {
-            _logger?.LogError(ex,
-                "SASL re-authentication failed for broker {BrokerId}. " +
-                "Connection may be terminated by the broker when the session expires",
-                BrokerId);
+            LogSaslReauthenticationFailed(ex, BrokerId);
 
             // Don't tear down the connection - let it fail naturally when the broker
             // rejects requests after session expiry. The connection pool will handle
@@ -1449,6 +1426,7 @@ public sealed class KafkaConnection : IKafkaConnection
             return;
 
         _disposed = true;
+        LogConnectionDisposing(BrokerId, _pendingRequests.Count);
 
         _receiveCts?.Cancel();
 
@@ -1493,6 +1471,91 @@ public sealed class KafkaConnection : IKafkaConnection
 
         FailAllPendingRequests(new ObjectDisposedException(nameof(KafkaConnection)));
     }
+
+    #region Logging
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Connecting to {Host}:{Port}")]
+    private partial void LogConnecting(string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Configuring pipe for broker {BrokerId}: pauseThreshold={PauseThreshold} bytes, resumeThreshold={ResumeThreshold} bytes")]
+    private partial void LogConfiguringPipe(int brokerId, long pauseThreshold, long resumeThreshold);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Connected to {Host}:{Port}")]
+    private partial void LogConnected(string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Sending {ApiKey} request (correlation {CorrelationId}, version {Version}) to {Host}:{Port}")]
+    private partial void LogSendingRequest(ApiKey apiKey, int correlationId, short version, string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Request sent, waiting for response (correlation {CorrelationId})")]
+    private partial void LogRequestSentWaitingForResponse(int correlationId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Sending fire-and-forget {ApiKey} request (correlation {CorrelationId}, version {Version}) to {Host}:{Port}")]
+    private partial void LogSendingFireAndForgetRequest(ApiKey apiKey, int correlationId, short version, string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Fire-and-forget request sent (correlation {CorrelationId})")]
+    private partial void LogFireAndForgetRequestSent(int correlationId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Waiting for response (correlation {CorrelationId})")]
+    private partial void LogWaitingForResponse(int correlationId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Response received for correlation {CorrelationId}")]
+    private partial void LogResponseReceived(int correlationId);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Flush timeout after {Timeout}ms for request {CorrelationId} to broker {BrokerId}")]
+    private partial void LogFlushTimeout(double timeout, int correlationId, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Receive loop started for {Host}:{Port}")]
+    private partial void LogReceiveLoopStarted(string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Receive timeout after {Timeout}ms on broker {BrokerId} - marking connection as failed")]
+    private partial void LogReceiveTimeout(double timeout, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Trace, Message = "Received {Length} bytes from {Host}:{Port}")]
+    private partial void LogReceivedBytes(long length, string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Received response for correlation ID {CorrelationId}, {Length} bytes")]
+    private partial void LogReceivedResponse(int correlationId, int length);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Received response for unknown correlation ID {CorrelationId}")]
+    private partial void LogUnknownCorrelationId(int correlationId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Receive loop completed (connection closed) for {Host}:{Port}")]
+    private partial void LogReceiveLoopCompleted(string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Error in receive loop")]
+    private partial void LogReceiveLoopError(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Starting SASL authentication with mechanism {Mechanism}")]
+    private partial void LogStartingSaslAuthentication(SaslMechanism mechanism);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "SASL authentication successful with mechanism {Mechanism}")]
+    private partial void LogSaslAuthenticationSuccessful(SaslMechanism mechanism);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "SASL handshake successful, starting authentication")]
+    private partial void LogSaslHandshakeSuccessful();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "SASL re-authentication is disabled")]
+    private partial void LogSaslReauthenticationDisabled();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "SASL re-authentication not needed: sessionLifetimeMs={SessionLifetimeMs}")]
+    private partial void LogSaslReauthenticationNotNeeded(long sessionLifetimeMs);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "SASL session lifetime is {SessionLifetimeMs}ms. Scheduling re-authentication in {DelayMs}ms (at {ReauthTime}) for broker {BrokerId}")]
+    private partial void LogSchedulingReauthentication(long sessionLifetimeMs, long delayMs, DateTimeOffset? reauthTime, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Starting SASL re-authentication for broker {BrokerId} at {Host}:{Port}")]
+    private partial void LogStartingSaslReauthentication(int brokerId, string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "SASL re-authentication successful for broker {BrokerId}. New session lifetime: {SessionLifetimeMs}ms")]
+    private partial void LogSaslReauthenticationSuccessful(int brokerId, long sessionLifetimeMs);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "SASL re-authentication failed for broker {BrokerId}. Connection may be terminated by the broker when the session expires")]
+    private partial void LogSaslReauthenticationFailed(Exception ex, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Disposing connection to broker {BrokerId}: {PendingRequestCount} pending requests")]
+    private partial void LogConnectionDisposing(int brokerId, int pendingRequestCount);
+
+    #endregion
 }
 
 /// <summary>

@@ -245,7 +245,7 @@ internal sealed class PendingFetchData : IDisposable
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
+public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 {
     /// <summary>
     /// Delay in milliseconds when all assigned partitions are paused, to prevent
@@ -261,7 +261,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
     private readonly MetadataManager _metadataManager;
     private readonly ConsumerCoordinator? _coordinator;
     private readonly CompressionCodecRegistry _compressionCodecs;
-    private readonly ILogger<KafkaConsumer<TKey, TValue>>? _logger;
+    private readonly ILogger _logger;
 
     private readonly HashSet<string> _subscription = [];
     private readonly HashSet<TopicPartition> _assignment = [];
@@ -345,7 +345,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         _options = options;
         _keyDeserializer = keyDeserializer;
         _valueDeserializer = valueDeserializer;
-        _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>();
+        _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
 
         // Initialize interceptors from options
         if (options.Interceptors is { Count: > 0 })
@@ -799,6 +799,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                     if (Interlocked.Read(ref _prefetchedBytes) >= maxBytes)
                     {
                         // Wait for consumer to catch up
+                        var currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
+                        LogPrefetchMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
                         await Task.Delay(50, cancellationToken).ConfigureAwait(false);
                         continue;
                     }
@@ -812,7 +814,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 }
                 catch (Exception ex)
                 {
-                    _logger?.LogWarning(ex, "Error in prefetch loop");
+                    LogPrefetchLoopError(ex);
                     await Task.Delay(100, cancellationToken).ConfigureAwait(false);
                 }
             }
@@ -894,13 +896,13 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         {
             // Fatal Kafka errors (e.g., AutoOffsetReset.None with OffsetOutOfRange)
             // should propagate to the consumer by completing the channel with the exception
-            _logger?.LogError(ex, "Fatal error prefetching from broker {BrokerId}", brokerId);
+            LogFatalPrefetchError(ex, brokerId);
             _prefetchChannel.Writer.TryComplete(ex);
             throw;
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "Failed to prefetch from broker {BrokerId}", brokerId);
+            LogPrefetchFromBrokerError(ex, brokerId);
         }
     }
 
@@ -984,23 +986,17 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                         };
                         _fetchPositions[tp] = resetTimestamp;
                         _positions[tp] = resetTimestamp;
-                        _logger?.LogWarning(
-                            "OffsetOutOfRange for {Topic}-{Partition}, resetting to {Reset}",
-                            topic, partitionResponse.PartitionIndex, resetName);
+                        LogOffsetOutOfRangeReset(topic, partitionResponse.PartitionIndex, resetName);
                     }
                     else if (partitionResponse.ErrorCode == ErrorCode.NotLeaderOrFollower)
                     {
                         // Invalidate metadata cache to force re-discovery of leader
                         InvalidatePartitionCache();
-                        _logger?.LogWarning(
-                            "NotLeaderOrFollower for {Topic}-{Partition}, will refresh metadata",
-                            topic, partitionResponse.PartitionIndex);
+                        LogNotLeaderOrFollower(topic, partitionResponse.PartitionIndex);
                     }
                     else
                     {
-                        _logger?.LogWarning(
-                            "Prefetch error for {Topic}-{Partition}: {Error}",
-                            topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                        LogPrefetchError(topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
                     }
                     continue;
                 }
@@ -1192,6 +1188,8 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             if (offsetCount == 0)
                 return;
 
+            LogCommitStarted(offsetCount);
+
             // Rent array from pool to avoid List allocation
             offsetsArray = ArrayPool<TopicPartitionOffset>.Shared.Rent(offsetCount);
             try
@@ -1267,6 +1265,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
     public IKafkaConsumer<TKey, TValue> Seek(TopicPartitionOffset offset)
     {
+        LogSeek(offset.Topic, offset.Partition, offset.Offset);
         var tp = new TopicPartition(offset.Topic, offset.Partition);
         // Update positions (thread-safe with ConcurrentDictionary)
         _positions[tp] = offset.Offset;
@@ -1629,8 +1628,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             }
             changed = true;
 
-            _logger?.LogDebug("Pattern subscription matched {Count} topics: {Topics}",
-                _subscription.Count, string.Join(", ", _subscription));
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                var topics = string.Join(", ", _subscription);
+                LogPatternSubscriptionMatched(_subscription.Count, topics);
+            }
         }
 
         return changed;
@@ -1677,6 +1679,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 // Track rebalance if assignment changed
                 var assignmentChanged = _assignment.Count != _coordinator.Assignment.Count ||
                                         newPartitions.Count > 0;
+
+                if (newPartitions.Count > 0)
+                    LogPartitionsAdded(newPartitions.Count);
+                if (removedPartitions.Count > 0)
+                    LogPartitionsRemoved(removedPartitions.Count);
 
                 // Update assignment from coordinator
                 _assignment.Clear();
@@ -2005,7 +2012,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "Failed to fetch from broker {BrokerId}", brokerId);
+            LogFetchFromBrokerError(ex, brokerId);
             return null;
         }
     }
@@ -2176,9 +2183,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
                 if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
-                    _logger?.LogWarning(
-                        "Fetch error for {Topic}-{Partition}: {Error}",
-                        topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                    LogFetchError(topic, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
                     continue;
                 }
 
@@ -2282,8 +2287,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Consumer interceptor {Interceptor} OnConsume threw an exception",
-                    interceptor.GetType().Name);
+                LogInterceptorOnConsumeError(ex, interceptor.GetType().Name);
             }
         }
         return result;
@@ -2306,8 +2310,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Consumer interceptor {Interceptor} OnCommit threw an exception",
-                    interceptor.GetType().Name);
+                LogInterceptorOnCommitError(ex, interceptor.GetType().Name);
             }
         }
     }
@@ -2515,7 +2518,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Auto-commit failed, retrying once");
+                LogAutoCommitFailed(ex);
                 try
                 {
                     await Task.Delay(200, cancellationToken).ConfigureAwait(false);
@@ -2535,7 +2538,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         _closed = true;
 
-        _logger?.LogDebug("Closing consumer gracefully");
+        LogClosingConsumer();
 
         // Step 1: Stop heartbeat background task
         if (_coordinator is not null)
@@ -2579,7 +2582,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 try
                 {
                     await CommitAsync(cancellationToken).ConfigureAwait(false);
-                    _logger?.LogDebug("Committed pending offsets during close");
+                    LogCommittedPendingOffsets();
                     break;
                 }
                 catch (OperationCanceledException)
@@ -2588,8 +2591,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 }
                 catch (Exception ex)
                 {
-                    _logger?.LogWarning(ex,
-                        "Failed to commit offsets during close (attempt {Attempt}/3)", attempt + 1);
+                    LogCommitOffsetsDuringCloseFailed(ex, attempt + 1);
                     if (attempt < 2)
                         await Task.Delay(200, cancellationToken).ConfigureAwait(false);
                 }
@@ -2602,11 +2604,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             try
             {
                 await _coordinator.LeaveGroupAsync("Consumer closing gracefully", cancellationToken).ConfigureAwait(false);
-                _logger?.LogDebug("Left consumer group during close");
+                LogLeftConsumerGroup();
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Failed to leave group during close");
+                LogLeaveGroupFailed(ex);
             }
         }
 
@@ -2623,7 +2625,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             prefetched.Dispose();
         }
 
-        _logger?.LogInformation("Consumer closed gracefully");
+        LogConsumerClosed();
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> GetOffsetsForTimesAsync(
@@ -2646,7 +2648,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
             if (leader is null)
             {
-                _logger?.LogWarning("No leader found for {Topic}-{Partition}", tpt.Topic, tpt.Partition);
+                LogNoLeaderFound(tpt.Topic, tpt.Partition);
                 continue;
             }
 
@@ -2741,9 +2743,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
                 if (partitionResponse.ErrorCode != ErrorCode.None)
                 {
-                    _logger?.LogWarning(
-                        "ListOffsets error for {Topic}-{Partition}: {Error}",
-                        topicName, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
+                    LogListOffsetsError(topicName, partitionResponse.PartitionIndex, partitionResponse.ErrorCode);
                     results[tp] = -1;
                     continue;
                 }
@@ -2760,6 +2760,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             return;
 
         _disposed = true;
+        LogConsumerDisposing();
 
         // If not already closed, perform graceful close first
         // Use 30 seconds to allow CommitAsync (which may take up to RequestTimeoutMs=30s) to complete
@@ -2838,4 +2839,86 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
     }
+
+    #region Logging
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Error in prefetch loop")]
+    private partial void LogPrefetchLoopError(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Fatal error prefetching from broker {BrokerId}")]
+    private partial void LogFatalPrefetchError(Exception exception, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Failed to prefetch from broker {BrokerId}")]
+    private partial void LogPrefetchFromBrokerError(Exception exception, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "OffsetOutOfRange for {Topic}-{Partition}, resetting to {Reset}")]
+    private partial void LogOffsetOutOfRangeReset(string topic, int partition, string reset);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "NotLeaderOrFollower for {Topic}-{Partition}, will refresh metadata")]
+    private partial void LogNotLeaderOrFollower(string topic, int partition);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Prefetch error for {Topic}-{Partition}: {Error}")]
+    private partial void LogPrefetchError(string topic, int partition, ErrorCode error);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Pattern subscription matched {Count} topics: {Topics}")]
+    private partial void LogPatternSubscriptionMatched(int count, string topics);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Failed to fetch from broker {BrokerId}")]
+    private partial void LogFetchFromBrokerError(Exception exception, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Fetch error for {Topic}-{Partition}: {Error}")]
+    private partial void LogFetchError(string topic, int partition, ErrorCode error);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Consumer interceptor {Interceptor} OnConsume threw an exception")]
+    private partial void LogInterceptorOnConsumeError(Exception exception, string interceptor);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Consumer interceptor {Interceptor} OnCommit threw an exception")]
+    private partial void LogInterceptorOnCommitError(Exception exception, string interceptor);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Auto-commit failed, retrying once")]
+    private partial void LogAutoCommitFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Closing consumer gracefully")]
+    private partial void LogClosingConsumer();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Committed pending offsets during close")]
+    private partial void LogCommittedPendingOffsets();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to commit offsets during close (attempt {Attempt}/3)")]
+    private partial void LogCommitOffsetsDuringCloseFailed(Exception exception, int attempt);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Left consumer group during close")]
+    private partial void LogLeftConsumerGroup();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to leave group during close")]
+    private partial void LogLeaveGroupFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Consumer closed gracefully")]
+    private partial void LogConsumerClosed();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "No leader found for {Topic}-{Partition}")]
+    private partial void LogNoLeaderFound(string topic, int partition);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ListOffsets error for {Topic}-{Partition}: {Error}")]
+    private partial void LogListOffsetsError(string topic, int partition, ErrorCode error);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Prefetch paused: memory limit reached ({CurrentBytes}/{MaxBytes} bytes)")]
+    private partial void LogPrefetchMemoryLimitPaused(long currentBytes, long maxBytes);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Assignment change: {Count} partitions added")]
+    private partial void LogPartitionsAdded(int count);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Assignment change: {Count} partitions removed")]
+    private partial void LogPartitionsRemoved(int count);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Committing offsets for {PartitionCount} partitions")]
+    private partial void LogCommitStarted(int partitionCount);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Seeking {Topic}-{Partition} to offset {Offset}")]
+    private partial void LogSeek(string topic, int partition, long offset);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Consumer disposing: beginning shutdown")]
+    private partial void LogConsumerDisposing();
+
+    #endregion
 }

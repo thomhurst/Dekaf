@@ -11,13 +11,13 @@ namespace Dekaf.Consumer;
 /// <summary>
 /// Handles consumer group coordination.
 /// </summary>
-public sealed class ConsumerCoordinator : IAsyncDisposable
+public sealed partial class ConsumerCoordinator : IAsyncDisposable
 {
     private readonly ConsumerOptions _options;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
     private readonly IRebalanceListener? _rebalanceListener;
-    private readonly ILogger<ConsumerCoordinator>? _logger;
+    private readonly ILogger _logger;
 
     private int _coordinatorId = -1;
     private string? _memberId;
@@ -53,7 +53,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         _connectionPool = connectionPool;
         _metadataManager = metadataManager;
         _rebalanceListener = options.RebalanceListener;
-        _logger = logger;
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConsumerCoordinator>.Instance;
     }
 
     public string? MemberId => _memberId;
@@ -83,6 +83,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             if (_state == CoordinatorState.Stable)
                 return;
 
+            LogEnsureActiveGroupStarted(_options.GroupId!, _state);
             var deadline = DateTime.UtcNow.AddMilliseconds(_options.RebalanceTimeoutMs);
             var retryDelayMs = 200;
 
@@ -104,10 +105,12 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
 
                     // Join group
                     _state = CoordinatorState.Joining;
+                    LogCoordinatorStateTransition(CoordinatorState.Joining);
                     await JoinGroupAsync(topics, cancellationToken).ConfigureAwait(false);
 
                     // Sync group - returns partition changes for rebalance listener
                     _state = CoordinatorState.Syncing;
+                    LogCoordinatorStateTransition(CoordinatorState.Syncing);
                     syncResult = await SyncGroupAsync(topics, cancellationToken).ConfigureAwait(false);
 
                     _state = CoordinatorState.Stable;
@@ -115,16 +118,12 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                     // Start heartbeat
                     StartHeartbeat();
 
-                    _logger?.LogInformation(
-                        "Joined group {GroupId} as member {MemberId} (generation {Generation})",
-                        _options.GroupId, _memberId, _generationId);
+                    LogJoinedGroup(_options.GroupId!, _memberId!, _generationId);
                 }
                 catch (Errors.GroupException ex) when (IsRetriableCoordinatorError(ex.ErrorCode))
                 {
                     // Coordinator has changed, is unavailable, or still loading - mark unknown and retry
-                    _logger?.LogDebug(
-                        "Retriable coordinator error {ErrorCode}, will re-discover coordinator",
-                        ex.ErrorCode);
+                    LogRetriableCoordinatorError(ex.ErrorCode);
 
                     MarkCoordinatorUnknown();
 
@@ -134,8 +133,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                 catch (ObjectDisposedException)
                 {
                     // Connection was disposed (e.g., broker closed it or receive timeout) - reconnect
-                    _logger?.LogDebug(
-                        "Coordinator connection disposed, will re-discover coordinator");
+                    LogCoordinatorConnectionDisposed();
 
                     MarkCoordinatorUnknown();
 
@@ -156,11 +154,13 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         {
             if (syncResult.Revoked is { Count: > 0 })
             {
+                LogRebalanceListenerCall("OnPartitionsRevoked", syncResult.Revoked.Count);
                 await _rebalanceListener.OnPartitionsRevokedAsync(syncResult.Revoked, cancellationToken).ConfigureAwait(false);
             }
 
             if (syncResult.Assigned is { Count: > 0 })
             {
+                LogRebalanceListenerCall("OnPartitionsAssigned", syncResult.Assigned.Count);
                 await _rebalanceListener.OnPartitionsAssignedAsync(syncResult.Assigned, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -255,9 +255,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             if (errorCode == ErrorCode.CoordinatorNotAvailable ||
                 errorCode == ErrorCode.CoordinatorLoadInProgress)
             {
-                _logger?.LogDebug(
-                    "Coordinator not available (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
-                    attempt + 1, maxRetries, retryDelayMs);
+                LogCoordinatorNotAvailableRetry(attempt + 1, maxRetries, retryDelayMs);
 
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                 retryDelayMs = Math.Min(retryDelayMs * 2, 1000); // Exponential backoff, max 1s
@@ -275,7 +273,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             _coordinatorId = nodeId;
             _connectionPool.RegisterBroker(nodeId, host, port);
 
-            _logger?.LogDebug("Found coordinator {NodeId} for group {GroupId}", _coordinatorId, _options.GroupId);
+            LogFoundCoordinator(_coordinatorId, _options.GroupId!);
             return;
         }
 
@@ -327,6 +325,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         {
             // Retry with assigned member ID
             _memberId = ((JoinGroupResponse)response).MemberId;
+            LogJoinGroupMemberIdRequired(_memberId!);
             await JoinGroupAsync(topics, cancellationToken).ConfigureAwait(false);
             return;
         }
@@ -346,9 +345,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         // Store members list if we're the leader (need it for assignment)
         _groupMembers = response.IsLeader ? response.Members : null;
 
-        _logger?.LogDebug(
-            "Joined group {GroupId}, member={MemberId}, generation={Generation}, isLeader={IsLeader}",
-            _options.GroupId, _memberId, _generationId, IsLeader);
+        LogJoinGroupResult(_options.GroupId!, _memberId!, _generationId, IsLeader);
     }
 
     /// <summary>
@@ -370,7 +367,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         {
             assignments = await ComputeAssignmentsAsync(topics, _groupMembers, cancellationToken)
                 .ConfigureAwait(false);
-            _logger?.LogDebug("Leader computed {Count} assignments", assignments.Length);
+            LogLeaderComputedAssignments(assignments.Length);
         }
 
         var request = new SyncGroupRequest
@@ -407,7 +404,11 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         var oldAssignment = _assignedPartitions;
         _assignedPartitions = ParseAssignment(response.Assignment);
 
-        _logger?.LogDebug("Received assignment: {Partitions}", string.Join(", ", _assignedPartitions));
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            var partitions = string.Join(", ", _assignedPartitions);
+            LogReceivedAssignment(partitions);
+        }
 
         // Compute revoked and assigned partitions for rebalance listener
         // Return them to caller so listener can be called OUTSIDE the lock
@@ -443,6 +444,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
 
     private void StartHeartbeat()
     {
+        LogHeartbeatStarted(_options.HeartbeatIntervalMs);
         _heartbeatCts?.Cancel();
         _heartbeatCts = new CancellationTokenSource();
         _heartbeatTask = HeartbeatLoopAsync(_heartbeatCts.Token);
@@ -463,7 +465,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Heartbeat failed");
+                LogHeartbeatFailed(ex);
 
                 if (ex is Errors.GroupException ge && IsRejoinNeededError(ge.ErrorCode))
                 {
@@ -526,6 +528,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         if (string.IsNullOrEmpty(_options.GroupId))
             return;
 
+        LogCommitOffsetsStarted(_options.GroupId!);
         await _commitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -862,9 +865,11 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
                 Assignment = assignmentBytes
             });
 
-            _logger?.LogDebug(
-                "Assigned {Count} partitions to member {MemberId}: {Partitions}",
-                partitions.Count, memberId, string.Join(", ", partitions));
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                var partitionList = string.Join(", ", partitions);
+                LogAssignedPartitionsToMember(partitions.Count, memberId, partitionList);
+            }
         }
 
         return result.ToArray();
@@ -1002,11 +1007,11 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
 
             if (response.ErrorCode != ErrorCode.None)
             {
-                _logger?.LogWarning("LeaveGroup failed with error: {ErrorCode}", response.ErrorCode);
+                LogLeaveGroupFailed(response.ErrorCode);
             }
             else
             {
-                _logger?.LogDebug("Successfully left group {GroupId}", _options.GroupId);
+                LogSuccessfullyLeftGroup(_options.GroupId!);
             }
 
             // Reset state after leaving
@@ -1017,7 +1022,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Failed to send LeaveGroup request");
+            LogLeaveGroupRequestFailed(ex);
             // Still reset state even if the request failed
             _memberId = null;
             _generationId = -1;
@@ -1056,6 +1061,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             return;
 
         _disposed = true;
+        LogCoordinatorDisposing();
 
         _heartbeatCts?.Cancel();
 
@@ -1076,6 +1082,70 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         _commitLock.Dispose();
         _fetchLock.Dispose();
     }
+
+    #region Logging
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Joined group {GroupId} as member {MemberId} (generation {Generation})")]
+    private partial void LogJoinedGroup(string groupId, string memberId, int generation);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Retriable coordinator error {ErrorCode}, will re-discover coordinator")]
+    private partial void LogRetriableCoordinatorError(ErrorCode? errorCode);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator connection disposed, will re-discover coordinator")]
+    private partial void LogCoordinatorConnectionDisposed();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator not available (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms")]
+    private partial void LogCoordinatorNotAvailableRetry(int attempt, int maxRetries, int delay);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Found coordinator {NodeId} for group {GroupId}")]
+    private partial void LogFoundCoordinator(int nodeId, string groupId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Joined group {GroupId}, member={MemberId}, generation={Generation}, isLeader={IsLeader}")]
+    private partial void LogJoinGroupResult(string groupId, string memberId, int generation, bool isLeader);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Leader computed {Count} assignments")]
+    private partial void LogLeaderComputedAssignments(int count);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Received assignment: {Partitions}")]
+    private partial void LogReceivedAssignment(string partitions);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Heartbeat failed")]
+    private partial void LogHeartbeatFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Assigned {Count} partitions to member {MemberId}: {Partitions}")]
+    private partial void LogAssignedPartitionsToMember(int count, string memberId, string partitions);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "LeaveGroup failed with error: {ErrorCode}")]
+    private partial void LogLeaveGroupFailed(ErrorCode errorCode);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Successfully left group {GroupId}")]
+    private partial void LogSuccessfullyLeftGroup(string groupId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to send LeaveGroup request")]
+    private partial void LogLeaveGroupRequestFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "EnsureActiveGroup: group={GroupId}, current state={State}")]
+    private partial void LogEnsureActiveGroupStarted(string groupId, CoordinatorState state);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator state transition to {NewState}")]
+    private partial void LogCoordinatorStateTransition(CoordinatorState newState);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Rebalance listener {CallbackName}: {PartitionCount} partitions")]
+    private partial void LogRebalanceListenerCall(string callbackName, int partitionCount);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "JoinGroup: MemberIdRequired, assigned memberId={MemberId}")]
+    private partial void LogJoinGroupMemberIdRequired(string memberId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Heartbeat loop started with interval {IntervalMs}ms")]
+    private partial void LogHeartbeatStarted(int intervalMs);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "CommitOffsets started for group {GroupId}")]
+    private partial void LogCommitOffsetsStarted(string groupId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator disposing")]
+    private partial void LogCoordinatorDisposing();
+
+    #endregion
 }
 
 /// <summary>
