@@ -109,7 +109,7 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         var rentedBuffer = ArrayPool<byte>.Shared.Rent(payloadLength);
         try
         {
-            data.Slice(5).CopyTo(rentedBuffer);
+            data.Slice(5, payloadLength).CopyTo(rentedBuffer);
 
             using var memoryStream = new PooledMemoryStream(rentedBuffer, payloadLength);
             var decoder = new BinaryDecoder(memoryStream);
