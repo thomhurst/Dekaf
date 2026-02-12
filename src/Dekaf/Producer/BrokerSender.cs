@@ -189,6 +189,7 @@ internal sealed class BrokerSender : IAsyncDisposable
 
         // Reusable collections for coalescing (single-threaded, no contention)
         var coalescedPartitions = new HashSet<TopicPartition>();
+        var channelBuffer = new List<ReadyBatch>();
 
         // Persistent carry-over list across iterations. Kept LOCAL instead of re-enqueued to the
         // channel to preserve batch ordering. Re-enqueueing puts batches at the back of the channel,
@@ -260,9 +261,11 @@ internal sealed class BrokerSender : IAsyncDisposable
                 var coalescedBatches = ArrayPool<ReadyBatch>.Shared.Rent(maxCoalesce);
 
                 // Scan carry-over: retry batches unmute and coalesce; muted/duplicate carry over.
+                // Sort first to ensure retry batches are processed in original sequence order.
                 var hadCarryOver = pendingCarryOver is { Count: > 0 };
                 if (hadCarryOver)
                 {
+                    SortBatchesByPartitionAndSequence(pendingCarryOver!);
                     for (var i = 0; i < pendingCarryOver!.Count; i++)
                     {
                         CoalesceBatch(pendingCarryOver[i], coalescedBatches, ref coalescedCount,
@@ -282,11 +285,22 @@ internal sealed class BrokerSender : IAsyncDisposable
                 // unbounded growth and O(n²) scanning.
                 if (!hadCarryOver || coalescedCount == 0)
                 {
+                    channelBuffer.Clear();
                     var channelReads = 0;
                     while (channelReads < maxCoalesce && channelReader.TryRead(out var channelBatch))
                     {
                         channelReads++;
-                        CoalesceBatch(channelBatch, coalescedBatches, ref coalescedCount,
+                        channelBuffer.Add(channelBatch);
+                    }
+
+                    // Sort to ensure retry batches are in original sequence order.
+                    // When multiple in-flight batches fail (e.g., OOSN), their concurrent
+                    // ScheduleRetryAsync tasks may re-enqueue them in non-deterministic order.
+                    SortBatchesByPartitionAndSequence(channelBuffer);
+
+                    for (var i = 0; i < channelBuffer.Count; i++)
+                    {
+                        CoalesceBatch(channelBuffer[i], coalescedBatches, ref coalescedCount,
                             coalescedPartitions, ref newCarryOver);
                     }
                 }
@@ -418,6 +432,67 @@ internal sealed class BrokerSender : IAsyncDisposable
 
         coalescedBatches[coalescedCount] = batch;
         coalescedCount++;
+    }
+
+    /// <summary>
+    /// Sorts batches by (TopicPartition, BaseSequence) to ensure retry batches are processed
+    /// in their original sequence order. When multiple in-flight batches for the same partition
+    /// fail (e.g., all get OutOfOrderSequenceNumber), their concurrent ScheduleRetryAsync tasks
+    /// may re-enqueue them in non-deterministic order due to async leader resolution. This sort
+    /// restores the original send order so the send loop re-sends them correctly.
+    ///
+    /// Fresh batches (BaseSequence &lt; 0, not yet assigned) are placed after retry batches for
+    /// the same partition — they were produced later. Among fresh batches, the original order
+    /// is preserved via a stable sort using the original index as tiebreaker.
+    ///
+    /// No-op in the happy path: when no retry batches exist, returns immediately.
+    /// </summary>
+    private static void SortBatchesByPartitionAndSequence(List<ReadyBatch> batches)
+    {
+        if (batches.Count <= 1) return;
+
+        // Quick check: skip sort entirely when no retry batches (happy path)
+        var hasRetry = false;
+        for (var i = 0; i < batches.Count; i++)
+        {
+            if (batches[i].RecordBatch.BaseSequence >= 0)
+            {
+                hasRetry = true;
+                break;
+            }
+        }
+
+        if (!hasRetry) return;
+
+        // Stable sort using (batch, originalIndex) pairs. List<T>.Sort() is unstable, so we
+        // include the original index as a tiebreaker to preserve relative order of fresh batches.
+        var indexed = new (ReadyBatch Batch, int Index)[batches.Count];
+        for (var i = 0; i < batches.Count; i++)
+            indexed[i] = (batches[i], i);
+
+        Array.Sort(indexed, static (a, b) =>
+        {
+            var topicCmp = string.Compare(
+                a.Batch.TopicPartition.Topic, b.Batch.TopicPartition.Topic, StringComparison.Ordinal);
+            if (topicCmp != 0) return topicCmp;
+
+            var partCmp = a.Batch.TopicPartition.Partition.CompareTo(b.Batch.TopicPartition.Partition);
+            if (partCmp != 0) return partCmp;
+
+            // Within same partition: retry batches (BaseSequence >= 0) before fresh (< 0)
+            var aRetry = a.Batch.RecordBatch.BaseSequence >= 0;
+            var bRetry = b.Batch.RecordBatch.BaseSequence >= 0;
+            if (aRetry != bRetry) return aRetry ? -1 : 1;
+
+            // Among retry batches: sort by BaseSequence (original send order)
+            if (aRetry) return a.Batch.RecordBatch.BaseSequence.CompareTo(b.Batch.RecordBatch.BaseSequence);
+
+            // Among fresh batches: preserve original order
+            return a.Index.CompareTo(b.Index);
+        });
+
+        for (var i = 0; i < batches.Count; i++)
+            batches[i] = indexed[i].Batch;
     }
 
     /// <summary>
