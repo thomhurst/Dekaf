@@ -17,7 +17,7 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
     /// growth stays under reasonable bounds.
     /// </summary>
     [Test]
-    [NotInParallel("MemoryMeasurement")]
+    [NotInParallel]
     public async Task SustainedLoad_DoesNotCauseUnboundedMemoryGrowth()
     {
         // Arrange
@@ -122,7 +122,7 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
     /// Sends messages and verifies they complete within a reasonable time.
     /// </summary>
     [Test]
-    [NotInParallel("MemoryMeasurement")]
+    [NotInParallel]
     public async Task BufferedBytes_StaysWithinReasonableBounds_UnderLoad()
     {
         // Arrange
