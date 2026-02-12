@@ -149,7 +149,6 @@ internal sealed class BrokerSender : IAsyncDisposable
         if (!_batchChannel.Writer.TryWrite(batch))
         {
             // Channel is completed (disposal in progress) — fail the batch.
-            // Must complete inflight entry so successors in WaitForPredecessorAsync don't hang.
             // If the batch is a retry, unmute its partition.
             if (batch.IsRetry)
             {
@@ -335,7 +334,6 @@ internal sealed class BrokerSender : IAsyncDisposable
         finally
         {
             // Fail any carry-over batches that couldn't be sent.
-            // Must complete inflight entries so successors in WaitForPredecessorAsync don't hang.
             if (pendingCarryOver is { Count: > 0 })
             {
                 foreach (var batch in pendingCarryOver)
@@ -427,29 +425,38 @@ internal sealed class BrokerSender : IAsyncDisposable
     {
         try
         {
-            // Lazy epoch check: batches sealed in the channel before an epoch bump have stale
-            // producer epoch/sequence. Rewrite them before sending. The epoch comparison is a
-            // short compare (essentially free) — the rewrite branch only executes during recovery.
-            if (_getCurrentEpoch is not null)
+            // Assign sequences at send time (Java Kafka Sender pattern).
+            // All sequence assignment happens here in the single-threaded send loop,
+            // eliminating the race between the accumulator's seal thread and the send
+            // loop during epoch bump recovery. Previously, sequences were assigned during
+            // PartitionBatch.Seal() on the producer thread, which raced with
+            // ResetSequenceNumbers() called inside BumpEpochAsync — both threads called
+            // GetAndIncrementSequence on the same shared counter, causing sequence
+            // conflicts that led to OutOfOrderSequenceNumber errors.
             {
-                var currentEpoch = _getCurrentEpoch();
+                var currentEpoch = _getCurrentEpoch?.Invoke() ?? (short)-1;
+                var currentPid = currentEpoch >= 0 ? _accumulator.ProducerId : -1L;
+
                 for (var i = 0; i < count; i++)
                 {
                     var batch = batches[i];
-                    var batchEpoch = batch.RecordBatch.ProducerEpoch;
+                    if (batch.RecordBatch.ProducerId < 0)
+                        continue; // Non-idempotent batch — no sequence tracking
 
-                    if (batchEpoch >= 0 && batchEpoch != currentEpoch)
+                    var tp = batch.TopicPartition;
+                    var recordCount = batch.RecordBatch.Records.Count;
+                    var isStaleEpoch = currentEpoch >= 0
+                        && batch.RecordBatch.ProducerEpoch >= 0
+                        && batch.RecordBatch.ProducerEpoch != currentEpoch;
+
+                    if (isStaleEpoch)
                     {
-                        // Stale batch — rewrite with current epoch and fresh sequence
+                        // Stale epoch: complete old inflight, assign fresh sequence, update epoch/PID
                         CompleteInflightEntry(batch);
-
-                        var tp = batch.TopicPartition;
-                        var recordCount = batch.RecordBatch.Records.Count;
                         var newSeq = _accumulator.GetAndIncrementSequence(tp, recordCount);
-                        // Read producerId from accumulator (updated atomically with epoch)
-                        var currentPid = _accumulator.ProducerId;
-                        batch.RewriteRecordBatch(
-                            batch.RecordBatch.WithProducerState(currentPid, currentEpoch, newSeq));
+                        batch.RecordBatch.ProducerId = currentPid;
+                        batch.RecordBatch.ProducerEpoch = currentEpoch;
+                        batch.RecordBatch.BaseSequence = newSeq;
 
                         // Re-register with inflight tracker
                         if (_inflightTracker is not null)
@@ -457,12 +464,19 @@ internal sealed class BrokerSender : IAsyncDisposable
                             batch.InflightEntry = _inflightTracker.Register(tp, newSeq, recordCount);
                         }
                     }
+                    else if (batch.RecordBatch.BaseSequence < 0)
+                    {
+                        // Fresh batch: assign sequence (epoch/PID are already correct)
+                        batch.RecordBatch.BaseSequence =
+                            _accumulator.GetAndIncrementSequence(tp, recordCount);
+                    }
+                    // else: retry batch with correct epoch — keeps its original sequence
                 }
             }
 
             // Register fresh batches with inflight tracker at send time (not drain time).
-            // Retry batches already have entries from ScheduleRetryAsync; stale batches were
-            // re-registered above. Only fresh batches (InflightEntry == null) need registration.
+            // Stale batches were re-registered above. Retry batches with correct epoch
+            // keep their existing inflight entries. Only batches without entries need registration.
             if (_inflightTracker is not null)
             {
                 for (var i = 0; i < count; i++)

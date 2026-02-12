@@ -3611,11 +3611,12 @@ internal sealed class PartitionBatch
                 attributes |= RecordBatchAttributes.IsTransactional;
             }
 
-            // For idempotent/transactional records, assign a monotonically increasing base sequence.
-            // Sequence numbers are used by the broker to detect duplicates and enforce ordering.
-            var baseSequence = _producerId >= 0 && _accumulator is not null
-                ? _accumulator.GetAndIncrementSequence(_topicPartition, _recordCount)
-                : -1;
+            // Sequences are assigned by BrokerSender.SendCoalescedAsync at send time.
+            // This eliminates a race between the accumulator's seal thread and the
+            // send loop's epoch bump recovery (ResetSequenceNumbers) that caused
+            // OutOfOrderSequenceNumber errors when both threads called
+            // GetAndIncrementSequence on the same shared counter.
+            var baseSequence = -1;
 
             var batch = new RecordBatch
             {

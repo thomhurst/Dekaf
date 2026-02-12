@@ -87,9 +87,9 @@ public sealed class RecordBatch : IDisposable
     public int LastOffsetDelta { get; init; }
     public long BaseTimestamp { get; init; }
     public long MaxTimestamp { get; init; }
-    public long ProducerId { get; init; } = -1;
-    public short ProducerEpoch { get; init; } = -1;
-    public int BaseSequence { get; init; } = -1;
+    public long ProducerId { get; set; } = -1;
+    public short ProducerEpoch { get; set; } = -1;
+    public int BaseSequence { get; set; } = -1;
 
     /// <summary>
     /// The records in this batch. For batches created via Read(), records are parsed lazily
