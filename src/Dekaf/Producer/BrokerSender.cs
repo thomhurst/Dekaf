@@ -66,6 +66,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly List<PendingResponse> _pendingResponses = new();
     private TaskCompletionSource? _responseReadySignal;
 
+    // Batches that failed during SendCoalescedAsync (connection error, etc.) and need retry.
+    // Set by the catch block, consumed by the send loop at the top of each iteration.
+    // Single-threaded: only accessed by the send loop.
+    private List<ReadyBatch>? _sendFailedRetries;
+
     // Non-blocking in-flight request limiter (replaces SemaphoreSlim).
     // Aligned with Java Kafka's InFlightRequests.canSendMore(): the send loop checks
     // capacity before sending, and waits for a signal when at max. No blocking primitives.
@@ -227,6 +232,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 cancellationToken.ThrowIfCancellationRequested();
 
                 LogSendLoopIteration(_brokerId, pendingCarryOver?.Count ?? 0, _pendingResponses.Count);
+
+                // Pick up batches that failed during SendCoalescedAsync (connection errors, etc.)
+                // and need retry. These are treated as carry-over for the next coalescing pass.
+                if (_sendFailedRetries is { Count: > 0 })
+                {
+                    pendingCarryOver ??= [];
+                    pendingCarryOver.AddRange(_sendFailedRetries);
+                    _sendFailedRetries = null;
+                }
 
                 // Process completed responses inline (like Java's NetworkClient.poll()).
                 // Retry batches are added to pendingCarryOver in deterministic send order.
@@ -580,18 +594,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             if (pending.ResponseTask.IsFaulted || pending.ResponseTask.IsCanceled)
             {
-                // Entire request failed — fail all batches
+                // Entire request failed (connection drop, timeout, etc.) — retry all batches.
+                // Aligned with Java Kafka's Sender: request-level failures cause reenqueue,
+                // not permanent failure. Batches retry until DeliveryTimeoutMs expires.
                 var ex = pending.ResponseTask.Exception?.InnerException
                     ?? new OperationCanceledException();
                 LogResponseFailed(ex, _brokerId);
+
+                // Invalidate the pinned connection since it likely failed
+                _pinnedConnection = null;
 
                 for (var j = 0; j < pending.Count; j++)
                 {
                     if (pending.Batches[j] is not null)
                     {
-                        if (_guaranteeMessageOrder)
-                            UnmutePartition(pending.Batches[j].TopicPartition);
-                        FailAndCleanupBatch(pending.Batches[j], ex);
+                        HandleRetriableBatch(pending.Batches[j], ErrorCode.NetworkException,
+                            ref pendingCarryOver, cancellationToken);
                     }
                 }
 
@@ -969,13 +987,49 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }, self, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
         }
-        catch (Exception ex)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Send failed — release everything
+            // Shutdown — fail batches permanently (no point retrying)
             ReleaseInFlightSlot();
             for (var i = 0; i < count; i++)
+                FailAndCleanupBatch(batches[i], new ObjectDisposedException(nameof(BrokerSender)));
+
+            ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+        }
+        catch (Exception ex)
+        {
+            // Send failed (connection error, etc.) — retry batches instead of permanently failing.
+            // Aligned with Java Kafka's Sender: transient failures cause reenqueue for retry.
+            ReleaseInFlightSlot();
+            _pinnedConnection = null; // Invalidate broken connection
+            LogResponseFailed(ex, _brokerId);
+
+            _sendFailedRetries ??= [];
+            for (var i = 0; i < count; i++)
             {
-                FailAndCleanupBatch(batches[i], ex);
+                var batch = batches[i];
+
+                // Check delivery deadline before retrying
+                var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
+                    (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+
+                if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
+                {
+                    if (_guaranteeMessageOrder)
+                        UnmutePartition(batch.TopicPartition);
+                    FailAndCleanupBatch(batch, new TimeoutException(
+                        $"Delivery timeout exceeded for {batch.TopicPartition}"));
+                }
+                else
+                {
+                    // Mute partition and queue for retry
+                    _mutedPartitions.TryAdd(batch.TopicPartition, 0);
+                    batch.IsRetry = true;
+                    batch.RetryNotBefore = Stopwatch.GetTimestamp() +
+                        (long)(_options.RetryBackoffMs * (Stopwatch.Frequency / 1000.0));
+                    _sendFailedRetries.Add(batch);
+                    _statisticsCollector.RecordRetry();
+                }
             }
 
             ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
