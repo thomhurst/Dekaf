@@ -10,7 +10,10 @@ using RegistrySchema = Dekaf.SchemaRegistry.Schema;
 
 namespace Dekaf.Tests.Unit.SchemaRegistry;
 
-public class AvroSerializerTests
+// Apache.Avro's Schema.Parse and PreresolvingDatumReader have thread-safety issues
+// when multiple tests parse the same schema concurrently. Serialize Avro tests.
+[NotInParallel("AvroSerialization")]
+public sealed class AvroSerializerTests
 {
     private const string SimpleRecordSchema = """
         {
