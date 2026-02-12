@@ -34,7 +34,7 @@ namespace Dekaf.Producer;
 ///
 /// All writes go through the send loop — there are no out-of-loop write paths.
 /// </summary>
-internal sealed class BrokerSender : IAsyncDisposable
+internal sealed partial class BrokerSender : IAsyncDisposable
 {
     private readonly int _brokerId;
     private readonly IConnectionPool _connectionPool;
@@ -48,7 +48,7 @@ internal sealed class BrokerSender : IAsyncDisposable
     private readonly Action<TopicPartition, long, DateTimeOffset, int, Exception?>? _onAcknowledgement;
     private readonly Func<short, CancellationToken, ValueTask<(long ProducerId, short ProducerEpoch)>>? _bumpEpoch;
     private readonly Func<short>? _getCurrentEpoch;
-    private readonly ILogger? _logger;
+    private readonly ILogger _logger;
 
     private readonly Channel<ReadyBatch> _batchChannel;
     private readonly Task _sendLoopTask;
@@ -142,7 +142,7 @@ internal sealed class BrokerSender : IAsyncDisposable
         _getCurrentEpoch = getCurrentEpoch;
         _rerouteBatch = rerouteBatch;
         _onAcknowledgement = onAcknowledgement;
-        _logger = logger;
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
 
         _batchChannel = Channel.CreateUnbounded<ReadyBatch>(new UnboundedChannelOptions
         {
@@ -287,9 +287,7 @@ internal sealed class BrokerSender : IAsyncDisposable
                     }
                     catch (Exception ex)
                     {
-                        _logger?.LogWarning(ex,
-                            "[BrokerSender] Epoch bump failed for stale epoch {Epoch}, will retry next iteration",
-                            staleEpoch);
+                        LogEpochBumpFailed(ex, staleEpoch);
                         // Flag stays set — retry next iteration.
                     }
                 }
@@ -431,7 +429,7 @@ internal sealed class BrokerSender : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _logger?.LogError(ex, "BrokerSender[{BrokerId}] send loop failed", _brokerId);
+            LogSendLoopFailed(ex, _brokerId);
         }
         finally
         {
@@ -565,7 +563,7 @@ internal sealed class BrokerSender : IAsyncDisposable
                 // Entire request failed — fail all batches
                 var ex = pending.ResponseTask.Exception?.InnerException
                     ?? new OperationCanceledException();
-                _logger?.LogError(ex, "BrokerSender[{BrokerId}] response failed", _brokerId);
+                LogResponseFailed(ex, _brokerId);
 
                 for (var j = 0; j < pending.Count; j++)
                 {
@@ -607,9 +605,7 @@ internal sealed class BrokerSender : IAsyncDisposable
                 if (partitionResponse is null)
                 {
                     // No response — treat as retriable
-                    _logger?.LogWarning(
-                        "[BrokerSender] No response for {Topic}-{Partition}",
-                        expectedTopic, expectedPartition);
+                    LogNoResponseForPartition(expectedTopic, expectedPartition);
                     HandleRetriableBatch(batch, ErrorCode.NetworkException,
                         ref pendingCarryOver, cancellationToken);
                     pending.Batches[j] = null!;
@@ -618,9 +614,7 @@ internal sealed class BrokerSender : IAsyncDisposable
 
                 if (partitionResponse.ErrorCode == ErrorCode.DuplicateSequenceNumber)
                 {
-                    _logger?.LogDebug(
-                        "[BrokerSender] DuplicateSequenceNumber for {Topic}-{Partition} at offset {Offset}",
-                        expectedTopic, expectedPartition, partitionResponse.BaseOffset);
+                    LogDuplicateSequenceNumber(expectedTopic, expectedPartition, partitionResponse.BaseOffset);
                     // Treat as success — fall through
                 }
                 else if (partitionResponse.ErrorCode != ErrorCode.None)
@@ -630,9 +624,7 @@ internal sealed class BrokerSender : IAsyncDisposable
                         || partitionResponse.ErrorCode == ErrorCode.InvalidProducerEpoch
                         || partitionResponse.ErrorCode == ErrorCode.UnknownProducerId)
                     {
-                        _logger?.LogDebug(
-                            "Retriable error {ErrorCode} for {Topic}-{Partition} seq={Seq} count={Count} epoch={Epoch} pid={Pid}",
-                            partitionResponse.ErrorCode, expectedTopic, expectedPartition,
+                        LogRetriableError(partitionResponse.ErrorCode, expectedTopic, expectedPartition,
                             batch.RecordBatch.BaseSequence, batch.RecordBatch.Records.Count,
                             batch.RecordBatch.ProducerEpoch, batch.RecordBatch.ProducerId);
 
@@ -720,9 +712,7 @@ internal sealed class BrokerSender : IAsyncDisposable
 
         if (isEpochBumpError && _bumpEpoch is not null)
         {
-            _logger?.LogDebug(
-                "[BrokerSender] {ErrorCode} for {Topic}-{Partition} seq={Seq}, signaling epoch bump to send loop",
-                errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
+            LogEpochBumpSignaled(errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
                 batch.RecordBatch.BaseSequence);
 
             // Signal the send loop to bump the epoch
@@ -737,9 +727,7 @@ internal sealed class BrokerSender : IAsyncDisposable
             && _inflightTracker is not null)
         {
             // Transactional producer — no epoch bump
-            _logger?.LogDebug(
-                "[BrokerSender] OOSN for {Topic}-{Partition} seq={Seq}, re-enqueueing (transactional)",
-                batch.TopicPartition.Topic, batch.TopicPartition.Partition,
+            LogOosnTransactionalReenqueue(batch.TopicPartition.Topic, batch.TopicPartition.Partition,
                 batch.RecordBatch.BaseSequence);
 
             CompleteInflightEntry(batch);
@@ -747,9 +735,7 @@ internal sealed class BrokerSender : IAsyncDisposable
         }
         else
         {
-            _logger?.LogDebug(
-                "[BrokerSender] Retriable error {ErrorCode} for {Topic}-{Partition}, retrying after {BackoffMs}ms",
-                errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
+            LogRetriableErrorWithBackoff(errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
                 _options.RetryBackoffMs);
 
             // Fire-and-forget metadata refresh for leader changes
@@ -1151,4 +1137,35 @@ internal sealed class BrokerSender : IAsyncDisposable
 
         _cts.Dispose();
     }
+
+    #region Logging
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "[BrokerSender] Epoch bump failed for stale epoch {Epoch}, will retry next iteration")]
+    private partial void LogEpochBumpFailed(Exception ex, int epoch);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "BrokerSender[{BrokerId}] send loop failed")]
+    private partial void LogSendLoopFailed(Exception ex, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "BrokerSender[{BrokerId}] response failed")]
+    private partial void LogResponseFailed(Exception ex, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "[BrokerSender] No response for {Topic}-{Partition}")]
+    private partial void LogNoResponseForPartition(string topic, int partition);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] DuplicateSequenceNumber for {Topic}-{Partition} at offset {Offset}")]
+    private partial void LogDuplicateSequenceNumber(string topic, int partition, long offset);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Retriable error {ErrorCode} for {Topic}-{Partition} seq={Seq} count={Count} epoch={Epoch} pid={Pid}")]
+    private partial void LogRetriableError(ErrorCode errorCode, string topic, int partition, int seq, int count, short epoch, long pid);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] {ErrorCode} for {Topic}-{Partition} seq={Seq}, signaling epoch bump to send loop")]
+    private partial void LogEpochBumpSignaled(ErrorCode errorCode, string topic, int partition, int seq);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] OOSN for {Topic}-{Partition} seq={Seq}, re-enqueueing (transactional)")]
+    private partial void LogOosnTransactionalReenqueue(string topic, int partition, int seq);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "[BrokerSender] Retriable error {ErrorCode} for {Topic}-{Partition}, retrying after {BackoffMs}ms")]
+    private partial void LogRetriableErrorWithBackoff(ErrorCode errorCode, string topic, int partition, int backoffMs);
+
+    #endregion
 }

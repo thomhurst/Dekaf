@@ -11,11 +11,11 @@ namespace Dekaf.Metadata;
 /// <summary>
 /// Manages cluster metadata with automatic refresh.
 /// </summary>
-public sealed class MetadataManager : IAsyncDisposable
+public sealed partial class MetadataManager : IAsyncDisposable
 {
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataOptions _options;
-    private readonly ILogger<MetadataManager>? _logger;
+    private readonly ILogger _logger;
     private readonly ClusterMetadata _metadata = new();
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private readonly List<(string Host, int Port)> _bootstrapEndpoints;
@@ -42,7 +42,7 @@ public sealed class MetadataManager : IAsyncDisposable
     {
         _connectionPool = connectionPool;
         _options = options ?? new MetadataOptions();
-        _logger = logger;
+        _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<MetadataManager>.Instance;
 
         // Pre-parse bootstrap servers to avoid allocation in hot path
         _bootstrapEndpoints = new List<(string Host, int Port)>();
@@ -121,8 +121,7 @@ public sealed class MetadataManager : IAsyncDisposable
             }
             catch (Exception ex) when (attempt < _options.MaxInitRetries && !cancellationToken.IsCancellationRequested)
             {
-                _logger?.LogWarning(ex, "Metadata initialization attempt {Attempt} failed, retrying in {BackoffMs}ms",
-                    attempt + 1, backoffMs);
+                LogMetadataInitializationFailed(ex, attempt + 1, backoffMs);
                 await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false);
                 backoffMs = Math.Min(backoffMs * 2, _options.RetryBackoffMaxMs);
             }
@@ -299,10 +298,7 @@ public sealed class MetadataManager : IAsyncDisposable
                     _connectionPool.RegisterBroker(broker.NodeId, broker.Host, broker.Port);
                 }
 
-                _logger?.LogDebug(
-                    "Refreshed metadata: {BrokerCount} brokers, {TopicCount} topics",
-                    response.Brokers.Count,
-                    response.Topics.Count);
+                LogMetadataRefreshed(response.Brokers.Count, response.Topics.Count);
 
                 // Success - reset the rebootstrap timer
                 ResetAllBrokersUnavailableTimestamp();
@@ -311,7 +307,7 @@ public sealed class MetadataManager : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Failed to refresh metadata from {Host}:{Port}", host, port);
+                LogMetadataRefreshFailed(ex, host, port);
                 lastException = ex;
             }
         }
@@ -341,29 +337,25 @@ public sealed class MetadataManager : IAsyncDisposable
         if (Interlocked.CompareExchange(ref _allBrokersUnavailableSince, now, 0) == 0)
         {
             // First time all brokers are unavailable - we just recorded the timestamp
-            _logger?.LogWarning("All known brokers are unavailable. Rebootstrap will trigger after {TriggerMs}ms",
-                _options.MetadataRecoveryRebootstrapTriggerMs);
+            LogAllBrokersUnavailable(_options.MetadataRecoveryRebootstrapTriggerMs);
             return false;
         }
 
         var elapsedMs = now - Interlocked.Read(ref _allBrokersUnavailableSince);
         if (elapsedMs < _options.MetadataRecoveryRebootstrapTriggerMs)
         {
-            _logger?.LogDebug(
-                "Rebootstrap not yet triggered. Elapsed: {ElapsedMs}ms, Trigger: {TriggerMs}ms",
-                elapsedMs, _options.MetadataRecoveryRebootstrapTriggerMs);
+            LogRebootstrapNotYetTriggered(elapsedMs, _options.MetadataRecoveryRebootstrapTriggerMs);
             return false;
         }
 
-        _logger?.LogInformation("Triggering rebootstrap: re-resolving bootstrap server DNS after {ElapsedMs}ms of broker unavailability",
-            elapsedMs);
+        LogRebootstrapTriggered(elapsedMs);
 
         // Re-resolve DNS for each original bootstrap server
         var newEndpoints = await ResolveBootstrapEndpointsAsync(cancellationToken).ConfigureAwait(false);
 
         if (newEndpoints.Count == 0)
         {
-            _logger?.LogWarning("Rebootstrap DNS resolution returned no endpoints");
+            LogRebootstrapDnsNoEndpoints();
             return false;
         }
 
@@ -395,9 +387,7 @@ public sealed class MetadataManager : IAsyncDisposable
                     _connectionPool.RegisterBroker(broker.NodeId, broker.Host, broker.Port);
                 }
 
-                _logger?.LogInformation(
-                    "Rebootstrap successful: discovered {BrokerCount} brokers via {Host}:{Port}",
-                    response.Brokers.Count, host, port);
+                LogRebootstrapSuccessful(response.Brokers.Count, host, port);
 
                 // Success - reset the rebootstrap timer
                 ResetAllBrokersUnavailableTimestamp();
@@ -406,12 +396,12 @@ public sealed class MetadataManager : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Rebootstrap: failed to connect to resolved endpoint {Host}:{Port}", host, port);
+                LogRebootstrapEndpointFailed(ex, host, port);
                 lastException = ex;
             }
         }
 
-        _logger?.LogWarning(lastException, "Rebootstrap failed: could not connect to any resolved endpoint");
+        LogRebootstrapFailed(lastException);
         return false;
     }
 
@@ -450,12 +440,11 @@ public sealed class MetadataManager : IAsyncDisposable
                     resolved.Add(hostnameEndpoint);
                 }
 
-                _logger?.LogDebug("Rebootstrap DNS resolution for {Host}:{Port} returned {Count} addresses",
-                    host, port, addresses.Length);
+                LogRebootstrapDnsResolved(host, port, addresses.Length);
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Rebootstrap DNS resolution failed for {Host}:{Port}", host, port);
+                LogRebootstrapDnsResolutionFailed(ex, host, port);
                 // Still add the original hostname as a fallback
                 var fallbackEndpoint = (host, port);
                 if (seen.Add(fallbackEndpoint))
@@ -526,7 +515,7 @@ public sealed class MetadataManager : IAsyncDisposable
         // Set metadata version last (acts as a signal that negotiation is complete)
         _metadataApiVersion = newMetadataVersion;
 
-        _logger?.LogDebug("Negotiated Metadata API version: {Version}", _metadataApiVersion);
+        LogNegotiatedApiVersion(_metadataApiVersion);
     }
 
     internal IReadOnlyList<(string Host, int Port)> GetEndpointsToTry()
@@ -604,7 +593,7 @@ public sealed class MetadataManager : IAsyncDisposable
             catch (Exception ex)
             {
                 consecutiveFailures++;
-                _logger?.LogWarning(ex, "Background metadata refresh failed (attempt {Attempt}), continuing with existing metadata", consecutiveFailures);
+                LogBackgroundMetadataRefreshFailed(ex, consecutiveFailures);
 
                 // Brief backoff on failures to avoid hammering a failing cluster
                 // Cap at 60 seconds, existing metadata continues to be used
@@ -645,6 +634,52 @@ public sealed class MetadataManager : IAsyncDisposable
         _backgroundRefreshCts?.Dispose();
         _refreshLock.Dispose();
     }
+
+    #region Logging
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Metadata initialization attempt {Attempt} failed, retrying in {BackoffMs}ms")]
+    private partial void LogMetadataInitializationFailed(Exception ex, int attempt, int backoffMs);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Refreshed metadata: {BrokerCount} brokers, {TopicCount} topics")]
+    private partial void LogMetadataRefreshed(int brokerCount, int topicCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to refresh metadata from {Host}:{Port}")]
+    private partial void LogMetadataRefreshFailed(Exception ex, string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "All known brokers are unavailable. Rebootstrap will trigger after {TriggerMs}ms")]
+    private partial void LogAllBrokersUnavailable(int triggerMs);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Rebootstrap not yet triggered. Elapsed: {ElapsedMs}ms, Trigger: {TriggerMs}ms")]
+    private partial void LogRebootstrapNotYetTriggered(long elapsedMs, int triggerMs);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Triggering rebootstrap: re-resolving bootstrap server DNS after {ElapsedMs}ms of broker unavailability")]
+    private partial void LogRebootstrapTriggered(long elapsedMs);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Rebootstrap DNS resolution returned no endpoints")]
+    private partial void LogRebootstrapDnsNoEndpoints();
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Rebootstrap successful: discovered {BrokerCount} brokers via {Host}:{Port}")]
+    private partial void LogRebootstrapSuccessful(int brokerCount, string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Rebootstrap: failed to connect to resolved endpoint {Host}:{Port}")]
+    private partial void LogRebootstrapEndpointFailed(Exception ex, string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Rebootstrap failed: could not connect to any resolved endpoint")]
+    private partial void LogRebootstrapFailed(Exception? ex);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Rebootstrap DNS resolution for {Host}:{Port} returned {Count} addresses")]
+    private partial void LogRebootstrapDnsResolved(string host, int port, int count);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Rebootstrap DNS resolution failed for {Host}:{Port}")]
+    private partial void LogRebootstrapDnsResolutionFailed(Exception ex, string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Negotiated Metadata API version: {Version}")]
+    private partial void LogNegotiatedApiVersion(short version);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Background metadata refresh failed (attempt {Attempt}), continuing with existing metadata")]
+    private partial void LogBackgroundMetadataRefreshFailed(Exception ex, int attempt);
+
+    #endregion
 }
 
 /// <summary>

@@ -7,12 +7,12 @@ namespace Dekaf.Networking;
 /// Connection pool for managing connections to Kafka brokers.
 /// Supports multiple connections per broker for parallel request handling.
 /// </summary>
-public sealed class ConnectionPool : IConnectionPool
+public sealed partial class ConnectionPool : IConnectionPool
 {
     private readonly string? _clientId;
     private readonly ConnectionOptions _connectionOptions;
     private readonly ILoggerFactory? _loggerFactory;
-    private readonly ILogger<ConnectionPool>? _logger;
+    private readonly ILogger _logger;
     private readonly int _connectionsPerBroker;
 
     // Default BufferMemory if not configured (256 MB)
@@ -46,14 +46,14 @@ public sealed class ConnectionPool : IConnectionPool
         _clientId = clientId;
         _connectionOptions = connectionOptions ?? new ConnectionOptions();
         _loggerFactory = loggerFactory;
-        _logger = loggerFactory?.CreateLogger<ConnectionPool>();
+        _logger = loggerFactory?.CreateLogger<ConnectionPool>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
     }
 
     public void RegisterBroker(int brokerId, string host, int port)
     {
         _brokers[brokerId] = new BrokerInfo(brokerId, host, port);
-        _logger?.LogDebug("Registered broker {BrokerId} at {Host}:{Port}", brokerId, host, port);
+        LogRegisteredBroker(brokerId, host, port);
     }
 
     public async ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken cancellationToken = default)
@@ -151,7 +151,7 @@ public sealed class ConnectionPool : IConnectionPool
             _connectionGroupsById[brokerId] = connections;
             _connectionGroupsByEndpoint[new EndpointKey(brokerInfo.Host, brokerInfo.Port)] = connections;
 
-            _logger?.LogDebug("Created connection group with {Count} connections to broker {BrokerId}", _connectionsPerBroker, brokerId);
+            LogCreatedConnectionGroup(_connectionsPerBroker, brokerId);
 
             // Return the first connection
             return connections[0];
@@ -242,7 +242,7 @@ public sealed class ConnectionPool : IConnectionPool
 
         await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
-        _logger?.LogDebug("Created connection {Index} to broker {BrokerId} at {Host}:{Port}", index, brokerId, host, port);
+        LogCreatedConnectionForGroup(index, brokerId, host, port);
 
         return connection;
     }
@@ -371,7 +371,7 @@ public sealed class ConnectionPool : IConnectionPool
             _connectionsById[brokerId] = connection;
         }
 
-        _logger?.LogDebug("Created connection to broker {BrokerId} at {Host}:{Port}", brokerId, host, port);
+        LogCreatedConnection(brokerId, host, port);
 
         return connection;
     }
@@ -384,7 +384,7 @@ public sealed class ConnectionPool : IConnectionPool
             _connectionsByEndpoint.TryRemove(endpoint, out _);
             _connectionCreationTasks.TryRemove(endpoint, out _);
             await connection.DisposeAsync().ConfigureAwait(false);
-            _logger?.LogDebug("Removed connection to broker {BrokerId}", brokerId);
+            LogRemovedConnection(brokerId);
         }
     }
 
@@ -393,7 +393,7 @@ public sealed class ConnectionPool : IConnectionPool
         await _disposeLock.WaitAsync().ConfigureAwait(false);
         try
         {
-            _logger?.LogDebug("Closing all connections");
+            LogClosingAllConnections();
 
             var tasks = new List<ValueTask>();
 
@@ -417,7 +417,7 @@ public sealed class ConnectionPool : IConnectionPool
                 }
             }
 
-            _logger?.LogDebug("Disposing {Count} connections with graceful timeout", tasks.Count);
+            LogDisposingConnections(tasks.Count);
 
             // Apply graceful timeout to each connection disposal
             foreach (var task in tasks)
@@ -429,21 +429,17 @@ public sealed class ConnectionPool : IConnectionPool
                 }
                 catch (TimeoutException)
                 {
-                    _logger?.LogWarning(
-                        "Connection disposal exceeded timeout ({Timeout}ms), forcing shutdown",
-                        _connectionOptions.ConnectionTimeout.TotalMilliseconds);
+                    LogConnectionDisposalExceededTimeout(_connectionOptions.ConnectionTimeout.TotalMilliseconds);
                     // Continue disposing other connections
                 }
                 catch (OperationCanceledException)
                 {
-                    _logger?.LogWarning(
-                        "Connection disposal timed out ({Timeout}ms), forcing shutdown",
-                        _connectionOptions.ConnectionTimeout.TotalMilliseconds);
+                    LogConnectionDisposalTimedOut(_connectionOptions.ConnectionTimeout.TotalMilliseconds);
                     // Continue disposing other connections
                 }
                 catch (Exception ex)
                 {
-                    _logger?.LogError(ex, "Error during connection disposal");
+                    LogErrorDuringConnectionDisposal(ex);
                     // Continue disposing other connections
                 }
             }
@@ -455,7 +451,7 @@ public sealed class ConnectionPool : IConnectionPool
             _connectionGroupsByEndpoint.Clear();
             _connectionGroupCreationTasks.Clear();
 
-            _logger?.LogInformation("All connections closed");
+            LogAllConnectionsClosed();
         }
         finally
         {
@@ -472,6 +468,43 @@ public sealed class ConnectionPool : IConnectionPool
         await CloseAllAsync().ConfigureAwait(false);
         _disposeLock.Dispose();
     }
+
+    #region Logging
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Registered broker {BrokerId} at {Host}:{Port}")]
+    private partial void LogRegisteredBroker(int brokerId, string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Created connection group with {Count} connections to broker {BrokerId}")]
+    private partial void LogCreatedConnectionGroup(int count, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Created connection {Index} to broker {BrokerId} at {Host}:{Port}")]
+    private partial void LogCreatedConnectionForGroup(int index, int brokerId, string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Created connection to broker {BrokerId} at {Host}:{Port}")]
+    private partial void LogCreatedConnection(int brokerId, string host, int port);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Removed connection to broker {BrokerId}")]
+    private partial void LogRemovedConnection(int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Closing all connections")]
+    private partial void LogClosingAllConnections();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Disposing {Count} connections with graceful timeout")]
+    private partial void LogDisposingConnections(int count);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Connection disposal exceeded timeout ({Timeout}ms), forcing shutdown")]
+    private partial void LogConnectionDisposalExceededTimeout(double timeout);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Connection disposal timed out ({Timeout}ms), forcing shutdown")]
+    private partial void LogConnectionDisposalTimedOut(double timeout);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Error during connection disposal")]
+    private partial void LogErrorDuringConnectionDisposal(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "All connections closed")]
+    private partial void LogAllConnectionsClosed();
+
+    #endregion
 
     private readonly record struct EndpointKey(string Host, int Port);
     private readonly record struct BrokerInfo(int BrokerId, string Host, int Port);

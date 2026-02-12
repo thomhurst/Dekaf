@@ -19,7 +19,7 @@ namespace Dekaf.Producer;
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
+public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 {
     private readonly ProducerOptions _options;
     private readonly ISerializer<TKey> _keySerializer;
@@ -29,7 +29,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
     private readonly MetadataManager _metadataManager;
     private readonly RecordAccumulator _accumulator;
     private readonly CompressionCodecRegistry _compressionCodecs;
-    private readonly ILogger<KafkaProducer<TKey, TValue>>? _logger;
+    private readonly ILogger _logger;
 
     private readonly CancellationTokenSource _senderCts;
     private readonly Task _senderTask;
@@ -136,7 +136,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         _options = options;
         _keySerializer = keySerializer;
         _valueSerializer = valueSerializer;
-        _logger = loggerFactory?.CreateLogger<KafkaProducer<TKey, TValue>>();
+        _logger = loggerFactory?.CreateLogger<KafkaProducer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaProducer<TKey, TValue>>.Instance;
 
         // Initialize interceptors from options
         if (options.Interceptors is { Count: > 0 })
@@ -483,7 +483,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Fire-and-forget produce failed for topic {Topic} (topic metadata fetch)", message.Topic);
+            LogFireAndForgetMetadataFetchFailed(ex, message.Topic);
         }
     }
 
@@ -542,7 +542,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             }
             catch (Exception ex)
             {
-                _logger?.LogDebug(ex, "Fire-and-forget produce failed for topic {Topic}", topic);
+                LogFireAndForgetProduceFailed(ex, topic);
             }
             return true;
         }
@@ -584,7 +584,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // Fire-and-forget: swallow exception but log for diagnostics
             // This matches Confluent.Kafka behavior where Produce() doesn't throw
             // for production errors in fire-and-forget mode
-            _logger?.LogDebug(ex, "Fire-and-forget produce failed for topic {Topic}", topic);
+            LogFireAndForgetProduceFailed(ex, topic);
         }
         return true;
     }
@@ -911,7 +911,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             }
             catch (Exception ex)
             {
-                _logger?.LogDebug(ex, "Fire-and-forget produce failed for topic {Topic}", message.Topic);
+                LogFireAndForgetProduceFailed(ex, message.Topic);
             }
             return true;
         }
@@ -943,7 +943,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         }
         catch (Exception ex)
         {
-            _logger?.LogDebug(ex, "Fire-and-forget produce failed for topic {Topic}", message.Topic);
+            LogFireAndForgetProduceFailed(ex, message.Topic);
         }
         return true;
     }
@@ -1052,8 +1052,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Producer interceptor {Interceptor} OnSend threw an exception",
-                    interceptor.GetType().Name);
+                LogInterceptorOnSendFailed(ex, interceptor.GetType().Name);
             }
         }
         return message;
@@ -1076,8 +1075,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Producer interceptor {Interceptor} OnAcknowledgement threw an exception",
-                    interceptor.GetType().Name);
+                LogInterceptorOnAcknowledgementFailed(ex, interceptor.GetType().Name);
             }
         }
     }
@@ -1669,9 +1667,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     or ErrorCode.CoordinatorNotAvailable
                     or ErrorCode.ConcurrentTransactions)
                 {
-                    _logger?.LogDebug(
-                        "InitProducerId retriable error ({ErrorCode}, attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
-                        response.ErrorCode, initAttempt + 1, maxInitRetries, initRetryDelayMs);
+                    LogInitProducerIdRetriableError(response.ErrorCode, initAttempt + 1, maxInitRetries, initRetryDelayMs);
 
                     await Task.Delay(initRetryDelayMs, cancellationToken).ConfigureAwait(false);
                     initRetryDelayMs = Math.Min(initRetryDelayMs * 2, 2000);
@@ -1680,9 +1676,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
                 if (response.ErrorCode == ErrorCode.NotCoordinator)
                 {
-                    _logger?.LogDebug(
-                        "InitProducerId got NotCoordinator (attempt {Attempt}/{MaxRetries}), re-discovering coordinator",
-                        initAttempt + 1, maxInitRetries);
+                    LogInitProducerIdNotCoordinator(initAttempt + 1, maxInitRetries);
 
                     await Task.Delay(initRetryDelayMs, cancellationToken).ConfigureAwait(false);
                     initRetryDelayMs = Math.Min(initRetryDelayMs * 2, 2000);
@@ -1715,9 +1709,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
                 _transactionState = TransactionState.Ready;
 
-                _logger?.LogDebug(
-                    "Initialized transactions: ProducerId={ProducerId}, Epoch={Epoch}",
-                    _producerId, _producerEpoch);
+                LogTransactionsInitialized(_producerId, _producerEpoch);
                 return;
             }
 
@@ -1786,9 +1778,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             if (errorCode is ErrorCode.CoordinatorNotAvailable or ErrorCode.NotCoordinator)
             {
-                _logger?.LogDebug(
-                    "Transaction coordinator not available ({ErrorCode}, attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
-                    errorCode, attempt + 1, maxRetries, retryDelayMs);
+                LogTransactionCoordinatorNotAvailable(errorCode, attempt + 1, maxRetries, retryDelayMs);
 
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                 retryDelayMs = Math.Min(retryDelayMs * 2, 1000);
@@ -1807,8 +1797,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             _transactionCoordinatorId = nodeId;
             _connectionPool.RegisterBroker(nodeId, host, port);
 
-            _logger?.LogDebug("Found transaction coordinator {NodeId} for {TransactionalId}",
-                _transactionCoordinatorId, _options.TransactionalId);
+            LogTransactionCoordinatorFound(_transactionCoordinatorId, _options.TransactionalId);
             return;
         }
 
@@ -1917,9 +1906,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 return; // Success
             }
 
-            _logger?.LogDebug(
-                "AddPartitionsToTxn retriable error (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
-                attempt + 1, maxRetries, retryDelayMs);
+            LogAddPartitionsToTxnRetriableError(attempt + 1, maxRetries, retryDelayMs);
 
             await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
             retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
@@ -1980,9 +1967,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 or ErrorCode.CoordinatorNotAvailable
                 or ErrorCode.ConcurrentTransactions)
             {
-                _logger?.LogDebug(
-                    "EndTxn retriable error ({ErrorCode}, attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms",
-                    response.ErrorCode, attempt + 1, maxRetries, retryDelayMs);
+                LogEndTxnRetriableError(response.ErrorCode, attempt + 1, maxRetries, retryDelayMs);
 
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                 retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
@@ -1991,9 +1976,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
             if (response.ErrorCode == ErrorCode.NotCoordinator)
             {
-                _logger?.LogDebug(
-                    "EndTxn got NotCoordinator (attempt {Attempt}/{MaxRetries}), re-discovering coordinator",
-                    attempt + 1, maxRetries);
+                LogEndTxnNotCoordinator(attempt + 1, maxRetries);
 
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                 retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
@@ -2405,7 +2388,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 }
                 catch (Exception ex)
                 {
-                    _logger?.LogError(ex, "Error in linger loop");
+                    LogLingerLoopError(ex);
                 }
             }
         }
@@ -2571,9 +2554,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 
                     _idempotentInitialized = true;
 
-                    _logger?.LogDebug(
-                        "Initialized idempotent producer: ProducerId={ProducerId}, Epoch={Epoch}",
-                        _producerId, _producerEpoch);
+                    LogIdempotentProducerInitialized(_producerId, _producerEpoch);
                     return;
                 }
 
@@ -2583,9 +2564,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                         $"Failed to initialize idempotent producer: {response.ErrorCode}");
                 }
 
-                _logger?.LogDebug(
-                    "InitProducerId returned retriable error {ErrorCode}, retrying in {DelayMs}ms",
-                    response.ErrorCode, retryDelayMs);
+                LogInitProducerIdRetriable(response.ErrorCode, retryDelayMs);
 
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                 retryDelayMs = Math.Min(retryDelayMs * 2, _options.RetryBackoffMaxMs);
@@ -2659,9 +2638,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                     _accumulator.ProducerEpoch = _producerEpoch;
                     _accumulator.ResetSequenceNumbers();
 
-                    _logger?.LogDebug(
-                        "Bumped producer epoch: ProducerId={ProducerId}, Epoch={Epoch}",
-                        _producerId, _producerEpoch);
+                    LogProducerEpochBumped(_producerId, _producerEpoch);
                     return (_producerId, _producerEpoch);
                 }
 
@@ -2671,9 +2648,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                         $"Failed to bump producer epoch: {response.ErrorCode}");
                 }
 
-                _logger?.LogDebug(
-                    "BumpEpoch InitProducerId returned retriable error {ErrorCode}, retrying in {DelayMs}ms",
-                    response.ErrorCode, retryDelayMs);
+                LogBumpEpochRetriable(response.ErrorCode, retryDelayMs);
 
                 await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
                 retryDelayMs = Math.Min(retryDelayMs * 2, _options.RetryBackoffMaxMs);
@@ -2818,7 +2793,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         {
             // Graceful shutdown timed out - fall back to forceful shutdown
             gracefulShutdown = false;
-            _logger?.LogWarning("Graceful shutdown timed out after {Timeout}ms, forcing disposal", _options.CloseTimeoutMs);
+            LogGracefulShutdownTimedOut(_options.CloseTimeoutMs);
         }
         catch
         {
@@ -2868,7 +2843,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
                 }
                 catch (Exception ex)
                 {
-                    _logger?.LogError(ex, "Failed to dispose broker sender");
+                    LogDisposeBrokerSenderFailed(ex);
                 }
             }
         } while (_brokerSenders.Count > previousCount);
@@ -2894,6 +2869,67 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
     }
+
+    #region Logging
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Fire-and-forget produce failed for topic {Topic} (topic metadata fetch)")]
+    private partial void LogFireAndForgetMetadataFetchFailed(Exception ex, string topic);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Fire-and-forget produce failed for topic {Topic}")]
+    private partial void LogFireAndForgetProduceFailed(Exception ex, string topic);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Producer interceptor {Interceptor} OnSend threw an exception")]
+    private partial void LogInterceptorOnSendFailed(Exception ex, string interceptor);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Producer interceptor {Interceptor} OnAcknowledgement threw an exception")]
+    private partial void LogInterceptorOnAcknowledgementFailed(Exception ex, string interceptor);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "InitProducerId retriable error ({ErrorCode}, attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms")]
+    private partial void LogInitProducerIdRetriableError(ErrorCode errorCode, int attempt, int maxRetries, int delay);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "InitProducerId got NotCoordinator (attempt {Attempt}/{MaxRetries}), re-discovering coordinator")]
+    private partial void LogInitProducerIdNotCoordinator(int attempt, int maxRetries);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Initialized transactions: ProducerId={ProducerId}, Epoch={Epoch}")]
+    private partial void LogTransactionsInitialized(long producerId, short epoch);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Transaction coordinator not available ({ErrorCode}, attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms")]
+    private partial void LogTransactionCoordinatorNotAvailable(ErrorCode errorCode, int attempt, int maxRetries, int delay);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Found transaction coordinator {NodeId} for {TransactionalId}")]
+    private partial void LogTransactionCoordinatorFound(int nodeId, string? transactionalId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "AddPartitionsToTxn retriable error (attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms")]
+    private partial void LogAddPartitionsToTxnRetriableError(int attempt, int maxRetries, int delay);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "EndTxn retriable error ({ErrorCode}, attempt {Attempt}/{MaxRetries}), retrying in {Delay}ms")]
+    private partial void LogEndTxnRetriableError(ErrorCode errorCode, int attempt, int maxRetries, int delay);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "EndTxn got NotCoordinator (attempt {Attempt}/{MaxRetries}), re-discovering coordinator")]
+    private partial void LogEndTxnNotCoordinator(int attempt, int maxRetries);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Error in linger loop")]
+    private partial void LogLingerLoopError(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Initialized idempotent producer: ProducerId={ProducerId}, Epoch={Epoch}")]
+    private partial void LogIdempotentProducerInitialized(long producerId, short epoch);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "InitProducerId returned retriable error {ErrorCode}, retrying in {DelayMs}ms")]
+    private partial void LogInitProducerIdRetriable(ErrorCode errorCode, int delayMs);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Bumped producer epoch: ProducerId={ProducerId}, Epoch={Epoch}")]
+    private partial void LogProducerEpochBumped(long producerId, short epoch);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "BumpEpoch InitProducerId returned retriable error {ErrorCode}, retrying in {DelayMs}ms")]
+    private partial void LogBumpEpochRetriable(ErrorCode errorCode, int delayMs);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Graceful shutdown timed out after {Timeout}ms, forcing disposal")]
+    private partial void LogGracefulShutdownTimedOut(int timeout);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Failed to dispose broker sender")]
+    private partial void LogDisposeBrokerSenderFailed(Exception ex);
+
+    #endregion
 }
 
 /// <summary>

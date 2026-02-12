@@ -10,7 +10,7 @@ namespace Dekaf.Extensions.Hosting;
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public abstract class KafkaConsumerService<TKey, TValue> : BackgroundService
+public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundService
 {
     private readonly IKafkaConsumer<TKey, TValue> _consumer;
     private readonly ILogger _logger;
@@ -38,7 +38,7 @@ public abstract class KafkaConsumerService<TKey, TValue> : BackgroundService
     /// </summary>
     protected virtual ValueTask OnErrorAsync(Exception exception, ConsumeResult<TKey, TValue>? result, CancellationToken cancellationToken)
     {
-        _logger.LogError(exception, "Error processing message from {Topic}", result?.Topic);
+        LogProcessingError(exception, result?.Topic);
         return ValueTask.CompletedTask;
     }
 
@@ -48,7 +48,11 @@ public abstract class KafkaConsumerService<TKey, TValue> : BackgroundService
 
         _consumer.Subscribe(Topics.ToArray());
 
-        _logger.LogInformation("Started consuming from topics: {Topics}", string.Join(", ", Topics));
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            var topics = string.Join(", ", Topics);
+            LogStartedConsuming(topics);
+        }
 
         try
         {
@@ -66,18 +70,18 @@ public abstract class KafkaConsumerService<TKey, TValue> : BackgroundService
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            _logger.LogInformation("Consumer service stopping");
+            LogConsumerServiceStopping();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Consumer service failed");
+            LogConsumerServiceFailed(ex);
             throw;
         }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Stopping consumer service");
+        LogStoppingConsumerService();
 
         // Commit any pending offsets
         try
@@ -86,7 +90,7 @@ public abstract class KafkaConsumerService<TKey, TValue> : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to commit offsets during shutdown");
+            LogCommitOffsetsFailed(ex);
         }
 
         await base.StopAsync(cancellationToken);
@@ -107,16 +111,44 @@ public abstract class KafkaConsumerService<TKey, TValue> : BackgroundService
         }
         catch (TimeoutException)
         {
-            _logger.LogWarning("Consumer disposal timed out after 30 seconds");
+            LogConsumerDisposalTimedOut();
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Error during consumer disposal");
+            LogConsumerDisposalError(ex);
         }
 
         base.Dispose();
         GC.SuppressFinalize(this);
     }
+
+    #region Logging
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Error processing message from {Topic}")]
+    private partial void LogProcessingError(Exception ex, string? topic);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Started consuming from topics: {Topics}")]
+    private partial void LogStartedConsuming(string topics);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Consumer service stopping")]
+    private partial void LogConsumerServiceStopping();
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Consumer service failed")]
+    private partial void LogConsumerServiceFailed(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Stopping consumer service")]
+    private partial void LogStoppingConsumerService();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to commit offsets during shutdown")]
+    private partial void LogCommitOffsetsFailed(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Consumer disposal timed out after 30 seconds")]
+    private partial void LogConsumerDisposalTimedOut();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Error during consumer disposal")]
+    private partial void LogConsumerDisposalError(Exception ex);
+
+    #endregion
 }
 
 /// <summary>
