@@ -908,6 +908,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var responseTask = connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
                 request, (short)apiVersion, cancellationToken);
 
+            // Release buffer memory now that data is written to TCP.
+            // This unblocks producers waiting for BufferMemory while the response is in flight.
+            // Arena buffers are still held (for potential retries) but BufferMemory flow control
+            // is released — the pipeline depth is bounded by MaxInFlightRequestsPerConnection.
+            for (var i = 0; i < count; i++)
+            {
+                if (!batches[i].MemoryReleased)
+                {
+                    _accumulator.ReleaseMemory(batches[i].DataSize);
+                    batches[i].MemoryReleased = true;
+                }
+            }
+
             _pendingResponses.Add(new PendingResponse(responseTask, batches, count, requestStartTime));
             LogPipelinedSend(_brokerId, count, _pendingResponses.Count);
 
@@ -1094,8 +1107,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void CleanupBatch(ReadyBatch batch)
     {
-        // Release buffer memory BEFORE returning to pool (Reset clears DataSize)
-        _accumulator.ReleaseMemory(batch.DataSize);
+        // Release buffer memory if not already released at TCP send time.
+        // Normal path: memory is released in SendCoalescedAsync after the batch is written to TCP.
+        // Error paths (before TCP send): memory has NOT been released and must be freed here.
+        if (!batch.MemoryReleased)
+        {
+            _accumulator.ReleaseMemory(batch.DataSize);
+            batch.MemoryReleased = true;
+        }
         _accumulator.ReturnReadyBatch(batch);
         _accumulator.OnBatchExitsPipeline();
     }

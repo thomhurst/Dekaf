@@ -2357,7 +2357,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         while (_readyBatches.Reader.TryRead(out var readyBatch))
         {
             readyBatch.Fail(disposedException);
-            ReleaseMemory(readyBatch.DataSize);
+            if (!readyBatch.MemoryReleased)
+            {
+                ReleaseMemory(readyBatch.DataSize);
+                readyBatch.MemoryReleased = true;
+            }
             OnBatchExitsPipeline(); // Decrement counter for batches drained during disposal
         }
 
@@ -2387,8 +2391,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (batch is not null)
             {
                 batch.Fail(disposedException);
-                // Release the batch's buffer memory
-                ReleaseMemory(batch.DataSize);
+                if (!batch.MemoryReleased)
+                {
+                    ReleaseMemory(batch.DataSize);
+                    batch.MemoryReleased = true;
+                }
                 OnBatchExitsPipeline(); // Decrement counter
             }
         }
@@ -3916,6 +3923,13 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     internal void RewriteRecordBatch(RecordBatch newRecordBatch) => _recordBatch = newRecordBatch;
 
     /// <summary>
+    /// Whether BufferMemory has already been released for this batch.
+    /// Set to true when ReleaseMemory is called (at TCP send time or in error paths).
+    /// Prevents double-release across send and cleanup paths.
+    /// </summary>
+    internal bool MemoryReleased { get; set; }
+
+    /// <summary>
     /// When true, this batch is a same-broker retry. The send loop unmutes the partition
     /// when coalescing a retry batch, ensuring it is sent before newer batches for the
     /// same partition. Set by ProcessCompletedResponses, cleared during coalescing or in Reset().
@@ -4012,6 +4026,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _callbacks = null;
         _callbackCount = 0;
         InflightEntry = null;
+        MemoryReleased = false;
         IsRetry = false;
         RetryNotBefore = 0;
 
