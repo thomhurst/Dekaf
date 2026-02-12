@@ -83,9 +83,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Func<bool> _isTransactional;
     private readonly Func<TopicPartition, CancellationToken, ValueTask>? _ensurePartitionInTransaction;
 
-    // Muted partitions: partitions with a retry in progress. Prevents newer batches from
-    // being sent while a retry is in-flight, maintaining per-partition ordering.
-    // Aligned with the Java Kafka producer's mute mechanism (RecordAccumulator.muted).
+    // Ordering guarantee flag (aligned with Java Kafka's guaranteeMessageOrder).
+    // When true, partitions are muted at send time and unmuted on response, ensuring
+    // at most one batch per partition in-flight. Prevents reordering on connection drops.
+    // Enabled for idempotent producers or when MaxInFlight == 1.
+    private readonly bool _guaranteeMessageOrder;
+
+    // Muted partitions: partitions with a batch in-flight (when _guaranteeMessageOrder)
+    // or a retry in progress. Prevents newer batches from being sent, maintaining
+    // per-partition ordering. Aligned with Java Kafka producer's mute mechanism.
     // Written and read by the single-threaded send loop (ProcessCompletedResponses/CoalesceBatch).
     private readonly ConcurrentDictionary<TopicPartition, byte> _mutedPartitions = new();
 
@@ -151,6 +157,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         });
 
         _maxInFlight = options.MaxInFlightRequestsPerConnection;
+
+        // Aligned with Java Kafka's guaranteeMessageOrder:
+        // mute partitions at send time to ensure at most one batch per partition in-flight.
+        // Required for idempotent producers (any maxInFlight) and non-idempotent with maxInFlight=1.
+        _guaranteeMessageOrder = inflightTracker is not null || _maxInFlight <= 1;
 
         _cts = new CancellationTokenSource();
         _sendLoopTask = SendLoopAsync(_cts.Token);
@@ -577,7 +588,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 for (var j = 0; j < pending.Count; j++)
                 {
                     if (pending.Batches[j] is not null)
+                    {
+                        if (_guaranteeMessageOrder)
+                            UnmutePartition(pending.Batches[j].TopicPartition);
                         FailAndCleanupBatch(pending.Batches[j], ex);
+                    }
                 }
 
                 ArrayPool<ReadyBatch>.Shared.Return(pending.Batches, clearArray: true);
@@ -643,7 +658,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         continue;
                     }
 
-                    // Non-retriable error
+                    // Non-retriable error — unmute so subsequent batches can proceed
+                    if (_guaranteeMessageOrder)
+                        UnmutePartition(batch.TopicPartition);
                     CompleteInflightEntry(batch);
                     _statisticsCollector.RecordBatchFailed(expectedTopic, expectedPartition,
                         batch.CompletionSourcesCount);
@@ -666,7 +683,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     continue;
                 }
 
-                // Success
+                // Success — unmute so the next batch for this partition can be sent
+                if (_guaranteeMessageOrder)
+                    UnmutePartition(batch.TopicPartition);
                 LogBatchCompleted(_brokerId, expectedTopic, expectedPartition, partitionResponse.BaseOffset);
                 _statisticsCollector.RecordBatchDelivered(expectedTopic, expectedPartition,
                     batch.CompletionSourcesCount);
@@ -708,6 +727,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
         {
             LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+            if (_guaranteeMessageOrder)
+                UnmutePartition(batch.TopicPartition);
             var ex = new TimeoutException(
                 $"Delivery timeout exceeded for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}" +
                 (errorCode != ErrorCode.None ? $" (last error: {errorCode})" : ""));
@@ -922,6 +943,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             _pendingResponses.Add(new PendingResponse(responseTask, batches, count, requestStartTime));
+
+            // Mute partitions at send time (aligned with Java Kafka's guaranteeMessageOrder).
+            // This ensures at most one batch per partition in-flight across all requests.
+            // Without this, connection drops allow newer batches on a new connection to commit
+            // before older batches on the broken connection, causing ordering violations.
+            if (_guaranteeMessageOrder)
+            {
+                for (var i = 0; i < count; i++)
+                    _mutedPartitions.TryAdd(batches[i].TopicPartition, 0);
+            }
+
             LogPipelinedSend(_brokerId, count, _pendingResponses.Count);
 
             // Release the in-flight slot and signal the send loop when the response completes.
