@@ -2515,7 +2515,13 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Auto-commit failed");
+                _logger?.LogWarning(ex, "Auto-commit failed, retrying once");
+                try
+                {
+                    await Task.Delay(200, cancellationToken).ConfigureAwait(false);
+                    await CommitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch { /* Best effort — will retry on next interval */ }
             }
         }
     }
@@ -2568,14 +2574,25 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         // Step 4: Commit pending offsets (if auto-commit enabled and we have a coordinator)
         if (_options.OffsetCommitMode == OffsetCommitMode.Auto && _coordinator is not null && !_positions.IsEmpty)
         {
-            try
+            for (var attempt = 0; attempt < 3; attempt++)
             {
-                await CommitAsync(cancellationToken).ConfigureAwait(false);
-                _logger?.LogDebug("Committed pending offsets during close");
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogWarning(ex, "Failed to commit offsets during close");
+                try
+                {
+                    await CommitAsync(cancellationToken).ConfigureAwait(false);
+                    _logger?.LogDebug("Committed pending offsets during close");
+                    break;
+                }
+                catch (OperationCanceledException)
+                {
+                    break; // Caller cancelled — don't retry
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex,
+                        "Failed to commit offsets during close (attempt {Attempt}/3)", attempt + 1);
+                    if (attempt < 2)
+                        await Task.Delay(200, cancellationToken).ConfigureAwait(false);
+                }
             }
         }
 
