@@ -754,8 +754,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
         }
 
-        // Mute partition
-        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
+        // Mute partition so no newer batches overtake the retry (ordering guarantee).
+        // Non-ordered producers skip muting: normal batches can proceed freely during retry.
+        if (_guaranteeMessageOrder)
+            _mutedPartitions.TryAdd(batch.TopicPartition, 0);
 
         var isEpochBumpError = errorCode is ErrorCode.OutOfOrderSequenceNumber
             or ErrorCode.InvalidProducerEpoch or ErrorCode.UnknownProducerId;
@@ -1022,8 +1024,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
                 else
                 {
-                    // Mute partition and queue for retry
-                    _mutedPartitions.TryAdd(batch.TopicPartition, 0);
+                    // Mute partition (ordering guarantee) and queue for retry.
+                    // Non-ordered producers skip muting: normal batches proceed freely.
+                    if (_guaranteeMessageOrder)
+                        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
                     batch.IsRetry = true;
                     batch.RetryNotBefore = Stopwatch.GetTimestamp() +
                         (long)(_options.RetryBackoffMs * (Stopwatch.Frequency / 1000.0));
