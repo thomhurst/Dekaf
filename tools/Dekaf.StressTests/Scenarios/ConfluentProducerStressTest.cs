@@ -62,13 +62,13 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
         {
             try
             {
-                var start = System.Diagnostics.Stopwatch.GetTimestamp();
+                var start = Stopwatch.GetTimestamp();
                 producer.Produce(options.Topic, new ConfluentKafka.Message<string, string>
                 {
                     Key = GetKey(messageIndex),
                     Value = messageValue
                 });
-                latency.RecordTicks(System.Diagnostics.Stopwatch.GetTimestamp() - start);
+                latency.RecordTicks(Stopwatch.GetTimestamp() - start);
                 throughput.RecordMessage(options.MessageSizeBytes);
                 messageIndex++;
 

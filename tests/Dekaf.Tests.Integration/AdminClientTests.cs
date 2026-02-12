@@ -284,7 +284,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
                 a.Entry.Operation == AclOperation.Read);
             await Assert.That(foundAcl).IsNotNull();
         }
-        catch (Errors.KafkaException ex) when (ex.Message.Contains("No Authorizer is configured"))
+        catch (KafkaException ex) when (ex.Message.Contains("No Authorizer is configured"))
         {
             // ACL operations require an Authorizer to be configured on the broker
             // Skip test when running against a broker without authorization
@@ -328,7 +328,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             var aclsAfter = await admin.DescribeAclsAsync(filter).ConfigureAwait(false);
             await Assert.That(aclsAfter.Count).IsEqualTo(0);
         }
-        catch (Errors.KafkaException ex) when (ex.Message.Contains("No Authorizer is configured"))
+        catch (KafkaException ex) when (ex.Message.Contains("No Authorizer is configured"))
         {
             // ACL operations require an Authorizer to be configured on the broker
             // Skip test when running against a broker without authorization
@@ -352,7 +352,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             // The count could be 0 if no ACLs are configured
             await Assert.That(acls).IsNotNull();
         }
-        catch (Errors.KafkaException ex) when (ex.Message.Contains("No Authorizer is configured"))
+        catch (KafkaException ex) when (ex.Message.Contains("No Authorizer is configured"))
         {
             // ACL operations require an Authorizer to be configured on the broker
             // Skip test when running against a broker without authorization
@@ -638,7 +638,7 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
         await Assert.That(results).ContainsKey(new TopicPartition(topic, 0));
         var result = results[new TopicPartition(topic, 0)];
         // ElectionNotNeeded is also acceptable - means preferred leader is already leader
-        var validErrorCodes = new[] { Protocol.ErrorCode.None, Protocol.ErrorCode.ElectionNotNeeded };
+        var validErrorCodes = new[] { ErrorCode.None, ErrorCode.ElectionNotNeeded };
         await Assert.That(validErrorCodes.Contains(result.ErrorCode)).IsTrue();
     }
 
@@ -677,10 +677,10 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
                 .ConfigureAwait(false);
             await Assert.That(credentials).IsNotNull();
         }
-        catch (Errors.KafkaException ex) when (ex.ErrorCode == Protocol.ErrorCode.UnsupportedVersion)
+        catch (KafkaException ex) when (ex.ErrorCode == ErrorCode.UnsupportedVersion)
         {
             // UnsupportedVersion is acceptable - not all Kafka versions support SCRAM APIs
-            await Assert.That(ex.ErrorCode).IsEqualTo(Protocol.ErrorCode.UnsupportedVersion);
+            await Assert.That(ex.ErrorCode).IsEqualTo(ErrorCode.UnsupportedVersion);
         }
     }
 
@@ -732,8 +732,8 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
 
             await Assert.That(deleted).IsTrue();
         }
-        catch (Errors.KafkaException ex) when (
-            ex.ErrorCode == Protocol.ErrorCode.UnsupportedVersion ||
+        catch (KafkaException ex) when (
+            ex.ErrorCode == ErrorCode.UnsupportedVersion ||
             ex.Message.Contains("does not exist") ||
             ex.Message.Contains("SCRAM"))
         {

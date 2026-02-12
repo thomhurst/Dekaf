@@ -555,7 +555,7 @@ public sealed class ProducerBuilder<TKey, TValue>
         };
 
         var metadataOptions = _metadataMaxAge.HasValue
-            ? new Metadata.MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
+            ? new MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
             : null;
 
         return new KafkaProducer<TKey, TValue>(options, keySerializer, valueSerializer, _loggerFactory, metadataOptions);
@@ -1214,7 +1214,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
         };
 
         var metadataOptions = _metadataMaxAge.HasValue
-            ? new Metadata.MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
+            ? new MetadataOptions { MetadataRefreshInterval = _metadataMaxAge.Value }
             : null;
 
         var consumer = new KafkaConsumer<TKey, TValue>(options, keyDeserializer, valueDeserializer, _loggerFactory, metadataOptions);

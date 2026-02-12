@@ -16,7 +16,7 @@ public sealed class TestMessage : IMessage<TestMessage>
     static TestMessage()
     {
         // Build the file descriptor for the test message
-        var fileDescriptorProto = new Google.Protobuf.Reflection.FileDescriptorProto
+        var fileDescriptorProto = new FileDescriptorProto
         {
             Name = "test_message.proto",
             Package = "dekaf.tests",
@@ -24,34 +24,34 @@ public sealed class TestMessage : IMessage<TestMessage>
         };
 
         // Add the message type
-        var messageType = new Google.Protobuf.Reflection.DescriptorProto
+        var messageType = new DescriptorProto
         {
             Name = "TestMessage"
         };
 
         // Add fields
-        messageType.Field.Add(new Google.Protobuf.Reflection.FieldDescriptorProto
+        messageType.Field.Add(new FieldDescriptorProto
         {
             Name = "id",
             Number = 1,
-            Type = Google.Protobuf.Reflection.FieldDescriptorProto.Types.Type.Int32,
-            Label = Google.Protobuf.Reflection.FieldDescriptorProto.Types.Label.Optional
+            Type = FieldDescriptorProto.Types.Type.Int32,
+            Label = FieldDescriptorProto.Types.Label.Optional
         });
 
-        messageType.Field.Add(new Google.Protobuf.Reflection.FieldDescriptorProto
+        messageType.Field.Add(new FieldDescriptorProto
         {
             Name = "name",
             Number = 2,
-            Type = Google.Protobuf.Reflection.FieldDescriptorProto.Types.Type.String,
-            Label = Google.Protobuf.Reflection.FieldDescriptorProto.Types.Label.Optional
+            Type = FieldDescriptorProto.Types.Type.String,
+            Label = FieldDescriptorProto.Types.Label.Optional
         });
 
-        messageType.Field.Add(new Google.Protobuf.Reflection.FieldDescriptorProto
+        messageType.Field.Add(new FieldDescriptorProto
         {
             Name = "value",
             Number = 3,
-            Type = Google.Protobuf.Reflection.FieldDescriptorProto.Types.Type.Double,
-            Label = Google.Protobuf.Reflection.FieldDescriptorProto.Types.Label.Optional
+            Type = FieldDescriptorProto.Types.Type.Double,
+            Label = FieldDescriptorProto.Types.Label.Optional
         });
 
         fileDescriptorProto.MessageType.Add(messageType);

@@ -130,7 +130,7 @@ public sealed class TransactionTests
         await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithTransactionalId("test-txn-id")
-            .WithAcks(Dekaf.Producer.Acks.All)
+            .WithAcks(Acks.All)
             .Build();
 
         await Assert.That(producer).IsNotNull();
@@ -152,7 +152,7 @@ public sealed class TransactionTests
     [Test]
     public async Task TopicPartitionOffset_RecordStruct_HasExpectedProperties()
     {
-        var tpo = new Dekaf.Producer.TopicPartitionOffset("test-topic", 0, 42);
+        var tpo = new TopicPartitionOffset("test-topic", 0, 42);
 
         await Assert.That(tpo.Topic).IsEqualTo("test-topic");
         await Assert.That(tpo.Partition).IsEqualTo(0);
@@ -162,9 +162,9 @@ public sealed class TransactionTests
     [Test]
     public async Task TopicPartitionOffset_Equality()
     {
-        var tpo1 = new Dekaf.Producer.TopicPartitionOffset("topic", 1, 100);
-        var tpo2 = new Dekaf.Producer.TopicPartitionOffset("topic", 1, 100);
-        var tpo3 = new Dekaf.Producer.TopicPartitionOffset("topic", 2, 100);
+        var tpo1 = new TopicPartitionOffset("topic", 1, 100);
+        var tpo2 = new TopicPartitionOffset("topic", 1, 100);
+        var tpo3 = new TopicPartitionOffset("topic", 2, 100);
 
         await Assert.That(tpo1).IsEqualTo(tpo2);
         await Assert.That(tpo1).IsNotEqualTo(tpo3);

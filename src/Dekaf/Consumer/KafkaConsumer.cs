@@ -29,7 +29,7 @@ internal sealed class PendingFetchData : IDisposable
 {
     private readonly IReadOnlyList<RecordBatch> _batches;
     private readonly Dictionary<long, Queue<long>>? _abortedProducers;
-    private Protocol.IPooledMemory? _memoryOwner;
+    private IPooledMemory? _memoryOwner;
     private int _batchIndex = -1;
     private int _recordIndex = -1;
     private bool _disposed;
@@ -66,7 +66,7 @@ internal sealed class PendingFetchData : IDisposable
 
     public PendingFetchData(string topic, int partitionIndex, IReadOnlyList<RecordBatch> batches,
         IReadOnlyList<AbortedTransaction>? abortedTransactions = null,
-        Protocol.IPooledMemory? memoryOwner = null)
+        IPooledMemory? memoryOwner = null)
     {
         Topic = topic;
         PartitionIndex = partitionIndex;
@@ -93,7 +93,7 @@ internal sealed class PendingFetchData : IDisposable
     /// <summary>
     /// Attaches a memory owner to this instance, avoiding the need to create a new PendingFetchData.
     /// </summary>
-    public void SetMemoryOwner(Protocol.IPooledMemory memoryOwner)
+    public void SetMemoryOwner(IPooledMemory memoryOwner)
     {
         _memoryOwner = memoryOwner;
     }
@@ -105,7 +105,7 @@ internal sealed class PendingFetchData : IDisposable
     /// Updates tracking for batch-level position and statistics updates.
     /// Called after yielding each record.
     /// </summary>
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void TrackConsumed(long offset, int messageBytes)
     {
         LastYieldedOffset = offset;
@@ -340,7 +340,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         IDeserializer<TKey> keyDeserializer,
         IDeserializer<TValue> valueDeserializer,
         ILoggerFactory? loggerFactory = null,
-        Metadata.MetadataOptions? metadataOptions = null)
+        MetadataOptions? metadataOptions = null)
     {
         _options = options;
         _keyDeserializer = keyDeserializer;
@@ -1416,22 +1416,22 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
             ApiKey.ListOffsets,
-            Protocol.Messages.ListOffsetsRequest.LowestSupportedVersion,
-            Protocol.Messages.ListOffsetsRequest.HighestSupportedVersion);
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
 
         // Query for earliest offset (low watermark) with timestamp -2
-        var earliestRequest = new Protocol.Messages.ListOffsetsRequest
+        var earliestRequest = new ListOffsetsRequest
         {
             ReplicaId = -1,
             IsolationLevel = _options.IsolationLevel,
             Topics =
             [
-                new Protocol.Messages.ListOffsetsRequestTopic
+                new ListOffsetsRequestTopic
                 {
                     Name = topicPartition.Topic,
                     Partitions =
                     [
-                        new Protocol.Messages.ListOffsetsRequestPartition
+                        new ListOffsetsRequestPartition
                         {
                             PartitionIndex = topicPartition.Partition,
                             Timestamp = -2, // Earliest
@@ -1442,12 +1442,12 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             ]
         };
 
-        var earliestResponse = await connection.SendAsync<Protocol.Messages.ListOffsetsRequest, Protocol.Messages.ListOffsetsResponse>(
+        var earliestResponse = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
             earliestRequest,
             listOffsetsVersion,
             cancellationToken).ConfigureAwait(false);
 
-        Protocol.Messages.ListOffsetsResponsePartition? earliestPartitionResponse = null;
+        ListOffsetsResponsePartition? earliestPartitionResponse = null;
         foreach (var topic in earliestResponse.Topics)
         {
             if (topic.Name == topicPartition.Topic)
@@ -1473,18 +1473,18 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         var lowWatermark = earliestPartitionResponse?.Offset ?? 0;
 
         // Query for latest offset (high watermark) with timestamp -1
-        var latestRequest = new Protocol.Messages.ListOffsetsRequest
+        var latestRequest = new ListOffsetsRequest
         {
             ReplicaId = -1,
             IsolationLevel = _options.IsolationLevel,
             Topics =
             [
-                new Protocol.Messages.ListOffsetsRequestTopic
+                new ListOffsetsRequestTopic
                 {
                     Name = topicPartition.Topic,
                     Partitions =
                     [
-                        new Protocol.Messages.ListOffsetsRequestPartition
+                        new ListOffsetsRequestPartition
                         {
                             PartitionIndex = topicPartition.Partition,
                             Timestamp = -1, // Latest
@@ -1495,12 +1495,12 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             ]
         };
 
-        var latestResponse = await connection.SendAsync<Protocol.Messages.ListOffsetsRequest, Protocol.Messages.ListOffsetsResponse>(
+        var latestResponse = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
             latestRequest,
             listOffsetsVersion,
             cancellationToken).ConfigureAwait(false);
 
-        Protocol.Messages.ListOffsetsResponsePartition? latestPartitionResponse = null;
+        ListOffsetsResponsePartition? latestPartitionResponse = null;
         foreach (var topic in latestResponse.Topics)
         {
             if (topic.Name == topicPartition.Topic)
@@ -1792,21 +1792,21 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
             ApiKey.ListOffsets,
-            Protocol.Messages.ListOffsetsRequest.LowestSupportedVersion,
-            Protocol.Messages.ListOffsetsRequest.HighestSupportedVersion);
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
 
-        var request = new Protocol.Messages.ListOffsetsRequest
+        var request = new ListOffsetsRequest
         {
             ReplicaId = -1,
             IsolationLevel = _options.IsolationLevel,
             Topics =
             [
-                new Protocol.Messages.ListOffsetsRequestTopic
+                new ListOffsetsRequestTopic
                 {
                     Name = partition.Topic,
                     Partitions =
                     [
-                        new Protocol.Messages.ListOffsetsRequestPartition
+                        new ListOffsetsRequestPartition
                         {
                             PartitionIndex = partition.Partition,
                             Timestamp = timestamp,
@@ -1817,12 +1817,12 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             ]
         };
 
-        var response = await connection.SendAsync<Protocol.Messages.ListOffsetsRequest, Protocol.Messages.ListOffsetsResponse>(
+        var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
             request,
             listOffsetsVersion,
             cancellationToken).ConfigureAwait(false);
 
-        Protocol.Messages.ListOffsetsResponsePartition? partitionResponse = null;
+        ListOffsetsResponsePartition? partitionResponse = null;
         foreach (var topic in response.Topics)
         {
             if (topic.Name == partition.Topic)
@@ -1867,21 +1867,21 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
             ApiKey.ListOffsets,
-            Protocol.Messages.ListOffsetsRequest.LowestSupportedVersion,
-            Protocol.Messages.ListOffsetsRequest.HighestSupportedVersion);
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
 
-        var request = new Protocol.Messages.ListOffsetsRequest
+        var request = new ListOffsetsRequest
         {
             ReplicaId = -1,
             IsolationLevel = _options.IsolationLevel,
             Topics =
             [
-                new Protocol.Messages.ListOffsetsRequestTopic
+                new ListOffsetsRequestTopic
                 {
                     Name = partition.Topic,
                     Partitions =
                     [
-                        new Protocol.Messages.ListOffsetsRequestPartition
+                        new ListOffsetsRequestPartition
                         {
                             PartitionIndex = partition.Partition,
                             Timestamp = timestamp,
@@ -1892,12 +1892,12 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
             ]
         };
 
-        var response = await connection.SendAsync<Protocol.Messages.ListOffsetsRequest, Protocol.Messages.ListOffsetsResponse>(
+        var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
             request,
             listOffsetsVersion,
             cancellationToken).ConfigureAwait(false);
 
-        Protocol.Messages.ListOffsetsResponsePartition? partitionResponse = null;
+        ListOffsetsResponsePartition? partitionResponse = null;
         foreach (var topic in response.Topics)
         {
             if (topic.Name == partition.Topic)
@@ -2685,11 +2685,11 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
 
         var listOffsetsVersion = _metadataManager.GetNegotiatedApiVersion(
             ApiKey.ListOffsets,
-            Protocol.Messages.ListOffsetsRequest.LowestSupportedVersion,
-            Protocol.Messages.ListOffsetsRequest.HighestSupportedVersion);
+            ListOffsetsRequest.LowestSupportedVersion,
+            ListOffsetsRequest.HighestSupportedVersion);
 
         // Group partitions by topic
-        var topicPartitions = new Dictionary<string, List<Protocol.Messages.ListOffsetsRequestPartition>>();
+        var topicPartitions = new Dictionary<string, List<ListOffsetsRequestPartition>>();
         foreach (var tpt in partitions)
         {
             if (!topicPartitions.TryGetValue(tpt.Topic, out var list))
@@ -2698,7 +2698,7 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
                 topicPartitions[tpt.Topic] = list;
             }
 
-            list.Add(new Protocol.Messages.ListOffsetsRequestPartition
+            list.Add(new ListOffsetsRequestPartition
             {
                 PartitionIndex = tpt.Partition,
                 Timestamp = tpt.Timestamp,
@@ -2707,24 +2707,24 @@ public sealed class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
         }
 
         // Build topics list
-        var topics = new List<Protocol.Messages.ListOffsetsRequestTopic>(topicPartitions.Count);
+        var topics = new List<ListOffsetsRequestTopic>(topicPartitions.Count);
         foreach (var kvp in topicPartitions)
         {
-            topics.Add(new Protocol.Messages.ListOffsetsRequestTopic
+            topics.Add(new ListOffsetsRequestTopic
             {
                 Name = kvp.Key,
                 Partitions = kvp.Value
             });
         }
 
-        var request = new Protocol.Messages.ListOffsetsRequest
+        var request = new ListOffsetsRequest
         {
             ReplicaId = -1,
             IsolationLevel = _options.IsolationLevel,
             Topics = topics
         };
 
-        var response = await connection.SendAsync<Protocol.Messages.ListOffsetsRequest, Protocol.Messages.ListOffsetsResponse>(
+        var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
             request,
             listOffsetsVersion,
             cancellationToken).ConfigureAwait(false);

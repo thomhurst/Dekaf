@@ -59,7 +59,7 @@ internal static class TestCertificateHelper
     /// </summary>
     private static byte[] DeriveSerialNumber(string subjectName)
     {
-        var hash = System.Security.Cryptography.SHA256.HashData(
+        var hash = SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(subjectName));
         var serial = new byte[9];
         serial[0] = 0x01; // Ensure no leading-zero ASN.1 issue

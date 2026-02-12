@@ -1586,7 +1586,7 @@ public sealed class AdminClientBuilder
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
-    private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
+    private ILoggerFactory? _loggerFactory;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private TimeSpan? _metadataMaxAge;
@@ -1634,7 +1634,7 @@ public sealed class AdminClientBuilder
         return this;
     }
 
-    public AdminClientBuilder WithLoggerFactory(Microsoft.Extensions.Logging.ILoggerFactory loggerFactory)
+    public AdminClientBuilder WithLoggerFactory(ILoggerFactory loggerFactory)
     {
         _loggerFactory = loggerFactory;
         return this;

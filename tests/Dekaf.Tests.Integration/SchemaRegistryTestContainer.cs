@@ -164,7 +164,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
                 .Build();
 
             await adminClient.CreateTopicsAsync([
-                new Dekaf.Admin.NewTopic
+                new Admin.NewTopic
                 {
                     Name = topicName,
                     NumPartitions = partitions,

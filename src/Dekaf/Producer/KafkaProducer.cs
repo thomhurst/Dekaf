@@ -131,7 +131,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
         ISerializer<TKey> keySerializer,
         ISerializer<TValue> valueSerializer,
         ILoggerFactory? loggerFactory = null,
-        Metadata.MetadataOptions? metadataOptions = null)
+        MetadataOptions? metadataOptions = null)
     {
         _options = options;
         _keySerializer = keySerializer;
@@ -235,7 +235,7 @@ public sealed class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
             // The GzipCompressionCodec(int) constructor validates the range (0-9).
             if (options.CompressionType == CompressionType.Gzip)
             {
-                registry.Register(new Compression.GzipCompressionCodec(level));
+                registry.Register(new GzipCompressionCodec(level));
             }
         }
 

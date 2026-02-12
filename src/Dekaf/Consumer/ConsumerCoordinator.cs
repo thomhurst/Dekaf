@@ -725,12 +725,12 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         }
 
         var buffer = new ArrayBufferWriter<byte>();
-        var writer = new Protocol.KafkaProtocolWriter(buffer);
+        var writer = new KafkaProtocolWriter(buffer);
 
         writer.WriteInt16(0); // Version
         writer.WriteArray(
             topicList,
-            (ref Protocol.KafkaProtocolWriter w, string t) => w.WriteString(t));
+            (ref KafkaProtocolWriter w, string t) => w.WriteString(t));
         writer.WriteBytes([]); // User data
 
         return buffer.WrittenSpan.ToArray();
@@ -742,13 +742,13 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             return [];
 
         var result = new HashSet<TopicPartition>();
-        var reader = new Protocol.KafkaProtocolReader(data);
+        var reader = new KafkaProtocolReader(data);
 
         var version = reader.ReadInt16();
-        var topics = reader.ReadArray((ref Protocol.KafkaProtocolReader r) =>
+        var topics = reader.ReadArray((ref KafkaProtocolReader r) =>
         {
             var topic = r.ReadString()!;
-            var partitions = r.ReadArray((ref Protocol.KafkaProtocolReader r2) => r2.ReadInt32());
+            var partitions = r.ReadArray((ref KafkaProtocolReader r2) => r2.ReadInt32());
             return (topic, partitions);
         });
 
@@ -876,10 +876,10 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
             return [];
 
         var result = new HashSet<string>();
-        var reader = new Protocol.KafkaProtocolReader(data);
+        var reader = new KafkaProtocolReader(data);
 
         var version = reader.ReadInt16();
-        var topics = reader.ReadArray((ref Protocol.KafkaProtocolReader r) => r.ReadString()!);
+        var topics = reader.ReadArray((ref KafkaProtocolReader r) => r.ReadString()!);
 
         foreach (var topic in topics)
         {
@@ -892,7 +892,7 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
     private byte[] BuildAssignmentData(List<TopicPartition> partitions)
     {
         var buffer = new ArrayBufferWriter<byte>();
-        var writer = new Protocol.KafkaProtocolWriter(buffer);
+        var writer = new KafkaProtocolWriter(buffer);
 
         // Group partitions by topic using pooled dictionary
         // Clear existing Lists before clearing the dictionary to reuse List instances
@@ -924,12 +924,12 @@ public sealed class ConsumerCoordinator : IAsyncDisposable
         // Write topics array
         writer.WriteArray(
             topicAssignments,
-            (ref Protocol.KafkaProtocolWriter w, (string Topic, List<int> Partitions) tp) =>
+            (ref KafkaProtocolWriter w, (string Topic, List<int> Partitions) tp) =>
             {
                 w.WriteString(tp.Topic); // Topic name
                 w.WriteArray(
                     tp.Partitions,
-                    (ref Protocol.KafkaProtocolWriter w2, int partition) => w2.WriteInt32(partition));
+                    (ref KafkaProtocolWriter w2, int partition) => w2.WriteInt32(partition));
             });
 
         writer.WriteBytes([]); // User data

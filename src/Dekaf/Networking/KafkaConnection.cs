@@ -477,16 +477,16 @@ public sealed class KafkaConnection : IKafkaConnection
             if (isFetchResponse)
             {
                 var memoryOwner = pooledBuffer.TransferOwnership();
-                Protocol.ResponseParsingContext.SetPooledMemory(memoryOwner);
+                ResponseParsingContext.SetPooledMemory(memoryOwner);
                 try
                 {
                     var reader = new KafkaProtocolReader(pooledBuffer.Data);
                     var response = (TResponse)TResponse.Read(ref reader, apiVersion);
 
-                    if (Protocol.ResponseParsingContext.WasMemoryUsed)
+                    if (ResponseParsingContext.WasMemoryUsed)
                     {
-                        var takenMemory = Protocol.ResponseParsingContext.TakePooledMemory();
-                        if (response is Protocol.Messages.FetchResponse fetchResponse && takenMemory is not null)
+                        var takenMemory = ResponseParsingContext.TakePooledMemory();
+                        if (response is FetchResponse fetchResponse && takenMemory is not null)
                         {
                             fetchResponse.PooledMemoryOwner = takenMemory;
                         }
@@ -504,7 +504,7 @@ public sealed class KafkaConnection : IKafkaConnection
                 }
                 finally
                 {
-                    Protocol.ResponseParsingContext.Reset();
+                    ResponseParsingContext.Reset();
                 }
             }
             else
@@ -1657,7 +1657,7 @@ internal readonly struct PooledResponseBuffer : IDisposable
 /// Used to transfer buffer ownership from KafkaConnection to FetchResponse/RecordBatch
 /// for zero-copy record parsing.
 /// </summary>
-internal sealed class PooledResponseMemory : Protocol.IPooledMemory
+internal sealed class PooledResponseMemory : IPooledMemory
 {
     private byte[]? _buffer;
     private readonly int _length;

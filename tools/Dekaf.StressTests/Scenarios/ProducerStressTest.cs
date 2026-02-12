@@ -59,9 +59,9 @@ internal sealed class ProducerStressTest : IStressTestScenario
         {
             try
             {
-                var start = System.Diagnostics.Stopwatch.GetTimestamp();
+                var start = Stopwatch.GetTimestamp();
                 producer.Send(options.Topic, GetKey(messageIndex), messageValue);
-                latency.RecordTicks(System.Diagnostics.Stopwatch.GetTimestamp() - start);
+                latency.RecordTicks(Stopwatch.GetTimestamp() - start);
                 throughput.RecordMessage(options.MessageSizeBytes);
                 messageIndex++;
 

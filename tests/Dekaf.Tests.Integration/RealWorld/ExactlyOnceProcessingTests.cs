@@ -38,7 +38,7 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
         await using var pipelineConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(consumerGroupId)
-            .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
             .BuildAsync();
@@ -86,7 +86,7 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
         await using var outputConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"eo-verify-{Guid.NewGuid():N}")
-            .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
             .BuildAsync();
 
@@ -152,7 +152,7 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"eo-abort-verify-{Guid.NewGuid():N}")
-            .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
             .BuildAsync();
 
@@ -222,7 +222,7 @@ public sealed class ExactlyOnceProcessingTests(KafkaTestContainer kafka) : Kafka
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"eo-fence-verify-{Guid.NewGuid():N}")
-            .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
             .BuildAsync();
 

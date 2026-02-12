@@ -175,7 +175,7 @@ public sealed class ConsumerOptions
     /// <summary>
     /// GSSAPI (Kerberos) configuration. Required when SaslMechanism is Gssapi.
     /// </summary>
-    public Security.Sasl.GssapiConfig? GssapiConfig { get; init; }
+    public GssapiConfig? GssapiConfig { get; init; }
 
     /// <summary>
     /// OAuth bearer token configuration for OAUTHBEARER authentication.
