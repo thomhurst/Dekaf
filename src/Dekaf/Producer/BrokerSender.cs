@@ -70,7 +70,7 @@ internal sealed class BrokerSender : IAsyncDisposable
     // Aligned with Java Kafka's InFlightRequests.canSendMore(): the send loop checks
     // capacity before sending, and waits for a signal when at max. No blocking primitives.
     // _inFlightCount is only incremented by the single-threaded send loop;
-    // decremented by ProcessCompletedResponses in the send loop via Interlocked.
+    // decremented by the ContinueWith callback on the response task via Interlocked.
     private readonly int _maxInFlight;
     private int _inFlightCount;
     private TaskCompletionSource? _inFlightSlotAvailable;
@@ -368,9 +368,9 @@ internal sealed class BrokerSender : IAsyncDisposable
 
                     if (_pendingResponses.Count > 0)
                     {
-                        var responseSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                        Volatile.Write(ref _responseReadySignal, responseSignal);
-
+                        // If any response is already completed, go back to the top of the loop
+                        // immediately so ProcessCompletedResponses can handle it. Without this,
+                        // we'd wait on channelWait + inFlightSignal which may never fire.
                         var anyCompleted = false;
                         for (var i = 0; i < _pendingResponses.Count; i++)
                         {
@@ -381,8 +381,15 @@ internal sealed class BrokerSender : IAsyncDisposable
                             }
                         }
 
-                        if (!anyCompleted)
-                            waitTasks.Add(responseSignal.Task);
+                        if (anyCompleted)
+                        {
+                            pendingCarryOver = newCarryOver;
+                            continue;
+                        }
+
+                        var responseSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                        Volatile.Write(ref _responseReadySignal, responseSignal);
+                        waitTasks.Add(responseSignal.Task);
                     }
 
                     // Calculate earliest backoff from carry-over
@@ -551,8 +558,7 @@ internal sealed class BrokerSender : IAsyncDisposable
                 continue;
             }
 
-            // Response complete — release in-flight slot immediately
-            ReleaseInFlightSlot();
+            // In-flight slot already released by ContinueWith in SendCoalescedAsync.
 
             if (pending.ResponseTask.IsFaulted || pending.ResponseTask.IsCanceled)
             {
@@ -905,11 +911,17 @@ internal sealed class BrokerSender : IAsyncDisposable
 
             _pendingResponses.Add(new PendingResponse(responseTask, batches, count, requestStartTime));
 
-            // Signal the send loop when the response completes so it can wake up from WaitToReadAsync.
+            // Release the in-flight slot and signal the send loop when the response completes.
+            // The slot MUST be released here (not in ProcessCompletedResponses) because the send loop
+            // may be waiting for a slot inside the loop body (while _inFlightCount >= _maxInFlight),
+            // and ProcessCompletedResponses only runs at the top of the loop — causing a deadlock.
             var self = this;
             _ = responseTask.ContinueWith(static (_, state) =>
-                Volatile.Read(ref ((BrokerSender)state!)._responseReadySignal)?.TrySetResult(),
-                self, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously,
+            {
+                var sender = (BrokerSender)state!;
+                sender.ReleaseInFlightSlot();
+                Volatile.Read(ref sender._responseReadySignal)?.TrySetResult();
+            }, self, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
         }
         catch (Exception ex)
