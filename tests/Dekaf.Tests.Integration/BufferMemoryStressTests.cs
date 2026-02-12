@@ -122,6 +122,7 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
     /// Sends messages and verifies they complete within a reasonable time.
     /// </summary>
     [Test]
+    [NotInParallel("MemoryMeasurement")]
     public async Task BufferedBytes_StaysWithinReasonableBounds_UnderLoad()
     {
         // Arrange
