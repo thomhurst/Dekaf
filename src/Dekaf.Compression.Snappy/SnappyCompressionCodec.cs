@@ -8,13 +8,18 @@ namespace Dekaf.Compression.Snappy;
 /// <summary>
 /// Snappy compression codec with xerial-snappy framing.
 /// Kafka uses xerial-snappy format which wraps raw snappy blocks with:
-/// - Magic header: 0x82 0x53 0x4e 0x41 0x50 0x50 0x59 0x00
-/// - Multiple blocks, each with: [compressed size (4 bytes BE)][uncompressed size (4 bytes BE)][snappy data]
+/// - Magic header (8 bytes): 0x82 SNAPPY 0x00
+/// - Version (4 bytes BE): 1
+/// - Min compatible version (4 bytes BE): 1
+/// - Multiple blocks, each with: [compressed size (4 bytes BE)][snappy data]
 /// </summary>
 public sealed class SnappyCompressionCodec : ICompressionCodec
 {
     // Xerial-snappy magic header
     private static ReadOnlySpan<byte> XerialMagic => [0x82, 0x53, 0x4e, 0x41, 0x50, 0x50, 0x59, 0x00];
+
+    // Total header size: magic (8) + version (4) + compat version (4) = 16 bytes
+    private const int HeaderSize = 16;
 
     // Default block size for compression (64KB)
     private const int DefaultBlockSize = 65536;
@@ -43,10 +48,12 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
     /// <inheritdoc />
     public void Compress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
     {
-        // Write xerial magic header
-        var headerSpan = destination.GetSpan(XerialMagic.Length);
+        // Write xerial header: magic (8 bytes) + version (4 bytes) + compat version (4 bytes)
+        var headerSpan = destination.GetSpan(HeaderSize);
         XerialMagic.CopyTo(headerSpan);
-        destination.Advance(XerialMagic.Length);
+        BinaryPrimitives.WriteInt32BigEndian(headerSpan.Slice(XerialMagic.Length), 1); // version
+        BinaryPrimitives.WriteInt32BigEndian(headerSpan.Slice(XerialMagic.Length + 4), 1); // min compat version
+        destination.Advance(HeaderSize);
 
         // Process in blocks
         var position = source.Start;
@@ -65,11 +72,10 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
             Snappier.Snappy.Compress(blockSequence, compressedBuffer);
             var compressedLength = compressedBuffer.WrittenCount;
 
-            // Write block header: [compressed size (4 bytes BE)][uncompressed size (4 bytes BE)]
-            var blockHeaderSpan = destination.GetSpan(8);
+            // Write block header: [compressed size (4 bytes BE)]
+            var blockHeaderSpan = destination.GetSpan(4);
             BinaryPrimitives.WriteInt32BigEndian(blockHeaderSpan, compressedLength);
-            BinaryPrimitives.WriteInt32BigEndian(blockHeaderSpan.Slice(4), blockLength);
-            destination.Advance(8);
+            destination.Advance(4);
 
             // Write compressed data
             var compressedSpan = destination.GetSpan(compressedLength);
@@ -84,36 +90,35 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
     /// <inheritdoc />
     public void Decompress(ReadOnlySequence<byte> source, IBufferWriter<byte> destination)
     {
-        if (source.Length < XerialMagic.Length)
+        if (source.Length < HeaderSize)
             throw new InvalidDataException("Snappy data too short for xerial header.");
 
-        // Verify and skip xerial magic header
-        Span<byte> headerBuffer = stackalloc byte[XerialMagic.Length];
-        source.Slice(0, XerialMagic.Length).CopyTo(headerBuffer);
+        // Verify and skip xerial header (magic + version + compat version)
+        Span<byte> headerBuffer = stackalloc byte[HeaderSize];
+        source.Slice(0, HeaderSize).CopyTo(headerBuffer);
 
-        if (!headerBuffer.SequenceEqual(XerialMagic))
+        if (!headerBuffer.Slice(0, XerialMagic.Length).SequenceEqual(XerialMagic))
             throw new InvalidDataException("Invalid xerial-snappy magic header.");
 
-        var position = source.GetPosition(XerialMagic.Length);
-        var remaining = source.Length - XerialMagic.Length;
+        var position = source.GetPosition(HeaderSize);
+        var remaining = source.Length - HeaderSize;
 
         // Process blocks
-        Span<byte> blockHeader = stackalloc byte[8];
+        Span<byte> blockHeader = stackalloc byte[4];
         byte[]? compressedBuffer = null;
 
         try
         {
-            while (remaining >= 8)
+            while (remaining >= 4)
             {
-                // Read block header
-                source.Slice(position, 8).CopyTo(blockHeader);
+                // Read block header: [compressed size (4 bytes BE)]
+                source.Slice(position, 4).CopyTo(blockHeader);
                 var compressedSize = BinaryPrimitives.ReadInt32BigEndian(blockHeader);
-                var uncompressedSize = BinaryPrimitives.ReadInt32BigEndian(blockHeader.Slice(4));
 
-                position = source.GetPosition(8, position);
-                remaining -= 8;
+                position = source.GetPosition(4, position);
+                remaining -= 4;
 
-                if (compressedSize < 0 || uncompressedSize < 0)
+                if (compressedSize < 0)
                     throw new InvalidDataException("Invalid block size in xerial-snappy data.");
 
                 if (remaining < compressedSize)
@@ -139,15 +144,12 @@ public sealed class SnappyCompressionCodec : ICompressionCodec
                     compressedSpan = compressedBuffer.AsSpan(0, compressedSize);
                 }
 
-                // Decompress directly into destination and verify size
+                // Get uncompressed length from snappy frame, then decompress
+                var uncompressedSize = Snappier.Snappy.GetUncompressedLength(compressedSpan);
                 var decompressedSpan = destination.GetSpan(uncompressedSize);
                 var actualDecompressedLength = Snappier.Snappy.Decompress(compressedSpan, decompressedSpan);
 
-                if (actualDecompressedLength != uncompressedSize)
-                    throw new InvalidDataException(
-                        $"Decompressed size mismatch. Expected {uncompressedSize}, got {actualDecompressedLength}.");
-
-                destination.Advance(uncompressedSize);
+                destination.Advance(actualDecompressedLength);
 
                 position = source.GetPosition(compressedSize, position);
                 remaining -= compressedSize;
