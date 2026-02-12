@@ -511,6 +511,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 {
     private readonly ProducerOptions _options;
     private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
+    private readonly ConcurrentDictionary<TopicPartition, object> _partitionSealLocks = new();
     private readonly Channel<ReadyBatch> _readyBatches;
     private readonly PartitionBatchPool _batchPool;
     private readonly ReadyBatchPool _readyBatchPool; // Pool for ReadyBatch objects to eliminate per-batch allocations
@@ -1127,49 +1128,41 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // The loop will increment again before the next TryAppend attempt.
             Interlocked.Decrement(ref _pendingAwaitedProduceCount);
 
-            // Batch is full - atomically remove it from dictionary BEFORE completing.
-            // Only the thread that wins the TryRemove race will complete the batch.
-            // This prevents a race where:
-            // 1. Thread A calls Complete(), batch returned to pool, Reset() clears _isCompleted
-            // 2. Thread B (holding stale reference) calls Complete() on recycled batch
-            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
+            // Batch is full - seal it under a per-partition lock to preserve ordering.
+            // The lock ensures that if the linger timer is concurrently sealing an older batch
+            // for this partition, the older batch is written to the channel first.
+            lock (GetPartitionSealLock(topicPartition))
             {
-                // Reset oldest batch tracking if dictionary is now empty
-                ResetOldestBatchTrackingIfEmpty();
-
-                var readyBatch = batch.Complete();
-                if (readyBatch is not null)
+                if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
                 {
-                    // Decrement pending awaited produce count by the number of completion sources in this batch
-                    if (readyBatch.CompletionSourcesCount > 0)
-                        Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
-                    ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
-                    // Track delivery task for FlushAsync
-                    OnBatchEntersPipeline();
+                    // Reset oldest batch tracking if dictionary is now empty
+                    ResetOldestBatchTrackingIfEmpty();
 
-                    // Try synchronous write first to avoid async state machine allocation
-                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    var readyBatch = batch.Complete();
+                    if (readyBatch is not null)
                     {
-                        try
-                        {
-                            // Backpressure happens here: WriteAsync blocks when channel is full
-                            await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-                            ProducerDebugCounters.RecordBatchQueuedToReady();
-                        }
-                        catch
+                        // Decrement pending awaited produce count by the number of completion sources in this batch
+                        if (readyBatch.CompletionSourcesCount > 0)
+                            Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
+                        ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+                        // Track delivery task for FlushAsync
+                        OnBatchEntersPipeline();
+
+                        // Write to unbounded channel — TryWrite always succeeds unless writer is completed (disposal)
+                        if (!_readyBatches.Writer.TryWrite(readyBatch))
                         {
                             ProducerDebugCounters.RecordBatchFailedToQueue();
-                            // CRITICAL: If WriteAsync fails (cancellation or disposal), fail the batch
-                            // and release memory to prevent permanent leak
                             readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            OnBatchExitsPipeline(); // Decrement counter on failure
+                            OnBatchExitsPipeline();
                             ReleaseMemory(readyBatch.DataSize);
-                            throw;
+                            _batchPool.Return(batch);
+                            throw new ObjectDisposedException(nameof(RecordAccumulator));
                         }
-                    }
 
-                    // Return the completed batch shell to the pool for reuse
-                    _batchPool.Return(batch);
+                        ProducerDebugCounters.RecordBatchQueuedToReady();
+                        // Return the completed batch shell to the pool for reuse
+                        _batchPool.Return(batch);
+                    }
                 }
             }
 
@@ -1416,31 +1409,33 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Header[]? pooledHeaderArray,
         int recordSize)
     {
-        // Atomically remove the old batch from dictionary BEFORE completing.
-        // Only the thread that wins the TryRemove race will complete the batch.
-        if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, oldBatch)))
+        // Seal under per-partition lock to preserve ordering across concurrent sealers.
+        lock (GetPartitionSealLock(topicPartition))
         {
-            // Reset oldest batch tracking if dictionary is now empty
-            ResetOldestBatchTrackingIfEmpty();
-
-            var readyBatch = oldBatch.Complete();
-            if (readyBatch is not null)
+            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, oldBatch)))
             {
-                // Track delivery task for FlushAsync to wait on
-                OnBatchEntersPipeline();
+                // Reset oldest batch tracking if dictionary is now empty
+                ResetOldestBatchTrackingIfEmpty();
 
-                if (!_readyBatches.Writer.TryWrite(readyBatch))
+                var readyBatch = oldBatch.Complete();
+                if (readyBatch is not null)
                 {
-                    readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                    OnBatchExitsPipeline(); // Decrement counter on failure
-                    // Release the batch's buffer memory since it won't go through producer
-                    ReleaseMemory(readyBatch.DataSize);
-                    t_cachedBatch = null;
-                    return false;
-                }
+                    // Track delivery task for FlushAsync to wait on
+                    OnBatchEntersPipeline();
 
-                // Return the completed batch shell to the pool for reuse
-                _batchPool.Return(oldBatch);
+                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    {
+                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                        OnBatchExitsPipeline(); // Decrement counter on failure
+                        // Release the batch's buffer memory since it won't go through producer
+                        ReleaseMemory(readyBatch.DataSize);
+                        t_cachedBatch = null;
+                        return false;
+                    }
+
+                    // Return the completed batch shell to the pool for reuse
+                    _batchPool.Return(oldBatch);
+                }
             }
         }
 
@@ -1588,36 +1583,34 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 return true;
             }
 
-            // Batch is full - atomically remove it from dictionary BEFORE completing.
-            // Only the thread that wins the TryRemove race will complete the batch.
-            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
+            // Seal under per-partition lock to preserve ordering across concurrent sealers.
+            lock (GetPartitionSealLock(topicPartition))
             {
-                // Reset oldest batch tracking if dictionary is now empty
-                ResetOldestBatchTrackingIfEmpty();
-
-                var readyBatch = batch.Complete();
-                if (readyBatch is not null)
+                if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
                 {
-                    // Track delivery task for FlushAsync
-                    OnBatchEntersPipeline();
+                    // Reset oldest batch tracking if dictionary is now empty
+                    ResetOldestBatchTrackingIfEmpty();
 
-                    // Non-blocking write to unbounded channel - should always succeed
-                    // If it fails (channel completed), the producer is being disposed
-                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    var readyBatch = batch.Complete();
+                    if (readyBatch is not null)
                     {
-                        // Channel is closed, fail the batch and return false
-                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                        OnBatchExitsPipeline(); // Decrement counter on failure
-                        // Release the batch's buffer memory since it won't go through producer
-                        ReleaseMemory(readyBatch.DataSize);
-                        // Invalidate caches
-                        t_cachedBatch = null;
-                        mpCache[cacheIndex].Batch = null;
-                        return false;
-                    }
+                        // Track delivery task for FlushAsync
+                        OnBatchEntersPipeline();
 
-                    // Return the completed batch shell to the pool for reuse
-                    _batchPool.Return(batch);
+                        if (!_readyBatches.Writer.TryWrite(readyBatch))
+                        {
+                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                            OnBatchExitsPipeline();
+                            ReleaseMemory(readyBatch.DataSize);
+                            t_cachedBatch = null;
+                            mpCache[cacheIndex].Batch = null;
+                            _batchPool.Return(batch);
+                            return false;
+                        }
+
+                        // Return the completed batch shell to the pool for reuse
+                        _batchPool.Return(batch);
+                    }
                 }
             }
 
@@ -1701,26 +1694,30 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 return true;
             }
 
-            // Batch is full - atomically remove and complete it
-            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
+            // Seal under per-partition lock to preserve ordering across concurrent sealers.
+            lock (GetPartitionSealLock(topicPartition))
             {
-                // Reset oldest batch tracking if dictionary is now empty
-                ResetOldestBatchTrackingIfEmpty();
-
-                var readyBatch = batch.Complete();
-                if (readyBatch is not null)
+                if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
                 {
-                    OnBatchEntersPipeline();
+                    // Reset oldest batch tracking if dictionary is now empty
+                    ResetOldestBatchTrackingIfEmpty();
 
-                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    var readyBatch = batch.Complete();
+                    if (readyBatch is not null)
                     {
-                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                        OnBatchExitsPipeline(); // Decrement counter on failure
-                        ReleaseMemory(readyBatch.DataSize);
-                        return false;
-                    }
+                        OnBatchEntersPipeline();
 
-                    _batchPool.Return(batch);
+                        if (!_readyBatches.Writer.TryWrite(readyBatch))
+                        {
+                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                            OnBatchExitsPipeline();
+                            ReleaseMemory(readyBatch.DataSize);
+                            _batchPool.Return(batch);
+                            return false;
+                        }
+
+                        _batchPool.Return(batch);
+                    }
                 }
             }
         }
@@ -1813,46 +1810,42 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // If we haven't appended all, batch is full
                 if (startIndex < items.Length)
                 {
-                    // Atomically remove the completed batch BEFORE completing.
-                    // Only the thread that wins the TryRemove race will complete the batch.
-                    if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
+                    // Seal under per-partition lock to preserve ordering across concurrent sealers.
+                    lock (GetPartitionSealLock(topicPartition))
                     {
-                        // Reset oldest batch tracking if dictionary is now empty
-                        ResetOldestBatchTrackingIfEmpty();
-
-                        var readyBatch = batch.Complete();
-                        if (readyBatch is not null)
+                        if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
                         {
-                            // Track delivery task for FlushAsync
-                            OnBatchEntersPipeline();
+                            // Reset oldest batch tracking if dictionary is now empty
+                            ResetOldestBatchTrackingIfEmpty();
 
-                            // Wrap in try-catch to ensure ReadyBatch cleanup if exception occurs
-                            // between Complete() and successful channel write
-                            try
+                            var readyBatch = batch.Complete();
+                            if (readyBatch is not null)
                             {
-                                if (!_readyBatches.Writer.TryWrite(readyBatch))
+                                // Track delivery task for FlushAsync
+                                OnBatchEntersPipeline();
+
+                                try
                                 {
-                                    readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                                    OnBatchExitsPipeline(); // Decrement counter on failure
-                                    // Release the batch's buffer memory since it won't go through producer
-                                    ReleaseMemory(readyBatch.DataSize);
-                                    t_cachedBatch = null;
-                                    return false;
-                                }
+                                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                                    {
+                                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                                        OnBatchExitsPipeline();
+                                        ReleaseMemory(readyBatch.DataSize);
+                                        t_cachedBatch = null;
+                                        _batchPool.Return(batch);
+                                        return false;
+                                    }
 
-                                // Batch successfully sent to channel - sender will release its memory
-                                // Return the completed batch shell to the pool for reuse
-                                _batchPool.Return(batch);
-                            }
-                            catch
-                            {
-                                // CRITICAL: If exception occurs after Complete(), must clean up ReadyBatch
-                                // to prevent ArrayPool leaks from pooled arrays in the batch
-                                readyBatch.Fail(new InvalidOperationException("Batch append failed"));
-                                OnBatchExitsPipeline(); // Decrement counter on failure
-                                // Release the batch memory here since it won't reach SendBatchAsync
-                                ReleaseMemory(readyBatch.DataSize);
-                                throw;
+                                    // Return the completed batch shell to the pool for reuse
+                                    _batchPool.Return(batch);
+                                }
+                                catch
+                                {
+                                    readyBatch.Fail(new InvalidOperationException("Batch append failed"));
+                                    OnBatchExitsPipeline();
+                                    ReleaseMemory(readyBatch.DataSize);
+                                    throw;
+                                }
                             }
                         }
                     }
@@ -1988,6 +1981,44 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Synchronous version of <see cref="SealBatchToChannelAsync"/> for use inside per-partition locks.
+    /// Since the ready channel is unbounded, TryWrite always succeeds unless the writer is completed (disposal).
+    /// This avoids the need for async WriteAsync inside a lock block.
+    /// </summary>
+    private void SealBatchToChannelSync(PartitionBatch batch)
+    {
+        var readyBatch = batch.Complete();
+        if (readyBatch is null)
+            return;
+
+        LogBatchSealed(batch.TopicPartition.Topic, batch.TopicPartition.Partition, batch.RecordCount, readyBatch.DataSize);
+
+        if (readyBatch.CompletionSourcesCount > 0)
+            Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
+        ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+        OnBatchEntersPipeline();
+
+        if (!_readyBatches.Writer.TryWrite(readyBatch))
+        {
+            ProducerDebugCounters.RecordBatchFailedToQueue();
+            try
+            {
+                readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                OnBatchExitsPipeline();
+            }
+            finally
+            {
+                ReleaseMemory(readyBatch.DataSize);
+            }
+            _batchPool.Return(batch);
+            return;
+        }
+
+        ProducerDebugCounters.RecordBatchQueuedToReady();
+        _batchPool.Return(batch);
+    }
+
+    /// <summary>
     /// Unified batch-sealing method used by both linger timer and flush.
     /// </summary>
     /// <param name="sealAll">
@@ -2021,14 +2052,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     if (_batches.TryGetValue(key, out var batch))
                     {
-                        // Atomically remove the batch from dictionary BEFORE completing.
-                        // Only the thread that wins the TryRemove race will complete the batch.
-                        if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(key, batch)))
+                        // Seal under per-partition lock to preserve ordering across concurrent sealers.
+                        lock (GetPartitionSealLock(key))
                         {
-                            // Reset oldest batch tracking if dictionary is now empty
-                            ResetOldestBatchTrackingIfEmpty();
-                            ProducerDebugCounters.RecordBatchFlushedFromDictionary();
-                            await SealBatchToChannelAsync(batch, cancellationToken).ConfigureAwait(false);
+                            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(key, batch)))
+                            {
+                                ResetOldestBatchTrackingIfEmpty();
+                                ProducerDebugCounters.RecordBatchFlushedFromDictionary();
+                                SealBatchToChannelSync(batch);
+                            }
                         }
                     }
                 }
@@ -2044,14 +2076,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     var batch = kvp.Value;
                     if (batch.ShouldFlush(now, _options.LingerMs))
                     {
-                        // Atomically remove the batch from dictionary BEFORE completing.
-                        // Only the thread that wins the TryRemove race will complete the batch.
-                        if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch)))
+                        // Seal under per-partition lock to preserve ordering across concurrent sealers.
+                        lock (GetPartitionSealLock(kvp.Key))
                         {
-                            // Note: We don't call ResetOldestBatchTrackingIfEmpty() here because
-                            // linger mode already recalculates _oldestBatchCreatedTicks
-                            // at the end of enumeration based on remaining batches.
-                            await SealBatchToChannelAsync(batch, cancellationToken).ConfigureAwait(false);
+                            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch)))
+                            {
+                                // Note: We don't call ResetOldestBatchTrackingIfEmpty() here because
+                                // linger mode already recalculates _oldestBatchCreatedTicks
+                                // at the end of enumeration based on remaining batches.
+                                SealBatchToChannelSync(batch);
+                            }
                         }
                     }
                     else
@@ -2161,6 +2195,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             Volatile.Write(ref _oldestBatchCreatedTicks, long.MaxValue);
         }
     }
+
+    /// <summary>
+    /// Gets the per-partition seal lock. This lock ensures that when multiple threads
+    /// seal batches for the same partition concurrently (e.g., linger timer and produce thread),
+    /// batches are written to the ready channel in creation order.
+    /// Without this lock, the following race can cause ordering violations:
+    /// 1. Linger timer: TryRemove(B1) — B1 removed from dictionary
+    /// 2. Produce thread: creates B2, fills it, TryRemove(B2), Complete(B2), TryWrite(B2)
+    /// 3. Linger timer: Complete(B1), TryWrite(B1) — B1 arrives AFTER B2 in channel
+    /// The lock prevents step 2 from completing before step 3.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private object GetPartitionSealLock(TopicPartition topicPartition) =>
+        _partitionSealLocks.GetOrAdd(topicPartition, static _ => new object());
 
     /// <summary>
     /// Flushes all batches and waits for them to be delivered to Kafka.
