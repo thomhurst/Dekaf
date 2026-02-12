@@ -88,6 +88,30 @@ internal sealed class PooledMemoryStream : Stream
         return count;
     }
 
+    public override int Read(Span<byte> buffer)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        var available = _length - _position;
+        if (available <= 0)
+            return 0;
+
+        var count = Math.Min(buffer.Length, available);
+        _buffer.AsSpan(_position, count).CopyTo(buffer);
+        _position += count;
+        return count;
+    }
+
+    public override int ReadByte()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (_position >= _length)
+            return -1;
+
+        return _buffer[_position++];
+    }
+
     public override long Seek(long offset, SeekOrigin origin)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

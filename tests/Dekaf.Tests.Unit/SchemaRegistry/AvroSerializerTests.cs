@@ -89,9 +89,12 @@ public class AvroSerializerTests
         // Warm up the deserializer cache with the schema
         await deserializer.WarmupAsync(schemaId);
 
-        // Pre-computed Avro binary payload for { "id": 42, "name": "test" }
-        // id: zigzag(42) = 84 = 0x54; name: length zigzag(4) = 0x08, "test" = 74 65 73 74
-        var avroPayload = new byte[] { 0x54, 0x08, 0x74, 0x65, 0x73, 0x74 };
+        // Serialize a record using the Avro library for correct binary encoding
+        var avroSchema = AvroSchema.Parse(SimpleRecordSchema) as Avro.RecordSchema;
+        var record = new GenericRecord(avroSchema!);
+        record.Add("id", 42);
+        record.Add("name", "test");
+        var avroPayload = SerializeAvroRecord(record, avroSchema!);
 
         // Create wire format
         var wireFormat = new byte[1 + 4 + avroPayload.Length];

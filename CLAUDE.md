@@ -103,6 +103,13 @@ private void TrackDeliveryTask(ReadyBatch readyBatch)
 - `DisposeAsync()` must wait for all in-flight work with `try-catch` to observe exceptions
 - Use `ConcurrentDictionary<Task, byte>` to track all async operations that need coordinated disposal
 
+**Flaky tests indicate real bugs — never just re-run:**
+- A flaky test is a test that fails intermittently. This always indicates a real bug — either in the code under test or in the test itself.
+- **Never re-run a failed CI job** hoping it passes. Instead, investigate and fix the root cause.
+- Common root causes: timing dependencies (`Task.Delay` for synchronization), thread pool starvation on slow CI runners, missing `ConfigureAwait(false)`, shared mutable state between parallel tests, hand-coded binary data that drifts from library encoding.
+- Fix timing-dependent tests by using deterministic synchronization (e.g., `TaskCompletionSource`, `ValueTask.IsCompleted` checks) instead of arbitrary delays.
+- Fix encoding-dependent tests by using the actual library to serialize data rather than hand-coding binary payloads.
+
 ## Project Structure
 
 ```
