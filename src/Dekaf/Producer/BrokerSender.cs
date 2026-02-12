@@ -1094,6 +1094,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void CleanupBatch(ReadyBatch batch)
     {
+        // Release buffer memory BEFORE returning to pool (Reset clears DataSize)
+        _accumulator.ReleaseMemory(batch.DataSize);
         _accumulator.ReturnReadyBatch(batch);
         _accumulator.OnBatchExitsPipeline();
     }

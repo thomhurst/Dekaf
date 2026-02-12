@@ -2357,6 +2357,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         while (_readyBatches.Reader.TryRead(out var readyBatch))
         {
             readyBatch.Fail(disposedException);
+            ReleaseMemory(readyBatch.DataSize);
             OnBatchExitsPipeline(); // Decrement counter for batches drained during disposal
         }
 
