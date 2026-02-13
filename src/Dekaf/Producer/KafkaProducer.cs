@@ -21,6 +21,12 @@ namespace Dekaf.Producer;
 /// <typeparam name="TValue">Value type.</typeparam>
 public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 {
+    /// <summary>
+    /// Sentinel exception used to signal that the buffer is full and the caller should
+    /// fall back to the async path (ReserveMemoryAsync). Never escapes ProduceSyncCore.
+    /// </summary>
+    private sealed class BufferFullException : Exception;
+
     private readonly ProducerOptions _options;
     private readonly ISerializer<TKey> _keySerializer;
     private readonly ISerializer<TValue> _valueSerializer;
@@ -394,6 +400,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         try
         {
             ProduceSyncCore(message, topicInfo, completion);
+        }
+        catch (BufferFullException)
+        {
+            // Buffer is full — fall back to async path which uses ReserveMemoryAsync
+            // (yields instead of blocking a thread, preventing thread pool starvation).
+            // ProduceSyncCore already cleaned up and returned the completion source.
+            completion = null;
+            return false;
         }
         catch (Exception ex)
         {
@@ -983,7 +997,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 recordHeaders = ConvertHeaders(message.Headers, out pooledHeaderArray);
             }
 
-            // Append to accumulator synchronously
+            // Append to accumulator synchronously (non-blocking memory reservation).
+            // Returns false when buffer is full OR accumulator is disposed.
             if (!_accumulator.TryAppendSync(
                 message.Topic,
                 partition,
@@ -994,18 +1009,17 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 pooledHeaderArray,
                 completion))
             {
-                // Accumulator is disposed - cleanup and throw
+                // Clean up serialized data — the async slow path will re-serialize
                 CleanupPooledResources(key, value, pooledHeaderArray);
-                var disposedException = new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-                completion.TrySetException(disposedException);
-                throw disposedException;
+                _valueTaskSourcePool.Return(completion);
+                throw new BufferFullException();
             }
 
             // Track message produced
             var messageBytes = key.Length + value.Length;
             _statisticsCollector.RecordMessageProduced(message.Topic, partition, messageBytes);
         }
-        catch (Exception ex) when (ex is not ObjectDisposedException)
+        catch (Exception ex) when (ex is not ObjectDisposedException and not BufferFullException)
         {
             // Cleanup resources on any exception (except ObjectDisposedException which already cleaned up)
             CleanupPooledResources(key, value, pooledHeaderArray);

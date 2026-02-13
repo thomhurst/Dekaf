@@ -1202,9 +1202,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Calculate record size for buffer memory tracking
         var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
 
-        // Reserve memory before appending - blocks synchronously if buffer is full
-        // This provides backpressure when producers are faster than the network can drain
-        ReserveMemorySync(recordSize);
+        // Try non-blocking memory reservation. If buffer is full, return false so the
+        // caller (ProduceAsync fast path) falls back to the async path which uses
+        // ReserveMemoryAsync and yields instead of blocking a thread. This prevents
+        // thread pool starvation when BufferMemory is held until batch completion.
+        if (!TryReserveMemory(recordSize))
+            return false;
 
         // OPTIMIZATION: Use a nested cache to get/create TopicPartition without allocating on hot path.
         var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
