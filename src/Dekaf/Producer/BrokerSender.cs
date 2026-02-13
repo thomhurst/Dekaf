@@ -336,8 +336,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                         if (!anyCompleted)
                         {
-                            var channelWait = channelReader.WaitToReadAsync(cancellationToken).AsTask();
-                            await Task.WhenAny(channelWait, responseSignal.Task).ConfigureAwait(false);
+                            // Fast path: if channel already has data, skip WhenAny allocation.
+                            // WaitToReadAsync completes synchronously when data is buffered.
+                            var channelWaitVt = channelReader.WaitToReadAsync(cancellationToken);
+                            if (!channelWaitVt.IsCompleted)
+                            {
+                                await Task.WhenAny(channelWaitVt.AsTask(), responseSignal.Task).ConfigureAwait(false);
+                            }
                         }
                     }
                 }
@@ -458,7 +463,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // 3. An in-flight slot opens, or
                     // 4. Retry backoff elapses (earliest RetryNotBefore from carry-over).
                     reusableWaitTasks.Clear();
-                    reusableWaitTasks.Add(channelReader.WaitToReadAsync(cancellationToken).AsTask());
+
+                    // Fast path: if channel already has data, skip wait entirely
+                    var channelWaitVt2 = channelReader.WaitToReadAsync(cancellationToken);
+                    if (channelWaitVt2.IsCompleted)
+                    {
+                        pendingCarryOver = newCarryOver;
+                        continue;
+                    }
+
+                    reusableWaitTasks.Add(channelWaitVt2.AsTask());
                     reusableWaitTasks.Add(inFlightSignal.Task);
 
                     if (_pendingResponses.Count > 0)
