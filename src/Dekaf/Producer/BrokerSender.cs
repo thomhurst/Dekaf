@@ -1005,9 +1005,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var responseTask = connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
                 request, (short)apiVersion, cancellationToken);
 
-            // Buffer memory is held until batch completion (CleanupBatch), matching Java's
-            // RecordAccumulator.deallocate() behavior. This provides accurate backpressure:
-            // BufferMemory reflects actual physical memory in use across the entire pipeline.
+            // Release buffer memory now that data is written to the TCP buffer.
+            // The untracked gap (between release and response) is bounded by
+            // MaxInFlightRequestsPerConnection × BatchSize (e.g. 5 × 1MB = 5MB).
+            // This is safe because: (1) the kernel has a copy in the TCP send buffer,
+            // (2) the gap is bounded and small, (3) it unblocks producers waiting on
+            // BufferMemory without the unbounded growth caused by drain-time release.
+            // CleanupBatch still releases for error paths where TCP send wasn't reached.
+            for (var i = 0; i < count; i++)
+            {
+                if (!batches[i].MemoryReleased)
+                {
+                    _accumulator.ReleaseMemory(batches[i].DataSize);
+                    batches[i].MemoryReleased = true;
+                }
+            }
 
             _pendingResponses.Add(new PendingResponse(responseTask, batches, count, requestStartTime));
 
