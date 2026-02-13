@@ -16,10 +16,10 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseSnappyCompression()
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -28,11 +28,11 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             Value = "snappy-compressed-value"
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"snappy-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -50,11 +50,11 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 50;
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseSnappyCompression()
             .WithLinger(TimeSpan.FromMilliseconds(10))
-            .Build();
+            .BuildAsync();
 
         var pendingTasks = new List<ValueTask<RecordMetadata>>();
         for (var i = 0; i < messageCount; i++)
@@ -72,11 +72,11 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             await task;
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"snappy-batch-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -106,10 +106,10 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var largeValue = new string('A', 100_000);
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseSnappyCompression()
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -118,11 +118,11 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             Value = largeValue
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"snappy-large-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -139,11 +139,11 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseSnappyCompression()
             .WithLinger(TimeSpan.FromMilliseconds(50))
-            .Build();
+            .BuildAsync();
 
         var expectedMessages = new Dictionary<string, string>
         {
@@ -170,11 +170,11 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             await task;
         }
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"snappy-mixed-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -201,10 +201,10 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseSnappyCompression()
-            .Build();
+            .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -213,11 +213,11 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             Value = "null-key-compressed"
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"snappy-null-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -234,10 +234,10 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseSnappyCompression()
-            .Build();
+            .BuildAsync();
 
         var headers = new Headers
         {
@@ -254,11 +254,11 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
             Headers = headers
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"snappy-headers-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -279,10 +279,10 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
         // Producer explicitly uses Snappy compression
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseSnappyCompression()
-            .Build();
+            .BuildAsync();
 
         const int messageCount = 10;
         var pendingTasks = new List<ValueTask<RecordMetadata>>();
@@ -302,11 +302,11 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
         }
 
         // Consumer does not specify compression - should auto-detect and decompress
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"snappy-cross-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Subscribe(topic);
 

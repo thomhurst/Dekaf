@@ -2189,12 +2189,17 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     // in the inflight list but could never complete. Moving registration to send time
                     // ensures only batches actually hitting the wire are tracked.
 
-                    // Buffer memory stays reserved until BrokerSender writes the batch to TCP
-                    // (SendCoalescedAsync releases it after the pipelined write). This ensures
-                    // BufferMemory accurately reflects actual in-use memory and provides proper
-                    // backpressure. Releasing here (at dequeue time) would allow the producer to
-                    // refill the buffer while data is still queued in BrokerSender, causing
-                    // unbounded memory growth proportional to (production_rate - TCP_drain_rate).
+                    // Release buffer memory at dequeue time (like Java's RecordAccumulator.drain()).
+                    // This unblocks producers waiting on BufferMemory immediately.
+                    // Pipeline depth is bounded by BrokerSender's bounded channel — not by holding
+                    // BufferMemory until TCP send. This prevents thread pool starvation: synchronous
+                    // ReserveMemorySync callers release their thread quickly, keeping background tasks
+                    // (linger, sender, broker sender) alive even under heavy parallelism.
+                    if (!batch.MemoryReleased)
+                    {
+                        _accumulator.ReleaseMemory(batch.DataSize);
+                        batch.MemoryReleased = true;
+                    }
 
                     // Look up leader and route to the appropriate broker sender
                     try
@@ -2243,7 +2248,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
                         var brokerSender = GetOrCreateBrokerSender(leader.NodeId);
                         LogBatchRouted(batch.TopicPartition.Topic, batch.TopicPartition.Partition, leader.NodeId);
-                        brokerSender.Enqueue(batch);
+                        await brokerSender.EnqueueAsync(batch, cancellationToken).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {
