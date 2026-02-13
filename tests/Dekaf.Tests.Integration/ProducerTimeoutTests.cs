@@ -18,12 +18,12 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         // even though we only send one small message (batch is far from full).
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-linger-expiry")
             .WithLinger(TimeSpan.FromMilliseconds(100))
             .WithBatchSize(1_048_576) // 1MB batch - one small message will never fill this
-            .Build();
+            .BuildAsync();
 
         // Act - Send a single small message via fire-and-forget, then wait for linger to expire
         var produceTask = producer.ProduceAsync(new ProducerMessage<string, string>
@@ -42,10 +42,10 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Verify the message is actually readable from Kafka
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, metadata.Partition));
 
@@ -60,26 +60,18 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
     [Test]
     public async Task MaxBlock_ExceededWaitingForMetadata_ErrorPropagated()
     {
-        // Arrange - Use an invalid bootstrap server so metadata lookup will fail.
-        // WithMaxBlock controls how long the producer blocks waiting for metadata/buffer space.
-        // With a short MaxBlock and invalid server, the produce should fail quickly.
-        await using var producer = Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers("invalid-host-that-does-not-exist:9092")
-            .WithClientId("test-maxblock-exceeded")
-            .WithMaxBlock(TimeSpan.FromSeconds(2))
-            .Build();
-
-        // Act & Assert - Producing to an unreachable broker should fail within the MaxBlock timeout
+        // Arrange & Act - Use an invalid bootstrap server so metadata lookup will fail.
+        // BuildAsync() eagerly initializes and connects, so an unreachable broker
+        // should cause initialization to fail quickly rather than hanging indefinitely.
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        await Assert.ThrowsAsync<KafkaException>(async () =>
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = "nonexistent-topic",
-                Key = "key",
-                Value = "value"
-            });
+            await using var producer = await Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers("invalid-host-that-does-not-exist:9092")
+                .WithClientId("test-maxblock-exceeded")
+                .WithMaxBlock(TimeSpan.FromSeconds(2))
+                .BuildAsync();
         });
 
         sw.Stop();
@@ -97,10 +89,10 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         // Per CLAUDE.md: "Cancellation before append - message NOT sent"
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-before-append")
-            .Build();
+            .BuildAsync();
 
         using var cts = new CancellationTokenSource();
         cts.Cancel(); // Cancel before producing
@@ -125,10 +117,10 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
             Value = "sentinel-value"
         });
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -156,11 +148,11 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         // then flush and verify all messages are delivered.
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-flush-waits")
             .WithLinger(TimeSpan.FromMilliseconds(100))
-            .Build();
+            .BuildAsync();
 
         const int messageCount = 25;
 
@@ -179,10 +171,10 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         await producer.FlushAsync();
 
         // Assert - All messages should be consumable after flush returns
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -213,11 +205,11 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         // Per CLAUDE.md: "Cancelling stops the caller from waiting, but batches continue sending in background."
         var topic = await KafkaContainer.CreateTestTopicAsync();
 
-        await using var producer = Kafka.CreateProducer<string, string>()
+        await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-flush-cancel-stops-waiting")
             .WithLinger(TimeSpan.FromSeconds(30)) // Very long linger to guarantee batch won't send on its own
-            .Build();
+            .BuildAsync();
 
         // Send messages via fire-and-forget
         for (var i = 0; i < 10; i++)
@@ -255,10 +247,10 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         // Flush again without cancellation to ensure all messages are delivered before consuming.
         await producer.FlushAsync();
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 

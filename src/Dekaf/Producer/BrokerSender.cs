@@ -155,10 +155,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _onAcknowledgement = onAcknowledgement;
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
 
-        _batchChannel = Channel.CreateUnbounded<ReadyBatch>(new UnboundedChannelOptions
+        // Bounded channel limits pipeline depth between SenderLoop (drain) and BrokerSender (send).
+        // Inspired by Java Kafka's Sender which drains and sends in a single thread (no intermediate
+        // buffer). Here we allow MaxInFlightRequestsPerConnection × 2 batches in the channel so the
+        // send loop always has work ready, while bounding the total in-transit data to prevent
+        // unbounded memory growth when production rate exceeds TCP drain rate.
+        _batchChannel = Channel.CreateBounded<ReadyBatch>(new BoundedChannelOptions(
+            options.MaxInFlightRequestsPerConnection * 2)
         {
             SingleReader = true,
-            SingleWriter = false
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.Wait
         });
 
         _maxInFlight = options.MaxInFlightRequestsPerConnection;
@@ -174,23 +181,77 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     /// <summary>
     /// Enqueues a batch for sending to this broker.
+    /// Fast path: TryWrite succeeds when the bounded channel has capacity.
+    /// Returns a ValueTask that completes asynchronously when the channel is full,
+    /// providing backpressure to the SenderLoop and bounding pipeline depth.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ValueTask EnqueueAsync(ReadyBatch batch, CancellationToken cancellationToken)
+    {
+        if (_batchChannel.Writer.TryWrite(batch))
+            return ValueTask.CompletedTask;
+
+        // Channel is either full (backpressure) or completed (disposal).
+        // Use async write which will wait for capacity or throw ChannelClosedException.
+        return EnqueueSlowAsync(batch, cancellationToken);
+    }
+
+    private async ValueTask EnqueueSlowAsync(ReadyBatch batch, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _batchChannel.Writer.WriteAsync(batch, cancellationToken).ConfigureAwait(false);
+        }
+        catch (ChannelClosedException)
+        {
+            FailEnqueuedBatch(batch);
+        }
+    }
+
+    /// <summary>
+    /// Synchronous enqueue for the reroute callback (called from BrokerSender's send loop
+    /// when a retry discovers the leader moved). Uses TryWrite; if the channel is full,
+    /// falls back to a background WriteAsync (rare — only when reroute targets a busy broker).
+    /// </summary>
     public void Enqueue(ReadyBatch batch)
     {
-        if (!_batchChannel.Writer.TryWrite(batch))
+        if (_batchChannel.Writer.TryWrite(batch))
+            return;
+
+        if (_cts.IsCancellationRequested)
         {
-            // Channel is completed (disposal in progress) — fail the batch.
-            // If the batch is a retry, unmute its partition.
-            if (batch.IsRetry)
-            {
-                batch.IsRetry = false;
-                UnmutePartition(batch.TopicPartition);
-            }
-            CompleteInflightEntry(batch);
-            batch.Fail(new ObjectDisposedException(nameof(BrokerSender)));
-            CleanupBatch(batch);
+            FailEnqueuedBatch(batch);
+            return;
         }
+
+        // Channel full (rare during reroute) — fire-and-forget async write.
+        // The write completes as soon as the send loop drains one batch.
+        _ = _batchChannel.Writer.WriteAsync(batch, _cts.Token).AsTask().ContinueWith(
+            static (task, state) =>
+            {
+                if (task.IsFaulted || task.IsCanceled)
+                {
+                    var b = (ReadyBatch)state!;
+                    // Can't use FailEnqueuedBatch (instance method), inline the cleanup
+                    try { b.Fail(task.Exception?.InnerException ?? new OperationCanceledException()); }
+                    catch { /* Observe */ }
+                }
+            },
+            batch,
+            CancellationToken.None,
+            TaskContinuationOptions.NotOnRanToCompletion,
+            TaskScheduler.Default);
+    }
+
+    private void FailEnqueuedBatch(ReadyBatch batch)
+    {
+        if (batch.IsRetry)
+        {
+            batch.IsRetry = false;
+            UnmutePartition(batch.TopicPartition);
+        }
+        CompleteInflightEntry(batch);
+        batch.Fail(new ObjectDisposedException(nameof(BrokerSender)));
+        CleanupBatch(batch);
     }
 
     /// <summary>
