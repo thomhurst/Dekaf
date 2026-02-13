@@ -2189,15 +2189,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     // in the inflight list but could never complete. Moving registration to send time
                     // ensures only batches actually hitting the wire are tracked.
 
-                    // Release buffer memory as soon as the sender dequeues the batch.
-                    // The batch data stays alive (held by ReadyBatch's arena/pooled arrays),
-                    // but the buffer memory accounting is freed to unblock waiting producers.
-                    // Retry batches already have MemoryReleased=true, so this is a no-op for them.
-                    if (!batch.MemoryReleased)
-                    {
-                        _accumulator.ReleaseMemory(batch.DataSize);
-                        batch.MemoryReleased = true;
-                    }
+                    // Buffer memory stays reserved until BrokerSender writes the batch to TCP
+                    // (SendCoalescedAsync releases it after the pipelined write). This ensures
+                    // BufferMemory accurately reflects actual in-use memory and provides proper
+                    // backpressure. Releasing here (at dequeue time) would allow the producer to
+                    // refill the buffer while data is still queued in BrokerSender, causing
+                    // unbounded memory growth proportional to (production_rate - TCP_drain_rate).
 
                     // Look up leader and route to the appropriate broker sender
                     try
