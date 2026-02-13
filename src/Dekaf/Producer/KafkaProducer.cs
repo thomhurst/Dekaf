@@ -2194,17 +2194,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     // in the inflight list but could never complete. Moving registration to send time
                     // ensures only batches actually hitting the wire are tracked.
 
-                    // Release buffer memory at dequeue time (like Java's RecordAccumulator.drain()).
-                    // This unblocks producers waiting on BufferMemory immediately.
-                    // Pipeline depth is bounded by BrokerSender's bounded channel — not by holding
-                    // BufferMemory until TCP send. This prevents thread pool starvation: synchronous
-                    // ReserveMemorySync callers release their thread quickly, keeping background tasks
-                    // (linger, sender, broker sender) alive even under heavy parallelism.
-                    if (!batch.MemoryReleased)
-                    {
-                        _accumulator.ReleaseMemory(batch.DataSize);
-                        batch.MemoryReleased = true;
-                    }
+                    // Buffer memory is held until batch completion (success or permanent failure),
+                    // matching Java's RecordAccumulator.deallocate() behavior. This ensures
+                    // BufferMemory accurately reflects physical memory in use and provides
+                    // true end-to-end backpressure: producers block on ReserveMemory until
+                    // batches are acknowledged and cleaned up by BrokerSender.CleanupBatch().
 
                     // Look up leader and route to the appropriate broker sender
                     try

@@ -1005,18 +1005,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var responseTask = connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
                 request, (short)apiVersion, cancellationToken);
 
-            // Release buffer memory now that data is written to TCP.
-            // This unblocks producers waiting for BufferMemory while the response is in flight.
-            // Arena buffers are still held (for potential retries) but BufferMemory flow control
-            // is released — the pipeline depth is bounded by MaxInFlightRequestsPerConnection.
-            for (var i = 0; i < count; i++)
-            {
-                if (!batches[i].MemoryReleased)
-                {
-                    _accumulator.ReleaseMemory(batches[i].DataSize);
-                    batches[i].MemoryReleased = true;
-                }
-            }
+            // Buffer memory is held until batch completion (CleanupBatch), matching Java's
+            // RecordAccumulator.deallocate() behavior. This provides accurate backpressure:
+            // BufferMemory reflects actual physical memory in use across the entire pipeline.
 
             _pendingResponses.Add(new PendingResponse(responseTask, batches, count, requestStartTime));
 
@@ -1066,14 +1057,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var batch = batches[i];
 
-                // Release buffer memory before retry — prevents memory leak when
-                // SendCoalescedAsync fails before reaching the TCP send memory release.
-                // The arena data stays valid for re-serialization during retry.
-                if (!batch.MemoryReleased)
-                {
-                    _accumulator.ReleaseMemory(batch.DataSize);
-                    batch.MemoryReleased = true;
-                }
+                // Buffer memory stays reserved during retry — the batch still holds
+                // physical memory (arena buffer). Release happens in CleanupBatch when
+                // the batch finally completes (success or permanent failure).
 
                 // Check delivery deadline before retrying
                 var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
@@ -1272,9 +1258,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void CleanupBatch(ReadyBatch batch)
     {
-        // Release buffer memory if not already released at TCP send time.
-        // Normal path: memory is released in SendCoalescedAsync after the batch is written to TCP.
-        // Error paths (before TCP send): memory has NOT been released and must be freed here.
+        // Release buffer memory at batch completion (matching Java's RecordAccumulator.deallocate()).
+        // This is the primary release path: memory is held throughout the entire pipeline
+        // (append → drain → send → response) to provide accurate end-to-end backpressure.
         if (!batch.MemoryReleased)
         {
             _accumulator.ReleaseMemory(batch.DataSize);
