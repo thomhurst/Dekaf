@@ -69,7 +69,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Batches that failed during SendCoalescedAsync (connection error, etc.) and need retry.
     // Set by the catch block, consumed by the send loop at the top of each iteration.
     // Single-threaded: only accessed by the send loop.
-    private List<ReadyBatch>? _sendFailedRetries;
+    private readonly List<ReadyBatch> _sendFailedRetries = new();
 
     // Non-blocking in-flight request limiter (replaces SemaphoreSlim).
     // Aligned with Java Kafka's InFlightRequests.canSendMore(): the send loop checks
@@ -216,11 +216,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Reusable collections for coalescing (single-threaded, no contention)
         var coalescedPartitions = new HashSet<TopicPartition>();
 
-        // Persistent carry-over list across iterations. Kept LOCAL instead of re-enqueued to the
-        // channel to preserve batch ordering. Re-enqueueing puts batches at the back of the channel,
-        // allowing new batches to jump ahead and be sent out of order.
-        // Retry batches from ProcessCompletedResponses are added here in deterministic order.
-        List<ReadyBatch>? pendingCarryOver = null;
+        // Two swappable carry-over lists — eliminates per-iteration List<ReadyBatch> allocations.
+        // pendingCarryOver holds batches from the previous iteration; newCarryOver receives batches
+        // that can't be coalesced in this iteration. At the end of each iteration they swap roles.
+        var carryOverA = new List<ReadyBatch>();
+        var carryOverB = new List<ReadyBatch>();
+        var pendingCarryOver = carryOverA;
+        var reusableWaitTasks = new List<Task>(4);
 
         try
         {
@@ -231,23 +233,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // without propagating the OCE from the cancelled token.
                 cancellationToken.ThrowIfCancellationRequested();
 
-                LogSendLoopIteration(_brokerId, pendingCarryOver?.Count ?? 0, _pendingResponses.Count);
+                LogSendLoopIteration(_brokerId, pendingCarryOver.Count, _pendingResponses.Count);
 
                 // Pick up batches that failed during SendCoalescedAsync (connection errors, etc.)
                 // and need retry. These are treated as carry-over for the next coalescing pass.
-                if (_sendFailedRetries is { Count: > 0 })
+                if (_sendFailedRetries.Count > 0)
                 {
-                    pendingCarryOver ??= [];
                     pendingCarryOver.AddRange(_sendFailedRetries);
-                    _sendFailedRetries = null;
+                    _sendFailedRetries.Clear();
                 }
 
                 // Process completed responses inline (like Java's NetworkClient.poll()).
                 // Retry batches are added to pendingCarryOver in deterministic send order.
-                ProcessCompletedResponses(ref pendingCarryOver, cancellationToken);
+                ProcessCompletedResponses(pendingCarryOver, cancellationToken);
 
                 // Wait for data: carry-over, channel, or pending responses
-                if (pendingCarryOver is not { Count: > 0 })
+                if (pendingCarryOver.Count == 0)
                 {
                     if (_pendingResponses.Count == 0)
                     {
@@ -322,22 +323,25 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // Coalesce: at most one batch per partition per request.
                 // Carry-over first (preserves ordering), then channel (prevents starvation).
                 coalescedPartitions.Clear();
-                List<ReadyBatch>? newCarryOver = null;
+                var newCarryOver = pendingCarryOver == carryOverA ? carryOverB : carryOverA;
+                newCarryOver.Clear();
                 var coalescedCount = 0;
                 var coalescedBatches = ArrayPool<ReadyBatch>.Shared.Rent(maxCoalesce);
 
                 // Scan carry-over: retry batches unmute and coalesce; muted/duplicate carry over.
                 // No sorting needed — ProcessCompletedResponses adds retry batches in send order.
-                var hadCarryOver = pendingCarryOver is { Count: > 0 };
+                var hadCarryOver = pendingCarryOver.Count > 0;
                 if (hadCarryOver)
                 {
-                    for (var i = 0; i < pendingCarryOver!.Count; i++)
+                    for (var i = 0; i < pendingCarryOver.Count; i++)
                     {
                         CoalesceBatch(pendingCarryOver[i], coalescedBatches, ref coalescedCount,
-                            coalescedPartitions, ref newCarryOver);
+                            coalescedPartitions, newCarryOver);
                     }
 
-                    pendingCarryOver = null;
+                    // Clear after scanning — prevents double-cleanup if an exception
+                    // occurs before the swap at the end of the iteration.
+                    pendingCarryOver.Clear();
                 }
 
                 // Scan channel (non-blocking). Two cases:
@@ -356,7 +360,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     {
                         channelReads++;
                         CoalesceBatch(channelBatch, coalescedBatches, ref coalescedCount,
-                            coalescedPartitions, ref newCarryOver);
+                            coalescedPartitions, newCarryOver);
                     }
                 }
 
@@ -392,9 +396,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // 2. New channel data arrives, or
                     // 3. An in-flight slot opens, or
                     // 4. Retry backoff elapses (earliest RetryNotBefore from carry-over).
-                    var waitTasks = new List<Task>(4);
-                    waitTasks.Add(channelReader.WaitToReadAsync(cancellationToken).AsTask());
-                    waitTasks.Add(inFlightSignal.Task);
+                    reusableWaitTasks.Clear();
+                    reusableWaitTasks.Add(channelReader.WaitToReadAsync(cancellationToken).AsTask());
+                    reusableWaitTasks.Add(inFlightSignal.Task);
 
                     if (_pendingResponses.Count > 0)
                     {
@@ -419,11 +423,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                         var responseSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                         Volatile.Write(ref _responseReadySignal, responseSignal);
-                        waitTasks.Add(responseSignal.Task);
+                        reusableWaitTasks.Add(responseSignal.Task);
                     }
 
                     // Calculate earliest backoff from carry-over
-                    if (newCarryOver is { Count: > 0 })
+                    if (newCarryOver.Count > 0)
                     {
                         var earliestBackoff = long.MaxValue;
                         for (var i = 0; i < newCarryOver.Count; i++)
@@ -438,13 +442,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             if (delayTicks > 0)
                             {
                                 var delayMs = (int)(delayTicks * 1000.0 / Stopwatch.Frequency);
-                                waitTasks.Add(Task.Delay(Math.Max(1, delayMs), cancellationToken));
+                                reusableWaitTasks.Add(Task.Delay(Math.Max(1, delayMs), cancellationToken));
                             }
                             // else: backoff already elapsed, will be processed next iteration
                         }
                     }
 
-                    await Task.WhenAny(waitTasks).ConfigureAwait(false);
+                    await Task.WhenAny(reusableWaitTasks).ConfigureAwait(false);
                 }
 
                 // Set carry-over for next iteration
@@ -466,16 +470,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         finally
         {
             // Fail any carry-over batches that couldn't be sent.
-            if (pendingCarryOver is { Count: > 0 })
-            {
-                foreach (var batch in pendingCarryOver)
-                {
-                    CompleteInflightEntry(batch);
-                    try { batch.Fail(new ObjectDisposedException(nameof(BrokerSender))); }
-                    catch { /* Observe */ }
-                    CleanupBatch(batch);
-                }
-            }
+            // Drain both swappable lists — if an exception occurred mid-iteration,
+            // batches may be in either list depending on timing.
+            FailCarryOverBatches(carryOverA);
+            FailCarryOverBatches(carryOverB);
 
             // Drain any remaining batches from channel and fail them
             while (channelReader.TryRead(out var remaining))
@@ -499,14 +497,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         ReadyBatch[] coalescedBatches,
         ref int coalescedCount,
         HashSet<TopicPartition> coalescedPartitions,
-        ref List<ReadyBatch>? newCarryOver)
+        List<ReadyBatch> newCarryOver)
     {
         if (batch.IsRetry)
         {
             // Check backoff — carry over if backoff hasn't elapsed
             if (batch.RetryNotBefore > 0 && Stopwatch.GetTimestamp() < batch.RetryNotBefore)
             {
-                newCarryOver ??= [];
                 newCarryOver.Add(batch);
                 return;
             }
@@ -537,7 +534,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 // Same partition already in this request (shouldn't happen — only one
                 // retry per partition at a time). Carry over as safety net.
-                newCarryOver ??= [];
                 newCarryOver.Add(batch);
                 return;
             }
@@ -574,7 +570,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// in-place. Retry batches are added to pendingCarryOver in deterministic order — no concurrent
     /// re-enqueue race possible since this runs in the single-threaded send loop.
     /// </summary>
-    private void ProcessCompletedResponses(ref List<ReadyBatch>? pendingCarryOver,
+    private void ProcessCompletedResponses(List<ReadyBatch> pendingCarryOver,
         CancellationToken cancellationToken)
     {
         if (_pendingResponses.Count == 0) return;
@@ -609,7 +605,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     if (pending.Batches[j] is not null)
                     {
                         HandleRetriableBatch(pending.Batches[j], ErrorCode.NetworkException,
-                            ref pendingCarryOver, cancellationToken);
+                            pendingCarryOver, cancellationToken);
                     }
                 }
 
@@ -649,7 +645,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // No response — treat as retriable
                     LogNoResponseForPartition(expectedTopic, expectedPartition);
                     HandleRetriableBatch(batch, ErrorCode.NetworkException,
-                        ref pendingCarryOver, cancellationToken);
+                        pendingCarryOver, cancellationToken);
                     pending.Batches[j] = null!;
                     continue;
                 }
@@ -671,7 +667,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             batch.RecordBatch.ProducerEpoch, batch.RecordBatch.ProducerId);
 
                         HandleRetriableBatch(batch, partitionResponse.ErrorCode,
-                            ref pendingCarryOver, cancellationToken);
+                            pendingCarryOver, cancellationToken);
                         pending.Batches[j] = null!;
                         continue;
                     }
@@ -736,7 +732,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Called inline from ProcessCompletedResponses in the single-threaded send loop.
     /// </summary>
     private void HandleRetriableBatch(ReadyBatch batch, ErrorCode errorCode,
-        ref List<ReadyBatch>? pendingCarryOver, CancellationToken cancellationToken)
+        List<ReadyBatch> pendingCarryOver, CancellationToken cancellationToken)
     {
         // Check delivery deadline
         var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
@@ -803,7 +799,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         // Add to carry-over — deterministic order since we process responses forward (FIFO)
         batch.IsRetry = true;
-        pendingCarryOver ??= [];
         pendingCarryOver.Add(batch);
     }
 
@@ -1006,7 +1001,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _pinnedConnection = null; // Invalidate broken connection
             LogResponseFailed(ex, _brokerId);
 
-            _sendFailedRetries ??= [];
             for (var i = 0; i < count; i++)
             {
                 var batch = batches[i];
@@ -1186,6 +1180,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         Interlocked.Decrement(ref _inFlightCount);
         Interlocked.Exchange(ref _inFlightSlotAvailable, null)?.TrySetResult();
+    }
+
+    private void FailCarryOverBatches(List<ReadyBatch> carryOver)
+    {
+        for (var i = 0; i < carryOver.Count; i++)
+        {
+            CompleteInflightEntry(carryOver[i]);
+            try { carryOver[i].Fail(new ObjectDisposedException(nameof(BrokerSender))); }
+            catch { /* Observe */ }
+            CleanupBatch(carryOver[i]);
+        }
     }
 
     private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)
