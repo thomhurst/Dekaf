@@ -564,24 +564,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     // Per-partition sequence numbers for idempotent/transactional producing.
     // The broker requires monotonically increasing BaseSequence per partition.
-    private readonly ConcurrentDictionary<TopicPartition, int> _sequenceNumbers = new();
+    // Uses StrongBox<int> so GetOrAdd returns a mutable reference on the fast path
+    // (lock-free hash lookup only), avoiding AddOrUpdate's per-call bucket locking.
+    // Each partition is accessed by exactly one BrokerSender thread, so direct
+    // mutation of StrongBox.Value is safe without additional synchronization.
+    private readonly ConcurrentDictionary<TopicPartition, StrongBox<int>> _sequenceNumbers = new();
 
     /// <summary>
     /// Gets the next base sequence number for a partition and increments by the record count.
-    /// Thread-safe: uses ConcurrentDictionary.AddOrUpdate. Batch completion is sequential
-    /// per partition so contention is minimal.
+    /// Fast path: lock-free ConcurrentDictionary.GetOrAdd (existing key) + direct mutation.
+    /// Each partition is assigned to exactly one BrokerSender, so no contention on the value.
     /// </summary>
     internal int GetAndIncrementSequence(TopicPartition topicPartition, int recordCount)
     {
-        var baseSequence = 0;
-        _sequenceNumbers.AddOrUpdate(
-            topicPartition,
-            recordCount, // Add: base was 0, next starts at recordCount
-            (_, current) =>
-            {
-                baseSequence = current;
-                return current + recordCount;
-            });
+        var box = _sequenceNumbers.GetOrAdd(topicPartition, static _ => new StrongBox<int>(0));
+        var baseSequence = box.Value;
+        box.Value = baseSequence + recordCount;
         return baseSequence;
     }
 
@@ -875,10 +873,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             // Wait for either: buffer space available, disposal, or timeout.
             // Use WaitHandle.WaitAny with pre-allocated array to avoid per-iteration allocation.
-            // Sync path uses 50ms (vs 5ms async) because: (1) WaitAny provides true signal-based
-            // wake-up so this is max sleep not actual latency, (2) Send() is fire-and-forget so
-            // caller doesn't need low-latency response, (3) longer interval reduces CPU usage.
-            var waitMs = Math.Min(50, (int)remainingMs);
+            // Sync path uses 10ms (vs 5ms async) because: (1) WaitAny provides true signal-based
+            // wake-up so this is max sleep not actual latency, (2) shorter interval reduces
+            // idle time after backpressure relief, improving throughput under sustained load.
+            var waitMs = Math.Min(10, (int)remainingMs);
             var signaled = WaitHandle.WaitAny(_syncWaitHandles, waitMs);
 
             // Check if disposal was signaled (index 1)
