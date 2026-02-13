@@ -26,7 +26,14 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
             ClientId = "stress-producer-confluent",
             Acks = ConfluentKafka.Acks.Leader,
             LingerMs = options.LingerMs,
-            BatchSize = options.BatchSize
+            BatchSize = options.BatchSize,
+            CompressionType = options.Compression switch
+            {
+                "lz4" => ConfluentKafka.CompressionType.Lz4,
+                "snappy" => ConfluentKafka.CompressionType.Snappy,
+                "zstd" => ConfluentKafka.CompressionType.Zstd,
+                _ => ConfluentKafka.CompressionType.None
+            }
         };
 
         using var producer = new ConfluentKafka.ProducerBuilder<string, string>(config).Build();

@@ -1,5 +1,8 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using Dekaf.Compression.Lz4;
+using Dekaf.Compression.Snappy;
+using Dekaf.Compression.Zstd;
 using Dekaf.Producer;
 using Dekaf.StressTests.Metrics;
 using Dekaf.StressTests.Reporting;
@@ -20,13 +23,22 @@ internal sealed class ProducerStressTest : IStressTestScenario
         var latency = new LatencyTracker();
         var startedAt = DateTime.UtcNow;
 
-        var producer = await Kafka.CreateProducer<string, string>()
+        var builder = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-producer-dekaf")
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
-            .WithBatchSize(options.BatchSize)
-            .BuildAsync(cancellationToken);
+            .WithBatchSize(options.BatchSize);
+
+        _ = options.Compression switch
+        {
+            "lz4" => builder.UseLz4Compression(),
+            "snappy" => builder.UseSnappyCompression(),
+            "zstd" => builder.UseZstdCompression(),
+            _ => builder
+        };
+
+        var producer = await builder.BuildAsync(cancellationToken);
 
         Console.WriteLine($"  Warming up Dekaf producer...");
         for (var i = 0; i < 1000; i++)

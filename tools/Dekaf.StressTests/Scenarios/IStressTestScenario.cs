@@ -18,4 +18,5 @@ internal sealed class StressTestOptions
     public int Partitions { get; init; } = 6;
     public int LingerMs { get; init; } = 5;
     public int BatchSize { get; init; } = 16384;
+    public string Compression { get; init; } = "none";
 }
