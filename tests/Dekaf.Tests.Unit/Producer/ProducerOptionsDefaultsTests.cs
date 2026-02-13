@@ -159,10 +159,10 @@ public class ProducerOptionsDefaultsTests
     }
 
     [Test]
-    public async Task InitialBatchRecordCapacity_DefaultsTo_64()
+    public async Task InitialBatchRecordCapacity_DefaultsTo_0()
     {
         var options = CreateOptions();
-        await Assert.That(options.InitialBatchRecordCapacity).IsEqualTo(64);
+        await Assert.That(options.InitialBatchRecordCapacity).IsEqualTo(0);
     }
 
     [Test]

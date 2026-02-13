@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
@@ -300,12 +301,7 @@ internal sealed class BatchArena
     /// </summary>
     public static void ReturnToPool(BatchArena arena)
     {
-        // Return the underlying buffer first
-        var buffer = Interlocked.Exchange(ref arena._buffer, null!);
-        if (buffer is not null)
-        {
-            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
-        }
+        arena._position = 0;
 
         if (Interlocked.Increment(ref s_poolCount) <= MaxPoolSize)
         {
@@ -314,6 +310,10 @@ internal sealed class BatchArena
         else
         {
             Interlocked.Decrement(ref s_poolCount);
+            // Only return buffer to ArrayPool when arena is discarded
+            var buffer = Interlocked.Exchange(ref arena._buffer, null!);
+            if (buffer is not null)
+                ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
         }
     }
 
@@ -322,6 +322,16 @@ internal sealed class BatchArena
     /// </summary>
     private void Reset(int capacity)
     {
+        if (_buffer is not null && _buffer.Length >= capacity)
+        {
+            _buffer.AsSpan(0, _position).Clear();
+            _position = 0;
+            return;
+        }
+
+        if (_buffer is not null)
+            ArrayPool<byte>.Shared.Return(_buffer, clearArray: true);
+
         _buffer = ArrayPool<byte>.Shared.Rent(capacity);
         _position = 0;
     }
@@ -2638,8 +2648,9 @@ internal sealed class PartitionBatch
         _options = options;
         _createdAt = DateTimeOffset.UtcNow;
 
-        // Clamp initial capacity to reasonable bounds (16-1024)
-        _initialRecordCapacity = Math.Max(16, Math.Min(options.InitialBatchRecordCapacity, 1024));
+        _initialRecordCapacity = options.InitialBatchRecordCapacity > 0
+            ? Math.Clamp(options.InitialBatchRecordCapacity, 16, 16384)
+            : ComputeInitialRecordCapacity(options.BatchSize);
 
         // Create arena for zero-copy serialization
         // Use ArenaCapacity if set, otherwise fall back to BatchSize
@@ -2658,6 +2669,14 @@ internal sealed class PartitionBatch
 
         _pooledHeaderArrays = ArrayPool<Header[]>.Shared.Rent(8); // Headers less common
         _pooledHeaderArrayCount = 0;
+    }
+
+    private static int ComputeInitialRecordCapacity(int batchSize)
+    {
+        // Minimum record wire overhead ~64 bytes (conservative for small messages)
+        const int minRecordOverhead = 64;
+        var estimated = (uint)Math.Max(batchSize / minRecordOverhead, 64);
+        return (int)Math.Min(BitOperations.RoundUpToPowerOf2(estimated), 16384);
     }
 
     /// <summary>

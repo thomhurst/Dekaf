@@ -234,11 +234,11 @@ public sealed class ProducerOptions
 
     /// <summary>
     /// Initial capacity for record arrays in partition batches.
-    /// Lower values reduce memory for applications with many small batches.
-    /// Higher values reduce array resizing for high-throughput scenarios.
-    /// Default is 64, balancing memory usage and resize frequency.
+    /// When 0 (default), automatically computed from <see cref="BatchSize"/> to minimize
+    /// array resizing. Set explicitly to override: lower values reduce memory for applications
+    /// with many small batches, higher values reduce resizing for high-throughput scenarios.
     /// </summary>
-    public int InitialBatchRecordCapacity { get; init; } = 64;
+    public int InitialBatchRecordCapacity { get; init; } = 0;
 
     /// <summary>
     /// Strategy for recovering cluster metadata when all known brokers become unavailable.
