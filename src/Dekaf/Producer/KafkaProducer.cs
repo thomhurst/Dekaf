@@ -1625,104 +1625,109 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // Step 1: Find the transaction coordinator
             await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
 
-            // Step 2: Initialize the producer ID via the coordinator (with retries for retriable errors)
-            const int maxInitRetries = 10;
-            var initRetryDelayMs = 100;
+            // Step 2: Initialize the producer ID via the coordinator
+            await ReinitializeProducerIdAsync(cancellationToken).ConfigureAwait(false);
 
-            for (var initAttempt = 0; initAttempt < maxInitRetries; initAttempt++)
-            {
-                var connection = await _connectionPool.GetConnectionAsync(_transactionCoordinatorId, cancellationToken)
-                    .ConfigureAwait(false);
-
-                var initProducerIdVersion = _metadataManager.GetNegotiatedApiVersion(
-                    ApiKey.InitProducerId,
-                    InitProducerIdRequest.LowestSupportedVersion,
-                    InitProducerIdRequest.HighestSupportedVersion);
-
-                var request = new InitProducerIdRequest
-                {
-                    TransactionalId = _options.TransactionalId,
-                    TransactionTimeoutMs = _options.TransactionTimeoutMs,
-                    ProducerId = _producerId,
-                    ProducerEpoch = _producerEpoch
-                };
-
-                var response = (InitProducerIdResponse)await connection
-                    .SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
-                        request, initProducerIdVersion, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (response.ErrorCode == ErrorCode.ProducerFenced ||
-                    response.ErrorCode == ErrorCode.TransactionalIdAuthorizationFailed)
-                {
-                    _transactionState = TransactionState.FatalError;
-                    throw new TransactionException(response.ErrorCode,
-                        $"InitProducerId failed with fatal error: {response.ErrorCode}")
-                    {
-                        TransactionalId = _options.TransactionalId
-                    };
-                }
-
-                if (response.ErrorCode is ErrorCode.CoordinatorLoadInProgress
-                    or ErrorCode.CoordinatorNotAvailable
-                    or ErrorCode.ConcurrentTransactions)
-                {
-                    LogInitProducerIdRetriableError(response.ErrorCode, initAttempt + 1, maxInitRetries, initRetryDelayMs);
-
-                    await Task.Delay(initRetryDelayMs, cancellationToken).ConfigureAwait(false);
-                    initRetryDelayMs = Math.Min(initRetryDelayMs * 2, 2000);
-                    continue;
-                }
-
-                if (response.ErrorCode == ErrorCode.NotCoordinator)
-                {
-                    LogInitProducerIdNotCoordinator(initAttempt + 1, maxInitRetries);
-
-                    await Task.Delay(initRetryDelayMs, cancellationToken).ConfigureAwait(false);
-                    initRetryDelayMs = Math.Min(initRetryDelayMs * 2, 2000);
-
-                    // Re-discover the transaction coordinator
-                    await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-
-                if (response.ErrorCode != ErrorCode.None)
-                {
-                    throw new TransactionException(response.ErrorCode,
-                        $"InitProducerId failed: {response.ErrorCode}")
-                    {
-                        TransactionalId = _options.TransactionalId
-                    };
-                }
-
-                // Success
-                _producerId = response.ProducerId;
-                _producerEpoch = response.ProducerEpoch;
-
-                // Wire the producer ID/epoch into the accumulator for RecordBatch headers
-                _accumulator.ProducerId = _producerId;
-                _accumulator.ProducerEpoch = _producerEpoch;
-                _accumulator.IsTransactional = true;
-
-                // Reset sequence numbers for new epoch
-                _accumulator.ResetSequenceNumbers();
-
-                _transactionState = TransactionState.Ready;
-
-                LogTransactionsInitialized(_producerId, _producerEpoch);
-                return;
-            }
-
-            throw new TransactionException(ErrorCode.CoordinatorLoadInProgress,
-                $"InitProducerId failed after {maxInitRetries} retries")
-            {
-                TransactionalId = _options.TransactionalId
-            };
+            _transactionState = TransactionState.Ready;
         }
         finally
         {
             _transactionLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Re-initializes the producer ID/epoch via the transaction coordinator.
+    /// Called after abort to get the bumped epoch (KIP-360), and during initial setup.
+    /// </summary>
+    internal async ValueTask ReinitializeProducerIdAsync(CancellationToken cancellationToken)
+    {
+        const int maxRetries = 10;
+        var retryDelayMs = 100;
+
+        for (var attempt = 0; attempt < maxRetries; attempt++)
+        {
+            var connection = await _connectionPool.GetConnectionAsync(_transactionCoordinatorId, cancellationToken)
+                .ConfigureAwait(false);
+
+            var initProducerIdVersion = _metadataManager.GetNegotiatedApiVersion(
+                ApiKey.InitProducerId,
+                InitProducerIdRequest.LowestSupportedVersion,
+                InitProducerIdRequest.HighestSupportedVersion);
+
+            var request = new InitProducerIdRequest
+            {
+                TransactionalId = _options.TransactionalId,
+                TransactionTimeoutMs = _options.TransactionTimeoutMs,
+                ProducerId = _producerId,
+                ProducerEpoch = _producerEpoch
+            };
+
+            var response = (InitProducerIdResponse)await connection
+                .SendAsync<InitProducerIdRequest, InitProducerIdResponse>(
+                    request, initProducerIdVersion, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (response.ErrorCode == ErrorCode.ProducerFenced ||
+                response.ErrorCode == ErrorCode.TransactionalIdAuthorizationFailed)
+            {
+                _transactionState = TransactionState.FatalError;
+                throw new TransactionException(response.ErrorCode,
+                    $"InitProducerId failed with fatal error: {response.ErrorCode}")
+                {
+                    TransactionalId = _options.TransactionalId
+                };
+            }
+
+            if (response.ErrorCode is ErrorCode.CoordinatorLoadInProgress
+                or ErrorCode.CoordinatorNotAvailable
+                or ErrorCode.ConcurrentTransactions)
+            {
+                LogInitProducerIdRetriableError(response.ErrorCode, attempt + 1, maxRetries, retryDelayMs);
+
+                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                continue;
+            }
+
+            if (response.ErrorCode == ErrorCode.NotCoordinator)
+            {
+                LogInitProducerIdNotCoordinator(attempt + 1, maxRetries);
+
+                await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+                retryDelayMs = Math.Min(retryDelayMs * 2, 2000);
+                await FindTransactionCoordinatorAsync(cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            if (response.ErrorCode != ErrorCode.None)
+            {
+                throw new TransactionException(response.ErrorCode,
+                    $"InitProducerId failed: {response.ErrorCode}")
+                {
+                    TransactionalId = _options.TransactionalId
+                };
+            }
+
+            // Success — update PID/epoch
+            _producerId = response.ProducerId;
+            _producerEpoch = response.ProducerEpoch;
+
+            _accumulator.ProducerId = _producerId;
+            _accumulator.ProducerEpoch = _producerEpoch;
+            _accumulator.IsTransactional = true;
+
+            _accumulator.ResetSequenceNumbers();
+
+            LogTransactionsInitialized(_producerId, _producerEpoch);
+            return;
+        }
+
+        throw new TransactionException(ErrorCode.CoordinatorLoadInProgress,
+            $"InitProducerId failed after {maxRetries} retries")
+        {
+            TransactionalId = _options.TransactionalId
+        };
     }
 
     private async ValueTask FindTransactionCoordinatorAsync(CancellationToken cancellationToken)
@@ -3082,6 +3087,12 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         try
         {
             await _producer.EndTransactionAsync(committed: false, cancellationToken).ConfigureAwait(false);
+
+            // After abort, the broker bumps the epoch (KIP-360). Re-initialize the
+            // producer ID to get the new epoch; otherwise the next transaction will
+            // fail with InvalidProducerIdMapping.
+            await _producer.ReinitializeProducerIdAsync(cancellationToken).ConfigureAwait(false);
+
             _aborted = true;
         }
         finally
