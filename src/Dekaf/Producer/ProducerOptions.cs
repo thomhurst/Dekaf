@@ -1,5 +1,6 @@
 using Dekaf.Metadata;
 using Dekaf.Protocol.Records;
+using Dekaf.Retry;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
 
@@ -256,6 +257,13 @@ public sealed class ProducerOptions
     /// Default is 300000 (5 minutes).
     /// </summary>
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
+
+    /// <summary>
+    /// Application-level retry policy for <see cref="KafkaProducer{TKey,TValue}.ProduceAsync"/>.
+    /// When set, retriable exceptions that escape the internal protocol-level retries will be
+    /// retried according to this policy. When <c>null</c>, no application-level retries occur.
+    /// </summary>
+    public IRetryPolicy? RetryPolicy { get; init; }
 
     /// <summary>
     /// Producer interceptors, called in order during the produce pipeline.

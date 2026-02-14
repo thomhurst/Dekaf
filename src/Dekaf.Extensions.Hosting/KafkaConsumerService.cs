@@ -1,6 +1,7 @@
 using Dekaf.Consumer;
 using Dekaf.Consumer.DeadLetter;
 using Dekaf.Producer;
+using Dekaf.Retry;
 using Dekaf.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -19,6 +20,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private readonly ILogger _logger;
     private readonly DeadLetterOptions? _deadLetterOptions;
     private readonly IDeadLetterPolicy<TKey, TValue>? _deadLetterPolicy;
+    private readonly IRetryPolicy? _retryPolicy;
     private IKafkaProducer<byte[]?, byte[]?>? _dlqProducer;
 
     /// <summary>
@@ -27,14 +29,17 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     /// <param name="consumer">The Kafka consumer instance.</param>
     /// <param name="logger">The logger instance.</param>
     /// <param name="deadLetterOptions">Optional dead letter queue configuration.</param>
+    /// <param name="retryPolicy">Optional retry policy for message processing failures.</param>
     protected KafkaConsumerService(
         IKafkaConsumer<TKey, TValue> consumer,
         ILogger logger,
-        DeadLetterOptions? deadLetterOptions = null)
+        DeadLetterOptions? deadLetterOptions = null,
+        IRetryPolicy? retryPolicy = null)
     {
         _consumer = consumer;
         _logger = logger;
         _deadLetterOptions = deadLetterOptions;
+        _retryPolicy = retryPolicy;
         if (deadLetterOptions is not null)
         {
             _deadLetterPolicy = new DefaultDeadLetterPolicy<TKey, TValue>(deadLetterOptions);
@@ -186,10 +191,52 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private async ValueTask ProcessWithRetriesAsync(
         ConsumeResult<TKey, TValue> result, CancellationToken stoppingToken)
     {
-        var maxAttempts = _deadLetterOptions?.MaxFailures ?? 1;
         byte[]? rawKey = null;
         byte[]? rawValue = null;
 
+        if (_retryPolicy is not null)
+        {
+            // Retry policy drives retry count and delays
+            var attempt = 0;
+            while (true)
+            {
+                attempt++;
+                try
+                {
+                    await ProcessAsync(result, stoppingToken).ConfigureAwait(false);
+                    return;
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    CaptureRawBytesOnFirstFailure(attempt, ref rawKey, ref rawValue);
+
+                    await OnErrorAsync(ex, result, stoppingToken).ConfigureAwait(false);
+
+                    var delay = _retryPolicy.GetNextDelay(attempt, ex);
+                    if (delay is not null)
+                    {
+                        await Task.Delay(delay.Value, stoppingToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    // Policy says stop retrying - check DLQ
+                    if (_deadLetterPolicy is not null &&
+                        _deadLetterPolicy.ShouldDeadLetter(result, ex, attempt))
+                    {
+                        await RouteToDeadLetterAsync(result, ex, rawKey, rawValue, attempt, stoppingToken)
+                            .ConfigureAwait(false);
+                    }
+                    return;
+                }
+            }
+        }
+
+        // No retry policy: existing behavior (immediate retry up to MaxFailures)
+        var maxAttempts = _deadLetterOptions?.MaxFailures ?? 1;
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             try
@@ -203,17 +250,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             }
             catch (Exception ex)
             {
-                // Eagerly capture raw bytes on first failure before OnErrorAsync runs,
-                // since async operations could yield and invalidate the raw byte references.
-                // Reuse the same bytes for all retry attempts (same message, same bytes).
-                if (attempt == 1 &&
-                    _deadLetterPolicy is not null &&
-                    _consumer is IRawRecordAccessor accessor &&
-                    accessor.TryGetCurrentRawRecord(out var rawKeyMemory, out var rawValueMemory))
-                {
-                    rawKey = rawKeyMemory.IsEmpty ? null : rawKeyMemory.ToArray();
-                    rawValue = rawValueMemory.IsEmpty ? null : rawValueMemory.ToArray();
-                }
+                CaptureRawBytesOnFirstFailure(attempt, ref rawKey, ref rawValue);
 
                 await OnErrorAsync(ex, result, stoppingToken).ConfigureAwait(false);
 
@@ -225,6 +262,18 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                     return;
                 }
             }
+        }
+    }
+
+    private void CaptureRawBytesOnFirstFailure(int attempt, ref byte[]? rawKey, ref byte[]? rawValue)
+    {
+        if (attempt == 1 &&
+            _deadLetterPolicy is not null &&
+            _consumer is IRawRecordAccessor accessor &&
+            accessor.TryGetCurrentRawRecord(out var rawKeyMemory, out var rawValueMemory))
+        {
+            rawKey = rawKeyMemory.IsEmpty ? null : rawKeyMemory.ToArray();
+            rawValue = rawValueMemory.IsEmpty ? null : rawValueMemory.ToArray();
         }
     }
 

@@ -2,6 +2,7 @@ using System.Security.Cryptography.X509Certificates;
 using Dekaf.Consumer;
 using Dekaf.Metadata;
 using Dekaf.Producer;
+using Dekaf.Retry;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Dekaf.Protocol.Messages;
@@ -47,6 +48,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private List<IProducerInterceptor<TKey, TValue>>? _interceptors;
     private TimeSpan? _metadataMaxAge;
+    private IRetryPolicy? _retryPolicy;
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -479,6 +481,18 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the application-level retry policy for produce operations.
+    /// When set, retriable exceptions from <see cref="IKafkaProducer{TKey,TValue}.ProduceAsync"/>
+    /// will be retried according to this policy.
+    /// </summary>
+    /// <param name="retryPolicy">The retry policy to use.</param>
+    public ProducerBuilder<TKey, TValue> WithRetryPolicy(IRetryPolicy retryPolicy)
+    {
+        _retryPolicy = retryPolicy ?? throw new ArgumentNullException(nameof(retryPolicy));
+        return this;
+    }
+
+    /// <summary>
     /// Builds and initializes the producer, ready for immediate use.
     /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IKafkaProducer{TKey,TValue}.InitializeAsync"/>.
     /// </summary>
@@ -551,7 +565,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             StatisticsHandler = _statisticsHandler,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
-            Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null
+            Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
+            RetryPolicy = _retryPolicy
         };
 
         var metadataOptions = _metadataMaxAge.HasValue
@@ -644,6 +659,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private IsolationLevel _isolationLevel = IsolationLevel.ReadUncommitted;
     private PartitionAssignmentStrategy _partitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky;
     private IPartitionAssignmentStrategy? _customPartitionAssignmentStrategy;
+    private IRetryPolicy? _retryPolicy;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -1170,6 +1186,16 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the application-level retry policy for message processing in hosted consumer services.
+    /// </summary>
+    /// <param name="retryPolicy">The retry policy to use.</param>
+    public ConsumerBuilder<TKey, TValue> WithRetryPolicy(IRetryPolicy retryPolicy)
+    {
+        _retryPolicy = retryPolicy ?? throw new ArgumentNullException(nameof(retryPolicy));
+        return this;
+    }
+
+    /// <summary>
     /// Builds and initializes the consumer, ready for immediate use.
     /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IKafkaConsumer{TKey,TValue}.InitializeAsync"/>.
     /// </summary>
@@ -1236,7 +1262,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             IsolationLevel = _isolationLevel,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
-            Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null
+            Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
+            RetryPolicy = _retryPolicy
         };
 
         var metadataOptions = _metadataMaxAge.HasValue

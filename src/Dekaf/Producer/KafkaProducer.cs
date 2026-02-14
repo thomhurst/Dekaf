@@ -9,6 +9,7 @@ using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
+using Dekaf.Retry;
 using Dekaf.Serialization;
 using Dekaf.Statistics;
 using Microsoft.Extensions.Logging;
@@ -86,6 +87,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     // Interceptors - stored as typed array for zero-allocation iteration
     private readonly IProducerInterceptor<TKey, TValue>[]? _interceptors;
 
+    // Application-level retry policy (null = no retries, zero overhead on fast path)
+    private readonly IRetryPolicy? _retryPolicy;
+
     // Thread-local reusable SerializationContext to avoid per-message allocations
     // Since SerializationContext contains reference types (Topic, Headers), copying it
     // involves copying those references. Using ThreadStatic avoids repeated struct creation.
@@ -156,6 +160,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
             _interceptors = interceptors;
         }
+
+        _retryPolicy = options.RetryPolicy;
 
         // Initialize ValueTaskSource pool with configured size
         _valueTaskSourcePool = new ValueTaskSourcePool<RecordMetadata>(options.ValueTaskSourcePoolSize);
@@ -300,6 +306,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ProducerMessage<TKey, TValue> message,
         CancellationToken cancellationToken = default)
     {
+        if (_retryPolicy is not null)
+            return ProduceAsyncWithRetry(message, cancellationToken);
+
+        return ProduceAsyncCore(message, cancellationToken);
+    }
+
+    private ValueTask<RecordMetadata> ProduceAsyncCore(
+        ProducerMessage<TKey, TValue> message,
+        CancellationToken cancellationToken)
+    {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
 
@@ -342,6 +358,30 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Slow path: Fall back to channel-based async processing.
         // This handles first-time metadata initialization or cache misses.
         return ProduceAsyncSlow(message, activity, cancellationToken);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private async ValueTask<RecordMetadata> ProduceAsyncWithRetry(
+        ProducerMessage<TKey, TValue> message,
+        CancellationToken cancellationToken)
+    {
+        var attempt = 0;
+        while (true)
+        {
+            try
+            {
+                return await ProduceAsyncCore(message, cancellationToken).ConfigureAwait(false);
+            }
+            catch (KafkaException ex) when (ex.IsRetriable)
+            {
+                attempt++;
+                var delay = _retryPolicy!.GetNextDelay(attempt, ex);
+                if (delay is null)
+                    throw;
+
+                await Task.Delay(delay.Value, cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
     /// <summary>

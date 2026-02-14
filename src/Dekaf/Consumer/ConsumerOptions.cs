@@ -1,5 +1,6 @@
 using Dekaf.Metadata;
 using Dekaf.Protocol.Messages;
+using Dekaf.Retry;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
 
@@ -273,6 +274,13 @@ public sealed class ConsumerOptions
     /// Default is 300000 (5 minutes).
     /// </summary>
     public int MetadataRecoveryRebootstrapTriggerMs { get; init; } = 300000;
+
+    /// <summary>
+    /// Application-level retry policy for message processing in hosted consumer services.
+    /// When set, the consumer service will use this policy to determine delays between retries.
+    /// When <c>null</c>, existing retry behavior is unchanged.
+    /// </summary>
+    public IRetryPolicy? RetryPolicy { get; init; }
 
     /// <summary>
     /// Consumer interceptors, called in order during the consume pipeline.
