@@ -68,6 +68,9 @@ public sealed class ProducerOptions
 
     /// <summary>
     /// Maximum in-flight requests per connection.
+    /// For idempotent producers (the default), values greater than 1 allow multiple batches
+    /// per partition to be in-flight simultaneously, improving throughput. Ordering is
+    /// guaranteed by Kafka's idempotent sequence numbers. Default is 5.
     /// </summary>
     public int MaxInFlightRequestsPerConnection { get; init; } = 5;
 
