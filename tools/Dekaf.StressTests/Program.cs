@@ -76,6 +76,7 @@ public static class Program
         Console.WriteLine($"Message Size: {options.MessageSizeBytes} bytes");
         Console.WriteLine($"Scenario: {options.Scenario}");
         Console.WriteLine($"Client: {options.Client}");
+        Console.WriteLine($"Compression: {options.Compression}");
         Console.WriteLine(new string('-', 50));
 
         await using var kafka = await KafkaEnvironment.CreateAsync().ConfigureAwait(false);
@@ -108,7 +109,8 @@ public static class Program
                 MessageSizeBytes = options.MessageSizeBytes,
                 Partitions = options.Partitions,
                 LingerMs = options.LingerMs,
-                BatchSize = options.BatchSize
+                BatchSize = options.BatchSize,
+                Compression = options.Compression
             };
 
             var result = await scenario.RunAsync(testOptions, CancellationToken.None).ConfigureAwait(false);
@@ -279,6 +281,9 @@ public static class Program
                 case "--batch-size":
                     options.BatchSize = int.Parse(args[++i]);
                     break;
+                case "--compression":
+                    options.Compression = args[++i].ToLowerInvariant();
+                    break;
                 case "--help":
                 case "-h":
                     PrintHelp();
@@ -307,6 +312,7 @@ public static class Program
               --partitions <count>    Number of topic partitions (default: 6)
               --linger-ms <ms>        Producer linger time (default: 5)
               --batch-size <bytes>    Producer batch size (default: 1048576)
+              --compression <type>   Compression type: none, lz4, snappy, zstd (default: none)
               report --input <path>   Generate report from existing results
 
             Environment Variables:
@@ -344,5 +350,6 @@ public static class Program
         public int Partitions { get; set; } = 6;
         public int LingerMs { get; set; } = 5;
         public int BatchSize { get; set; } = 1048576;
+        public string Compression { get; set; } = "none";
     }
 }
