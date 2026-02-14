@@ -22,7 +22,8 @@ public sealed class ExponentialBackoffRetryPolicy : IRetryPolicy
     public required int MaxAttempts { get; init; }
 
     /// <summary>
-    /// Whether to add random jitter (0.5x to 1.5x) to the delay. Default is <c>true</c>.
+    /// Whether to add random jitter (0.5x to 1.5x) to the computed delay. Default is <c>true</c>.
+    /// The final delay is always clamped to <see cref="MaxDelay"/>, so jitter cannot exceed it.
     /// </summary>
     public bool Jitter { get; init; } = true;
 
@@ -40,9 +41,13 @@ public sealed class ExponentialBackoffRetryPolicy : IRetryPolicy
 
         if (Jitter)
         {
-            // Jitter range: 0.5x to 1.5x
+            // Jitter range: 0.5x to 1.5x of computed delay
             var jitterMultiplier = 0.5 + Random.Shared.NextDouble();
             delayTicks = (long)(delayTicks * jitterMultiplier);
+
+            // Clamp again so jitter cannot exceed MaxDelay
+            if (delayTicks > MaxDelay.Ticks)
+                delayTicks = MaxDelay.Ticks;
         }
 
         return TimeSpan.FromTicks(delayTicks);

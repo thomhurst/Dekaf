@@ -129,6 +129,29 @@ public class RetryPolicyTests
     }
 
     [Test]
+    public async Task ExponentialBackoff_WithJitter_NeverExceedsMaxDelay()
+    {
+        var policy = new ExponentialBackoffRetryPolicy
+        {
+            BaseDelay = TimeSpan.FromSeconds(1),
+            MaxDelay = TimeSpan.FromSeconds(5),
+            MaxAttempts = 10,
+            Jitter = true
+        };
+
+        // At attempt 10, base delay = min(1*2^9=512, 5) = 5s
+        // Jitter could produce up to 1.5x = 7.5s without the post-jitter clamp
+        // Verify MaxDelay is a hard cap
+        for (var i = 0; i < 200; i++)
+        {
+            var delay = policy.GetNextDelay(10, new InvalidOperationException("test"));
+            await Assert.That(delay).IsNotNull();
+            await Assert.That(delay!.Value).IsLessThanOrEqualTo(TimeSpan.FromSeconds(5));
+            await Assert.That(delay!.Value.Ticks).IsGreaterThan(0);
+        }
+    }
+
+    [Test]
     public async Task ExponentialBackoff_LargeAttempt_HandlesOverflow()
     {
         var policy = new ExponentialBackoffRetryPolicy
