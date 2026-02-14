@@ -15,22 +15,14 @@ internal static class MarkdownReporter
         sb.AppendLine($"**Total Duration:** {(results.RunCompletedAtUtc - results.RunStartedAtUtc).TotalMinutes:F1} minutes");
         sb.AppendLine();
 
-        var producerResults = results.Results
-            .Where(r => r.Scenario.Contains("producer", StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var scenarioGroups = results.Results
+            .GroupBy(r => r.Scenario)
+            .OrderBy(g => g.Key);
 
-        var consumerResults = results.Results
-            .Where(r => r.Scenario.Contains("consumer", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        if (producerResults.Count > 0)
+        foreach (var group in scenarioGroups)
         {
-            GenerateThroughputTable(sb, "Producer Throughput", producerResults);
-        }
-
-        if (consumerResults.Count > 0)
-        {
-            GenerateThroughputTable(sb, "Consumer Throughput", consumerResults);
+            var title = FormatScenarioTitle(group.Key);
+            GenerateThroughputTable(sb, title, group.ToList());
         }
 
         var resultsWithLatency = results.Results.Where(r => r.Latency is not null).ToList();
@@ -87,13 +79,14 @@ internal static class MarkdownReporter
     {
         sb.AppendLine("## Latency Percentiles");
         sb.AppendLine();
-        sb.AppendLine("| Client    | p50    | p95    | p99    | Max    |");
-        sb.AppendLine("|-----------|--------|--------|--------|--------|");
+        sb.AppendLine("| Client    | Scenario         | p50    | p95    | p99    | Max    |");
+        sb.AppendLine("|-----------|------------------|--------|--------|--------|--------|");
 
-        foreach (var result in results.OrderBy(r => r.Latency!.P50Ms))
+        foreach (var result in results.OrderBy(r => r.Scenario).ThenBy(r => r.Latency!.P50Ms))
         {
             var latency = result.Latency!;
-            sb.AppendLine($"| {result.Client,-9} | {FormatLatency(latency.P50Ms)} | {FormatLatency(latency.P95Ms)} | {FormatLatency(latency.P99Ms)} | {FormatLatency(latency.MaxMs)} |");
+            var scenarioLabel = FormatScenarioLabel(result.Scenario);
+            sb.AppendLine($"| {result.Client,-9} | {scenarioLabel,-16} | {FormatLatency(latency.P50Ms)} | {FormatLatency(latency.P95Ms)} | {FormatLatency(latency.P99Ms)} | {FormatLatency(latency.MaxMs)} |");
         }
 
         sb.AppendLine();
@@ -113,6 +106,22 @@ internal static class MarkdownReporter
 
         sb.AppendLine();
     }
+
+    private static string FormatScenarioTitle(string scenario) => scenario switch
+    {
+        "producer" => "Producer (Fire-and-Forget) Throughput",
+        "producer-async" => "Producer (Async) Throughput",
+        "consumer" => "Consumer Throughput",
+        _ => $"{scenario} Throughput"
+    };
+
+    private static string FormatScenarioLabel(string scenario) => scenario switch
+    {
+        "producer" => "Fire-and-Forget",
+        "producer-async" => "Async",
+        "consumer" => "Consumer",
+        _ => scenario
+    };
 
     private static string FormatLatency(double ms)
     {
