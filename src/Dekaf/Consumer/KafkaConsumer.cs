@@ -687,6 +687,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
             // Yield records lazily from pending fetches
             System.Diagnostics.Activity? previousActivity = null;
+            try
+            {
             while (_pendingFetches.Count > 0)
             {
                 var pending = _pendingFetches.Peek();
@@ -793,6 +795,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 // This pending fetch is exhausted, remove and dispose it
                 // Disposing releases the pooled network buffer memory
                 _pendingFetches.Dequeue().Dispose();
+            }
+            }
+            finally
+            {
+                // Ensure activity is disposed if caller breaks out of enumeration early
+                previousActivity?.Dispose();
             }
 
             // Yield any pending EOF events (thread-safe with ConcurrentQueue)
