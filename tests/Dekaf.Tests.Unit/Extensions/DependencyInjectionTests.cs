@@ -510,7 +510,7 @@ public class DependencyInjectionTests
 
     #endregion
 
-    #region ProducerServiceBuilder.AddInterceptor Chaining Tests
+    #region ProducerServiceBuilder.AddInterceptor Tests
 
     [Test]
     public async Task ProducerServiceBuilder_AddInterceptor_ReturnsSelf()
@@ -521,9 +521,17 @@ public class DependencyInjectionTests
         await Assert.That(result).IsSameReferenceAs(builder);
     }
 
+    [Test]
+    public async Task ProducerServiceBuilder_AddInterceptor_NullInterceptor_ThrowsArgumentNullException()
+    {
+        var builder = new ProducerServiceBuilder<string, string>();
+
+        await Assert.That(() => builder.AddInterceptor(null!)).Throws<ArgumentNullException>();
+    }
+
     #endregion
 
-    #region ConsumerServiceBuilder.AddInterceptor Chaining Tests
+    #region ConsumerServiceBuilder.AddInterceptor Tests
 
     [Test]
     public async Task ConsumerServiceBuilder_AddInterceptor_ReturnsSelf()
@@ -532,6 +540,14 @@ public class DependencyInjectionTests
         var interceptor = Substitute.For<IConsumerInterceptor<string, string>>();
         var result = builder.AddInterceptor(interceptor);
         await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    [Test]
+    public async Task ConsumerServiceBuilder_AddInterceptor_NullInterceptor_ThrowsArgumentNullException()
+    {
+        var builder = new ConsumerServiceBuilder<string, string>();
+
+        await Assert.That(() => builder.AddInterceptor(null!)).Throws<ArgumentNullException>();
     }
 
     #endregion
