@@ -60,6 +60,18 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         return ValueTask.CompletedTask;
     }
 
+    /// <summary>
+    /// Called when routing a message to the dead letter queue fails.
+    /// Override to implement custom failure handling (e.g., metrics, alerts).
+    /// Default implementation logs the error.
+    /// </summary>
+    protected virtual ValueTask OnDeadLetterRoutingFailedAsync(
+        Exception exception, ConsumeResult<TKey, TValue> result, CancellationToken cancellationToken)
+    {
+        LogDeadLetterRoutingFailed(exception, result.Topic, result.Partition, result.Offset);
+        return ValueTask.CompletedTask;
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Enable raw byte capture and create DLQ producer if configured
@@ -84,39 +96,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         {
             await foreach (var result in _consumer.ConsumeAsync(stoppingToken).ConfigureAwait(false))
             {
-                try
-                {
-                    await ProcessAsync(result, stoppingToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    // Eagerly capture raw bytes before OnErrorAsync runs, since
-                    // async operations in OnErrorAsync could yield and allow the
-                    // consumer to advance, invalidating the raw byte references.
-                    byte[]? rawKey = null;
-                    byte[]? rawValue = null;
-                    if (_deadLetterPolicy is not null &&
-                        _consumer is IRawRecordAccessor accessor &&
-                        accessor.TryGetCurrentRawRecord(out var rawKeyMemory, out var rawValueMemory))
-                    {
-                        rawKey = rawKeyMemory.IsEmpty ? null : rawKeyMemory.ToArray();
-                        rawValue = rawValueMemory.IsEmpty ? null : rawValueMemory.ToArray();
-                    }
-
-                    await OnErrorAsync(ex, result, stoppingToken).ConfigureAwait(false);
-
-                    if (_deadLetterPolicy is not null)
-                    {
-                        if (_deadLetterPolicy.ShouldDeadLetter(result, ex, failureCount: 1))
-                        {
-                            await RouteToDeadLetterAsync(result, ex, rawKey, rawValue, failureCount: 1).ConfigureAwait(false);
-                        }
-                    }
-                }
+                await ProcessWithRetriesAsync(result, stoppingToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -203,9 +183,55 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         GC.SuppressFinalize(this);
     }
 
+    private async ValueTask ProcessWithRetriesAsync(
+        ConsumeResult<TKey, TValue> result, CancellationToken stoppingToken)
+    {
+        var maxAttempts = _deadLetterOptions?.MaxFailures ?? 1;
+        byte[]? rawKey = null;
+        byte[]? rawValue = null;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                await ProcessAsync(result, stoppingToken).ConfigureAwait(false);
+                return;
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Eagerly capture raw bytes on first failure before OnErrorAsync runs,
+                // since async operations could yield and invalidate the raw byte references.
+                // Reuse the same bytes for all retry attempts (same message, same bytes).
+                if (attempt == 1 &&
+                    _deadLetterPolicy is not null &&
+                    _consumer is IRawRecordAccessor accessor &&
+                    accessor.TryGetCurrentRawRecord(out var rawKeyMemory, out var rawValueMemory))
+                {
+                    rawKey = rawKeyMemory.IsEmpty ? null : rawKeyMemory.ToArray();
+                    rawValue = rawValueMemory.IsEmpty ? null : rawValueMemory.ToArray();
+                }
+
+                await OnErrorAsync(ex, result, stoppingToken).ConfigureAwait(false);
+
+                if (_deadLetterPolicy is not null &&
+                    _deadLetterPolicy.ShouldDeadLetter(result, ex, attempt))
+                {
+                    await RouteToDeadLetterAsync(result, ex, rawKey, rawValue, attempt, stoppingToken)
+                        .ConfigureAwait(false);
+                    return;
+                }
+            }
+        }
+    }
+
     private async ValueTask RouteToDeadLetterAsync(
         ConsumeResult<TKey, TValue> result, Exception exception,
-        byte[]? rawKey, byte[]? rawValue, int failureCount)
+        byte[]? rawKey, byte[]? rawValue, int failureCount,
+        CancellationToken cancellationToken)
     {
         if (_dlqProducer is null || _deadLetterPolicy is null || _deadLetterOptions is null)
             return;
@@ -228,7 +254,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
             if (_deadLetterOptions.AwaitDelivery)
             {
-                await _dlqProducer.ProduceAsync(message).ConfigureAwait(false);
+                await _dlqProducer.ProduceAsync(message, cancellationToken).ConfigureAwait(false);
             }
             else
             {
@@ -239,7 +265,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         }
         catch (Exception dlqEx)
         {
-            LogDeadLetterRoutingFailed(dlqEx, result.Topic, result.Partition, result.Offset);
+            await OnDeadLetterRoutingFailedAsync(dlqEx, result, cancellationToken).ConfigureAwait(false);
         }
     }
 
