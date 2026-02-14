@@ -19,11 +19,11 @@ var oauthConfig = new OAuthBearerConfig
     Scope = "kafka"
 };
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
     .WithOAuthBearer(oauthConfig)
-    .Build();
+    .BuildAsync();
 ```
 
 ## Custom Token Provider
@@ -33,7 +33,7 @@ For more control, implement a custom token provider:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
     .WithOAuthBearer(async ct =>
@@ -46,7 +46,7 @@ var producer = Kafka.CreateProducer<string, string>()
             Principal = token.Subject
         };
     })
-    .Build();
+    .BuildAsync();
 ```
 
 ## Azure AD Example
@@ -56,7 +56,7 @@ using Dekaf;
 
 var credential = new DefaultAzureCredential();
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
     .WithOAuthBearer(async ct =>
@@ -72,7 +72,7 @@ var producer = Kafka.CreateProducer<string, string>()
             ExpiresAt = token.ExpiresOn
         };
     })
-    .Build();
+    .BuildAsync();
 ```
 
 ## AWS MSK IAM
@@ -82,7 +82,7 @@ For AWS MSK with IAM authentication:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("broker.msk.us-east-1.amazonaws.com:9098")
     .UseTls()
     .WithOAuthBearer(async ct =>
@@ -95,7 +95,7 @@ var producer = Kafka.CreateProducer<string, string>()
             ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5)
         };
     })
-    .Build();
+    .BuildAsync();
 ```
 
 ## Token Refresh
@@ -131,13 +131,13 @@ public class OAuthKafkaClientFactory
         _config = config;
     }
 
-    public IKafkaProducer<string, string> CreateProducer()
+    public async Task<IKafkaProducer<string, string>> CreateProducer()
     {
-        return Kafka.CreateProducer<string, string>()
+        return await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_config["Kafka:BootstrapServers"])
             .UseTls()
             .WithOAuthBearer(GetTokenAsync)
-            .Build();
+            .BuildAsync();
     }
 
     private async ValueTask<OAuthBearerToken> GetTokenAsync(CancellationToken ct)

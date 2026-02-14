@@ -4,6 +4,7 @@ using Dekaf.Extensions.DependencyInjection;
 using Dekaf.Producer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Extensions;
 
@@ -402,6 +403,151 @@ public class DependencyInjectionTests
         });
 
         await Assert.That(capturedResult).IsSameReferenceAs(capturedBuilder);
+    }
+
+    #endregion
+
+    #region Global Interceptor Registration Tests
+
+    [Test]
+    public async Task DekafBuilder_AddGlobalProducerInterceptor_ReturnsSelf()
+    {
+        var services = new ServiceCollection();
+        DekafBuilder? capturedBuilder = null;
+        DekafBuilder? capturedResult = null;
+
+        services.AddDekaf(builder =>
+        {
+            capturedBuilder = builder;
+            capturedResult = builder.AddGlobalProducerInterceptor<TestProducerInterceptor>();
+        });
+
+        await Assert.That(capturedResult).IsSameReferenceAs(capturedBuilder);
+    }
+
+    [Test]
+    public async Task DekafBuilder_AddGlobalConsumerInterceptor_ReturnsSelf()
+    {
+        var services = new ServiceCollection();
+        DekafBuilder? capturedBuilder = null;
+        DekafBuilder? capturedResult = null;
+
+        services.AddDekaf(builder =>
+        {
+            capturedBuilder = builder;
+            capturedResult = builder.AddGlobalConsumerInterceptor<TestConsumerInterceptor>();
+        });
+
+        await Assert.That(capturedResult).IsSameReferenceAs(capturedBuilder);
+    }
+
+    [Test]
+    public async Task DekafBuilder_AddGlobalProducerInterceptor_NullType_ThrowsArgumentNullException()
+    {
+        var services = new ServiceCollection();
+
+        await Assert.That(() =>
+        {
+            services.AddDekaf(builder =>
+            {
+                builder.AddGlobalProducerInterceptor(null!);
+            });
+        }).Throws<ArgumentNullException>();
+    }
+
+    [Test]
+    public async Task DekafBuilder_AddGlobalConsumerInterceptor_NullType_ThrowsArgumentNullException()
+    {
+        var services = new ServiceCollection();
+
+        await Assert.That(() =>
+        {
+            services.AddDekaf(builder =>
+            {
+                builder.AddGlobalConsumerInterceptor(null!);
+            });
+        }).Throws<ArgumentNullException>();
+    }
+
+    [Test]
+    public async Task DekafBuilder_GlobalAndPerInstanceInterceptors_ProducerRegistered()
+    {
+        var services = new ServiceCollection();
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddGlobalProducerInterceptor<TestProducerInterceptor>();
+            builder.AddProducer<string, string>(p =>
+            {
+                p.WithBootstrapServers("localhost:9092");
+                p.AddInterceptor(new TestProducerInterceptor());
+            });
+        });
+
+        var descriptor = services.FirstOrDefault(d => d.ServiceType == typeof(IKafkaProducer<string, string>));
+        await Assert.That(descriptor).IsNotNull();
+    }
+
+    [Test]
+    public async Task DekafBuilder_GlobalAndPerInstanceInterceptors_ConsumerRegistered()
+    {
+        var services = new ServiceCollection();
+
+        services.AddDekaf(builder =>
+        {
+            builder.AddGlobalConsumerInterceptor<TestConsumerInterceptor>();
+            builder.AddConsumer<string, string>(c =>
+            {
+                c.WithBootstrapServers("localhost:9092")
+                    .WithGroupId("test-group");
+                c.AddInterceptor(new TestConsumerInterceptor());
+            });
+        });
+
+        var descriptor = services.FirstOrDefault(d => d.ServiceType == typeof(IKafkaConsumer<string, string>));
+        await Assert.That(descriptor).IsNotNull();
+    }
+
+    #endregion
+
+    #region ProducerServiceBuilder.AddInterceptor Chaining Tests
+
+    [Test]
+    public async Task ProducerServiceBuilder_AddInterceptor_ReturnsSelf()
+    {
+        var builder = new ProducerServiceBuilder<string, string>();
+        var interceptor = Substitute.For<IProducerInterceptor<string, string>>();
+        var result = builder.AddInterceptor(interceptor);
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    #endregion
+
+    #region ConsumerServiceBuilder.AddInterceptor Chaining Tests
+
+    [Test]
+    public async Task ConsumerServiceBuilder_AddInterceptor_ReturnsSelf()
+    {
+        var builder = new ConsumerServiceBuilder<string, string>();
+        var interceptor = Substitute.For<IConsumerInterceptor<string, string>>();
+        var result = builder.AddInterceptor(interceptor);
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    #endregion
+
+    #region Test Interceptor Implementations
+
+    private sealed class TestProducerInterceptor : IProducerInterceptor<string, string>
+    {
+        public ProducerMessage<string, string> OnSend(ProducerMessage<string, string> message) => message;
+        public void OnAcknowledgement(RecordMetadata metadata, Exception? exception) { }
+    }
+
+    private sealed class TestConsumerInterceptor : IConsumerInterceptor<string, string>
+    {
+        public ConsumeResult<string, string> OnConsume(ConsumeResult<string, string> result) => result;
+        public void OnCommit(IReadOnlyList<TopicPartitionOffset> offsets) { }
     }
 
     #endregion

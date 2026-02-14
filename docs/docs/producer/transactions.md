@@ -21,10 +21,10 @@ Create a producer with a transactional ID:
 ```csharp
 using Dekaf;
 
-await using var producer = Kafka.CreateProducer<string, string>()
+await using var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithTransactionalId("my-service-instance-1")  // Must be unique per instance
-    .Build();
+    .BuildAsync();
 
 // Initialize transactions (required before first transaction)
 await producer.InitTransactionsAsync();
@@ -65,18 +65,18 @@ The most common use case for transactions is exactly-once stream processing:
 ```csharp
 using Dekaf;
 
-await using var consumer = Kafka.CreateConsumer<string, string>()
+await using var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("processor-group")
     .WithOffsetCommitMode(OffsetCommitMode.Manual)  // We'll commit via transaction
     .WithIsolationLevel(IsolationLevel.ReadCommitted)  // Only read committed messages
     .SubscribeTo("input-topic")
-    .Build();
+    .BuildAsync();
 
-await using var producer = Kafka.CreateProducer<string, string>()
+await using var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithTransactionalId($"processor-{Environment.MachineName}")
-    .Build();
+    .BuildAsync();
 
 await producer.InitTransactionsAsync();
 
@@ -134,11 +134,11 @@ Transactions have a timeout to prevent hanging transactions:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithTransactionalId("my-service")
     .WithTransactionTimeout(TimeSpan.FromMinutes(2))  // Default is 1 minute
-    .Build();
+    .BuildAsync();
 ```
 
 If a transaction isn't committed or aborted within the timeout, Kafka will abort it automatically.

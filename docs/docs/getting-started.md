@@ -34,9 +34,9 @@ Dekaf's entry point is available through the `Dekaf` namespace:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .Build();
+    .BuildAsync();
 ```
 
 The `using Dekaf;` directive gives you access to:
@@ -76,9 +76,9 @@ Let's send a message to Kafka:
 using Dekaf;
 
 // Create a producer
-await using var producer = Kafka.CreateProducer<string, string>()
+await using var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .Build();
+    .BuildAsync();
 
 // Send a message and wait for acknowledgment
 var metadata = await producer.ProduceAsync("my-topic", "greeting", "Hello, Kafka!");
@@ -92,7 +92,7 @@ That's it! Let's break down what's happening:
 
 2. **`WithBootstrapServers()`** - Tells the producer where to find your Kafka cluster. It will discover other brokers automatically.
 
-3. **`Build()`** - Creates the producer instance. The producer is `IAsyncDisposable`, so use `await using` to ensure proper cleanup.
+3. **`BuildAsync()`** - Creates the producer instance. The producer is `IAsyncDisposable`, so use `await using` to ensure proper cleanup.
 
 4. **`ProduceAsync()`** - Sends the message and waits for the broker to acknowledge it.
 
@@ -104,11 +104,11 @@ Now let's consume messages:
 using Dekaf;
 
 // Create a consumer
-await using var consumer = Kafka.CreateConsumer<string, string>()
+await using var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-first-consumer")
     .SubscribeTo("my-topic")
-    .Build();
+    .BuildAsync();
 
 // Consume messages
 Console.WriteLine("Waiting for messages... (Ctrl+C to exit)");
@@ -146,12 +146,12 @@ const string topic = "getting-started";
 var cts = new CancellationTokenSource();
 var consumerTask = Task.Run(async () =>
 {
-    await using var consumer = Kafka.CreateConsumer<string, string>()
+    await using var consumer = await Kafka.CreateConsumer<string, string>()
         .WithBootstrapServers(bootstrapServers)
         .WithGroupId("getting-started-group")
         .WithAutoOffsetReset(AutoOffsetReset.Earliest)
         .SubscribeTo(topic)
-        .Build();
+        .BuildAsync();
 
     await foreach (var msg in consumer.ConsumeAsync(cts.Token))
     {
@@ -163,9 +163,9 @@ var consumerTask = Task.Run(async () =>
 await Task.Delay(2000);
 
 // Produce some messages
-await using var producer = Kafka.CreateProducer<string, string>()
+await using var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers(bootstrapServers)
-    .Build();
+    .BuildAsync();
 
 for (int i = 1; i <= 5; i++)
 {

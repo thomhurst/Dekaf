@@ -30,11 +30,11 @@ Offsets are automatically committed in the background:
 ```csharp
 using Dekaf;
 
-var consumer = Kafka.CreateConsumer<string, string>()
+var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithOffsetCommitMode(OffsetCommitMode.Auto)
-    .Build();
+    .BuildAsync();
 
 await foreach (var msg in consumer.ConsumeAsync(ct))
 {
@@ -57,11 +57,11 @@ You control when offsets are committed by calling `CommitAsync()`:
 ```csharp
 using Dekaf;
 
-var consumer = Kafka.CreateConsumer<string, string>()
+var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithOffsetCommitMode(OffsetCommitMode.Manual)
-    .Build();
+    .BuildAsync();
 
 await foreach (var msg in consumer.ConsumeAsync(ct))
 {

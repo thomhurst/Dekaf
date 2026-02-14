@@ -28,11 +28,11 @@ Use the builder for more configuration options:
 ```csharp
 using Dekaf;
 
-await using var producer = Kafka.CreateProducer<string, string>()
+await using var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.All)
     .EnableIdempotence()
-    .BuildForTopic("orders");
+    .BuildForTopicAsync("orders");
 
 await producer.ProduceAsync("order-123", orderJson);
 ```
@@ -44,10 +44,10 @@ Create topic producers from a shared base producer. This is useful when you have
 ```csharp
 using Dekaf;
 
-await using var baseProducer = Kafka.CreateProducer<string, string>()
+await using var baseProducer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.All)
-    .Build();
+    .BuildAsync();
 
 // Create topic-specific wrappers (they share the base producer's resources)
 var ordersProducer = baseProducer.ForTopic("orders");

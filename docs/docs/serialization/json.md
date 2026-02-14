@@ -19,10 +19,10 @@ dotnet add package Dekaf.Serialization.Json
 ```csharp
 using Dekaf.Serialization.Json;
 
-var producer = Kafka.CreateProducer<string, Order>()
+var producer = await Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new JsonSerializer<Order>())
-    .Build();
+    .BuildAsync();
 
 var order = new Order
 {
@@ -40,12 +40,12 @@ await producer.ProduceAsync("orders", order.Id, order);
 ```csharp
 using Dekaf.Serialization.Json;
 
-var consumer = Kafka.CreateConsumer<string, Order>()
+var consumer = await Kafka.CreateConsumer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("order-processors")
     .WithValueDeserializer(new JsonDeserializer<Order>())
     .SubscribeTo("orders")
-    .Build();
+    .BuildAsync();
 
 await foreach (var message in consumer.ConsumeAsync(ct))
 {
@@ -68,10 +68,10 @@ var options = new JsonSerializerOptions
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
 };
 
-var producer = Kafka.CreateProducer<string, Order>()
+var producer = await Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new JsonSerializer<Order>(options))
-    .Build();
+    .BuildAsync();
 ```
 
 ## Both Key and Value
@@ -81,11 +81,11 @@ Serialize both key and value as JSON:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<OrderKey, OrderEvent>()
+var producer = await Kafka.CreateProducer<OrderKey, OrderEvent>()
     .WithBootstrapServers("localhost:9092")
     .WithKeySerializer(new JsonSerializer<OrderKey>())
     .WithValueSerializer(new JsonSerializer<OrderEvent>())
-    .Build();
+    .BuildAsync();
 
 await producer.ProduceAsync("order-events",
     new OrderKey { TenantId = "acme", OrderId = "123" },
@@ -169,10 +169,10 @@ var jsonOptions = new JsonSerializerOptions
     PropertyNamingPolicy = JsonNamingPolicy.CamelCase
 };
 
-await using var producer = Kafka.CreateProducer<string, Order>()
+await using var producer = await Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new JsonSerializer<Order>(jsonOptions))
-    .Build();
+    .BuildAsync();
 
 var order = new Order(
     Id: "order-123",
@@ -189,12 +189,12 @@ var order = new Order(
 await producer.ProduceAsync("orders", order.Id, order);
 
 // Consumer
-await using var consumer = Kafka.CreateConsumer<string, Order>()
+await using var consumer = await Kafka.CreateConsumer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("order-processors")
     .WithValueDeserializer(new JsonDeserializer<Order>(jsonOptions))
     .SubscribeTo("orders")
-    .Build();
+    .BuildAsync();
 
 await foreach (var msg in consumer.ConsumeAsync(ct))
 {

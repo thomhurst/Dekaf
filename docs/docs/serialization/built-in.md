@@ -26,14 +26,14 @@ When you create a producer or consumer without specifying serializers, Dekaf aut
 using Dekaf;
 
 // Automatically uses Serializers.String for both key and value
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .Build();
+    .BuildAsync();
 
 // Automatically uses Serializers.String for key, Serializers.Int64 for value
-var producer = Kafka.CreateProducer<string, long>()
+var producer = await Kafka.CreateProducer<string, long>()
     .WithBootstrapServers("localhost:9092")
-    .Build();
+    .BuildAsync();
 ```
 
 ## String Serializer
@@ -43,9 +43,9 @@ Encodes strings as UTF-8:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .Build();
+    .BuildAsync();
 
 await producer.ProduceAsync("topic", "key", "Hello, World!");
 ```
@@ -59,9 +59,9 @@ Passes bytes through unchanged:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, byte[]>()
+var producer = await Kafka.CreateProducer<string, byte[]>()
     .WithBootstrapServers("localhost:9092")
-    .Build();
+    .BuildAsync();
 
 await producer.ProduceAsync("topic", "key", new byte[] { 1, 2, 3, 4 });
 ```
@@ -73,9 +73,9 @@ Zero-copy byte handling:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, ReadOnlyMemory<byte>>()
+var producer = await Kafka.CreateProducer<string, ReadOnlyMemory<byte>>()
     .WithBootstrapServers("localhost:9092")
-    .Build();
+    .BuildAsync();
 
 ReadOnlyMemory<byte> data = GetData();
 await producer.ProduceAsync("topic", "key", data);
@@ -89,16 +89,16 @@ Big-endian encoding (network byte order):
 using Dekaf;
 
 // 32-bit integer
-var producer32 = Kafka.CreateProducer<int, string>()
+var producer32 = await Kafka.CreateProducer<int, string>()
     .WithBootstrapServers("localhost:9092")
-    .Build();
+    .BuildAsync();
 
 await producer32.ProduceAsync("topic", 12345, "value");
 
 // 64-bit integer
-var producer64 = Kafka.CreateProducer<long, string>()
+var producer64 = await Kafka.CreateProducer<long, string>()
     .WithBootstrapServers("localhost:9092")
-    .Build();
+    .BuildAsync();
 
 await producer64.ProduceAsync("topic", 123456789L, "value");
 ```
@@ -110,9 +110,9 @@ await producer64.ProduceAsync("topic", 123456789L, "value");
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<Guid, string>()
+var producer = await Kafka.CreateProducer<Guid, string>()
     .WithBootstrapServers("localhost:9092")
-    .Build();
+    .BuildAsync();
 
 await producer.ProduceAsync("topic", Guid.NewGuid(), "value");
 ```
@@ -124,9 +124,9 @@ For topics where you don't need keys:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<Ignore, string>()
+var producer = await Kafka.CreateProducer<Ignore, string>()
     .WithBootstrapServers("localhost:9092")
-    .Build();
+    .BuildAsync();
 
 // Key is always null
 await producer.ProduceAsync("topic", Ignore.Value, "value");
@@ -139,11 +139,11 @@ You can also use the built-in serializers explicitly:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithKeySerializer(Serializers.String)
     .WithValueSerializer(Serializers.String)
-    .Build();
+    .BuildAsync();
 ```
 
 ## Unsupported Types
@@ -153,10 +153,10 @@ If you use a type without a built-in serializer:
 ```csharp
 using Dekaf;
 
-// This throws InvalidOperationException at Build()
-var producer = Kafka.CreateProducer<string, MyCustomType>()
+// This throws InvalidOperationException at BuildAsync()
+var producer = await Kafka.CreateProducer<string, MyCustomType>()
     .WithBootstrapServers("localhost:9092")
-    .Build();  // Error: No default serializer for type MyCustomType
+    .BuildAsync();  // Error: No default serializer for type MyCustomType
 ```
 
 For custom types, see [JSON Serialization](./json) or [Custom Serializers](./custom).
