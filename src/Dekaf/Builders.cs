@@ -642,6 +642,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private readonly List<string> _topicsToSubscribe = [];
     private TimeSpan? _metadataMaxAge;
     private IsolationLevel _isolationLevel = IsolationLevel.ReadUncommitted;
+    private PartitionAssignmentStrategy _partitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky;
+    private IPartitionAssignmentStrategy? _customPartitionAssignmentStrategy;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -703,6 +705,28 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithGroupRemoteAssignor(string assignor)
     {
         _groupRemoteAssignor = assignor ?? throw new ArgumentNullException(nameof(assignor));
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the partition assignment strategy for the classic consumer group protocol.
+    /// </summary>
+    /// <param name="strategy">The built-in assignment strategy to use.</param>
+    public ConsumerBuilder<TKey, TValue> WithPartitionAssignmentStrategy(PartitionAssignmentStrategy strategy)
+    {
+        _partitionAssignmentStrategy = strategy;
+        _customPartitionAssignmentStrategy = null;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets a custom partition assignment strategy implementation.
+    /// When set, this takes precedence over the enum-based <see cref="WithPartitionAssignmentStrategy(PartitionAssignmentStrategy)"/>.
+    /// </summary>
+    /// <param name="strategy">The custom partition assignment strategy to use.</param>
+    public ConsumerBuilder<TKey, TValue> WithPartitionAssignmentStrategy(IPartitionAssignmentStrategy strategy)
+    {
+        _customPartitionAssignmentStrategy = strategy ?? throw new ArgumentNullException(nameof(strategy));
         return this;
     }
 
@@ -1194,6 +1218,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             FetchMaxWaitMs = _fetchMaxWaitMs,
             MaxPollRecords = _maxPollRecords,
             SessionTimeoutMs = _sessionTimeoutMs,
+            PartitionAssignmentStrategy = _partitionAssignmentStrategy,
+            CustomPartitionAssignmentStrategy = _customPartitionAssignmentStrategy,
             UseTls = _useTls,
             TlsConfig = _tlsConfig,
             SaslMechanism = _saslMechanism,

@@ -36,8 +36,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
     private readonly SemaphoreSlim _fetchLock = new(1, 1);
     // These are only used within _lock-protected methods, so no additional synchronization needed:
     private readonly Dictionary<string, int> _topicPartitionCounts = new();
-    private readonly Dictionary<string, HashSet<string>> _memberSubscriptions = new();
-    private readonly Dictionary<string, List<TopicPartition>> _memberAssignments = new();
     private readonly Dictionary<string, List<int>> _assignmentByTopic = new();
 
     private volatile CoordinatorState _state = CoordinatorState.Unjoined;
@@ -766,14 +764,40 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return result;
     }
 
-    private string GetAssignorName() => _options.PartitionAssignmentStrategy switch
+    private string GetAssignorName()
     {
-        PartitionAssignmentStrategy.Range => "range",
-        PartitionAssignmentStrategy.RoundRobin => "roundrobin",
-        PartitionAssignmentStrategy.Sticky => "sticky",
-        PartitionAssignmentStrategy.CooperativeSticky => "cooperative-sticky",
-        _ => "range"
-    };
+        if (_options.CustomPartitionAssignmentStrategy is not null)
+            return _options.CustomPartitionAssignmentStrategy.Name;
+
+        return _options.PartitionAssignmentStrategy switch
+        {
+            PartitionAssignmentStrategy.Range => "range",
+            PartitionAssignmentStrategy.RoundRobin => "roundrobin",
+            PartitionAssignmentStrategy.Sticky => "sticky",
+            PartitionAssignmentStrategy.CooperativeSticky => "cooperative-sticky",
+            _ => "range"
+        };
+    }
+
+    private IPartitionAssignmentStrategy ResolveAssignmentStrategy()
+    {
+        if (_options.CustomPartitionAssignmentStrategy is not null)
+            return _options.CustomPartitionAssignmentStrategy;
+
+        return _options.PartitionAssignmentStrategy switch
+        {
+            PartitionAssignmentStrategy.Range => PartitionAssignors.Range,
+            PartitionAssignmentStrategy.RoundRobin => PartitionAssignors.RoundRobin,
+            PartitionAssignmentStrategy.Sticky or PartitionAssignmentStrategy.CooperativeSticky => FallbackToRange(),
+            _ => PartitionAssignors.Range
+        };
+    }
+
+    private IPartitionAssignmentStrategy FallbackToRange()
+    {
+        LogStickyFallbackToRange(_options.PartitionAssignmentStrategy);
+        return PartitionAssignors.Range;
+    }
 
     private async ValueTask<SyncGroupRequestAssignment[]> ComputeAssignmentsAsync(
         IReadOnlySet<string> topics,
@@ -792,83 +816,37 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             }
         }
 
-        // Parse each member's subscription using pooled dictionary
-        _memberSubscriptions.Clear();
+        // Build ConsumerGroupMember list from JoinGroupResponseMember
+        var groupMembers = new List<ConsumerGroupMember>(members.Count);
         foreach (var member in members)
         {
             var subscribedTopics = ParseSubscriptionMetadata(member.Metadata);
-            _memberSubscriptions[member.MemberId] = subscribedTopics;
+            groupMembers.Add(new ConsumerGroupMember(member.MemberId, subscribedTopics, member.Metadata));
         }
 
-        // Compute assignments using range assignor (simple per-topic partitioning)
-        // Clear existing Lists before clearing the dictionary to reuse List instances
-        foreach (var list in _memberAssignments.Values)
-        {
-            list.Clear();
-        }
-
-        foreach (var member in members)
-        {
-            if (!_memberAssignments.TryGetValue(member.MemberId, out var assignments))
-            {
-                assignments = [];
-                _memberAssignments[member.MemberId] = assignments;
-            }
-        }
-
-        foreach (var (topic, partitionCount) in _topicPartitionCounts)
-        {
-            // Get members interested in this topic without LINQ to avoid allocations
-            var interestedMembers = new List<string>();
-            foreach (var member in members)
-            {
-                if (_memberSubscriptions[member.MemberId].Contains(topic))
-                {
-                    interestedMembers.Add(member.MemberId);
-                }
-            }
-
-            // Sort for deterministic assignment
-            if (interestedMembers.Count > 1)
-            {
-                interestedMembers.Sort(StringComparer.Ordinal);
-            }
-
-            if (interestedMembers.Count == 0)
-                continue;
-
-            // Range assignment: divide partitions evenly among interested members
-            var partitionsPerMember = partitionCount / interestedMembers.Count;
-            var extraPartitions = partitionCount % interestedMembers.Count;
-
-            var partitionIndex = 0;
-            for (var memberIdx = 0; memberIdx < interestedMembers.Count; memberIdx++)
-            {
-                var memberId = interestedMembers[memberIdx];
-                var assignedCount = partitionsPerMember + (memberIdx < extraPartitions ? 1 : 0);
-
-                for (var i = 0; i < assignedCount; i++)
-                {
-                    _memberAssignments[memberId].Add(new TopicPartition(topic, partitionIndex++));
-                }
-            }
-        }
+        // Delegate to the resolved strategy
+        var strategy = ResolveAssignmentStrategy();
+        var strategyAssignments = strategy.Assign(groupMembers, _topicPartitionCounts);
 
         // Build SyncGroupRequestAssignment for each member
-        var result = new List<SyncGroupRequestAssignment>();
-        foreach (var (memberId, partitions) in _memberAssignments)
+        var result = new List<SyncGroupRequestAssignment>(members.Count);
+        foreach (var member in members)
         {
+            IReadOnlyList<TopicPartition> partitions = strategyAssignments.TryGetValue(member.MemberId, out var assigned)
+                ? assigned
+                : [];
+
             var assignmentBytes = BuildAssignmentData(partitions);
             result.Add(new SyncGroupRequestAssignment
             {
-                MemberId = memberId,
+                MemberId = member.MemberId,
                 Assignment = assignmentBytes
             });
 
             if (_logger.IsEnabled(LogLevel.Debug))
             {
                 var partitionList = string.Join(", ", partitions);
-                LogAssignedPartitionsToMember(partitions.Count, memberId, partitionList);
+                LogAssignedPartitionsToMember(partitions.Count, member.MemberId, partitionList);
             }
         }
 
@@ -894,7 +872,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         return result;
     }
 
-    private byte[] BuildAssignmentData(List<TopicPartition> partitions)
+    private byte[] BuildAssignmentData(IReadOnlyList<TopicPartition> partitions)
     {
         var buffer = new ArrayBufferWriter<byte>();
         var writer = new KafkaProtocolWriter(buffer);
@@ -1144,6 +1122,9 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator disposing")]
     private partial void LogCoordinatorDisposing();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "{Strategy} assignment strategy is not yet implemented, falling back to Range assignor")]
+    private partial void LogStickyFallbackToRange(PartitionAssignmentStrategy strategy);
 
     #endregion
 }

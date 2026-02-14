@@ -261,6 +261,27 @@ public sealed class ConsumerServiceBuilder<TKey, TValue>
         return this;
     }
 
+    /// <summary>
+    /// Sets the partition assignment strategy for the classic consumer group protocol.
+    /// </summary>
+    /// <param name="strategy">The built-in assignment strategy to use.</param>
+    public ConsumerServiceBuilder<TKey, TValue> WithPartitionAssignmentStrategy(PartitionAssignmentStrategy strategy)
+    {
+        _builder.WithPartitionAssignmentStrategy(strategy);
+        return this;
+    }
+
+    /// <summary>
+    /// Sets a custom partition assignment strategy implementation.
+    /// When set, this takes precedence over the enum-based overload.
+    /// </summary>
+    /// <param name="strategy">The custom partition assignment strategy to use.</param>
+    public ConsumerServiceBuilder<TKey, TValue> WithPartitionAssignmentStrategy(IPartitionAssignmentStrategy strategy)
+    {
+        _builder.WithPartitionAssignmentStrategy(strategy);
+        return this;
+    }
+
     private DeadLetterQueueBuilder? _dlqBuilder;
 
     /// <summary>

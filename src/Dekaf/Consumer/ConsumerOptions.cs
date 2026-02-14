@@ -132,6 +132,12 @@ public sealed class ConsumerOptions
         PartitionAssignmentStrategy.CooperativeSticky;
 
     /// <summary>
+    /// Custom partition assignment strategy instance. When set, this takes precedence over
+    /// <see cref="PartitionAssignmentStrategy"/>.
+    /// </summary>
+    public IPartitionAssignmentStrategy? CustomPartitionAssignmentStrategy { get; init; }
+
+    /// <summary>
     /// Isolation level for transactional reads.
     /// </summary>
     public IsolationLevel IsolationLevel { get; init; } = IsolationLevel.ReadUncommitted;
