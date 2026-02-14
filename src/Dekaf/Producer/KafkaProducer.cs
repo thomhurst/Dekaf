@@ -73,9 +73,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     // Only initialized when idempotence is enabled (sequence numbers guarantee ordering at broker).
     private readonly PartitionInflightTracker? _inflightTracker;
 
-    // Statistics collection
+    // Statistics collection - only tracks per-message counters when a handler is configured
     private readonly ProducerStatisticsCollector _statisticsCollector = new();
     private readonly StatisticsEmitter<ProducerStatistics>? _statisticsEmitter;
+    private readonly bool _statisticsEnabled;
 
     // Pool for PooledValueTaskSource to avoid per-message allocations
     // Unlike TaskCompletionSource, these can be reset and reused
@@ -216,6 +217,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             options.StatisticsInterval.Value > TimeSpan.Zero &&
             options.StatisticsHandler is not null)
         {
+            _statisticsEnabled = true;
             _statisticsEmitter = new StatisticsEmitter<ProducerStatistics>(
                 options.StatisticsInterval.Value,
                 CollectStatistics,
@@ -713,13 +715,21 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // This succeeds when: same partition as recent message AND batch has space
         if (TryAppendToArenaFast(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, ref pooledHeaderArray))
         {
-            _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
+            if (_statisticsEnabled)
+            {
+                _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
+            }
+
             return;
         }
 
         // Step 6: SLOW PATH - Handle all complexity
         AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueLength, recordHeaders, pooledHeaderArray);
-        _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
+
+        if (_statisticsEnabled)
+        {
+            _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
+        }
     }
 
     /// <summary>
@@ -1016,8 +1026,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
 
             // Track message produced
-            var messageBytes = key.Length + value.Length;
-            _statisticsCollector.RecordMessageProduced(message.Topic, partition, messageBytes);
+            if (_statisticsEnabled)
+            {
+                var messageBytes = key.Length + value.Length;
+                _statisticsCollector.RecordMessageProduced(message.Topic, partition, messageBytes);
+            }
         }
         catch (Exception ex) when (ex is not ObjectDisposedException and not BufferFullException)
         {
@@ -1251,13 +1264,21 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Step 5: FAST PATH - Try to append to cached batch with arena and callback
         if (TryAppendToArenaFastWithCallback(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, ref pooledHeaderArray, callback))
         {
-            _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
+            if (_statisticsEnabled)
+            {
+                _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
+            }
+
             return;
         }
 
         // Step 6: SLOW PATH - Handle all complexity
         AppendWithSlowPathWithCallback(topic, partition, timestampMs, keyIsNull, keyLength, valueLength, recordHeaders, pooledHeaderArray, callback);
-        _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
+
+        if (_statisticsEnabled)
+        {
+            _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
+        }
     }
 
     /// <summary>
@@ -1506,8 +1527,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         // Track message produced (key + value bytes)
-        var messageBytes = key.Length + value.Length;
-        _statisticsCollector.RecordMessageProduced(message.Topic, partition, messageBytes);
+        if (_statisticsEnabled)
+        {
+            var messageBytes = key.Length + value.Length;
+            _statisticsCollector.RecordMessageProduced(message.Topic, partition, messageBytes);
+        }
 
         // No await here - completion will be set by the batch when it's sent
     }
