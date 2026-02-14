@@ -43,10 +43,10 @@ public class OrderSerializer : ISerializer<Order>, IDeserializer<Order>
 }
 
 // Usage
-var producer = Kafka.CreateProducer<string, Order>()
+var producer = await Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new OrderSerializer())
-    .Build();
+    .BuildAsync();
 ```
 
 ## Zero-Allocation Serializer
@@ -115,10 +115,10 @@ public class MessagePackSerializer<T> : ISerializer<T>, IDeserializer<T>
 }
 
 // Usage
-var producer = Kafka.CreateProducer<string, Order>()
+var producer = await Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new MessagePackSerializer<Order>())
-    .Build();
+    .BuildAsync();
 ```
 
 ## Null Handling
@@ -178,11 +178,11 @@ public class OrderCodec : ISerializer<Order>, IDeserializer<Order>
 // Use same instance for both
 var codec = new OrderCodec();
 
-var producer = Kafka.CreateProducer<string, Order>()
+var producer = await Kafka.CreateProducer<string, Order>()
     .WithValueSerializer(codec)
-    .Build();
+    .BuildAsync();
 
-var consumer = Kafka.CreateConsumer<string, Order>()
+var consumer = await Kafka.CreateConsumer<string, Order>()
     .WithValueDeserializer(codec)
-    .Build();
+    .BuildAsync();
 ```

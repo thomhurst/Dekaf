@@ -31,10 +31,10 @@ var schemaRegistry = new CachedSchemaRegistryClient(
     new SchemaRegistryConfig { Url = "http://localhost:8081" }
 );
 
-var producer = Kafka.CreateProducer<string, Order>()
+var producer = await Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new AvroSerializer<Order>(schemaRegistry))
-    .Build();
+    .BuildAsync();
 
 await producer.ProduceAsync("orders", order.Id, order);
 ```
@@ -70,10 +70,10 @@ var schemaRegistry = new CachedSchemaRegistryClient(
     new SchemaRegistryConfig { Url = "http://localhost:8081" }
 );
 
-var producer = Kafka.CreateProducer<string, OrderProto>()
+var producer = await Kafka.CreateProducer<string, OrderProto>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new ProtobufSerializer<OrderProto>(schemaRegistry))
-    .Build();
+    .BuildAsync();
 ```
 
 ## Schema Registry Configuration
@@ -100,12 +100,12 @@ var schemaRegistry = new CachedSchemaRegistryClient(config);
 ```csharp
 using Dekaf;
 
-var consumer = Kafka.CreateConsumer<string, Order>()
+var consumer = await Kafka.CreateConsumer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("order-processors")
     .WithValueDeserializer(new AvroDeserializer<Order>(schemaRegistry))
     .SubscribeTo("orders")
-    .Build();
+    .BuildAsync();
 
 await foreach (var msg in consumer.ConsumeAsync(ct))
 {

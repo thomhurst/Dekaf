@@ -13,11 +13,11 @@ Simple username/password authentication:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()  // Always use TLS with PLAIN to encrypt credentials
     .WithSaslPlain("username", "password")
-    .Build();
+    .BuildAsync();
 ```
 
 :::warning
@@ -33,11 +33,11 @@ Challenge-response authentication that doesn't send passwords:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
     .WithSaslScramSha256("username", "password")
-    .Build();
+    .BuildAsync();
 ```
 
 ### SCRAM-SHA-512 (Recommended)
@@ -45,11 +45,11 @@ var producer = Kafka.CreateProducer<string, string>()
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .UseTls()
     .WithSaslScramSha512("username", "password")
-    .Build();
+    .BuildAsync();
 ```
 
 ## SASL/GSSAPI (Kerberos)
@@ -66,10 +66,10 @@ var gssapiConfig = new GssapiConfig
     Principal = "client@EXAMPLE.COM"
 };
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .WithGssapi(gssapiConfig)
-    .Build();
+    .BuildAsync();
 ```
 
 ## Consumer Configuration
@@ -79,13 +79,13 @@ Same methods work for consumers:
 ```csharp
 using Dekaf;
 
-var consumer = Kafka.CreateConsumer<string, string>()
+var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("kafka.example.com:9092")
     .WithGroupId("my-group")
     .UseTls()
     .WithSaslScramSha512("username", "password")
     .SubscribeTo("my-topic")
-    .Build();
+    .BuildAsync();
 ```
 
 ## Confluent Cloud Example
@@ -96,11 +96,11 @@ using Dekaf;
 var apiKey = Environment.GetEnvironmentVariable("CONFLUENT_API_KEY");
 var apiSecret = Environment.GetEnvironmentVariable("CONFLUENT_API_SECRET");
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("pkc-xxxxx.us-east-1.aws.confluent.cloud:9092")
     .UseTls()
     .WithSaslPlain(apiKey, apiSecret)
-    .Build();
+    .BuildAsync();
 ```
 
 ## Securing Credentials
@@ -130,9 +130,9 @@ public class SecureKafkaClient
 {
     private readonly IConfiguration _config;
 
-    public IKafkaProducer<string, string> CreateProducer()
+    public async Task<IKafkaProducer<string, string>> CreateProducer()
     {
-        return Kafka.CreateProducer<string, string>()
+        return await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_config["Kafka:BootstrapServers"])
             .UseTls()
             .WithSaslScramSha512(
@@ -140,7 +140,7 @@ public class SecureKafkaClient
                 _config["Kafka:Password"]
             )
             .ForReliability()
-            .Build();
+            .BuildAsync();
     }
 }
 ```

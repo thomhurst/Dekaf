@@ -13,10 +13,10 @@ Enable TLS for encrypted connections:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls()
-    .Build();
+    .BuildAsync();
 ```
 
 This uses system CA certificates to validate the broker's certificate.
@@ -33,10 +33,10 @@ var tlsConfig = new TlsConfig
     CaCertificatePath = "/path/to/ca.crt"
 };
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls(tlsConfig)
-    .Build();
+    .BuildAsync();
 ```
 
 ## Mutual TLS (mTLS)
@@ -47,7 +47,7 @@ For client certificate authentication:
 using Dekaf;
 
 // Using file paths
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseMutualTls(
         caCertPath: "/path/to/ca.crt",
@@ -55,16 +55,16 @@ var producer = Kafka.CreateProducer<string, string>()
         clientKeyPath: "/path/to/client.key",
         keyPassword: "optional-password"
     )
-    .Build();
+    .BuildAsync();
 
 // Using X509Certificate2
 var clientCert = new X509Certificate2("client.pfx", "password");
 var caCert = new X509Certificate2("ca.crt");
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseMutualTls(clientCert, caCert)
-    .Build();
+    .BuildAsync();
 ```
 
 ## TLS Configuration Options
@@ -89,10 +89,10 @@ var tlsConfig = new TlsConfig
     EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
 };
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls(tlsConfig)
-    .Build();
+    .BuildAsync();
 ```
 
 ## Common Configurations
@@ -102,11 +102,11 @@ var producer = Kafka.CreateProducer<string, string>()
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("broker1.msk.us-east-1.amazonaws.com:9098")
     .UseTls()
     .WithSaslOAuthBearer(new AwsMskTokenProvider())
-    .Build();
+    .BuildAsync();
 ```
 
 ### Confluent Cloud
@@ -114,11 +114,11 @@ var producer = Kafka.CreateProducer<string, string>()
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("pkc-xxxxx.us-east-1.aws.confluent.cloud:9092")
     .UseTls()
     .WithSaslPlain(apiKey, apiSecret)
-    .Build();
+    .BuildAsync();
 ```
 
 ## Troubleshooting

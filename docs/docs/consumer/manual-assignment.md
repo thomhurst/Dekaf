@@ -22,10 +22,10 @@ Use `Assign` instead of `Subscribe`:
 ```csharp
 using Dekaf;
 
-var consumer = Kafka.CreateConsumer<string, string>()
+var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     // No group ID needed for manual assignment
-    .Build();
+    .BuildAsync();
 
 // Assign specific partitions
 consumer.Assign(
@@ -71,9 +71,9 @@ With manual assignment, you're responsible for tracking offsets:
 ```csharp
 using Dekaf;
 
-var consumer = Kafka.CreateConsumer<string, string>()
+var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .Build();
+    .BuildAsync();
 
 // Load saved offsets from your storage
 var savedOffsets = await LoadOffsetsFromDatabaseAsync();
@@ -153,10 +153,10 @@ public class PartitionReader
         Func<ConsumeResult<string, string>, Task> processor,
         CancellationToken ct)
     {
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(bootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.None)
-            .Build();
+            .BuildAsync();
 
         consumer.Assign(new TopicPartitionOffset(topic, partition, startOffset));
 
@@ -198,9 +198,9 @@ public class MultiPartitionWorker
 
     public MultiPartitionWorker(string bootstrapServers)
     {
-        _consumer = Kafka.CreateConsumer<string, string>()
+        _consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(bootstrapServers)
-            .Build();
+            .BuildAsync();
     }
 
     public async Task StartAsync(string topic, int[] partitions, CancellationToken ct)

@@ -39,10 +39,10 @@ Gzip is built into .NET, no additional package needed.
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .UseLz4Compression()    // or UseZstdCompression(), UseSnappyCompression(), UseGzipCompression()
-    .Build();
+    .BuildAsync();
 ```
 
 ### Using Enum
@@ -124,12 +124,12 @@ Compression works best with batching. Configure linger time to allow batches to 
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .UseLz4Compression()
     .WithLingerMs(5)        // Wait up to 5ms to fill batches
     .WithBatchSize(65536)   // 64KB batches
-    .Build();
+    .BuildAsync();
 ```
 
 ## Consumer Decompression
@@ -140,10 +140,10 @@ Consumers automatically detect and decompress messages. No configuration needed:
 using Dekaf;
 
 // Consumer handles decompression automatically
-var consumer = Kafka.CreateConsumer<string, string>()
+var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
-    .Build();
+    .BuildAsync();
 
 await foreach (var msg in consumer.ConsumeAsync(ct))
 {
@@ -188,11 +188,11 @@ Typical performance characteristics:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()     // Sets batching parameters
     .UseLz4Compression()     // Add compression
-    .Build();
+    .BuildAsync();
 
 // Send many messages
 for (int i = 0; i < 1_000_000; i++)

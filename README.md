@@ -28,9 +28,9 @@ The simplest way to send a message:
 ```csharp
 using Dekaf;
 
-await using var producer = Kafka.CreateProducer<string, string>()
+await using var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .Build();
+    .BuildAsync();
 
 // Wait for acknowledgment
 var metadata = await producer.ProduceAsync("my-topic", "key", "Hello, Kafka!");
@@ -77,11 +77,11 @@ await events.ProduceAsync("event-1", eventJson);
 ```csharp
 using Dekaf;
 
-await using var consumer = Kafka.CreateConsumer<string, string>()
+await using var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-consumer-group")
     .SubscribeTo("my-topic")
-    .Build();
+    .BuildAsync();
 
 await foreach (var message in consumer.ConsumeAsync(cancellationToken))
 {
@@ -97,22 +97,22 @@ Not sure which settings to use? We've got you covered with presets for common sc
 using Dekaf;
 
 // Maximize throughput (batching, compression, relaxed durability)
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()
-    .Build();
+    .BuildAsync();
 
 // Minimize latency (no batching delay, smaller batches)
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForLowLatency()
-    .Build();
+    .BuildAsync();
 
 // Maximum reliability (all replicas must ack, idempotent)
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForReliability()
-    .Build();
+    .BuildAsync();
 ```
 
 You can override individual settings after applying a preset.
@@ -195,22 +195,22 @@ using Dekaf;
 
 // Auto mode (default): Offsets committed automatically in the background
 // Good for: Log processing, analytics, cases where losing a message is OK
-var consumer = Kafka.CreateConsumer<string, string>()
+var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithOffsetCommitMode(OffsetCommitMode.Auto)
-    .Build();
+    .BuildAsync();
 
 // Manual mode: You control when to commit by calling CommitAsync()
 // Dekaf tracks consumed offsets for you - CommitAsync() commits the latest
 // consumed position for each partition. This gives you at-least-once semantics:
 // if your app crashes before committing, messages will be redelivered on restart.
 // Good for: Payment processing, order handling, anything where you can't lose messages
-var consumer = Kafka.CreateConsumer<string, string>()
+var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithOffsetCommitMode(OffsetCommitMode.Manual)
-    .Build();
+    .BuildAsync();
 
 await foreach (var msg in consumer.ConsumeAsync(ct))
 {
@@ -234,10 +234,10 @@ Then enable it:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .UseLz4Compression()
-    .Build();
+    .BuildAsync();
 ```
 
 ## Serialization
@@ -257,10 +257,10 @@ dotnet add package Dekaf.Serialization.Json
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, Order>()
+var producer = await Kafka.CreateProducer<string, Order>()
     .WithBootstrapServers("localhost:9092")
     .WithValueSerializer(new JsonSerializer<Order>())
-    .Build();
+    .BuildAsync();
 
 await producer.ProduceAsync("orders", order.Id, order);
 ```
@@ -272,10 +272,10 @@ await producer.ProduceAsync("orders", order.Id, order);
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls()
-    .Build();
+    .BuildAsync();
 ```
 
 ### SASL Authentication
@@ -284,18 +284,18 @@ var producer = Kafka.CreateProducer<string, string>()
 using Dekaf;
 
 // SASL/PLAIN
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls()
     .WithSaslPlain("username", "password")
-    .Build();
+    .BuildAsync();
 
 // SASL/SCRAM-SHA-512
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("kafka.example.com:9093")
     .UseTls()
     .WithSaslScramSha512("username", "password")
-    .Build();
+    .BuildAsync();
 ```
 
 ## Dependency Injection
@@ -307,13 +307,40 @@ dotnet add package Dekaf.Extensions.DependencyInjection
 ```
 
 ```csharp
-services.AddDekafProducer<string, string>(builder => builder
-    .WithBootstrapServers(configuration["Kafka:BootstrapServers"])
-    .ForReliability());
+using Dekaf.Extensions.DependencyInjection;
 
-services.AddDekafConsumer<string, string>(builder => builder
-    .WithBootstrapServers(configuration["Kafka:BootstrapServers"])
-    .WithGroupId("my-service")
-    .SubscribeTo("events"));
+services.AddDekaf(dekaf =>
+{
+    dekaf.AddProducer<string, string>(producer => producer
+        .WithBootstrapServers(configuration["Kafka:BootstrapServers"]!));
+
+    dekaf.AddConsumer<string, string>(consumer => consumer
+        .WithBootstrapServers(configuration["Kafka:BootstrapServers"]!)
+        .WithGroupId("my-service"));
+});
 ```
+
+Then inject `IKafkaProducer<string, string>` or `IKafkaConsumer<string, string>` wherever you need them.
+
+### Global Interceptors
+
+Register cross-cutting interceptors (tracing, metrics, audit logging) that apply to all producers or consumers:
+
+```csharp
+services.AddDekaf(dekaf =>
+{
+    // Global interceptors apply to every producer/consumer
+    dekaf.AddGlobalProducerInterceptor(typeof(TracingInterceptor<,>));
+    dekaf.AddGlobalConsumerInterceptor(typeof(MetricsInterceptor<,>));
+
+    dekaf.AddProducer<string, string>(producer => producer
+        .WithBootstrapServers("localhost:9092"));
+
+    dekaf.AddConsumer<string, string>(consumer => consumer
+        .WithBootstrapServers("localhost:9092")
+        .WithGroupId("my-service"));
+});
+```
+
+Global interceptors execute before per-instance interceptors, in registration order. They are constructed via `ActivatorUtilities`, so their dependencies are resolved from the DI container.
 

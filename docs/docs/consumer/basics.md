@@ -13,10 +13,10 @@ Use the fluent builder API:
 ```csharp
 using Dekaf;
 
-await using var consumer = Kafka.CreateConsumer<string, string>()
+await using var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-consumer-group")
-    .Build();
+    .BuildAsync();
 ```
 
 The type parameters `<TKey, TValue>` define the expected key and value types.
@@ -35,11 +35,11 @@ consumer.Subscribe("my-topic");
 consumer.Subscribe("topic1", "topic2", "topic3");
 
 // Using the builder
-var consumer = Kafka.CreateConsumer<string, string>()
+var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .SubscribeTo("my-topic")  // Subscribe during build
-    .Build();
+    .BuildAsync();
 ```
 
 ## Consuming Messages
@@ -100,11 +100,11 @@ When a consumer starts with no committed offset, `AutoOffsetReset` determines wh
 ```csharp
 using Dekaf;
 
-var consumer = Kafka.CreateConsumer<string, string>()
+var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithAutoOffsetReset(AutoOffsetReset.Earliest)  // Start from beginning
-    .Build();
+    .BuildAsync();
 ```
 
 | Value | Behavior |
@@ -150,11 +150,11 @@ Always dispose the consumer properly:
 ```csharp
 using Dekaf;
 
-await using var consumer = Kafka.CreateConsumer<string, string>()
+await using var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .SubscribeTo("my-topic")
-    .Build();
+    .BuildAsync();
 
 using var cts = new CancellationTokenSource();
 
@@ -229,12 +229,12 @@ public class OrderConsumer : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await using var consumer = Kafka.CreateConsumer<string, Order>()
+        await using var consumer = await Kafka.CreateConsumer<string, Order>()
             .WithBootstrapServers("localhost:9092")
             .WithGroupId("order-processor")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .SubscribeTo("orders")
-            .Build();
+            .BuildAsync();
 
         _logger.LogInformation("Order consumer started");
 

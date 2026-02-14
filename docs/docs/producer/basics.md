@@ -13,9 +13,9 @@ Use the fluent builder API to create a producer:
 ```csharp
 using Dekaf;
 
-await using var producer = Kafka.CreateProducer<string, string>()
+await using var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
-    .Build();
+    .BuildAsync();
 ```
 
 The type parameters `<TKey, TValue>` define the types for message keys and values. Dekaf includes built-in serializers for common types.
@@ -76,10 +76,10 @@ The `Acks` setting controls when the broker considers a message "delivered":
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithAcks(Acks.All)  // Wait for all in-sync replicas
-    .Build();
+    .BuildAsync();
 ```
 
 | Acks Value | Behavior | Trade-off |
@@ -99,11 +99,11 @@ Dekaf automatically batches messages for efficiency. You can tune the batching b
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithLingerMs(5)       // Wait up to 5ms to collect more messages
     .WithBatchSize(65536)  // Maximum batch size in bytes
-    .Build();
+    .BuildAsync();
 ```
 
 - **`LingerMs`** - How long to wait before sending a batch that isn't full. Higher values = better batching but more latency.
@@ -116,10 +116,10 @@ Enable compression to reduce network usage:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .UseLz4Compression()  // Fast and good compression
-    .Build();
+    .BuildAsync();
 ```
 
 Available compression methods:
@@ -142,10 +142,10 @@ Enable idempotence to prevent duplicate messages during retries:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .EnableIdempotence()
-    .Build();
+    .BuildAsync();
 ```
 
 With idempotence enabled:

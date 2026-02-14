@@ -36,18 +36,18 @@ Each consumer instance needs the same group ID:
 using Dekaf;
 
 // Instance 1
-var consumer1 = Kafka.CreateConsumer<string, string>()
+var consumer1 = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("order-processors")  // Same group ID
     .SubscribeTo("orders")
-    .Build();
+    .BuildAsync();
 
 // Instance 2 (different machine/process)
-var consumer2 = Kafka.CreateConsumer<string, string>()
+var consumer2 = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("order-processors")  // Same group ID
     .SubscribeTo("orders")
-    .Build();
+    .BuildAsync();
 ```
 
 ## Rebalancing
@@ -93,11 +93,11 @@ public class MyRebalanceListener : IRebalanceListener
     }
 }
 
-var consumer = Kafka.CreateConsumer<string, string>()
+var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithRebalanceListener(new MyRebalanceListener())
-    .Build();
+    .BuildAsync();
 ```
 
 ### Cooperative Rebalancing
@@ -108,17 +108,17 @@ Dekaf uses cooperative (incremental) rebalancing by default, which minimizes dis
 using Dekaf;
 
 // Default: CooperativeSticky assignor
-var consumer = Kafka.CreateConsumer<string, string>()
+var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
-    .Build();
+    .BuildAsync();
 
 // Or explicitly set the assignor
-var consumer = Kafka.CreateConsumer<string, string>()
+var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithPartitionAssignmentStrategy(PartitionAssignmentStrategy.CooperativeSticky)
-    .Build();
+    .BuildAsync();
 ```
 
 With cooperative rebalancing:
@@ -133,11 +133,11 @@ For faster rebalances with planned restarts, use static membership:
 ```csharp
 using Dekaf;
 
-var consumer = Kafka.CreateConsumer<string, string>()
+var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithGroupInstanceId("instance-1")  // Must be unique within the group
-    .Build();
+    .BuildAsync();
 ```
 
 Benefits:
@@ -154,12 +154,12 @@ Each instance in the group must have a unique `GroupInstanceId`. Using the same 
 ```csharp
 using Dekaf;
 
-var consumer = Kafka.CreateConsumer<string, string>()
+var consumer = await Kafka.CreateConsumer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .WithGroupId("my-group")
     .WithSessionTimeout(TimeSpan.FromSeconds(45))    // Max time before considered dead
     .WithHeartbeatInterval(TimeSpan.FromSeconds(3)) // How often to send heartbeats
-    .Build();
+    .BuildAsync();
 ```
 
 Guidelines:
@@ -214,16 +214,16 @@ Different groups consume the same topic independently:
 using Dekaf;
 
 // Analytics group - processes all messages
-var analyticsConsumer = Kafka.CreateConsumer<string, string>()
+var analyticsConsumer = await Kafka.CreateConsumer<string, string>()
     .WithGroupId("analytics")
     .SubscribeTo("orders")
-    .Build();
+    .BuildAsync();
 
 // Notification group - also processes all messages
-var notificationConsumer = Kafka.CreateConsumer<string, string>()
+var notificationConsumer = await Kafka.CreateConsumer<string, string>()
     .WithGroupId("notifications")
     .SubscribeTo("orders")
-    .Build();
+    .BuildAsync();
 ```
 
 Each group:
@@ -242,14 +242,14 @@ public class OrderProcessor
 
     public async Task RunAsync(string instanceId, CancellationToken ct)
     {
-        await using var consumer = Kafka.CreateConsumer<string, Order>()
+        await using var consumer = await Kafka.CreateConsumer<string, Order>()
             .WithBootstrapServers("localhost:9092")
             .WithGroupId("order-processors")
             .WithGroupInstanceId(instanceId)  // Static membership
             .WithRebalanceListener(new LoggingRebalanceListener(_logger))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .SubscribeTo("orders")
-            .Build();
+            .BuildAsync();
 
         _logger.LogInformation(
             "Consumer {InstanceId} started, member ID: {MemberId}",

@@ -185,13 +185,13 @@ For maximum throughput with fire-and-forget, tune the batching settings:
 ```csharp
 using Dekaf;
 
-var producer = Kafka.CreateProducer<string, string>()
+var producer = await Kafka.CreateProducer<string, string>()
     .WithBootstrapServers("localhost:9092")
     .ForHighThroughput()  // Preset with good defaults
     .WithLingerMs(10)     // Allow more time for batching
     .WithBatchSize(131072) // Larger batches (128KB)
     .UseLz4Compression()  // Compress batches
-    .Build();
+    .BuildAsync();
 ```
 
 This configuration:
