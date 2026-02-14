@@ -57,7 +57,6 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
                         Framework = framework,
                         Arguments = [
                             "--",
-                            "--timeout", "10m",
                             "--hangdump",
                             "--hangdump-timeout", "8m",
                             "--log-level", "Trace",

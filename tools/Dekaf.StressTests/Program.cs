@@ -15,7 +15,7 @@ namespace Dekaf.StressTests;
 /// Options:
 ///   --duration &lt;minutes&gt;    Test duration in minutes (default: 15)
 ///   --message-size &lt;bytes&gt;  Message size in bytes (default: 1000)
-///   --scenario &lt;name&gt;       Run specific scenario: producer, consumer, all (default: all)
+///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-async, consumer, all (default: all)
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   report --input &lt;path&gt;   Generate report from existing results
@@ -104,7 +104,7 @@ public static class Program
             var testOptions = new StressTestOptions
             {
                 BootstrapServers = kafka.BootstrapServers,
-                Topic = scenario.Name == "producer" ? producerTopic : consumerTopic,
+                Topic = scenario.Name.StartsWith("producer", StringComparison.OrdinalIgnoreCase) ? producerTopic : consumerTopic,
                 DurationMinutes = options.DurationMinutes,
                 MessageSizeBytes = options.MessageSizeBytes,
                 Partitions = options.Partitions,
@@ -202,6 +202,8 @@ public static class Program
         {
             new ProducerStressTest(),
             new ConfluentProducerStressTest(),
+            new ProducerAsyncStressTest(),
+            new ConfluentProducerAsyncStressTest(),
             new ConsumerStressTest(),
             new ConfluentConsumerStressTest()
         };
@@ -306,7 +308,7 @@ public static class Program
             Options:
               --duration <minutes>    Test duration in minutes (default: 15)
               --message-size <bytes>  Message size in bytes (default: 1000)
-              --scenario <name>       Run specific scenario: producer, consumer, all (default: all)
+              --scenario <name>       Run specific scenario: producer, producer-async, consumer, all (default: all)
               --client <name>         Run specific client: dekaf, confluent, all (default: all)
               --output <path>         Output directory for results (default: ./results)
               --partitions <count>    Number of topic partitions (default: 6)

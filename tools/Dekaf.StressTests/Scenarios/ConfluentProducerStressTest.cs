@@ -50,7 +50,7 @@ internal sealed class ConfluentProducerStressTest : IStressTestScenario
         GC.Collect();
 
         var gcStats = new GcStats();
-        var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
 
         Console.WriteLine($"  Running Confluent producer stress test for {options.DurationMinutes} minutes...");

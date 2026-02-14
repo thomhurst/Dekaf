@@ -58,7 +58,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         GC.Collect();
 
         var gcStats = new GcStats();
-        var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
 
         Console.WriteLine($"  Running Dekaf consumer stress test for {options.DurationMinutes} minutes...");
