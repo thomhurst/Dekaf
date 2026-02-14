@@ -686,12 +686,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             }
 
             // Yield records lazily from pending fetches
+            System.Diagnostics.Activity? previousActivity = null;
+            try
+            {
             while (_pendingFetches.Count > 0)
             {
                 var pending = _pendingFetches.Peek();
 
                 while (pending.MoveNext())
                 {
+                    // Dispose previous message's activity (captures user processing time)
+                    previousActivity?.Dispose();
+                    previousActivity = null;
+
                     var record = pending.CurrentRecord;
                     var batch = pending.CurrentBatch;
 
@@ -703,6 +710,28 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     var timestampType = ((int)batch.Attributes & 0x08) != 0
                         ? TimestampType.LogAppendTime
                         : TimestampType.CreateTime;
+
+                    // Start consumer tracing activity (~2ns no-op when no listener)
+                    var parentContext = Diagnostics.TraceContextPropagator.ExtractTraceContext(headers);
+                    var activity = parentContext.HasValue
+                        ? Diagnostics.DekafDiagnostics.Source.StartActivity(
+                            $"{pending.Topic} process",
+                            System.Diagnostics.ActivityKind.Consumer,
+                            parentContext.Value)
+                        : Diagnostics.DekafDiagnostics.Source.StartActivity(
+                            $"{pending.Topic} process",
+                            System.Diagnostics.ActivityKind.Consumer);
+                    if (activity is not null)
+                    {
+                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
+                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic);
+                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "process");
+                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, pending.PartitionIndex);
+                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageOffset, offset);
+                        if (_options.GroupId is not null)
+                            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingConsumerGroupName, _options.GroupId);
+                        previousActivity = activity;
+                    }
 
                     // Create result - deserialization happens eagerly in the constructor
                     var result = new ConsumeResult<TKey, TValue>(
@@ -728,11 +757,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                                        (record.IsValueNull ? 0 : record.Value.Length);
                     pending.TrackConsumed(offset, messageBytes);
 
+                    // Record consumer metrics (~3ns no-op when no listener)
+                    var metricTags = new System.Diagnostics.TagList
+                        { { Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic } };
+                    Diagnostics.DekafMetrics.MessagesReceived.Add(1, metricTags);
+                    Diagnostics.DekafMetrics.BytesReceived.Add(messageBytes, metricTags);
+
                     // Apply OnConsume interceptors before yielding to user
                     result = ApplyOnConsumeInterceptors(result);
 
                     yield return result;
                 }
+
+                // Dispose last activity from this pending fetch
+                previousActivity?.Dispose();
+                previousActivity = null;
 
                 // Batch-level _fetchPositions update (once per partition-fetch, not per message).
                 // When prefetching is enabled, the prefetch thread already advances
@@ -756,6 +795,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 // This pending fetch is exhausted, remove and dispose it
                 // Disposing releases the pooled network buffer memory
                 _pendingFetches.Dequeue().Dispose();
+            }
+            }
+            finally
+            {
+                // Ensure activity is disposed if caller breaks out of enumeration early
+                previousActivity?.Dispose();
             }
 
             // Yield any pending EOF events (thread-safe with ConcurrentQueue)

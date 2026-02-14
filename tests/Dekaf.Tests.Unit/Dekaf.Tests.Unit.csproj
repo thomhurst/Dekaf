@@ -16,10 +16,12 @@
     <ProjectReference Include="..\..\src\Dekaf.Serialization.Json\Dekaf.Serialization.Json.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Extensions.DependencyInjection\Dekaf.Extensions.DependencyInjection.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Extensions.Hosting\Dekaf.Extensions.Hosting.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.OpenTelemetry\Dekaf.OpenTelemetry.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Google.Protobuf" Version="3.*" />
+    <PackageReference Include="OpenTelemetry" Version="1.*" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="*" />
     <PackageReference Include="Microsoft.Testing.Extensions.HangDump" Version="*" />
     <PackageReference Include="NSubstitute" Version="5.*" />
