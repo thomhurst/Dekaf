@@ -484,7 +484,7 @@ jobs:
 
       - name: Create Pull Request
         id: create-pr
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           commit-message: 'docs: Update stress test results'
           title: 'docs: Update stress test results'
