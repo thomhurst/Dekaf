@@ -871,6 +871,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         _statisticsCollector.RecordRetry();
+        Diagnostics.DekafMetrics.Retries.Add(1,
+            new System.Diagnostics.TagList { { Diagnostics.DekafDiagnostics.MessagingDestinationName, batch.TopicPartition.Topic } });
 
         // Add to carry-over — deterministic order since we process responses forward (FIFO)
         batch.IsRetry = true;

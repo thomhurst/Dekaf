@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Dekaf.Compression;
 using Dekaf.Errors;
@@ -310,12 +311,27 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
+        // Start tracing activity (~2ns no-op when no listener attached)
+        var activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
+            $"{message.Topic} send", ActivityKind.Producer);
+        if (activity is not null)
+        {
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, message.Topic);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "send");
+            message = message with { Headers = Diagnostics.TraceContextPropagator.InjectTraceContext(message.Headers, activity) };
+        }
+
         // Fast path: Try synchronous produce if metadata is initialized and cached.
         // This bypasses channel overhead for 99%+ of calls after warmup.
         if (TryProduceSyncForAsync(message, out var completion))
         {
             // POST-QUEUE: Message appended to batch, committed to being sent
             // Message WILL be delivered, but caller can stop waiting via cancellation token.
+            if (activity is not null)
+            {
+                return AwaitWithActivity(completion!, activity, message.Topic, cancellationToken);
+            }
             if (cancellationToken.CanBeCanceled)
             {
                 return AwaitWithCancellation(completion!, cancellationToken);
@@ -325,7 +341,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Slow path: Fall back to channel-based async processing.
         // This handles first-time metadata initialization or cache misses.
-        return ProduceAsyncSlow(message, cancellationToken);
+        return ProduceAsyncSlow(message, activity, cancellationToken);
     }
 
     /// <summary>
@@ -355,6 +371,73 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         finally
         {
             await registration.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Awaits a completion source with Activity lifecycle and optional cancellation support.
+    /// Records OTel metrics and sets span status/tags on completion.
+    /// </summary>
+    private static async ValueTask<RecordMetadata> AwaitWithActivity(
+        PooledValueTaskSource<RecordMetadata> completion,
+        Activity activity,
+        string topic,
+        CancellationToken cancellationToken)
+    {
+        var startTimestamp = Stopwatch.GetTimestamp();
+        CancellationTokenRegistration registration = default;
+
+        if (cancellationToken.CanBeCanceled)
+        {
+            var state = (completion, cancellationToken);
+            registration = cancellationToken.Register(
+                static s =>
+                {
+                    var (comp, token) = ((PooledValueTaskSource<RecordMetadata>, CancellationToken))s!;
+                    comp.TrySetCanceled(token);
+                },
+                state);
+        }
+
+        try
+        {
+            var metadata = await completion.Task.ConfigureAwait(false);
+
+            // Success: record metrics and set activity tags
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, metadata.Partition);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageOffset, metadata.Offset);
+            activity.SetStatus(ActivityStatusCode.Ok);
+
+            var tagList = new TagList { { Diagnostics.DekafDiagnostics.MessagingDestinationName, topic } };
+            Diagnostics.DekafMetrics.MessagesSent.Add(1, tagList);
+            Diagnostics.DekafMetrics.BytesSent.Add(metadata.KeySize + metadata.ValueSize, tagList);
+            Diagnostics.DekafMetrics.ProduceDuration.Record(
+                Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds, tagList);
+
+            return metadata;
+        }
+        catch (Exception ex)
+        {
+            activity.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity.AddEvent(new ActivityEvent("exception",
+                tags: new ActivityTagsCollection
+                {
+                    { "exception.type", ex.GetType().FullName },
+                    { "exception.message", ex.Message }
+                }));
+
+            var tagList = new TagList { { Diagnostics.DekafDiagnostics.MessagingDestinationName, topic } };
+            Diagnostics.DekafMetrics.ProduceErrors.Add(1, tagList);
+
+            throw;
+        }
+        finally
+        {
+            activity.Dispose();
+            if (cancellationToken.CanBeCanceled)
+            {
+                await registration.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 
@@ -427,11 +510,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     [MethodImpl(MethodImplOptions.NoInlining)]
     private async ValueTask<RecordMetadata> ProduceAsyncSlow(
         ProducerMessage<TKey, TValue> message,
+        Activity? activity,
         CancellationToken cancellationToken)
     {
         // Retry fast path - metadata should already be initialized via InitializeAsync()
         if (TryProduceSyncForAsync(message, out var fastCompletion))
         {
+            if (activity is not null)
+            {
+                return await AwaitWithActivity(fastCompletion!, activity, message.Topic, cancellationToken).ConfigureAwait(false);
+            }
             if (cancellationToken.CanBeCanceled)
             {
                 return await AwaitWithCancellation(fastCompletion!, cancellationToken).ConfigureAwait(false);
@@ -454,6 +542,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             completion.TrySetException(ex);
         }
 
+        if (activity is not null)
+        {
+            return await AwaitWithActivity(completion, activity, message.Topic, cancellationToken).ConfigureAwait(false);
+        }
         if (cancellationToken.CanBeCanceled)
         {
             return await AwaitWithCancellation(completion, cancellationToken).ConfigureAwait(false);
@@ -472,34 +564,60 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
-        // Fast path: synchronous fire-and-forget produce with cached metadata (99%+ of calls).
-        if (TryProduceSyncFireAndForget(message))
+        // Start tracing activity (~2ns no-op when no listener attached)
+        var activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
+            $"{message.Topic} send", ActivityKind.Producer);
+        if (activity is not null)
         {
-            return;
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, message.Topic);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "send");
+            message = message with { Headers = Diagnostics.TraceContextPropagator.InjectTraceContext(message.Headers, activity) };
         }
 
-        // Topic cache miss — fetch topic metadata synchronously and produce.
-        // This is a one-time cost per new topic.
         try
         {
-            var topicInfo = FetchTopicMetadataSync(message.Topic);
-            ProduceSyncCoreFireAndForgetDirect(
-                message.Topic,
-                message.Key,
-                message.Value,
-                message.Partition,
-                message.Timestamp,
-                message.Headers,
-                topicInfo);
+            // Fast path: synchronous fire-and-forget produce with cached metadata (99%+ of calls).
+            if (TryProduceSyncFireAndForget(message))
+            {
+                activity?.SetStatus(ActivityStatusCode.Ok);
+                return;
+            }
+
+            // Topic cache miss — fetch topic metadata synchronously and produce.
+            // This is a one-time cost per new topic.
+            try
+            {
+                var topicInfo = FetchTopicMetadataSync(message.Topic);
+                ProduceSyncCoreFireAndForgetDirect(
+                    message.Topic,
+                    message.Key,
+                    message.Value,
+                    message.Partition,
+                    message.Timestamp,
+                    message.Headers,
+                    topicInfo);
+                activity?.SetStatus(ActivityStatusCode.Ok);
+            }
+            catch (TimeoutException)
+            {
+                // BufferMemory backpressure or metadata timeout must propagate
+                throw;
+            }
+            catch (Exception ex)
+            {
+                LogFireAndForgetMetadataFetchFailed(ex, message.Topic);
+            }
         }
-        catch (TimeoutException)
+        catch (Exception ex) when (activity is not null)
         {
-            // BufferMemory backpressure or metadata timeout must propagate
+            activity.SetStatus(ActivityStatusCode.Error, ex.Message);
             throw;
         }
-        catch (Exception ex)
+        finally
         {
-            LogFireAndForgetMetadataFetchFailed(ex, message.Topic);
+            // Span covers only "message accepted into client buffer" for fire-and-forget
+            activity?.Dispose();
         }
     }
 

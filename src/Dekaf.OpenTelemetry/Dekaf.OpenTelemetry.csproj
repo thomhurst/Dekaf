@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.OpenTelemetry</PackageId>
+    <Description>OpenTelemetry instrumentation for Dekaf Kafka client</Description>
+    <PackageTags>kafka;opentelemetry;tracing;metrics;observability</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+    <PackageReference Include="OpenTelemetry.Api" Version="1.*" />
+  </ItemGroup>
+
+</Project>

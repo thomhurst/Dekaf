@@ -23,6 +23,7 @@ public class PackModule : Module<List<PackedProject>>
         "Dekaf.Compression.Zstd",
         "Dekaf.Extensions.DependencyInjection",
         "Dekaf.Extensions.Hosting",
+        "Dekaf.OpenTelemetry",
         "Dekaf.SchemaRegistry",
         "Dekaf.SchemaRegistry.Avro",
         "Dekaf.SchemaRegistry.Protobuf",
