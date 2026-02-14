@@ -689,6 +689,11 @@ public class BufferMemoryTests
 
             await cts.CancelAsync();
 
+            // Await background tasks to observe their cancellation exceptions,
+            // preventing unobserved task exceptions after CTS disposal.
+            try { await lingerTask; } catch (OperationCanceledException) { }
+            try { await drainTask; } catch (OperationCanceledException) { }
+
             // Should complete quickly - using 5000ms to account for CI variability
             // (LingerMs=100 + some overhead for task scheduling)
             await Assert.That(sw.ElapsedMilliseconds).IsLessThan(5000);
