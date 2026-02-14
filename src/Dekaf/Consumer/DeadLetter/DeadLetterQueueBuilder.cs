@@ -80,6 +80,16 @@ public sealed class DeadLetterQueueBuilder
     }
 
     /// <summary>
+    /// Sets default bootstrap servers only if not already explicitly configured.
+    /// Used by DI to inherit from the consumer's bootstrap servers.
+    /// </summary>
+    internal DeadLetterQueueBuilder WithDefaultBootstrapServers(string servers)
+    {
+        _bootstrapServers ??= servers;
+        return this;
+    }
+
+    /// <summary>
     /// Builds the dead letter queue options.
     /// </summary>
     /// <returns>The configured <see cref="DeadLetterOptions"/> instance.</returns>

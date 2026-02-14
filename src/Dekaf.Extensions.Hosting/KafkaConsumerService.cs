@@ -94,13 +94,26 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 }
                 catch (Exception ex)
                 {
+                    // Eagerly capture raw bytes before OnErrorAsync runs, since
+                    // async operations in OnErrorAsync could yield and allow the
+                    // consumer to advance, invalidating the raw byte references.
+                    byte[]? rawKey = null;
+                    byte[]? rawValue = null;
+                    if (_deadLetterPolicy is not null &&
+                        _consumer is IRawRecordAccessor accessor &&
+                        accessor.TryGetCurrentRawRecord(out var rawKeyMemory, out var rawValueMemory))
+                    {
+                        rawKey = rawKeyMemory.IsEmpty ? null : rawKeyMemory.ToArray();
+                        rawValue = rawValueMemory.IsEmpty ? null : rawValueMemory.ToArray();
+                    }
+
                     await OnErrorAsync(ex, result, stoppingToken).ConfigureAwait(false);
 
                     if (_deadLetterPolicy is not null)
                     {
                         if (_deadLetterPolicy.ShouldDeadLetter(result, ex, failureCount: 1))
                         {
-                            await RouteToDeadLetterAsync(result, ex, failureCount: 1).ConfigureAwait(false);
+                            await RouteToDeadLetterAsync(result, ex, rawKey, rawValue, failureCount: 1).ConfigureAwait(false);
                         }
                     }
                 }
@@ -136,20 +149,33 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     public override void Dispose()
     {
-        // Dispose DLQ producer
+        // Flush and dispose DLQ producer
         if (_dlqProducer is not null)
         {
             try
             {
-                _dlqProducer.DisposeAsync().AsTask()
-                    .WaitAsync(TimeSpan.FromSeconds(10))
+                _dlqProducer.FlushAsync().AsTask()
+                    .WaitAsync(TimeSpan.FromSeconds(5))
                     .ConfigureAwait(false)
                     .GetAwaiter()
                     .GetResult();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // Best-effort DLQ producer disposal
+                LogDlqProducerFlushError(ex);
+            }
+
+            try
+            {
+                _dlqProducer.DisposeAsync().AsTask()
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (Exception ex)
+            {
+                LogDlqProducerDisposalError(ex);
             }
         }
 
@@ -178,7 +204,8 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     }
 
     private async ValueTask RouteToDeadLetterAsync(
-        ConsumeResult<TKey, TValue> result, Exception exception, int failureCount)
+        ConsumeResult<TKey, TValue> result, Exception exception,
+        byte[]? rawKey, byte[]? rawValue, int failureCount)
     {
         if (_dlqProducer is null || _deadLetterPolicy is null || _deadLetterOptions is null)
             return;
@@ -186,16 +213,6 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         try
         {
             var dlqTopic = _deadLetterPolicy.GetDeadLetterTopic(result.Topic);
-
-            byte[]? rawKey = null;
-            byte[]? rawValue = null;
-
-            if (_consumer is IRawRecordAccessor rawAccessor &&
-                rawAccessor.TryGetCurrentRawRecord(out var rawKeyMemory, out var rawValueMemory))
-            {
-                rawKey = rawKeyMemory.IsEmpty ? null : rawKeyMemory.ToArray();
-                rawValue = rawValueMemory.IsEmpty ? null : rawValueMemory.ToArray();
-            }
 
             var headers = DeadLetterHeaders.Build(
                 result, exception, failureCount,
@@ -228,6 +245,14 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     private IKafkaProducer<byte[]?, byte[]?> BuildDlqProducer()
     {
+        if (_deadLetterOptions?.BootstrapServers is null && _deadLetterOptions?.ConfigureProducer is null)
+        {
+            throw new InvalidOperationException(
+                "Dead letter queue bootstrap servers must be configured. " +
+                "Call WithBootstrapServers() on the dead letter queue builder, " +
+                "or provide a ConfigureProducer action that sets bootstrap servers.");
+        }
+
         var builder = Kafka.CreateProducer<byte[]?, byte[]?>()
             .WithClientId("dekaf-dlq-producer")
             .WithAcks(Acks.All);
@@ -273,6 +298,12 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Failed to route message from {Topic}[{Partition}]@{Offset} to dead letter queue")]
     private partial void LogDeadLetterRoutingFailed(Exception ex, string topic, int partition, long offset);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to flush DLQ producer during shutdown")]
+    private partial void LogDlqProducerFlushError(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Error during DLQ producer disposal")]
+    private partial void LogDlqProducerDisposalError(Exception ex);
 
     #endregion
 }

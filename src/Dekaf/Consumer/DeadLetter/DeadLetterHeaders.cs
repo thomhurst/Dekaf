@@ -41,7 +41,8 @@ public static class DeadLetterHeaders
         bool includeException)
     {
         var originalCount = result.Headers?.Count ?? 0;
-        var headers = new Headers(originalCount + 7);
+        var dlqHeaderCount = includeException ? 7 : 5;
+        var headers = new Headers(originalCount + dlqHeaderCount);
 
         // Preserve original headers first
         if (result.Headers is not null)

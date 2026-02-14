@@ -198,9 +198,11 @@ public sealed class ProducerServiceBuilder<TKey, TValue>
 public sealed class ConsumerServiceBuilder<TKey, TValue>
 {
     private readonly ConsumerBuilder<TKey, TValue> _builder = new();
+    private string? _bootstrapServers;
 
     public ConsumerServiceBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
+        _bootstrapServers = servers;
         _builder.WithBootstrapServers(servers);
         return this;
     }
@@ -277,7 +279,21 @@ public sealed class ConsumerServiceBuilder<TKey, TValue>
     /// Builds the dead letter options if a DLQ was configured.
     /// </summary>
     /// <returns>The configured <see cref="DeadLetterOptions"/> or null if DLQ was not configured.</returns>
-    internal DeadLetterOptions? BuildDeadLetterOptions() => _dlqBuilder?.Build();
+    internal DeadLetterOptions? BuildDeadLetterOptions()
+    {
+        if (_dlqBuilder is null)
+        {
+            return null;
+        }
+
+        // Inherit consumer's bootstrap servers if not explicitly set on DLQ
+        if (_bootstrapServers is not null)
+        {
+            _dlqBuilder.WithDefaultBootstrapServers(_bootstrapServers);
+        }
+
+        return _dlqBuilder.Build();
+    }
 
     internal IKafkaConsumer<TKey, TValue> Build(Microsoft.Extensions.Logging.ILoggerFactory? loggerFactory)
     {

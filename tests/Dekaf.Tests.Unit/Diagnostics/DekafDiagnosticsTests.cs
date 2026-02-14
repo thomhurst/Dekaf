@@ -4,6 +4,7 @@ using Dekaf.Diagnostics;
 
 namespace Dekaf.Tests.Unit.Diagnostics;
 
+[NotInParallel("ActivityListener")]
 public sealed class DekafDiagnosticsTests
 {
     [Test]

@@ -69,4 +69,25 @@ public class DeadLetterQueueBuilderTests
 
         await Assert.That(result).IsEqualTo(builder);
     }
+
+    [Test]
+    public async Task WithDefaultBootstrapServers_SetsWhenNotExplicitlyConfigured()
+    {
+        var options = new DeadLetterQueueBuilder()
+            .WithDefaultBootstrapServers("inherited:9092")
+            .Build();
+
+        await Assert.That(options.BootstrapServers).IsEqualTo("inherited:9092");
+    }
+
+    [Test]
+    public async Task WithDefaultBootstrapServers_DoesNotOverrideExplicit()
+    {
+        var options = new DeadLetterQueueBuilder()
+            .WithBootstrapServers("explicit:9092")
+            .WithDefaultBootstrapServers("inherited:9092")
+            .Build();
+
+        await Assert.That(options.BootstrapServers).IsEqualTo("explicit:9092");
+    }
 }
