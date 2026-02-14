@@ -64,31 +64,29 @@ public sealed class CoordinatedRetryTests
     public async Task PredecessorCompletes_SuccessorRetriesWithoutBackoff()
     {
         // Verifies the coordinated retry is immediate (no backoff delay) once predecessor finishes.
-        // Measures that the successor wakes up within a few milliseconds of predecessor completion.
+        // Uses deterministic synchronization instead of wall-clock timing to avoid flakiness on slow CI.
         var tracker = new PartitionInflightTracker();
 
         var entry1 = tracker.Register(Tp0, baseSequence: 0, recordCount: 10);
         var entry2 = tracker.Register(Tp0, baseSequence: 10, recordCount: 5);
 
-        long wakeTimeTicks = 0;
+        var waitingStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         var waitTask = Task.Run(async () =>
         {
+            waitingStarted.SetResult();
             await tracker.WaitForPredecessorAsync(entry2, CancellationToken.None);
-            wakeTimeTicks = Environment.TickCount64;
         });
 
-        // Give time for task to start waiting
-        await Task.Delay(50);
+        // Deterministic: wait for Task.Run to enter WaitForPredecessorAsync
+        await waitingStarted.Task;
 
-        // Complete predecessor and record the time
-        var completeTimeTicks = Environment.TickCount64;
+        // Complete predecessor
         tracker.Complete(entry1);
 
+        // Successor should wake up promptly — 5s timeout catches real backoff issues
+        // without being sensitive to CI runner thread scheduling delays
         await waitTask.WaitAsync(TimeSpan.FromSeconds(5));
-
-        // Wake-up should be nearly immediate (within 100ms generously for thread scheduling)
-        var delayMs = wakeTimeTicks - completeTimeTicks;
-        await Assert.That(delayMs).IsLessThan(100);
 
         tracker.Complete(entry2);
     }

@@ -4,6 +4,7 @@ using Dekaf.Serialization;
 
 namespace Dekaf.Tests.Unit.Diagnostics;
 
+[NotInParallel("ActivityListener")]
 public sealed class TraceContextPropagatorTests
 {
     [Test]

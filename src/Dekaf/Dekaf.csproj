@@ -13,6 +13,8 @@
     <InternalsVisibleTo Include="Dekaf.Benchmarks" />
     <InternalsVisibleTo Include="Dekaf.Profiling" />
     <InternalsVisibleTo Include="Dekaf.Compression.Lz4" />
+    <InternalsVisibleTo Include="Dekaf.Extensions.Hosting" />
+    <InternalsVisibleTo Include="Dekaf.Extensions.DependencyInjection" />
   </ItemGroup>
 
   <ItemGroup>
