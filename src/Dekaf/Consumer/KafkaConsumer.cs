@@ -245,7 +245,7 @@ internal sealed class PendingFetchData : IDisposable
 /// </summary>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
-public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>
+public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>, DeadLetter.IRawRecordAccessor
 {
     /// <summary>
     /// Delay in milliseconds when all assigned partitions are paused, to prevent
@@ -305,6 +305,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private CancellationTokenSource? _autoCommitCts;
     private Task? _autoCommitTask;
     private int _fetchApiVersion = -1;
+
+    // Dead letter queue raw byte tracking (zero overhead when not enabled)
+    private bool _rawRecordTrackingEnabled;
+    private ReadOnlyMemory<byte> _currentRawKey;
+    private ReadOnlyMemory<byte> _currentRawValue;
+
     private volatile bool _disposed;
     private volatile bool _closed;
     private volatile bool _initialized;
@@ -765,6 +771,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                     // Apply OnConsume interceptors before yielding to user
                     result = ApplyOnConsumeInterceptors(result);
+
+                    // Store raw byte references for DLQ lazy capture (zero-copy — just memory slices)
+                    if (_rawRecordTrackingEnabled)
+                    {
+                        _currentRawKey = record.IsKeyNull ? ReadOnlyMemory<byte>.Empty : record.Key;
+                        _currentRawValue = record.IsValueNull ? ReadOnlyMemory<byte>.Empty : record.Value;
+                    }
 
                     yield return result;
                 }
@@ -2964,6 +2977,30 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Consumer disposing: beginning shutdown")]
     private partial void LogConsumerDisposing();
+
+    #endregion
+
+    #region IRawRecordAccessor
+
+    void DeadLetter.IRawRecordAccessor.EnableRawRecordTracking()
+    {
+        _rawRecordTrackingEnabled = true;
+    }
+
+    bool DeadLetter.IRawRecordAccessor.TryGetCurrentRawRecord(
+        out ReadOnlyMemory<byte> rawKey, out ReadOnlyMemory<byte> rawValue)
+    {
+        if (!_rawRecordTrackingEnabled)
+        {
+            rawKey = default;
+            rawValue = default;
+            return false;
+        }
+
+        rawKey = _currentRawKey;
+        rawValue = _currentRawValue;
+        return true;
+    }
 
     #endregion
 }

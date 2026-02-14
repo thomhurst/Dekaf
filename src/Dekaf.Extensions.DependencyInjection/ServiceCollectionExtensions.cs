@@ -1,5 +1,6 @@
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Consumer.DeadLetter;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 using Microsoft.Extensions.DependencyInjection;
@@ -79,6 +80,13 @@ public sealed class DekafBuilder
         // Register as IInitializableKafkaClient (resolves the same singleton instance)
         _services.AddSingleton<IInitializableKafkaClient>(sp =>
             sp.GetRequiredService<IKafkaConsumer<TKey, TValue>>());
+
+        // Register DLQ options if configured
+        var dlqOptions = builder.BuildDeadLetterOptions();
+        if (dlqOptions is not null)
+        {
+            _services.AddSingleton(dlqOptions);
+        }
 
         return this;
     }
@@ -250,6 +258,26 @@ public sealed class ConsumerServiceBuilder<TKey, TValue>
         _builder.UseTls();
         return this;
     }
+
+    private DeadLetterQueueBuilder? _dlqBuilder;
+
+    /// <summary>
+    /// Configures dead letter queue routing for the consumer service.
+    /// </summary>
+    /// <param name="configure">An action to configure the dead letter queue builder.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerServiceBuilder<TKey, TValue> WithDeadLetterQueue(Action<DeadLetterQueueBuilder> configure)
+    {
+        _dlqBuilder = new DeadLetterQueueBuilder();
+        configure(_dlqBuilder);
+        return this;
+    }
+
+    /// <summary>
+    /// Builds the dead letter options if a DLQ was configured.
+    /// </summary>
+    /// <returns>The configured <see cref="DeadLetterOptions"/> or null if DLQ was not configured.</returns>
+    internal DeadLetterOptions? BuildDeadLetterOptions() => _dlqBuilder?.Build();
 
     internal IKafkaConsumer<TKey, TValue> Build(Microsoft.Extensions.Logging.ILoggerFactory? loggerFactory)
     {
