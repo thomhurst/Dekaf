@@ -5,9 +5,8 @@ namespace Dekaf.Tests.Integration;
 
 /// <summary>
 /// Integration tests for multiple in-flight batches per partition.
-/// Verifies that idempotent producers with multiple in-flight batches preserve
-/// per-partition ordering, deliver all messages, and that non-idempotent
-/// producers retain single in-flight behavior.
+/// Verifies that producers with multiple in-flight batches preserve
+/// per-partition ordering and deliver all messages.
 /// </summary>
 [Category("MultiInFlightProducer")]
 public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
@@ -22,7 +21,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-single-partition")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithBatchSize(512) // Small batch size to force many batches
             .WithLinger(TimeSpan.FromMilliseconds(1))
             .BuildAsync();
@@ -80,7 +79,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-multi-partition")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
 
@@ -156,7 +155,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-concurrent")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
 
@@ -213,7 +212,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-high-volume")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithBatchSize(256) // Very small to force many batch rotations
             .WithLinger(TimeSpan.FromMilliseconds(1))
             .BuildAsync();
@@ -266,7 +265,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-fire-and-forget")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
 
@@ -307,7 +306,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
     }
 
     [Test]
-    public async Task NonIdempotent_SingleInflight_BehaviorUnchanged()
+    public async Task SingleInflight_DefaultConfig_DeliversAllMessages()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
         const int messageCount = 100;
@@ -363,7 +362,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-inflight-coalescing")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithLinger(TimeSpan.FromMilliseconds(5)) // Higher linger to trigger coalescing
             .BuildAsync();
 

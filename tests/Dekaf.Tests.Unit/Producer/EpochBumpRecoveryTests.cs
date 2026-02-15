@@ -1259,8 +1259,8 @@ public sealed class EpochBumpRecoveryTests
     [Test]
     public async Task EpochBump_NonEpochBatch_NotRewrittenByLazyCheck()
     {
-        // Batches with ProducerEpoch=-1 (non-idempotent) should not be rewritten
-        var nonIdempotentBatch = new RecordBatch
+        // Batches with ProducerEpoch=-1 (pre-initialization) should not be rewritten
+        var preInitBatch = new RecordBatch
         {
             BaseOffset = 0,
             BaseTimestamp = 0,
@@ -1272,7 +1272,7 @@ public sealed class EpochBumpRecoveryTests
         };
 
         short currentEpoch = 5;
-        var batchEpoch = nonIdempotentBatch.ProducerEpoch;
+        var batchEpoch = preInitBatch.ProducerEpoch;
 
         // Epoch is -1, which is < 0, so the lazy check condition `batchEpoch >= 0` is false
         var needsRewrite = batchEpoch >= 0 && batchEpoch != currentEpoch;

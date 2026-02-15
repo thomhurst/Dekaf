@@ -16,33 +16,12 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
     [Test]
     [Timeout(60_000)]
-    public async Task Diag01_ProduceAsync_SingleMessage_NonIdempotent(CancellationToken cancellationToken)
+    public async Task Diag01_ProduceAsync_SingleMessage(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
-            .BuildAsync(cancellationToken);
-
-        var result = await producer.ProduceAsync(new ProducerMessage<string, string>
-        {
-            Topic = topic,
-            Key = "k",
-            Value = "v"
-        }, cancellationToken);
-
-        await Assert.That(result.Offset).IsGreaterThanOrEqualTo(0);
-    }
-
-    [Test]
-    [Timeout(60_000)]
-    public async Task Diag02_ProduceAsync_SingleMessage_Idempotent(CancellationToken cancellationToken)
-    {
-        var topic = await KafkaContainer.CreateTestTopicAsync();
-        await using var producer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithAcks(Acks.All)
-            .EnableIdempotence()
             .BuildAsync(cancellationToken);
 
         var result = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -59,33 +38,12 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
     [Test]
     [Timeout(60_000)]
-    public async Task Diag03_SendAndFlush_SingleMessage_NonIdempotent(CancellationToken cancellationToken)
+    public async Task Diag02_SendAndFlush_SingleMessage(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
-            .BuildAsync(cancellationToken);
-
-        producer.Send(new ProducerMessage<string, string>
-        {
-            Topic = topic,
-            Key = "k",
-            Value = "v"
-        });
-
-        await producer.FlushAsync(cancellationToken);
-    }
-
-    [Test]
-    [Timeout(60_000)]
-    public async Task Diag04_SendAndFlush_SingleMessage_Idempotent(CancellationToken cancellationToken)
-    {
-        var topic = await KafkaContainer.CreateTestTopicAsync();
-        await using var producer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithAcks(Acks.All)
-            .EnableIdempotence()
             .BuildAsync(cancellationToken);
 
         producer.Send(new ProducerMessage<string, string>
@@ -102,34 +60,12 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
     [Test]
     [Timeout(60_000)]
-    public async Task Diag05_ProduceAsync_10Messages_NonIdempotent(CancellationToken cancellationToken)
+    public async Task Diag03_ProduceAsync_10Messages(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
-            .BuildAsync(cancellationToken);
-
-        for (var i = 0; i < 10; i++)
-        {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Key = "k",
-                Value = $"v-{i}"
-            }, cancellationToken);
-        }
-    }
-
-    [Test]
-    [Timeout(60_000)]
-    public async Task Diag06_ProduceAsync_10Messages_Idempotent(CancellationToken cancellationToken)
-    {
-        var topic = await KafkaContainer.CreateTestTopicAsync();
-        await using var producer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithAcks(Acks.All)
-            .EnableIdempotence()
             .BuildAsync(cancellationToken);
 
         for (var i = 0; i < 10; i++)
@@ -147,7 +83,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
     [Test]
     [Timeout(60_000)]
-    public async Task Diag07_SendAndFlush_10Messages_NonIdempotent(CancellationToken cancellationToken)
+    public async Task Diag04_SendAndFlush_10Messages(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
         await using var producer = await Kafka.CreateProducer<string, string>()
@@ -170,60 +106,12 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
     [Test]
     [Timeout(60_000)]
-    public async Task Diag08_SendAndFlush_10Messages_Idempotent(CancellationToken cancellationToken)
+    public async Task Diag05_SendAndFlush_100Messages(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
-            .EnableIdempotence()
-            .BuildAsync(cancellationToken);
-
-        for (var i = 0; i < 10; i++)
-        {
-            producer.Send(new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Key = "k",
-                Value = $"v-{i}"
-            });
-        }
-
-        await producer.FlushAsync(cancellationToken);
-    }
-
-    [Test]
-    [Timeout(60_000)]
-    public async Task Diag09_SendAndFlush_100Messages_NonIdempotent(CancellationToken cancellationToken)
-    {
-        var topic = await KafkaContainer.CreateTestTopicAsync();
-        await using var producer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithAcks(Acks.All)
-            .BuildAsync(cancellationToken);
-
-        for (var i = 0; i < 100; i++)
-        {
-            producer.Send(new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Key = "k",
-                Value = $"v-{i}"
-            });
-        }
-
-        await producer.FlushAsync(cancellationToken);
-    }
-
-    [Test]
-    [Timeout(60_000)]
-    public async Task Diag10_SendAndFlush_100Messages_Idempotent(CancellationToken cancellationToken)
-    {
-        var topic = await KafkaContainer.CreateTestTopicAsync();
-        await using var producer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithAcks(Acks.All)
-            .EnableIdempotence()
             .BuildAsync(cancellationToken);
 
         for (var i = 0; i < 100; i++)
@@ -243,38 +131,12 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
     [Test]
     [Timeout(60_000)]
-    public async Task Diag11_SendAndFlush_SmallBatch_50Messages_NonIdempotent(CancellationToken cancellationToken)
+    public async Task Diag06_SendAndFlush_SmallBatch_50Messages(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
-            .WithBatchSize(256) // Very small batch to force many batch rotations
-            .WithLinger(TimeSpan.FromMilliseconds(1))
-            .BuildAsync(cancellationToken);
-
-        for (var i = 0; i < 50; i++)
-        {
-            producer.Send(new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Key = "k",
-                Value = $"v-{i}"
-            });
-        }
-
-        await producer.FlushAsync(cancellationToken);
-    }
-
-    [Test]
-    [Timeout(60_000)]
-    public async Task Diag12_SendAndFlush_SmallBatch_50Messages_Idempotent(CancellationToken cancellationToken)
-    {
-        var topic = await KafkaContainer.CreateTestTopicAsync();
-        await using var producer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithAcks(Acks.All)
-            .EnableIdempotence()
             .WithBatchSize(256) // Very small batch to force many batch rotations
             .WithLinger(TimeSpan.FromMilliseconds(1))
             .BuildAsync(cancellationToken);
@@ -296,40 +158,12 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
     [Test]
     [Timeout(60_000)]
-    public async Task Diag13_SendAndFlush_MultiPartition_NonIdempotent(CancellationToken cancellationToken)
+    public async Task Diag07_SendAndFlush_MultiPartition(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
         await using var producer = await Kafka.CreateProducer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
-            .BuildAsync(cancellationToken);
-
-        for (var p = 0; p < 4; p++)
-        {
-            for (var i = 0; i < 25; i++)
-            {
-                producer.Send(new ProducerMessage<int, string>
-                {
-                    Topic = topic,
-                    Partition = p,
-                    Key = p,
-                    Value = $"p{p}-v{i}"
-                });
-            }
-        }
-
-        await producer.FlushAsync(cancellationToken);
-    }
-
-    [Test]
-    [Timeout(60_000)]
-    public async Task Diag14_SendAndFlush_MultiPartition_Idempotent(CancellationToken cancellationToken)
-    {
-        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
-        await using var producer = await Kafka.CreateProducer<int, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithAcks(Acks.All)
-            .EnableIdempotence()
             .BuildAsync(cancellationToken);
 
         for (var p = 0; p < 4; p++)
@@ -353,13 +187,12 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
     [Test]
     [Timeout(60_000)]
-    public async Task Diag15_SendAndFlush_500Messages_SmallBatch_Idempotent_WithDiagnostics(CancellationToken cancellationToken)
+    public async Task Diag08_SendAndFlush_500Messages_SmallBatch_WithDiagnostics(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
-            .EnableIdempotence()
             .WithBatchSize(512)
             .WithLinger(TimeSpan.FromMilliseconds(1))
             .BuildAsync(cancellationToken);
@@ -414,7 +247,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
     [Test]
     [Timeout(60_000)]
-    public async Task Diag16_SendAndFlush_AcksNone_100Messages(CancellationToken cancellationToken)
+    public async Task Diag09_SendAndFlush_AcksNone_100Messages(CancellationToken cancellationToken)
     {
         var topic = await KafkaContainer.CreateTestTopicAsync();
         await using var producer = await Kafka.CreateProducer<string, string>()

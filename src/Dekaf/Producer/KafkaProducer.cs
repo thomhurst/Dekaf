@@ -72,8 +72,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
 
     // In-flight batch tracker for coordinated retry with multiple in-flight batches per partition.
-    // Only initialized when idempotence is enabled (sequence numbers guarantee ordering at broker).
-    private readonly PartitionInflightTracker? _inflightTracker;
+    // Always initialized since idempotence is always enabled (sequence numbers guarantee ordering at broker).
+    private readonly PartitionInflightTracker _inflightTracker;
 
     // Statistics collection - only tracks per-message counters when a handler is configured
     private readonly ProducerStatisticsCollector _statisticsCollector = new();
@@ -201,14 +201,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _accumulator = new RecordAccumulator(options, loggerFactory?.CreateLogger<RecordAccumulator>());
         _compressionCodecs = CreateCompressionCodecRegistry(options);
 
-        // Initialize inflight tracker for idempotent producers to enable multiple in-flight
-        // batches per partition. With idempotence, the broker uses sequence numbers to guarantee
-        // ordering, so multiple batches can be in-flight simultaneously. The tracker enables
-        // coordinated retry on OutOfOrderSequenceNumber instead of blind backoff.
-        if (options.EnableIdempotence)
-        {
-            _inflightTracker = new PartitionInflightTracker();
-        }
+        // Initialize inflight tracker for coordinated retry with multiple in-flight batches
+        // per partition. The broker uses sequence numbers to guarantee ordering, so multiple
+        // batches can be in-flight simultaneously. The tracker enables coordinated retry on
+        // OutOfOrderSequenceNumber instead of blind backoff.
+        _inflightTracker = new PartitionInflightTracker();
 
         _senderCts = new CancellationTokenSource();
         // Use 1ms check interval for low-latency awaited produces.
@@ -2490,7 +2487,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         if (batch.InflightEntry is { } entry)
         {
-            _inflightTracker?.Complete(entry);
+            _inflightTracker.Complete(entry);
             batch.InflightEntry = null;
         }
     }
@@ -2501,9 +2498,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// </summary>
     private BrokerSender GetOrCreateBrokerSender(int brokerId)
     {
-        // Epoch bump recovery is only for idempotent non-transactional producers.
+        // Epoch bump recovery is only for non-transactional producers.
         // Transactional producers manage epochs via InitTransactionsAsync.
-        var isIdempotentNonTransactional = _options.EnableIdempotence && _options.TransactionalId is null;
+        var isNonTransactional = _options.TransactionalId is null;
 
         return _brokerSenders.GetOrAdd(brokerId, id => new BrokerSender(
             id,
@@ -2518,8 +2515,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             version => Interlocked.CompareExchange(ref _produceApiVersion, version, -1),
             () => _accumulator.IsTransactional,
             EnsurePartitionInTransactionAsync,
-            bumpEpoch: isIdempotentNonTransactional ? BumpEpochAsync : null,
-            getCurrentEpoch: isIdempotentNonTransactional ? () => _producerEpoch : null,
+            bumpEpoch: isNonTransactional ? BumpEpochAsync : null,
+            getCurrentEpoch: isNonTransactional ? () => _producerEpoch : null,
             RerouteBatchToCurrentLeader,
             _interceptors is not null ? InvokeOnAcknowledgementForBatch : null,
             _logger));
@@ -2665,7 +2662,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     $"Ensure the Kafka cluster is reachable and the bootstrap servers are correct.");
             }
 
-            if (_options.EnableIdempotence && _options.TransactionalId is null && !_idempotentInitialized)
+            if (_options.TransactionalId is null && !_idempotentInitialized)
             {
                 await InitIdempotentProducerAsync(cancellationToken).ConfigureAwait(false);
             }

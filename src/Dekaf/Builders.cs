@@ -22,7 +22,6 @@ public sealed class ProducerBuilder<TKey, TValue>
     private Acks _acks = Acks.All;
     private int _lingerMs;
     private int _batchSize = 1048576;
-    private bool _enableIdempotence = true;
     private string? _transactionalId;
     private int? _transactionTimeoutMs;
     private Protocol.Records.CompressionType _compressionType = Protocol.Records.CompressionType.None;
@@ -127,16 +126,9 @@ public sealed class ProducerBuilder<TKey, TValue>
         return this;
     }
 
-    public ProducerBuilder<TKey, TValue> EnableIdempotence()
-    {
-        _enableIdempotence = true;
-        return this;
-    }
-
     public ProducerBuilder<TKey, TValue> WithTransactionalId(string transactionalId)
     {
         _transactionalId = transactionalId;
-        _enableIdempotence = true;
         return this;
     }
 
@@ -454,15 +446,13 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <para>Settings applied:</para>
     /// <list type="bullet">
     /// <item><description>Acks: All (wait for all in-sync replicas)</description></item>
-    /// <item><description>EnableIdempotence: true (exactly-once semantics)</description></item>
     /// </list>
-    /// <para>These settings can be overridden by calling other builder methods after this one.</para>
+    /// <para>Idempotence is always enabled. These settings can be overridden by calling other builder methods after this one.</para>
     /// </remarks>
     /// <returns>The builder instance for method chaining.</returns>
     public ProducerBuilder<TKey, TValue> ForReliability()
     {
         _acks = Acks.All;
-        _enableIdempotence = true;
         return this;
     }
 
@@ -546,7 +536,6 @@ public sealed class ProducerBuilder<TKey, TValue>
             BatchSize = _batchSize,
             BufferMemory = _bufferMemory ?? 268435456, // 256 MB default
             MaxBlockMs = _maxBlockMs ?? 60000, // 60 seconds default
-            EnableIdempotence = _enableIdempotence,
             TransactionalId = _transactionalId,
             TransactionTimeoutMs = _transactionTimeoutMs ?? 60000,
             CompressionType = _compressionType,
