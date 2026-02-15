@@ -2061,8 +2061,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Fast path 2: if the oldest batch hasn't reached linger time yet AND there are no
-        // pending awaited produces, skip enumeration. Awaited produces (ProduceAsync) need
-        // immediate flushing via ShouldFlush() regardless of LingerMs.
+        // pending awaited produces, skip enumeration. Awaited produces (ProduceAsync) use a
+        // micro-linger (min(1ms, LingerMs/10)) so they need more frequent enumeration checks.
         // This is the key optimization: with LingerMs=5 and 1ms timer, we'd enumerate 5x per batch.
         // By tracking the oldest batch, we skip 4 out of 5 enumerations for fire-and-forget workloads.
         if (Volatile.Read(ref _pendingAwaitedProduceCount) == 0)
@@ -3874,11 +3874,12 @@ internal sealed class PartitionBatch
     /// Uses volatile read instead of locking since this is a read-only check.
     /// The worst case of a stale read is harmless - we'll catch it on the next check.
     ///
-    /// Smart batching strategy (similar to librdkafka):
-    /// - If there are completion sources waiting (awaited produces), send immediately
-    /// - Otherwise, wait for full linger time (fire-and-forget batching)
-    /// This provides low latency for awaited produces while maintaining efficient
-    /// batching for fire-and-forget workloads.
+    /// Smart batching strategy:
+    /// - If there are completion sources waiting (awaited produces), use a micro-linger
+    ///   of min(1ms, LingerMs/10) to let co-temporal messages batch together
+    /// - When LingerMs == 0 (default), awaited produces still flush immediately
+    /// - Fire-and-forget messages wait for full linger time
+    /// This balances low latency for awaited produces with efficient batching.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool ShouldFlush(DateTimeOffset now, int lingerMs)
@@ -3889,14 +3890,17 @@ internal sealed class PartitionBatch
         if (Volatile.Read(ref _recordCount) == 0)
             return false;
 
-        // Early flush: If there are completion sources waiting, send immediately.
-        // This provides low latency for awaited produces (ProduceAsync).
+        var elapsedMs = (now - _createdAt).TotalMilliseconds;
+
+        // Awaited produces: use micro-linger instead of immediate flush.
+        // When LingerMs > 0, wait min(1ms, LingerMs/10) to let co-temporal messages batch.
+        // When LingerMs == 0, flush immediately (preserves current default behavior).
         // Fire-and-forget messages (Send) don't add completion sources, so they
         // still benefit from full linger time batching.
         if (Volatile.Read(ref _completionSourceCount) > 0)
-            return true;
+            return lingerMs == 0 || elapsedMs >= Math.Min(1.0, lingerMs / 10.0);
 
-        return (now - _createdAt).TotalMilliseconds >= lingerMs;
+        return elapsedMs >= lingerMs;
     }
 
     public ReadyBatch? Complete()
