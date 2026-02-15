@@ -89,14 +89,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Func<TopicPartition, CancellationToken, ValueTask>? _ensurePartitionInTransaction;
 
     // Ordering guarantee flag (aligned with Java Kafka's guaranteeMessageOrder).
-    // When true, partitions are muted at send time and unmuted on response, ensuring
-    // at most one batch per partition in-flight. Prevents reordering on connection drops.
-    // Enabled for idempotent producers or when MaxInFlight == 1.
+    // When true, partitions are muted on retry to prevent newer batches from being sent
+    // before retried batches, ensuring per-partition ordering on error recovery.
+    // Enabled for idempotent producers (any maxInFlight) or when MaxInFlight == 1.
     private readonly bool _guaranteeMessageOrder;
 
-    // Muted partitions: partitions with a batch in-flight (when _guaranteeMessageOrder)
-    // or a retry in progress. Prevents newer batches from being sent, maintaining
-    // per-partition ordering. Aligned with Java Kafka producer's mute mechanism.
+    // Send-time muting: when true, partitions are muted at send time (limiting to 1
+    // in-flight batch per partition). When false, multiple in-flight batches per partition
+    // are allowed, relying on sequence numbers for ordering instead of muting.
+    // Only enabled when MaxInFlight <= 1; idempotent producers with MaxInFlight > 1
+    // use sequence numbers to guarantee ordering without send-time muting.
+    private readonly bool _muteOnSend;
+
+    // Muted partitions: partitions with a retry in progress (when _guaranteeMessageOrder)
+    // or limited to 1 in-flight batch (when _muteOnSend). Prevents newer batches from
+    // being sent, maintaining per-partition ordering. Aligned with Java Kafka producer's
+    // mute mechanism.
     // Written and read by the single-threaded send loop (ProcessCompletedResponses/CoalesceBatch).
     private readonly ConcurrentDictionary<TopicPartition, byte> _mutedPartitions = new();
 
@@ -171,9 +179,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _maxInFlight = options.MaxInFlightRequestsPerConnection;
 
         // Aligned with Java Kafka's guaranteeMessageOrder:
-        // mute partitions at send time to ensure at most one batch per partition in-flight.
+        // mute partitions on retry to prevent reordering during error recovery.
         // Required for idempotent producers (any maxInFlight) and non-idempotent with maxInFlight=1.
         _guaranteeMessageOrder = inflightTracker is not null || _maxInFlight <= 1;
+
+        // Only mute at send time when limited to 1 in-flight request.
+        // Idempotent producers with maxInFlight > 1 rely on sequence numbers for ordering.
+        _muteOnSend = _maxInFlight <= 1;
 
         _cts = new CancellationTokenSource();
         _sendLoopTask = SendLoopAsync(_cts.Token);
@@ -1039,11 +1051,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             _pendingResponses.Add(new PendingResponse(responseTask, batches, count, requestStartTime));
 
-            // Mute partitions at send time (aligned with Java Kafka's guaranteeMessageOrder).
+            // Mute partitions at send time when limited to 1 in-flight request.
             // This ensures at most one batch per partition in-flight across all requests.
-            // Without this, connection drops allow newer batches on a new connection to commit
-            // before older batches on the broken connection, causing ordering violations.
-            if (_guaranteeMessageOrder)
+            // When maxInFlight > 1 (idempotent), sequence numbers guarantee ordering instead,
+            // and retry-time muting (_guaranteeMessageOrder) handles error recovery.
+            if (_muteOnSend)
             {
                 for (var i = 0; i < count; i++)
                     _mutedPartitions.TryAdd(batches[i].TopicPartition, 0);
