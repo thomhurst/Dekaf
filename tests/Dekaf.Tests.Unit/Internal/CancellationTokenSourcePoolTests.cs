@@ -147,12 +147,19 @@ public class CancellationTokenSourcePoolTests
         var pool = new CancellationTokenSourcePool();
         var cts = pool.Rent();
 
-        // Multiple disposes should not throw
+        // Multiple disposes should not throw and should only return to pool once
         cts.Dispose();
         cts.Dispose();
         cts.Dispose();
 
-        await Task.CompletedTask;
+        // Only one instance should be in the pool (not three)
+        var cts2 = pool.Rent();
+        var cts3 = pool.Rent();
+        await Assert.That(cts2).IsSameReferenceAs(cts);
+        await Assert.That(cts3).IsNotSameReferenceAs(cts);
+
+        cts2.Dispose();
+        cts3.Dispose();
     }
 
     [Test]

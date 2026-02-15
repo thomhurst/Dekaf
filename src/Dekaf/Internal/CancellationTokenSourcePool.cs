@@ -27,6 +27,7 @@ internal sealed class CancellationTokenSourcePool
         if (_queue.TryDequeue(out var cts))
         {
             Interlocked.Decrement(ref _count);
+            Volatile.Write(ref cts._returned, 0); // Reset guard for new rental
             return cts;
         }
 
@@ -57,12 +58,13 @@ internal sealed class CancellationTokenSourcePool
     internal sealed class PooledCancellationTokenSource : CancellationTokenSource
     {
         private readonly CancellationTokenSourcePool _pool;
+        internal int _returned; // Guard against double-dispose returning to pool twice
 
         internal PooledCancellationTokenSource(CancellationTokenSourcePool pool) => _pool = pool;
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing)
+            if (disposing && Interlocked.Exchange(ref _returned, 1) == 0)
             {
                 if (!_pool.Return(this))
                 {
