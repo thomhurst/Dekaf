@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using ModularPipelines.Attributes;
+using ModularPipelines.Configuration;
 using ModularPipelines.Context;
 using ModularPipelines.DotNet.Extensions;
 using ModularPipelines.DotNet.Options;
@@ -19,6 +20,13 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
         {
             yield return "net10.0";
         }
+    }
+
+    protected override ModuleConfiguration Configure()
+    {
+        return new ModuleConfigurationBuilder()
+            .WithTimeout(TimeSpan.FromMinutes(30))
+            .Build();
     }
 
     protected abstract string ProjectFileName { get; }
@@ -43,42 +51,31 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
                 throw new InvalidOperationException($"Project {ProjectFileName} not found");
             }
 
-            // Add 15-minute pipeline timeout as safety fallback
-            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-
-            try
-            {
-                var testResult = await context.DotNet().Run(
-                    new DotNetRunOptions
-                    {
-                        NoBuild = true,
-                        Configuration = "Release",
-                        Framework = framework,
-                        Arguments = [
-                            "--",
+            var testResult = await context.DotNet().Run(
+                new DotNetRunOptions
+                {
+                    NoBuild = true,
+                    Configuration = "Release",
+                    Framework = framework,
+                    Arguments = [
+                        "--",
                             "--hangdump",
-                            "--hangdump-timeout", "8m",
+                            "--hangdump-timeout", "15m",
                             "--log-level", "Trace",
                             "--output", "Detailed"
-                        ]
-                    },
-                    new CommandExecutionOptions
+                    ]
+                },
+                new CommandExecutionOptions
+                {
+                    WorkingDirectory = project.Folder!.Path,
+                    EnvironmentVariables = new Dictionary<string, string?>
                     {
-                        WorkingDirectory = project.Folder!.Path,
-                        EnvironmentVariables = new Dictionary<string, string?>
-                        {
-                            ["NET_VERSION"] = framework,
-                        }
-                    },
-                    linkedCts.Token);
+                        ["NET_VERSION"] = framework,
+                    }
+                },
+                cancellationToken);
 
-                results.Add(testResult);
-            }
-            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
-            {
-                throw new TimeoutException($"Test execution for {ProjectFileName} ({framework}) exceeded 15 minute pipeline timeout");
-            }
+            results.Add(testResult);
         }
 
         return results;

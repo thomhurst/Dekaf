@@ -550,6 +550,32 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             FailCarryOverBatches(carryOverA);
             FailCarryOverBatches(carryOverB);
 
+            // Fail batches queued for retry from failed sends
+            FailCarryOverBatches(_sendFailedRetries);
+
+            // Fail pending responses — if the send loop exits (exception, cancellation, or
+            // channel completion) while responses are still in-flight, the batches would be
+            // orphaned: their CompletionSources never completed, causing ProduceAsync to hang.
+            // DisposeAsync also handles this, but only if disposal is reached. If the caller is
+            // blocked on ProduceAsync (waiting for the orphaned CompletionSource), disposal never
+            // happens, creating a deadlock. Cleaning up here breaks the cycle.
+            if (_pendingResponses.Count > 0)
+            {
+                LogFailingPendingResponses(_brokerId, _pendingResponses.Count);
+                foreach (var pr in _pendingResponses)
+                {
+                    for (var j = 0; j < pr.Count; j++)
+                    {
+                        if (pr.Batches[j] is not null)
+                            FailAndCleanupBatch(pr.Batches[j], new ObjectDisposedException(nameof(BrokerSender)));
+                    }
+
+                    ArrayPool<ReadyBatch>.Shared.Return(pr.Batches, clearArray: true);
+                }
+
+                _pendingResponses.Clear();
+            }
+
             // Drain any remaining batches from channel and fail them
             while (channelReader.TryRead(out var remaining))
             {
@@ -1297,8 +1323,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         await _cts.CancelAsync().ConfigureAwait(false);
 
         // Wait for send loop to finish (should exit quickly now that CTS is cancelled).
-        // The send loop owns _pendingResponses — it will process remaining responses
-        // during its final iteration(s) before exiting.
+        // The send loop's finally block fails any remaining pending responses, so
+        // _pendingResponses should normally be empty after the loop exits. The check
+        // below is a safety net for edge cases (e.g., loop didn't exit in time).
         LogWaitingForSendLoop(_brokerId);
         try
         {
