@@ -5,7 +5,7 @@ namespace Dekaf.Tests.Integration;
 
 /// <summary>
 /// Integration tests for idempotent producer behavior.
-/// Verifies that EnableIdempotence() provides exactly-once semantics within a producer session.
+/// Verifies that the producer provides exactly-once semantics within a producer session.
 /// </summary>
 [Category("Producer")]
 public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
@@ -20,7 +20,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-idempotent-basic")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .BuildAsync();
 
         // Act
@@ -49,7 +49,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-idempotent-concurrent")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .BuildAsync();
 
         var allResults = new System.Collections.Concurrent.ConcurrentBag<RecordMetadata>();
@@ -101,7 +101,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-idempotent-ordering")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .BuildAsync();
 
         // Act - produce messages concurrently and verify ordering
@@ -185,7 +185,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-idempotent-volume")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .BuildAsync();
 

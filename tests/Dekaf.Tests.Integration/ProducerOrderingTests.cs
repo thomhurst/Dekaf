@@ -25,7 +25,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-strict-ordering")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .BuildAsync();
 
         // Produce sequentially to guarantee append order
@@ -85,7 +85,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-high-throughput-ordering")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
 
@@ -143,7 +143,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-single-partition-ordering")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithBatchSize(512) // Very small to force many batches in flight
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
@@ -200,7 +200,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-partition-ordering")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
 
@@ -280,7 +280,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId($"test-concurrent-flush-{producerId}")
                 .WithAcks(Acks.All)
-                .EnableIdempotence()
+    
                 .BuildAsync();
 
             for (var i = 0; i < messagesPerProducer; i++)
@@ -358,7 +358,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-coalesced-ordering")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithBatchSize(1024) // Small to force many batches
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
@@ -437,7 +437,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-deferred-chain")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithBatchSize(256) // Tiny: ~10 messages per batch → ~100 batches for 1000 messages
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
@@ -495,7 +495,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-drain")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithBatchSize(512) // Small to create many batches per wave
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
@@ -574,7 +574,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-rapid-fire-forget")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithBatchSize(512)
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
@@ -643,7 +643,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-interleaved-deferred")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithBatchSize(256) // Tiny: forces many batches
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
@@ -720,7 +720,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-high-partition-count")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithBatchSize(512)
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
@@ -792,7 +792,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-mixed-produce-send")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithBatchSize(512)
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
@@ -850,7 +850,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-sustained")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithBatchSize(512)
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
@@ -941,7 +941,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-pool-recycling")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithBatchSize(256) // Tiny: forces very frequent batch rotation
             .WithLinger(TimeSpan.FromMilliseconds(1)) // Aggressive linger timer
             .BuildAsync();
@@ -1023,7 +1023,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-linger-recycling")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithBatchSize(65536) // Large: batches never fill up from size alone
             .WithLinger(TimeSpan.FromMilliseconds(1)) // Very short: linger timer always fires first
             .BuildAsync();
@@ -1100,7 +1100,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-many-partitions-rotation")
             .WithAcks(Acks.All)
-            .EnableIdempotence()
+
             .WithBatchSize(256)
             .WithLinger(TimeSpan.FromMilliseconds(1))
             .BuildAsync();

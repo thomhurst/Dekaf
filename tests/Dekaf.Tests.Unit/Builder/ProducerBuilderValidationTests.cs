@@ -118,14 +118,6 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
-    public async Task EnableIdempotence_ReturnsSameBuilder()
-    {
-        var builder = Kafka.CreateProducer<string, string>();
-        var result = builder.EnableIdempotence();
-        await Assert.That(result).IsSameReferenceAs(builder);
-    }
-
-    [Test]
     public async Task WithTransactionalId_ReturnsSameBuilder()
     {
         var builder = Kafka.CreateProducer<string, string>();

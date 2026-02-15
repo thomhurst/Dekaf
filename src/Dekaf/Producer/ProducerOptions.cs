@@ -102,11 +102,6 @@ public sealed class ProducerOptions
     public int DeliveryTimeoutMs { get; init; } = 120000;
 
     /// <summary>
-    /// Enable idempotent producer.
-    /// </summary>
-    public bool EnableIdempotence { get; init; } = true;
-
-    /// <summary>
     /// Transactional ID for exactly-once semantics.
     /// </summary>
     public string? TransactionalId { get; init; }

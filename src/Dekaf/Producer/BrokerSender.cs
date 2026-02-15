@@ -42,7 +42,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly RecordAccumulator _accumulator;
     private readonly ProducerOptions _options;
     private readonly CompressionCodecRegistry _compressionCodecs;
-    private readonly PartitionInflightTracker? _inflightTracker;
+    private readonly PartitionInflightTracker _inflightTracker;
     private readonly ProducerStatisticsCollector _statisticsCollector;
     private readonly Action<ReadyBatch>? _rerouteBatch;
     private readonly Action<TopicPartition, long, DateTimeOffset, int, Exception?>? _onAcknowledgement;
@@ -88,12 +88,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly Func<bool> _isTransactional;
     private readonly Func<TopicPartition, CancellationToken, ValueTask>? _ensurePartitionInTransaction;
 
-    // Ordering guarantee flag (aligned with Java Kafka's guaranteeMessageOrder).
-    // When true, partitions are muted on retry to prevent newer batches from being sent
-    // before retried batches, ensuring per-partition ordering on error recovery.
-    // Enabled for idempotent producers (any maxInFlight) or when MaxInFlight == 1.
-    private readonly bool _guaranteeMessageOrder;
-
     // Send-time muting: when true, partitions are muted at send time (limiting to 1
     // in-flight batch per partition). When false, multiple in-flight batches per partition
     // are allowed, relying on sequence numbers for ordering instead of muting.
@@ -101,10 +95,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // use sequence numbers to guarantee ordering without send-time muting.
     private readonly bool _muteOnSend;
 
-    // Muted partitions: partitions with a retry in progress (when _guaranteeMessageOrder)
-    // or limited to 1 in-flight batch (when _muteOnSend). Prevents newer batches from
-    // being sent, maintaining per-partition ordering. Aligned with Java Kafka producer's
-    // mute mechanism.
+    // Muted partitions: partitions with a retry in progress or limited to 1 in-flight
+    // batch (when _muteOnSend). Prevents newer batches from being sent, maintaining
+    // per-partition ordering. Aligned with Java Kafka producer's mute mechanism.
     // Written and read by the single-threaded send loop (ProcessCompletedResponses/CoalesceBatch).
     private readonly ConcurrentDictionary<TopicPartition, byte> _mutedPartitions = new();
 
@@ -133,7 +126,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         RecordAccumulator accumulator,
         ProducerOptions options,
         CompressionCodecRegistry compressionCodecs,
-        PartitionInflightTracker? inflightTracker,
+        PartitionInflightTracker inflightTracker,
         ProducerStatisticsCollector statisticsCollector,
         Func<int> getProduceApiVersion,
         Action<int> setProduceApiVersion,
@@ -177,11 +170,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         });
 
         _maxInFlight = options.MaxInFlightRequestsPerConnection;
-
-        // Aligned with Java Kafka's guaranteeMessageOrder:
-        // mute partitions on retry to prevent reordering during error recovery.
-        // Required for idempotent producers (any maxInFlight) and non-idempotent with maxInFlight=1.
-        _guaranteeMessageOrder = inflightTracker is not null || _maxInFlight <= 1;
 
         // Only mute at send time when limited to 1 in-flight request.
         // Idempotent producers with maxInFlight > 1 rely on sequence numbers for ordering.
@@ -760,8 +748,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
 
                     // Non-retriable error — unmute so subsequent batches can proceed
-                    if (_guaranteeMessageOrder)
-                        UnmutePartition(batch.TopicPartition);
+                    UnmutePartition(batch.TopicPartition);
                     CompleteInflightEntry(batch);
                     _statisticsCollector.RecordBatchFailed(expectedTopic, expectedPartition,
                         batch.CompletionSourcesCount);
@@ -785,8 +772,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // Success — unmute so the next batch for this partition can be sent
-                if (_guaranteeMessageOrder)
-                    UnmutePartition(batch.TopicPartition);
+                UnmutePartition(batch.TopicPartition);
                 LogBatchCompleted(_brokerId, expectedTopic, expectedPartition, partitionResponse.BaseOffset);
                 _statisticsCollector.RecordBatchDelivered(expectedTopic, expectedPartition,
                     batch.CompletionSourcesCount);
@@ -828,8 +814,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
         {
             LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-            if (_guaranteeMessageOrder)
-                UnmutePartition(batch.TopicPartition);
+            UnmutePartition(batch.TopicPartition);
             var ex = new TimeoutException(
                 $"Delivery timeout exceeded for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}" +
                 (errorCode != ErrorCode.None ? $" (last error: {errorCode})" : ""));
@@ -838,9 +823,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         // Mute partition so no newer batches overtake the retry (ordering guarantee).
-        // Non-ordered producers skip muting: normal batches can proceed freely during retry.
-        if (_guaranteeMessageOrder)
-            _mutedPartitions.TryAdd(batch.TopicPartition, 0);
+        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
 
         var isEpochBumpError = errorCode is ErrorCode.OutOfOrderSequenceNumber
             or ErrorCode.InvalidProducerEpoch or ErrorCode.UnknownProducerId;
@@ -917,9 +900,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 for (var i = 0; i < count; i++)
                 {
                     var batch = batches[i];
-                    if (batch.RecordBatch.ProducerId < 0)
-                        continue; // Non-idempotent batch — no sequence tracking
-
                     var tp = batch.TopicPartition;
                     var recordCount = batch.RecordBatch.Records.Count;
                     var isStaleEpoch = currentEpoch >= 0
@@ -938,10 +918,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         batch.RecordBatch.BaseSequence = newSeq;
 
                         // Re-register with inflight tracker
-                        if (_inflightTracker is not null)
-                        {
-                            batch.InflightEntry = _inflightTracker.Register(tp, newSeq, recordCount);
-                        }
+                        batch.InflightEntry = _inflightTracker.Register(tp, newSeq, recordCount);
                     }
                     else if (batch.RecordBatch.BaseSequence < 0)
                     {
@@ -959,18 +936,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Register fresh batches with inflight tracker at send time (not drain time).
             // Stale batches were re-registered above. Retry batches with correct epoch
             // keep their existing inflight entries. Only batches without entries need registration.
-            if (_inflightTracker is not null)
+            for (var i = 0; i < count; i++)
             {
-                for (var i = 0; i < count; i++)
+                var batch = batches[i];
+                if (batch.InflightEntry is null && batch.RecordBatch.BaseSequence >= 0)
                 {
-                    var batch = batches[i];
-                    if (batch.InflightEntry is null && batch.RecordBatch.BaseSequence >= 0)
-                    {
-                        batch.InflightEntry = _inflightTracker.Register(
-                            batch.TopicPartition,
-                            batch.RecordBatch.BaseSequence,
-                            batch.CompletionSourcesCount);
-                    }
+                    batch.InflightEntry = _inflightTracker.Register(
+                        batch.TopicPartition,
+                        batch.RecordBatch.BaseSequence,
+                        batch.CompletionSourcesCount);
                 }
             }
 
@@ -1053,8 +1027,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Mute partitions at send time when limited to 1 in-flight request.
             // This ensures at most one batch per partition in-flight across all requests.
-            // When maxInFlight > 1 (idempotent), sequence numbers guarantee ordering instead,
-            // and retry-time muting (_guaranteeMessageOrder) handles error recovery.
+            // When maxInFlight > 1, sequence numbers guarantee ordering instead,
+            // and retry-time muting handles error recovery.
             if (_muteOnSend)
             {
                 for (var i = 0; i < count; i++)
@@ -1107,17 +1081,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
                 {
-                    if (_guaranteeMessageOrder)
-                        UnmutePartition(batch.TopicPartition);
+                    UnmutePartition(batch.TopicPartition);
                     FailAndCleanupBatch(batch, new TimeoutException(
                         $"Delivery timeout exceeded for {batch.TopicPartition}"));
                 }
                 else
                 {
                     // Mute partition (ordering guarantee) and queue for retry.
-                    // Non-ordered producers skip muting: normal batches proceed freely.
-                    if (_guaranteeMessageOrder)
-                        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
+                    _mutedPartitions.TryAdd(batch.TopicPartition, 0);
                     batch.IsRetry = true;
                     batch.RetryNotBefore = Stopwatch.GetTimestamp() +
                         (long)(_options.RetryBackoffMs * (Stopwatch.Frequency / 1000.0));
@@ -1245,7 +1216,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         if (batch.InflightEntry is { } entry)
         {
-            _inflightTracker?.Complete(entry);
+            _inflightTracker.Complete(entry);
             batch.InflightEntry = null;
         }
     }

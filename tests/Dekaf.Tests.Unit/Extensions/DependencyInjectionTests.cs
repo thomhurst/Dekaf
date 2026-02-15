@@ -144,14 +144,6 @@ public class DependencyInjectionTests
     }
 
     [Test]
-    public async Task ProducerServiceBuilder_EnableIdempotence_ReturnsSelf()
-    {
-        var builder = new ProducerServiceBuilder<string, string>();
-        var result = builder.EnableIdempotence();
-        await Assert.That(result).IsSameReferenceAs(builder);
-    }
-
-    [Test]
     public async Task ProducerServiceBuilder_UseZstdCompression_ReturnsSelf()
     {
         var builder = new ProducerServiceBuilder<string, string>();

@@ -230,12 +230,6 @@ public sealed class ProducerServiceBuilder<TKey, TValue>
         return this;
     }
 
-    public ProducerServiceBuilder<TKey, TValue> EnableIdempotence()
-    {
-        _builder.EnableIdempotence();
-        return this;
-    }
-
     public ProducerServiceBuilder<TKey, TValue> WithTransactionalId(string transactionalId)
     {
         _builder.WithTransactionalId(transactionalId);
