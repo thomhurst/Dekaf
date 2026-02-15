@@ -68,9 +68,8 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
         var arguments = new List<string>
         {
             "--",
-            "--timeout", "10m", // Per-test timeout — prevents individual test hangs
             "--hangdump",
-            "--hangdump-timeout", "15m", // Module timeout (30m) is the hard backstop
+            "--hangdump-timeout", "15m", // Generates hangdumps for analysis; process timeout (20m) is the hard backstop
             "--log-level", "Trace",
             "--output", "Detailed",
             "--treenode-filter", $"/**[Category={Category}]"
