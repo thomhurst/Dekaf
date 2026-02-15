@@ -438,6 +438,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
+                // Track batch count for error recovery cleanup (must be set before
+                // any awaits that could throw, to prevent batch loss in inner catch).
+                iterationBatchCount = coalescedCount;
+
                 // Send or wait
                 if (coalescedCount > 0)
                 {
@@ -458,7 +462,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     Interlocked.Increment(ref _inFlightCount);
                     LogSendingCoalesced(_brokerId, coalescedCount);
-                    iterationBatchCount = coalescedCount;
                     await SendCoalescedAsync(
                         coalescedBatches, coalescedCount, cancellationToken).ConfigureAwait(false);
                     iterationBatches = null; // SendCoalescedAsync took ownership
@@ -668,6 +671,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         HashSet<TopicPartition> coalescedPartitions,
         List<ReadyBatch> newCarryOver)
     {
+        // Fail batches that have exceeded their delivery deadline during carry-over.
+        // Without this, batches can circulate in carry-over indefinitely if the delivery
+        // deadline check in HandleRetriableBatch/SendCoalescedAsync is never reached
+        // (e.g., errors occur before sending, or batches are muted indefinitely).
+        var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
+            (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+
+        if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
+        {
+            LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+            UnmutePartition(batch.TopicPartition);
+            FailAndCleanupBatch(batch, new TimeoutException(
+                $"Delivery timeout exceeded for {batch.TopicPartition}"));
+            return;
+        }
+
         if (batch.IsRetry)
         {
             // Check backoff — carry over if backoff hasn't elapsed
