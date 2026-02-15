@@ -284,6 +284,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var carryOverB = new List<ReadyBatch>();
         var pendingCarryOver = carryOverA;
         var reusableWaitTasks = new List<Task>(4);
+        ReadyBatch[]? iterationBatches = null;
+        var iterationBatchCount = 0;
 
         try
         {
@@ -293,6 +295,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // with muted partitions (coalescedCount==0), the WhenAny path below completes
                 // without propagating the OCE from the cancelled token.
                 cancellationToken.ThrowIfCancellationRequested();
+                iterationBatches = null;
+                iterationBatchCount = 0;
+
+                try
+                {
 
                 LogSendLoopIteration(_brokerId, pendingCarryOver.Count, _pendingResponses.Count);
 
@@ -393,6 +400,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 newCarryOver.Clear();
                 var coalescedCount = 0;
                 var coalescedBatches = ArrayPool<ReadyBatch>.Shared.Rent(maxCoalesce);
+                iterationBatches = coalescedBatches;
 
                 // Scan carry-over: retry batches unmute and coalesce; muted/duplicate carry over.
                 // No sorting needed — ProcessCompletedResponses adds retry batches in send order.
@@ -450,12 +458,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     Interlocked.Increment(ref _inFlightCount);
                     LogSendingCoalesced(_brokerId, coalescedCount);
+                    iterationBatchCount = coalescedCount;
                     await SendCoalescedAsync(
                         coalescedBatches, coalescedCount, cancellationToken).ConfigureAwait(false);
+                    iterationBatches = null; // SendCoalescedAsync took ownership
                 }
                 else
                 {
                     ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
+                    iterationBatches = null; // Returned to pool
 
                     // All batches are for muted partitions or in backoff. Wait for either:
                     // 1. A response completes (may produce carry-over retry batches), or
@@ -528,6 +539,57 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 // Set carry-over for next iteration
                 pendingCarryOver = newCarryOver;
+
+                } // inner try
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw; // Propagate shutdown to outer handler
+                }
+                catch (ChannelClosedException)
+                {
+                    throw; // Propagate channel completion to outer handler
+                }
+                catch (Exception ex)
+                {
+                    // Safety net: if an unexpected error occurs in the loop body,
+                    // log it and continue rather than killing the send loop permanently.
+                    // A dead send loop causes cascading deadlocks (bounded channel fills,
+                    // SenderLoop blocks on EnqueueAsync, producer pipeline stalls).
+                    LogSendLoopIterationFailed(ex, _brokerId);
+                    _pinnedConnection = null; // Invalidate possibly-broken connection
+
+                    // Clean up rented coalesced array if not yet consumed by SendCoalescedAsync
+                    if (iterationBatches is not null)
+                    {
+                        for (var i = 0; i < iterationBatchCount; i++)
+                        {
+                            if (iterationBatches[i] is not null)
+                                FailAndCleanupBatch(iterationBatches[i], ex);
+                        }
+                        ArrayPool<ReadyBatch>.Shared.Return(iterationBatches, clearArray: true);
+                        iterationBatches = null;
+                    }
+
+                    // Ensure pendingCarryOver points to whichever list has batches.
+                    // During coalescing, batches move between the two swappable lists.
+                    if (pendingCarryOver.Count == 0)
+                    {
+                        var other = pendingCarryOver == carryOverA ? carryOverB : carryOverA;
+                        if (other.Count > 0)
+                            pendingCarryOver = other;
+                    }
+
+                    // Brief delay to prevent tight error loop on persistent failures
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw; // Shutdown during recovery delay
+                    }
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1379,6 +1441,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Error, Message = "BrokerSender[{BrokerId}] send loop failed")]
     private partial void LogSendLoopFailed(Exception ex, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "BrokerSender[{BrokerId}] send loop iteration failed, recovering")]
+    private partial void LogSendLoopIterationFailed(Exception ex, int brokerId);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "BrokerSender[{BrokerId}] response failed")]
     private partial void LogResponseFailed(Exception ex, int brokerId);
