@@ -795,12 +795,29 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             catch (OperationCanceledException) when (workItem.CancellationToken.IsCancellationRequested)
             {
+                CleanupWorkItemResources(in workItem);
                 workItem.Completion.TrySetCanceled(workItem.CancellationToken);
             }
             catch (Exception ex)
             {
+                CleanupWorkItemResources(in workItem);
                 workItem.Completion.TrySetException(ex);
             }
+        }
+    }
+
+    /// <summary>
+    /// Returns pooled resources owned by a work item back to their respective ArrayPools.
+    /// Called when the work item will NOT be processed by AppendAsync (exception, cancellation, disposal).
+    /// On the success path, AppendAsync/TryAppend takes ownership of these resources.
+    /// </summary>
+    private static void CleanupWorkItemResources(in AppendWorkItem workItem)
+    {
+        workItem.Key.Return();
+        workItem.Value.Return();
+        if (workItem.PooledHeaderArray is not null)
+        {
+            ArrayPool<Header>.Shared.Return(workItem.PooledHeaderArray);
         }
     }
 
@@ -826,6 +843,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         if (!_appendWorkerChannels[workerIndex].Writer.TryWrite(workItem))
         {
+            CleanupWorkItemResources(in workItem);
             completion.TrySetException(new ObjectDisposedException(nameof(RecordAccumulator)));
         }
     }
@@ -2561,6 +2579,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             while (channel.Reader.TryRead(out var workItem))
             {
+                CleanupWorkItemResources(in workItem);
                 workItem.Completion.TrySetException(disposedException);
             }
         }

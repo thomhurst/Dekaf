@@ -12,37 +12,40 @@ namespace Dekaf.Tests.Unit.Security;
 internal static class TestCertificateHelper
 {
     /// <summary>
-    /// Pre-generated RSA 2048-bit private key in PKCS#1 PEM format.
-    /// This key has been verified to work for PEM and PFX export without ASN.1 errors.
+    /// Pre-generated RSA 2048-bit private key in PKCS#8 PEM format.
+    /// PKCS#8 stores full CRT parameters, avoiding OpenSSL "iqmp not inverse of q"
+    /// validation errors that occur with some PKCS#1 keys on Linux.
+    /// This key has been verified to work for PEM and PFX export on both Windows and Linux.
     /// </summary>
     private const string FixedRsaPrivateKeyPem = """
-        -----BEGIN RSA PRIVATE KEY-----
-        MIIEowIBAAKCAQEAuj7vjWbLtZlYq3g811iOkBY3swengYBBx7v57PmgZNbeBH/e
-        avJGGxz7+W0UU4yQoVa99RwDipsfoSLGDj41KOzKObQsVqvALTrIAueWGSJysb6s
-        kD7CnDLPXc6lbiuEqDDMAXnwTQ2RhWWbPt2RPojMOPI4Z1nAo+TQxgzdDEWNzlbi
-        VD77klyk7L3QwriS3D0al8TuxdfhGBmQhKYjbxtb8kZfV7SCEKlAtNFOrC5g5xHk
-        n4HPX94MtsHFZlN4gAsmh93OZ8mra4wdtqLDvI9AsGiXsDydSt23oBi2HlWBtJ8P
-        fpwuYQGshLj8TTF2TgadZTf2o4jKoRa/RPZEZwIDAQABAoIBAAzT/Of+ZpWRhFv7
-        IiWrAdbG0PtR0aXH0cASIHrEDtojOpOQwx8WpOGFM43Qh4/hpKyYLulNDqljWeBd
-        ZsrgWgUBmkQzNsKZfdkfrVsV3G7Kwp+fhH9C82CS11mcvCREdxSml8aaQYTtJFLN
-        1s2TsUdfYMGjXWMw+WXQgtjBVhBcM8+ny/fBBUZqV76WsLnNKGuv9Ep6JHGFORd0
-        bcvHW6nYrxKKwOWUvAal2KB4O0/eFKQgjRXGZ65IWPnjDdkCOLJeBJR60ZlUuBLV
-        n0c+rdfSleR89lTYCUfQIYr58Irpyh37EgdxfLh5PsBdFmfW03Sqs5s6EYyM7NZ3
-        O/WsfSECgYEA85s666xWbmfYrPlix5hJLCE8q67V/GQ6nOvX364d2Pi4yUr4Q8iK
-        8EUawNVJu9hmfkPdbeOAhI5eflYUtkEFjvjqLAdjFhxldncnhXf4GWxbIcBFjyTq
-        ZIysMGPPNLg5A/tA5lPwPtTL2WUiaa7OTocoYHtWIV8v7jIsCFWHfrkCgYEAw7ih
-        8I5x9svw2O7LQH0973kUn8WFLr4TFH74dfVukzaB03aK0mGWI7HRAfQfzVlQ/Lal
-        esyYEJemY7dxwMP7Wwhkhqq1IRcyrIeivsKVDYgZB0jmawIOYvIP4Ko5pzwDBocN
-        oOoL/1DkFtw5ESX5QaqdzA9UsEFfBUz/rI/nTB8CgYBriQCvfDoDLrBFWykxtpXG
-        dz2TA/DOI2iEUM/Qm8ntN45KvV9ufJ5ohfjTWtPbqiFEZ6zdj2nyGe64kkM+WOGd
-        RWAJ45Dn980KSHsXvee1QVHRSlDqaX9Wt4pjKgwT16bDjSwPAMqy0bjS1IQmZtYH
-        cD5wqMFSpfRAj8FERI01cQKBgBa+nhMWeqfzi0mqdnRIGap6p6rpiVClRhJbrwQG
-        QZNaAjxQylEohgof3+oaNJfoiUDU+OYMYJ+NAAkWiGGeZNdvYj9EF0iBKaJjIMaK
-        Vkf8SOxPzHcjBgj5mF7DaW/FyZQ4nZzVlg9VlywQ65DSmOTIrw3Huk/BSQmUqSGk
-        l3yBAoGBAOazopZDSmaE4/vV+eMH6vSptkGKGSkg3fjZHRferxwstEGY5mZkbSMv
-        +dnvErfSG8LooEW0cOZR67s/opAPhtySpb/MN/B0V1GodH+c8D8XCnxLpPdOf3Aw
-        RSy+PZyYcqKJuLmFozxdk1Yu5FqQU4nX8VNvz48ivkPFLvmBBH8/
-        -----END RSA PRIVATE KEY-----
+        -----BEGIN PRIVATE KEY-----
+        MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDbEmbq4ecg/TGs
+        VUWztR5dPrjbV1xQnQ+ixZZQPckmc8ywcEIJ8hEdaYVaORFkawZJfkuIDgpoDiwl
+        W7f3sCUhIfs18fB9Bonna8HiRUY5EAle9eujSEKdn8dTWnTKRaRtbvbLH05qTrYR
+        VQ09RZM30CMvW5Kc9cXo4z9DOnJJNltiiQi/fAbfOS+ES+dUER+R1eyrCRFghppL
+        pcPO5CZXdQ+gV+XV2l+Zczsa9SRLlbSiZqgGcn6lx8S8g6oobco47Pf4enqRBYyi
+        J4HgvUghZrI91O9m6QDNM+9bLLiOX2PaCXhviInNIb7ew+YGEx9qZHbVR/olmH+H
+        m+pisBWJAgMBAAECggEAap23FsLgcG6o+Rz68i3IXEsFPkJy/AykKmyM7fpT5fHf
+        gVLw4NQ9Pho3uyQg8cUgZy4e5lUm/WNAWuIbU2EXgNt/3c4kY0SGYulPj6Z1OZoz
+        ZVK73lhxizLSmB9izXo9PsENPOe8iwJJm3/QFKzCrBwQs6CWZus56VCHXlmYe0Yh
+        cbsTE5+hiwdxDNP9L1EkAqEvBY9HvmnTb55jBNXkDNh+NdkJmdpsiFDwNgQLLW0B
+        KKKdsjTOk4GuAuaeZosDrIMHuzWdsv7G7LP2jWacOSkkKKf8OowsWeNQIXJFvRoL
+        mmhWHJSu8LmvknnDZnvLGTyu1T31NWUPQBYZs5fNXQKBgQDl7VB0QHBBI7r7A2Q/
+        hh+bpA2vCE7LfxNI0lxLN6yONuvdiAWne/owkLefhK4Z9Qm7kfnDP2o+Pv3saBUJ
+        QLfh2/UmsbblegDZHeHJRxPh1FyYdMGvqYOaJh1st6latDGl4uKsELqV4rVYbBfS
+        d/laRLmxD1+6PzTczabhERFf4wKBgQDz6ffLA3mQNR2+czQhXGJa4D+MCfna7JYh
+        Myd/nKjlGg3nFg5MCW+BxYxy5NRHPPcix6kQf5PnToG5aF9eOJSjAuo4CzCSnvTj
+        1uNpmBZWCIw8t7qnu5hQFxUEayIHnUKxcuDFu7P1lwZXymGb6Zt8sXKONyLtMZoS
+        t3lmgc5YowKBgQDcqjppp6JUUedUmneuo5lYNUVQs6dzk9y9Ke6b3a3Eux74+F98
+        0vZVf75K4Pp6PPp/QuSypvzfCnOGXIm73JndsM0ButMuPz3rIcuc8ZM6TCYlxwBQ
+        B18fJO9edJGbVI7Fhw9GVbPMv8yNNQhT3QK5yHVyYa/cvmaMdu5u2IOVQwKBgQCs
+        WvoUZMIz2rTH7VQ69rMxkCCXbj02K9PyZdlVXXgjXAPS9UzpAgnfY57ZWUV/iV8B
+        HqEi3WPAIUOdplktlUHC5r5nF9Ec6mIV1bUg2q194dBm31VwTSlV/tmFI8cKJmAI
+        UCrwzrBdrHh49LOAntSWijVutRtjDJfY/fk1LCiJjQKBgEeS2pSLRNrlIdb4qhzK
+        +7xgFINesUruTJuSoezt2cbFWSP8gcQB7pYuiI+nDDU7ZIYgxA4WX8F63J5BH0VF
+        yDoA3gQ+5+q90wZh1gNjSTOeccWzJOU7QyCdoPfraW0WUlXlc1hm3LGw0wJrWybz
+        p/rS60ZgPDQeOJ8QDtM6YA7w
+        -----END PRIVATE KEY-----
         """;
 
     /// <summary>

@@ -59,11 +59,14 @@ public class AppendWorkerAffinityTests
                 cancellationToken: CancellationToken.None);
         }
 
-        // Allow workers to process
-        await Task.Delay(200);
-
         var batches = GetBatches(accumulator);
         var tp = new TopicPartition("test-topic", 0);
+
+        // Poll until workers have processed and created the batch
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (!batches.ContainsKey(tp) && sw.ElapsedMilliseconds < 5000)
+            await Task.Delay(10);
+
         await Assert.That(batches.ContainsKey(tp)).IsTrue();
 
         // Cancel workers before disposal to avoid waiting for sender drain timeout
@@ -104,10 +107,13 @@ public class AppendWorkerAffinityTests
             }
         }
 
-        // Allow workers to process
-        await Task.Delay(200);
-
         var batches = GetBatches(accumulator);
+
+        // Poll until workers have processed all partitions
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (batches.Count < partitionCount && sw.ElapsedMilliseconds < 5000)
+            await Task.Delay(10);
+
         for (var p = 0; p < partitionCount; p++)
         {
             var tp = new TopicPartition("test-topic", p);
@@ -173,9 +179,7 @@ public class AppendWorkerAffinityTests
             completion: completion,
             cancellationToken: messageCts.Token);
 
-        // Allow worker to process
-        await Task.Delay(200);
-
+        // Await the completion directly — the worker will set cancellation deterministically
         var vt = new ValueTask<RecordMetadata>(completion, completion.Version);
         await Assert.That(async () => await vt).Throws<OperationCanceledException>();
 

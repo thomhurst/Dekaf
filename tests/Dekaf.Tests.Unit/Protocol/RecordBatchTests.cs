@@ -389,6 +389,9 @@ public class RecordBatchTests
     [Test]
     public async Task RecordBatch_WithoutPooledMemoryContext_CopiesData()
     {
+        // Ensure no stale thread-local state from a prior test on the same thread
+        ResponseParsingContext.Reset();
+
         var buffer = new ArrayBufferWriter<byte>();
 
         var originalBatch = new RecordBatch
