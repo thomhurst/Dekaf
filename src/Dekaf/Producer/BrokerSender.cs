@@ -544,6 +544,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
         finally
         {
+            // Complete the channel FIRST so that any concurrent EnqueueAsync calls fail
+            // immediately with ChannelClosedException instead of blocking forever on a
+            // bounded channel whose only reader (this send loop) has exited. Without this,
+            // SenderLoop blocks on EnqueueAsync, backing up the entire producer pipeline.
+            _batchChannel.Writer.TryComplete();
+
             // Fail any carry-over batches that couldn't be sent.
             // Drain both swappable lists — if an exception occurred mid-iteration,
             // batches may be in either list depending on timing.
