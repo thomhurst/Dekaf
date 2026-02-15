@@ -248,6 +248,45 @@ public readonly struct ProducerRecordData
 }
 
 /// <summary>
+/// Work item for per-partition-affine append workers.
+/// Encapsulates all data needed to append a record to the accumulator via a worker channel.
+/// </summary>
+internal readonly struct AppendWorkItem
+{
+    public readonly string Topic;
+    public readonly int Partition;
+    public readonly long Timestamp;
+    public readonly PooledMemory Key;
+    public readonly PooledMemory Value;
+    public readonly IReadOnlyList<Header>? Headers;
+    public readonly Header[]? PooledHeaderArray;
+    public readonly PooledValueTaskSource<RecordMetadata> Completion;
+    public readonly CancellationToken CancellationToken;
+
+    public AppendWorkItem(
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
+        PooledValueTaskSource<RecordMetadata> completion,
+        CancellationToken cancellationToken)
+    {
+        Topic = topic;
+        Partition = partition;
+        Timestamp = timestamp;
+        Key = key;
+        Value = value;
+        Headers = headers;
+        PooledHeaderArray = pooledHeaderArray;
+        Completion = completion;
+        CancellationToken = cancellationToken;
+    }
+}
+
+/// <summary>
 /// Arena allocator for batch message data. Pre-allocates a contiguous buffer
 /// and provides slices for direct serialization, eliminating per-message ArrayPool rentals.
 /// </summary>
@@ -523,6 +562,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
     private readonly ConcurrentDictionary<TopicPartition, object> _partitionSealLocks = new();
     private readonly Channel<ReadyBatch> _readyBatches;
+
+    // Per-partition-affine append workers: each worker owns a channel and processes
+    // appends for a subset of partitions (partition % workerCount). This eliminates
+    // contention on CAS spin, ConcurrentDictionary lookups, and per-partition seal locks
+    // when many threads miss the fast path and fall through to the slow (async) append path.
+    private readonly Channel<AppendWorkItem>[] _appendWorkerChannels;
+    private readonly int _appendWorkerCount;
+    private Task[]? _appendWorkerTasks;
+
     private readonly PartitionBatchPool _batchPool;
     private readonly ReadyBatchPool _readyBatchPool; // Pool for ReadyBatch objects to eliminate per-batch allocations
 
@@ -677,6 +725,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             SingleReader = true,
             SingleWriter = false
         });
+
+        // Create per-partition-affine append worker channels.
+        // Each channel is SingleReader (one worker) but allows multiple writers (caller threads).
+        _appendWorkerCount = Math.Clamp(Environment.ProcessorCount, 1, 8);
+        _appendWorkerChannels = new Channel<AppendWorkItem>[_appendWorkerCount];
+        for (var i = 0; i < _appendWorkerCount; i++)
+        {
+            _appendWorkerChannels[i] = Channel.CreateUnbounded<AppendWorkItem>(
+                new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+        }
     }
 
     /// <summary>
@@ -693,6 +751,83 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal void ReturnReadyBatch(ReadyBatch batch)
     {
         _readyBatchPool.Return(batch);
+    }
+
+    /// <summary>
+    /// Starts per-partition-affine append worker tasks.
+    /// Each worker processes appends for partitions where (partition % workerCount == workerIndex),
+    /// enabling cross-partition parallelism while preserving per-partition ordering.
+    /// </summary>
+    internal void StartAppendWorkers(CancellationToken cancellationToken)
+    {
+        _appendWorkerTasks = new Task[_appendWorkerCount];
+        for (var i = 0; i < _appendWorkerCount; i++)
+        {
+            var workerIndex = i;
+            _appendWorkerTasks[i] = Task.Run(
+                () => ProcessAppendWorkerAsync(workerIndex, cancellationToken),
+                CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// Worker loop that processes append work items from its dedicated channel.
+    /// Each worker handles a subset of partitions, so AppendAsync calls for the same
+    /// partition are always serialized through a single worker — no contention.
+    /// </summary>
+    private async Task ProcessAppendWorkerAsync(int workerIndex, CancellationToken cancellationToken)
+    {
+        var reader = _appendWorkerChannels[workerIndex].Reader;
+        await foreach (var workItem in reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            try
+            {
+                await AppendAsync(
+                    workItem.Topic,
+                    workItem.Partition,
+                    workItem.Timestamp,
+                    workItem.Key,
+                    workItem.Value,
+                    workItem.Headers,
+                    workItem.PooledHeaderArray,
+                    workItem.Completion,
+                    workItem.CancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (workItem.CancellationToken.IsCancellationRequested)
+            {
+                workItem.Completion.TrySetCanceled(workItem.CancellationToken);
+            }
+            catch (Exception ex)
+            {
+                workItem.Completion.TrySetException(ex);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Enqueues a record for append by a per-partition-affine worker.
+    /// Partition is used to route the work item to a specific worker channel,
+    /// ensuring all appends for the same partition are processed sequentially.
+    /// </summary>
+    internal void EnqueueAppend(
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
+        PooledValueTaskSource<RecordMetadata> completion,
+        CancellationToken cancellationToken)
+    {
+        var workerIndex = (int)((uint)partition % (uint)_appendWorkerCount);
+        var workItem = new AppendWorkItem(topic, partition, timestamp, key, value,
+            headers, pooledHeaderArray, completion, cancellationToken);
+
+        if (!_appendWorkerChannels[workerIndex].Writer.TryWrite(workItem))
+        {
+            completion.TrySetException(new ObjectDisposedException(nameof(RecordAccumulator)));
+        }
     }
 
     /// <summary>
@@ -2294,6 +2429,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Completes all append worker channels. Safe to call multiple times.
+    /// </summary>
+    private void CompleteAppendWorkerChannels()
+    {
+        foreach (var channel in _appendWorkerChannels)
+            channel.Writer.TryComplete();
+    }
+
+    /// <summary>
     /// Flushes all pending batches and completes the ready channel for graceful shutdown.
     /// The sender loop will process remaining batches and exit when the channel is empty.
     /// </summary>
@@ -2304,6 +2448,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         LogCloseStarted(_batches.Count);
         _closed = true;
+
+        // Complete append worker channels so workers drain remaining items and exit.
+        // Don't await workers here — they may be blocked in ReserveMemoryAsync which
+        // needs the disposal event (set later in DisposeAsync) to unblock.
+        CompleteAppendWorkerChannels();
 
         // Flush all pending batches to the ready channel
         await FlushAsync(cancellationToken).ConfigureAwait(false);
@@ -2356,17 +2505,24 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             catch (OperationCanceledException)
             {
                 // Timeout or cancellation - proceed with immediate shutdown
+                CompleteAppendWorkerChannels();
                 _readyBatches.Writer.Complete();
             }
             catch
             {
                 // Other exceptions (e.g., no connection) - proceed with immediate shutdown
+                CompleteAppendWorkerChannels();
                 _readyBatches.Writer.Complete();
             }
         }
 
+        // Ensure append worker channels are completed even if CloseAsync early-returned
+        // (CloseAsync checks _disposed and returns immediately, so channels may not be completed)
+        CompleteAppendWorkerChannels();
+
         // Cancel the disposal token and signal the disposal event to interrupt any blocked operations
-        // Do this AFTER graceful shutdown attempt so FlushAsync can complete normally
+        // (e.g., workers stuck in ReserveMemoryAsync). Do this AFTER graceful shutdown attempt
+        // so FlushAsync can complete normally.
         try
         {
             _disposalCts.Cancel();
@@ -2377,12 +2533,37 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Ignore exceptions during cancellation
         }
 
+        // Wait for append workers to exit now that disposal event has been set.
+        // Workers blocked in ReserveMemoryAsync will be interrupted by the disposal event above.
+        if (_appendWorkerTasks is not null)
+        {
+            try
+            {
+                await Task.WhenAll(_appendWorkerTasks)
+                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                // Timeout or cancellation — proceed with disposal
+            }
+        }
+
         // NOW fail any remaining batches that couldn't be sent during graceful shutdown
         var remainingBatches = _batches.Count;
         if (remainingBatches > 0)
             LogDisposalFailingRemainingBatches(remainingBatches);
 
         var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
+
+        // Drain append worker channels and fail any unprocessed work items
+        foreach (var channel in _appendWorkerChannels)
+        {
+            while (channel.Reader.TryRead(out var workItem))
+            {
+                workItem.Completion.TrySetException(disposedException);
+            }
+        }
 
         // Fail incomplete batches still in the dictionary (weren't flushed in time)
         foreach (var kvp in _batches)

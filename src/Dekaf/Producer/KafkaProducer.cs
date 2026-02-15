@@ -215,6 +215,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _lingerTimer = new PeriodicTimer(TimeSpan.FromMilliseconds(1));
         _senderTask = SenderLoopAsync(_senderCts.Token);
         _lingerTask = LingerLoopAsync(_senderCts.Token);
+        _accumulator.StartAppendWorkers(_senderCts.Token);
 
         // Start statistics emitter if configured
         if (options.StatisticsInterval.HasValue &&
@@ -1657,10 +1658,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             recordHeaders = ConvertHeaders(message.Headers, out pooledHeaderArray);
         }
 
-        // Append to accumulator - passes completion through to batch
-        // The batch will complete the TCS when sent, so we don't await anything here
-        // Pass topic and partition separately to avoid TopicPartition allocation
-        var result = await _accumulator.AppendAsync(
+        // Track message produced (key + value bytes) on caller thread before enqueue
+        if (_statisticsEnabled)
+        {
+            var messageBytes = key.Length + value.Length;
+            _statisticsCollector.RecordMessageProduced(message.Topic, partition, messageBytes);
+        }
+
+        // Enqueue to per-partition-affine worker instead of calling AppendAsync inline.
+        // The worker will call AppendAsync and set the completion source on success/failure.
+        _accumulator.EnqueueAppend(
             message.Topic,
             partition,
             timestampMs,
@@ -1669,26 +1676,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             recordHeaders,
             pooledHeaderArray,
             completion,
-            cancellationToken).ConfigureAwait(false);
-
-        if (!result.Success)
-        {
-            // Return pooled array before throwing to avoid resource leak
-            if (pooledHeaderArray is not null)
-            {
-                ArrayPool<Header>.Shared.Return(pooledHeaderArray);
-            }
-            throw new InvalidOperationException("Failed to append record");
-        }
-
-        // Track message produced (key + value bytes)
-        if (_statisticsEnabled)
-        {
-            var messageBytes = key.Length + value.Length;
-            _statisticsCollector.RecordMessageProduced(message.Topic, partition, messageBytes);
-        }
-
-        // No await here - completion will be set by the batch when it's sent
+            cancellationToken);
     }
 
     public ValueTask<RecordMetadata> ProduceAsync(
