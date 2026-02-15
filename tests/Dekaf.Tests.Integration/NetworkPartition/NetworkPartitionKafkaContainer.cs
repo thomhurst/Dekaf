@@ -36,6 +36,26 @@ public class NetworkPartitionKafkaContainer : KafkaTestContainer
         await client.Containers.UnpauseContainerAsync(containerId).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Attempts to unpause the container, logging any unexpected failures.
+    /// Intended for use in finally blocks to ensure container cleanup.
+    /// </summary>
+    public async Task TryUnpauseAsync()
+    {
+        try
+        {
+            await UnpauseAsync().ConfigureAwait(false);
+        }
+        catch (Docker.DotNet.DockerApiException)
+        {
+            // Container is not paused - expected when unpause already succeeded in the test
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NetworkPartitionKafkaContainer] Unexpected error during cleanup unpause: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     private string GetContainerId()
     {
         var container = ContainerInstance
@@ -52,21 +72,12 @@ public class NetworkPartitionKafkaContainer : KafkaTestContainer
 
     public new async ValueTask DisposeAsync()
     {
-        // Always unpause before disposing to avoid Docker cleanup issues
+        // Always attempt to unpause before disposing to avoid Docker cleanup issues
         try
         {
-            var container = ContainerInstance;
-            if (container is not null)
+            if (ContainerInstance is not null)
             {
-                var client = GetDockerClient();
-                try
-                {
-                    await client.Containers.UnpauseContainerAsync(container.Id).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Container may not be paused, ignore
-                }
+                await TryUnpauseAsync().ConfigureAwait(false);
             }
         }
         finally

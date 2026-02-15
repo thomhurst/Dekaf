@@ -47,7 +47,7 @@ public class ProducerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
                 Value = "partition-value"
             }).AsTask();
 
-            // Wait long enough for request timeout to fire, then unpause
+            // Wait 6s to exceed the 5s request timeout, triggering retry logic
             await Task.Delay(TimeSpan.FromSeconds(6));
             await kafka.UnpauseAsync();
 
@@ -59,8 +59,7 @@ public class ProducerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
         }
         finally
         {
-            // Safety: ensure container is always unpaused
-            try { await kafka.UnpauseAsync(); } catch { /* may already be unpaused */ }
+            await kafka.TryUnpauseAsync();
         }
     }
 
@@ -114,8 +113,7 @@ public class ProducerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
         }
         finally
         {
-            // Always unpause to allow cleanup
-            try { await kafka.UnpauseAsync(); } catch { /* may already be unpaused */ }
+            await kafka.TryUnpauseAsync();
         }
     }
 }

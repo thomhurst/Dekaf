@@ -38,10 +38,11 @@ public class ConnectionRecoveryTests(NetworkPartitionKafkaContainer kafka)
 
         try
         {
+            // Brief 3s pause - shorter than the 5s request timeout
             await Task.Delay(TimeSpan.FromSeconds(3));
             await kafka.UnpauseAsync();
 
-            // Wait for connection recovery
+            // Allow time for TCP connection re-establishment
             await Task.Delay(TimeSpan.FromSeconds(2));
 
             // Produce again - should succeed after reconnection
@@ -56,7 +57,7 @@ public class ConnectionRecoveryTests(NetworkPartitionKafkaContainer kafka)
         }
         finally
         {
-            try { await kafka.UnpauseAsync(); } catch { /* may already be unpaused */ }
+            await kafka.TryUnpauseAsync();
         }
 
         // Verify data integrity: consume both messages
@@ -110,10 +111,11 @@ public class ConnectionRecoveryTests(NetworkPartitionKafkaContainer kafka)
 
         try
         {
+            // Wait 5s to ensure partition is visible to the client
             await Task.Delay(TimeSpan.FromSeconds(5));
             await kafka.UnpauseAsync();
 
-            // Wait for metadata max age to expire (3s) and recovery
+            // Wait 5s: 3s for metadata max age expiry + 2s for refresh to complete
             await Task.Delay(TimeSpan.FromSeconds(5));
 
             // Create a new topic after recovery
@@ -132,7 +134,7 @@ public class ConnectionRecoveryTests(NetworkPartitionKafkaContainer kafka)
         }
         finally
         {
-            try { await kafka.UnpauseAsync(); } catch { /* may already be unpaused */ }
+            await kafka.TryUnpauseAsync();
         }
     }
 }

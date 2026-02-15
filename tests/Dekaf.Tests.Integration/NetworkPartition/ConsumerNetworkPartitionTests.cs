@@ -61,10 +61,11 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
 
         try
         {
+            // Wait 8s to exceed the 6s session timeout, causing group expiry
             await Task.Delay(TimeSpan.FromSeconds(8));
             await kafka.UnpauseAsync();
 
-            // Wait for reconnection
+            // Allow time for TCP recovery and consumer group rejoin
             await Task.Delay(TimeSpan.FromSeconds(3));
 
             // Produce new messages after recovery
@@ -96,7 +97,7 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
         }
         finally
         {
-            try { await kafka.UnpauseAsync(); } catch { /* may already be unpaused */ }
+            await kafka.TryUnpauseAsync();
         }
     }
 
@@ -197,7 +198,7 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
         }
         finally
         {
-            try { await kafka.UnpauseAsync(); } catch { /* may already be unpaused */ }
+            await kafka.TryUnpauseAsync();
         }
     }
 
