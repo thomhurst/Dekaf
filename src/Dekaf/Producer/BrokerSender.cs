@@ -404,6 +404,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 // Scan carry-over: retry batches unmute and coalesce; muted/duplicate carry over.
                 // No sorting needed — ProcessCompletedResponses adds retry batches in send order.
+                // iterationBatchCount is updated after each CoalesceBatch call so the inner catch
+                // can clean up already-coalesced batches if an error occurs mid-coalescing.
                 var hadCarryOver = pendingCarryOver.Count > 0;
                 if (hadCarryOver)
                 {
@@ -411,6 +413,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     {
                         CoalesceBatch(pendingCarryOver[i], coalescedBatches, ref coalescedCount,
                             coalescedPartitions, newCarryOver);
+                        iterationBatchCount = coalescedCount;
                     }
 
                     // Clear after scanning — prevents double-cleanup if an exception
@@ -435,12 +438,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         channelReads++;
                         CoalesceBatch(channelBatch, coalescedBatches, ref coalescedCount,
                             coalescedPartitions, newCarryOver);
+                        iterationBatchCount = coalescedCount;
                     }
                 }
-
-                // Track batch count for error recovery cleanup (must be set before
-                // any awaits that could throw, to prevent batch loss in inner catch).
-                iterationBatchCount = coalescedCount;
 
                 // Send or wait
                 if (coalescedCount > 0)
@@ -581,6 +581,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         if (other.Count > 0)
                             pendingCarryOver = other;
                     }
+
+                    // Sweep carry-over and sendFailedRetries for expired batches.
+                    // If errors prevent reaching CoalesceBatch (e.g., ProcessCompletedResponses
+                    // throws), carry-over batches would circulate past their delivery deadline
+                    // without this sweep.
+                    SweepExpiredBatches(pendingCarryOver);
+                    SweepExpiredBatches(_sendFailedRetries);
 
                     // Brief delay to prevent tight error loop on persistent failures
                     try
@@ -1364,13 +1371,38 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Sweeps a batch list for entries past their delivery deadline, removing and failing them.
+    /// Called during error recovery to prevent carry-over batches from circulating indefinitely
+    /// when errors prevent the normal CoalesceBatch delivery deadline check from being reached.
+    /// </summary>
+    private void SweepExpiredBatches(List<ReadyBatch> batches)
+    {
+        for (var i = batches.Count - 1; i >= 0; i--)
+        {
+            var batch = batches[i];
+            var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
+                (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+
+            if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
+            {
+                batches.RemoveAt(i);
+                UnmutePartition(batch.TopicPartition);
+                FailAndCleanupBatch(batch, new TimeoutException(
+                    $"Delivery timeout exceeded for {batch.TopicPartition} during error recovery"));
+            }
+        }
+    }
+
     private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)
     {
-        CompleteInflightEntry(batch);
-        _statisticsCollector.RecordBatchFailed(
+        try { CompleteInflightEntry(batch); }
+        catch { /* Must not prevent batch cleanup */ }
+        try { _statisticsCollector.RecordBatchFailed(
             batch.TopicPartition.Topic,
             batch.TopicPartition.Partition,
-            batch.CompletionSourcesCount);
+            batch.CompletionSourcesCount); }
+        catch { /* Must not prevent batch cleanup */ }
         try { batch.Fail(ex); }
         catch { /* Observe */ }
         try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
