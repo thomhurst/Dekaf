@@ -771,6 +771,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (_pendingResponses.Count == 0) return;
 
         var writeIndex = 0;
+        try
+        {
         for (var i = 0; i < _pendingResponses.Count; i++)
         {
             var pending = _pendingResponses[i];
@@ -829,6 +831,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             for (var j = 0; j < pending.Count; j++)
             {
                 var batch = pending.Batches[j];
+                if (batch is null)
+                    continue; // Already processed in a prior (interrupted) call
+
                 var expectedTopic = batch.TopicPartition.Topic;
                 var expectedPartition = batch.TopicPartition.Partition;
 
@@ -914,9 +919,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             ArrayPool<ReadyBatch>.Shared.Return(pending.Batches, clearArray: true);
         }
-
-        // Compact the list
-        _pendingResponses.RemoveRange(writeIndex, _pendingResponses.Count - writeIndex);
+        }
+        finally
+        {
+            // CRITICAL: Always compact the list, even if an exception occurred mid-processing.
+            // Without this, already-processed responses (whose Batches arrays were returned to the
+            // pool with clearArray:true) would be re-processed on the next call, causing
+            // NullReferenceException on the cleared batch slots — creating a self-perpetuating
+            // error loop that blocks the entire producer pipeline.
+            _pendingResponses.RemoveRange(writeIndex, _pendingResponses.Count - writeIndex);
+        }
     }
 
     /// <summary>
