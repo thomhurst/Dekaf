@@ -230,13 +230,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 if (task.IsFaulted || task.IsCanceled)
                 {
-                    var b = (ReadyBatch)state!;
-                    // Can't use FailEnqueuedBatch (instance method), inline the cleanup
+                    var (sender, b) = ((BrokerSender, ReadyBatch))state!;
                     try { b.Fail(task.Exception?.InnerException ?? new OperationCanceledException()); }
+                    catch { /* Observe */ }
+                    // Must call CleanupBatch to release memory, return the batch to the pool,
+                    // and decrement _inFlightBatchCount. Without this, FlushAsync hangs forever
+                    // waiting for _inFlightBatchCount to reach zero.
+                    try { sender.CleanupBatch(b); }
                     catch { /* Observe */ }
                 }
             },
-            batch,
+            (this, batch),
             CancellationToken.None,
             TaskContinuationOptions.NotOnRanToCompletion,
             TaskScheduler.Default);
@@ -515,25 +519,48 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         reusableWaitTasks.Add(responseSignal.Task);
                     }
 
-                    // Calculate earliest backoff from carry-over
+                    // Calculate earliest backoff and delivery deadline from carry-over
                     if (newCarryOver.Count > 0)
                     {
                         var earliestBackoff = long.MaxValue;
+                        var earliestDeadlineTicks = long.MaxValue;
+                        var now = Stopwatch.GetTimestamp();
+
                         for (var i = 0; i < newCarryOver.Count; i++)
                         {
                             if (newCarryOver[i].RetryNotBefore > 0 && newCarryOver[i].RetryNotBefore < earliestBackoff)
                                 earliestBackoff = newCarryOver[i].RetryNotBefore;
+
+                            var deadlineTicks = newCarryOver[i].StopwatchCreatedTicks +
+                                (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+                            if (deadlineTicks < earliestDeadlineTicks)
+                                earliestDeadlineTicks = deadlineTicks;
                         }
 
                         if (earliestBackoff < long.MaxValue)
                         {
-                            var delayTicks = earliestBackoff - Stopwatch.GetTimestamp();
+                            var delayTicks = earliestBackoff - now;
                             if (delayTicks > 0)
                             {
                                 var delayMs = (int)(delayTicks * 1000.0 / Stopwatch.Frequency);
                                 reusableWaitTasks.Add(Task.Delay(Math.Max(1, delayMs), cancellationToken));
                             }
                             // else: backoff already elapsed, will be processed next iteration
+                        }
+
+                        // Delivery deadline timer: ensures muted batches are eventually expired
+                        // even when no other wake-up signal fires. Without this, carry-over with
+                        // only muted (non-retry) batches would wait indefinitely — no backoff
+                        // timer, response signal, or channel data fires the WhenAny, so
+                        // CoalesceBatch's delivery deadline check is never reached.
+                        if (earliestDeadlineTicks < long.MaxValue)
+                        {
+                            var delayTicks = earliestDeadlineTicks - now;
+                            if (delayTicks > 0)
+                            {
+                                var delayMs = (int)(delayTicks * 1000.0 / Stopwatch.Frequency);
+                                reusableWaitTasks.Add(Task.Delay(Math.Max(1, delayMs), cancellationToken));
+                            }
                         }
                     }
 
