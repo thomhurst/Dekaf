@@ -13,6 +13,7 @@ namespace Dekaf.Tests.Integration;
 public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 {
     private KafkaContainer? _container;
+    protected KafkaContainer? ContainerInstance => _container;
     private KafkaContainer Container => _container ??= new KafkaBuilder(ContainerName)
         .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")     // Limit JVM heap for CI runners
         .WithEnvironment("KAFKA_LOG_RETENTION_MS", "30000")           // Delete segments after 30s
