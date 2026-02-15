@@ -420,49 +420,41 @@ public sealed partial class KafkaConnection : IKafkaConnection
             PooledResponseBuffer pooledBuffer;
             if (!cancellationToken.CanBeCanceled)
             {
-                var timeoutCts = _timeoutCtsPool.Rent();
+                using var timeoutCts = _timeoutCtsPool.Rent();
+                timeoutCts.CancelAfter(_options.RequestTimeout);
+                pending.RegisterCancellation(timeoutCts.Token);
+
                 try
                 {
-                    timeoutCts.CancelAfter(_options.RequestTimeout);
-                    pending.RegisterCancellation(timeoutCts.Token);
-
-                    try
-                    {
-                        pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
-                    {
-                        throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
-                    }
+                    pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+                {
+                    throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
                 }
                 finally
                 {
                     pending.DisposeRegistration();
-                    _timeoutCtsPool.Return(timeoutCts);
                 }
             }
             else
             {
-                var timeoutCts = _timeoutCtsPool.Rent();
+                using var timeoutCts = _timeoutCtsPool.Rent();
+                timeoutCts.CancelAfter(_options.RequestTimeout);
+                using var reg = cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts);
+                pending.RegisterCancellation(timeoutCts.Token);
+
                 try
                 {
-                    timeoutCts.CancelAfter(_options.RequestTimeout);
-                    using var reg = cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts);
-                    pending.RegisterCancellation(timeoutCts.Token);
-
-                    try
-                    {
-                        pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                    {
-                        throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
-                    }
+                    pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
                 }
                 finally
                 {
                     pending.DisposeRegistration();
-                    _timeoutCtsPool.Return(timeoutCts);
                 }
             }
 
@@ -581,35 +573,28 @@ public sealed partial class KafkaConnection : IKafkaConnection
         _writer.Advance(4 + totalSize);
 
         // Apply RequestTimeout to flush operation using pooled CTS
-        var timeoutCts = _timeoutCtsPool.Rent();
+        using var timeoutCts = _timeoutCtsPool.Rent();
+        timeoutCts.CancelAfter(_options.RequestTimeout);
+        using var reg = cancellationToken.CanBeCanceled
+            ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
+            : default;
+
+        FlushResult result;
         try
         {
-            timeoutCts.CancelAfter(_options.RequestTimeout);
-            using var reg = cancellationToken.CanBeCanceled
-                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
-                : default;
-
-            FlushResult result;
-            try
-            {
-                result = await _writer.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-            {
-                LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
-
-                throw new KafkaException(
-                    $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
-            }
-
-            if (result.IsCompleted || result.IsCanceled)
-            {
-                throw new IOException("Connection closed while writing");
-            }
+            result = await _writer.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
         }
-        finally
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            _timeoutCtsPool.Return(timeoutCts);
+            LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
+
+            throw new KafkaException(
+                $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
+        }
+
+        if (result.IsCompleted || result.IsCanceled)
+        {
+            throw new IOException("Connection closed while writing");
         }
     }
 
@@ -625,64 +610,57 @@ public sealed partial class KafkaConnection : IKafkaConnection
             while (!cancellationToken.IsCancellationRequested)
             {
                 // Apply RequestTimeout to each read operation using pooled CTS
-                var timeoutCts = _timeoutCtsPool.Rent();
+                using var timeoutCts = _timeoutCtsPool.Rent();
+                ReadResult result;
                 try
                 {
-                    ReadResult result;
-                    try
+                    timeoutCts.CancelAfter(_options.RequestTimeout);
+                    using var reg = cancellationToken.CanBeCanceled
+                        ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
+                        : default;
+                    result = await _reader.ReadAsync(timeoutCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                {
+                    LogReceiveTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
+
+                    // Mark connection as failed to trigger reconnection
+                    _disposed = true;
+
+                    throw new KafkaException(
+                        $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
+                }
+
+                var buffer = result.Buffer;
+
+                LogReceivedBytes(buffer.Length, _host, _port);
+
+                while (TryReadResponse(ref buffer, out var correlationId, out var responseData))
+                {
+                    LogReceivedResponse(correlationId, responseData.Length);
+
+                    if (_pendingRequests.TryGetValue(correlationId, out var pending))
                     {
-                        timeoutCts.CancelAfter(_options.RequestTimeout);
-                        using var reg = cancellationToken.CanBeCanceled
-                            ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
-                            : default;
-                        result = await _reader.ReadAsync(timeoutCts.Token).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                    {
-                        LogReceiveTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
-
-                        // Mark connection as failed to trigger reconnection
-                        _disposed = true;
-
-                        throw new KafkaException(
-                            $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
-                    }
-
-                    var buffer = result.Buffer;
-
-                    LogReceivedBytes(buffer.Length, _host, _port);
-
-                    while (TryReadResponse(ref buffer, out var correlationId, out var responseData))
-                    {
-                        LogReceivedResponse(correlationId, responseData.Length);
-
-                        if (_pendingRequests.TryGetValue(correlationId, out var pending))
+                        if (!pending.TryComplete(responseData))
                         {
-                            if (!pending.TryComplete(responseData))
-                            {
-                                // Request was already cancelled/failed - dispose the buffer
-                                responseData.Dispose();
-                            }
-                        }
-                        else
-                        {
-                            LogUnknownCorrelationId(correlationId);
-                            // No pending request - dispose the buffer
+                            // Request was already cancelled/failed - dispose the buffer
                             responseData.Dispose();
                         }
                     }
-
-                    _reader.AdvanceTo(buffer.Start, buffer.End);
-
-                    if (result.IsCompleted)
+                    else
                     {
-                        LogReceiveLoopCompleted(_host, _port);
-                        break;
+                        LogUnknownCorrelationId(correlationId);
+                        // No pending request - dispose the buffer
+                        responseData.Dispose();
                     }
                 }
-                finally
+
+                _reader.AdvanceTo(buffer.Start, buffer.End);
+
+                if (result.IsCompleted)
                 {
-                    _timeoutCtsPool.Return(timeoutCts);
+                    LogReceiveLoopCompleted(_host, _port);
+                    break;
                 }
             }
         }
