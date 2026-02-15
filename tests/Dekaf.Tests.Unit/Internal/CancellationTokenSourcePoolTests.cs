@@ -18,28 +18,28 @@ public class CancellationTokenSourcePoolTests
     }
 
     [Test]
-    public async Task Dispose_ReturnsToPool_WhenNotCancelled()
+    public async Task Return_AddsToPool_WhenNotCancelled()
     {
         var pool = new CancellationTokenSourcePool();
         var cts = pool.Rent();
 
-        cts.Dispose();
+        pool.Return(cts);
 
         var cts2 = pool.Rent();
 
         await Assert.That(cts2).IsSameReferenceAs(cts);
 
-        cts2.Dispose();
+        pool.Return(cts2);
     }
 
     [Test]
-    public async Task Dispose_DoesNotReturnToPool_WhenCancelled()
+    public async Task Return_DisposesInsteadOfPooling_WhenCancelled()
     {
         var pool = new CancellationTokenSourcePool();
         var cts = pool.Rent();
         cts.Cancel();
 
-        cts.Dispose();
+        pool.Return(cts);
 
         var cts2 = pool.Rent();
 
@@ -58,7 +58,7 @@ public class CancellationTokenSourcePoolTests
 
         await Assert.That(cts.IsCancellationRequested).IsTrue();
 
-        cts.Dispose();
+        pool.Return(cts);
     }
 
     [Test]
@@ -82,7 +82,7 @@ public class CancellationTokenSourcePoolTests
         await Assert.That(completed).IsTrue();
         await Assert.That(cts.IsCancellationRequested).IsTrue();
 
-        cts.Dispose();
+        pool.Return(cts);
     }
 
     [Test]
@@ -93,7 +93,7 @@ public class CancellationTokenSourcePoolTests
 
         // Set timeout and return before it fires
         cts1.CancelAfter(TimeSpan.FromSeconds(10));
-        cts1.Dispose();
+        pool.Return(cts1);
 
         // Get same instance back
         var cts2 = pool.Rent();
@@ -102,7 +102,7 @@ public class CancellationTokenSourcePoolTests
         await Assert.That(cts1).IsSameReferenceAs(cts2);
         await Assert.That(cts2.IsCancellationRequested).IsFalse();
 
-        cts2.Dispose();
+        pool.Return(cts2);
     }
 
     [Test]
@@ -110,13 +110,13 @@ public class CancellationTokenSourcePoolTests
     {
         var pool = new CancellationTokenSourcePool();
 
-        // Add multiple instances to pool via Dispose (auto-return)
+        // Add multiple instances to pool
         var cts1 = pool.Rent();
         var cts2 = pool.Rent();
         var cts3 = pool.Rent();
-        cts1.Dispose();
-        cts2.Dispose();
-        cts3.Dispose();
+        pool.Return(cts1);
+        pool.Return(cts2);
+        pool.Return(cts3);
 
         pool.Clear();
 
@@ -130,60 +130,40 @@ public class CancellationTokenSourcePoolTests
     }
 
     [Test]
-    public async Task Rent_ReturnsPooledCancellationTokenSource()
+    public async Task Pool_LimitsSize()
     {
         var pool = new CancellationTokenSourcePool();
 
-        var cts = pool.Rent();
-
-        await Assert.That(cts).IsTypeOf<CancellationTokenSourcePool.PooledCancellationTokenSource>();
-
-        cts.Dispose();
-    }
-
-    [Test]
-    public async Task Dispose_IsIdempotent()
-    {
-        var pool = new CancellationTokenSourcePool();
-        var cts = pool.Rent();
-
-        // Multiple disposes should not throw and should only return to pool once
-        cts.Dispose();
-        cts.Dispose();
-        cts.Dispose();
-
-        // Only one instance should be in the pool (not three)
-        var cts2 = pool.Rent();
-        var cts3 = pool.Rent();
-        await Assert.That(cts2).IsSameReferenceAs(cts);
-        await Assert.That(cts3).IsNotSameReferenceAs(cts);
-
-        cts2.Dispose();
-        cts3.Dispose();
-    }
-
-    [Test]
-    public async Task UsingPattern_AutoReturnsToPool()
-    {
-        var pool = new CancellationTokenSourcePool();
-        CancellationTokenSourcePool.PooledCancellationTokenSource original;
-
-        // Simulate using var pattern
-        using (var cts = pool.Rent())
+        // Rent and return more than max pool size
+        var instances = new List<CancellationTokenSource>();
+        for (int i = 0; i < 20; i++)
         {
-            original = cts;
-            cts.CancelAfter(TimeSpan.FromSeconds(10));
+            instances.Add(pool.Rent());
         }
-        // cts.Dispose() called here, auto-returns to pool
 
-        var reused = pool.Rent();
-        await Assert.That(reused).IsSameReferenceAs(original);
+        foreach (var cts in instances)
+        {
+            pool.Return(cts);
+        }
 
-        reused.Dispose();
+        // Rent back and verify not all were pooled
+        var reused = new HashSet<CancellationTokenSource>();
+        for (int i = 0; i < 20; i++)
+        {
+            var cts = pool.Rent();
+            if (instances.Contains(cts))
+            {
+                reused.Add(cts);
+            }
+            pool.Return(cts);
+        }
+
+        // Some should have been pooled (not all 20)
+        await Assert.That(reused.Count).IsLessThanOrEqualTo(16);
     }
 
     [Test]
-    public async Task ConcurrentRentDispose_IsThreadSafe()
+    public async Task ConcurrentRentReturn_IsThreadSafe()
     {
         var pool = new CancellationTokenSourcePool();
         var tasks = new List<Task>();
@@ -198,7 +178,7 @@ public class CancellationTokenSourcePoolTests
                     for (int j = 0; j < 50; j++)
                     {
                         var cts = pool.Rent();
-                        cts.Dispose();
+                        pool.Return(cts);
                     }
                 }
                 catch (Exception ex)
