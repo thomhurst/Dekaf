@@ -342,6 +342,7 @@ public class RecordBatchTests
     }
 
     [Test]
+    [NotInParallel("ResponseParsingContext")]
     public async Task RecordBatch_WithPooledMemoryContext_MarksMemoryAsUsed()
     {
         var buffer = new ArrayBufferWriter<byte>();
@@ -387,6 +388,7 @@ public class RecordBatchTests
     }
 
     [Test]
+    [NotInParallel("ResponseParsingContext")]
     public async Task RecordBatch_WithoutPooledMemoryContext_CopiesData()
     {
         // Ensure no stale thread-local state from a prior test on the same thread
@@ -420,6 +422,7 @@ public class RecordBatchTests
     }
 
     [Test]
+    [NotInParallel("ResponseParsingContext")]
     public async Task ResponseParsingContext_TakePooledMemory_RequiresMemoryUsed()
     {
         var mockMemory = new MockPooledMemory(new byte[100]);
@@ -446,6 +449,7 @@ public class RecordBatchTests
     }
 
     [Test]
+    [NotInParallel("ResponseParsingContext")]
     public async Task ResponseParsingContext_Reset_ClearsState()
     {
         var mockMemory = new MockPooledMemory(new byte[100]);
