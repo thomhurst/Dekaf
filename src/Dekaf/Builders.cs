@@ -47,6 +47,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private List<IProducerInterceptor<TKey, TValue>>? _interceptors;
     private TimeSpan? _metadataMaxAge;
+    private int? _deliveryTimeoutMs;
+    private int? _requestTimeoutMs;
     private IRetryPolicy? _retryPolicy;
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
@@ -471,6 +473,37 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Sets the delivery timeout - the upper bound on the time to report success or failure
+    /// after a call to <c>ProduceAsync</c>. This limits the total time a message can spend
+    /// being retried. Equivalent to Kafka's <c>delivery.timeout.ms</c>.
+    /// Default is 120 seconds.
+    /// </summary>
+    /// <param name="timeout">The delivery timeout. Must be positive.</param>
+    public ProducerBuilder<TKey, TValue> WithDeliveryTimeout(TimeSpan timeout)
+    {
+        if (timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Delivery timeout must be positive");
+
+        _deliveryTimeoutMs = (int)timeout.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the request timeout for individual broker requests.
+    /// Equivalent to Kafka's <c>request.timeout.ms</c>.
+    /// Default is 30 seconds.
+    /// </summary>
+    /// <param name="timeout">The request timeout. Must be positive.</param>
+    public ProducerBuilder<TKey, TValue> WithRequestTimeout(TimeSpan timeout)
+    {
+        if (timeout <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Request timeout must be positive");
+
+        _requestTimeoutMs = (int)timeout.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
     /// Sets the application-level retry policy for produce operations.
     /// When set, retriable exceptions from <see cref="IKafkaProducer{TKey,TValue}.ProduceAsync"/>
     /// will be retried according to this policy.
@@ -536,6 +569,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             BatchSize = _batchSize,
             BufferMemory = _bufferMemory ?? 268435456, // 256 MB default
             MaxBlockMs = _maxBlockMs ?? 60000, // 60 seconds default
+            DeliveryTimeoutMs = _deliveryTimeoutMs ?? 120000,
+            RequestTimeoutMs = _requestTimeoutMs ?? 30000,
             TransactionalId = _transactionalId,
             TransactionTimeoutMs = _transactionTimeoutMs ?? 60000,
             CompressionType = _compressionType,
@@ -624,6 +659,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private int _fetchMaxWaitMs = 500;
     private int _maxPollRecords = 500;
     private int _sessionTimeoutMs = 45000;
+    private int? _heartbeatIntervalMs;
     private bool _useTls;
     private TlsConfig? _tlsConfig;
     private List<IConsumerInterceptor<TKey, TValue>>? _interceptors;
@@ -881,6 +917,23 @@ public sealed class ConsumerBuilder<TKey, TValue>
     public ConsumerBuilder<TKey, TValue> WithSessionTimeout(TimeSpan timeout)
     {
         _sessionTimeoutMs = (int)timeout.TotalMilliseconds;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the heartbeat interval for consumer group membership.
+    /// The consumer sends heartbeats to the group coordinator at this interval to indicate
+    /// it is alive. Must be lower than <see cref="WithSessionTimeout"/>.
+    /// Equivalent to Kafka's <c>heartbeat.interval.ms</c>.
+    /// Default is 3 seconds.
+    /// </summary>
+    /// <param name="interval">The heartbeat interval. Must be positive.</param>
+    public ConsumerBuilder<TKey, TValue> WithHeartbeatInterval(TimeSpan interval)
+    {
+        if (interval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(interval), "Heartbeat interval must be positive");
+
+        _heartbeatIntervalMs = (int)interval.TotalMilliseconds;
         return this;
     }
 
@@ -1233,6 +1286,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
             FetchMaxWaitMs = _fetchMaxWaitMs,
             MaxPollRecords = _maxPollRecords,
             SessionTimeoutMs = _sessionTimeoutMs,
+            HeartbeatIntervalMs = _heartbeatIntervalMs ?? 3000,
             PartitionAssignmentStrategy = _partitionAssignmentStrategy,
             CustomPartitionAssignmentStrategy = _customPartitionAssignmentStrategy,
             UseTls = _useTls,
