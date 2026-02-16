@@ -1,6 +1,8 @@
 using Dekaf.Consumer;
 using Dekaf.Producer;
 
+#pragma warning disable CA2016 // Timeout cancellation token is a safety net; internal operations have their own timeouts
+
 namespace Dekaf.Tests.Integration.RealWorld;
 
 /// <summary>
@@ -9,10 +11,12 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Common in event-driven architectures where different services need the same data.
 /// </summary>
 [Category("Messaging")]
+[ParallelLimiter<RealWorldMessagingLimit>]
+[Timeout(120_000)] // 2 minutes — prevents individual test hangs from blocking CI
 public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
-    public async Task FanOut_MultipleConsumerGroups_EachReceivesAllMessages()
+    public async Task FanOut_MultipleConsumerGroups_EachReceivesAllMessages(CancellationToken cancellationToken)
     {
         // Simulate: order-events consumed by billing, shipping, and notification services
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -56,7 +60,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     [Test]
-    public async Task FanOut_ConsumerGroupsAtDifferentSpeeds_IndependentProgress()
+    public async Task FanOut_ConsumerGroupsAtDifferentSpeeds_IndependentProgress(CancellationToken cancellationToken)
     {
         // Fast consumer reads all, slow consumer reads partial - they don't affect each other
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -131,7 +135,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     [Test]
-    public async Task FanOut_NewConsumerGroupJoinsLate_GetsAllHistoricalMessages()
+    public async Task FanOut_NewConsumerGroupJoinsLate_GetsAllHistoricalMessages(CancellationToken cancellationToken)
     {
         // A new service joins after events have already been produced
         var topic = await KafkaContainer.CreateTestTopicAsync();
@@ -177,7 +181,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     [Test]
-    public async Task FanOut_ConcurrentConsumerGroups_AllConsumeSimultaneously()
+    public async Task FanOut_ConcurrentConsumerGroups_AllConsumeSimultaneously(CancellationToken cancellationToken)
     {
         // Multiple consumer groups consuming the same topic at the same time
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);

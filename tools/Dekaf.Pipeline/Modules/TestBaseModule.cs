@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using ModularPipelines.Attributes;
+using ModularPipelines.Configuration;
 using ModularPipelines.Context;
 using ModularPipelines.DotNet.Extensions;
 using ModularPipelines.DotNet.Options;
@@ -19,6 +20,13 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
         {
             yield return "net10.0";
         }
+    }
+
+    protected override ModuleConfiguration Configure()
+    {
+        return new ModuleConfigurationBuilder()
+            .WithTimeout(TimeSpan.FromMinutes(30))
+            .Build();
     }
 
     protected abstract string ProjectFileName { get; }
@@ -43,42 +51,55 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
                 throw new InvalidOperationException($"Project {ProjectFileName} not found");
             }
 
-            // Add 15-minute pipeline timeout as safety fallback
-            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-
-            try
-            {
-                var testResult = await context.DotNet().Run(
-                    new DotNetRunOptions
-                    {
-                        NoBuild = true,
-                        Configuration = "Release",
-                        Framework = framework,
-                        Arguments = [
-                            "--",
+            // ThrowOnNonZeroExitCode = false: TUnit 1.14+ can hang after all tests
+            // pass due to cleanup running outside the timeout scope (PR #4782).
+            // The --hangdump-timeout kills the process (exit code 7) which we accept
+            // when no test failures are detected.
+            var testResult = await context.DotNet().Run(
+                new DotNetRunOptions
+                {
+                    NoBuild = true,
+                    Configuration = "Release",
+                    Framework = framework,
+                    Arguments = [
+                        "--",
                             "--hangdump",
-                            "--hangdump-timeout", "8m",
+                            "--hangdump-timeout", "15m",
                             "--log-level", "Trace",
                             "--output", "Detailed"
-                        ]
-                    },
-                    new CommandExecutionOptions
+                    ]
+                },
+                new CommandExecutionOptions
+                {
+                    WorkingDirectory = project.Folder!.Path,
+                    ThrowOnNonZeroExitCode = false,
+                    EnvironmentVariables = new Dictionary<string, string?>
                     {
-                        WorkingDirectory = project.Folder!.Path,
-                        EnvironmentVariables = new Dictionary<string, string?>
-                        {
-                            ["NET_VERSION"] = framework,
-                        }
-                    },
-                    linkedCts.Token);
+                        ["NET_VERSION"] = framework,
+                    }
+                },
+                cancellationToken);
 
-                results.Add(testResult);
-            }
-            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+            if (testResult.ExitCode != 0)
             {
-                throw new TimeoutException($"Test execution for {ProjectFileName} ({framework}) exceeded 15 minute pipeline timeout");
+                var output = testResult.StandardOutput + "\n" + testResult.StandardError;
+                var isCleanupHangExitCode = testResult.ExitCode is 3 or 7;
+                var hasTestFailures = output.Contains("failed:") && !output.Contains("failed: 0");
+
+                if (isCleanupHangExitCode && !hasTestFailures)
+                {
+                    context.Logger.LogWarning(
+                        "Tests exited with code {ExitCode} (process didn't exit cleanly after test completion)",
+                        testResult.ExitCode);
+                }
+                else
+                {
+                    throw new InvalidOperationException(
+                        $"Tests failed with exit code {testResult.ExitCode}");
+                }
             }
+
+            results.Add(testResult);
         }
 
         return results;

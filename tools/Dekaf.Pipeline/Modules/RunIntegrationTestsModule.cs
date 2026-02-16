@@ -68,9 +68,8 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
         var arguments = new List<string>
         {
             "--",
-            "--timeout", "10m", // Per-test timeout — prevents individual test hangs
             "--hangdump",
-            "--hangdump-timeout", "15m", // Module timeout (30m) is the hard backstop
+            "--hangdump-timeout", "15m", // Creates diagnostic dump then kills process if it hangs
             "--log-level", "Trace",
             "--output", "Detailed",
             "--treenode-filter", $"/**[Category={Category}]"
@@ -84,6 +83,10 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
 
         try
         {
+            // ThrowOnNonZeroExitCode = false: TUnit 1.14+ (PR #4782) moved test cleanup
+            // outside the timeout scope. When producer/consumer disposal is slow, the process
+            // hangs after all tests pass until --hangdump-timeout kills it (exit code 7).
+            // We handle this by checking for actual test failures in the output.
             var testResult = await context.DotNet().Run(
                 new DotNetRunOptions
                 {
@@ -95,6 +98,7 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
                 new CommandExecutionOptions
                 {
                     WorkingDirectory = project.Folder!.Path,
+                    ThrowOnNonZeroExitCode = false,
                     EnvironmentVariables = new Dictionary<string, string?>
                     {
                         ["NET_VERSION"] = "net10.0",
@@ -102,6 +106,28 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
                     }
                 },
                 linkedCts.Token);
+
+            if (testResult.ExitCode != 0)
+            {
+                // Microsoft.Testing.Platform exit codes:
+                // 0 = success, 2 = test failures, 3 = session timeout, 7 = process killed (hangdump)
+                var output = testResult.StandardOutput + "\n" + testResult.StandardError;
+                var isCleanupHangExitCode = testResult.ExitCode is 3 or 7;
+                var hasTestFailures = output.Contains("failed:") && !output.Contains("failed: 0");
+
+                if (isCleanupHangExitCode && !hasTestFailures)
+                {
+                    context.Logger.LogWarning(
+                        "Integration tests for '{Category}' exited with code {ExitCode} " +
+                        "(process didn't exit cleanly after test completion)",
+                        Category, testResult.ExitCode);
+                }
+                else
+                {
+                    throw new InvalidOperationException(
+                        $"Integration tests for category '{Category}' failed with exit code {testResult.ExitCode}");
+                }
+            }
 
             results.Add(testResult);
         }

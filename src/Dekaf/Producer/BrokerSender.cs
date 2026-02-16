@@ -180,6 +180,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
+    /// Returns true if the send loop is still running. When false, this BrokerSender
+    /// should be replaced — its send loop has exited and it can no longer process batches.
+    /// </summary>
+    internal bool IsAlive => !_sendLoopTask.IsCompleted;
+
+    /// <summary>
     /// Enqueues a batch for sending to this broker.
     /// Fast path: TryWrite succeeds when the bounded channel has capacity.
     /// Returns a ValueTask that completes asynchronously when the channel is full,
@@ -228,15 +234,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _ = _batchChannel.Writer.WriteAsync(batch, _cts.Token).AsTask().ContinueWith(
             static (task, state) =>
             {
-                if (task.IsFaulted || task.IsCanceled)
-                {
-                    var b = (ReadyBatch)state!;
-                    // Can't use FailEnqueuedBatch (instance method), inline the cleanup
-                    try { b.Fail(task.Exception?.InnerException ?? new OperationCanceledException()); }
-                    catch { /* Observe */ }
-                }
+                var (sender, b) = ((BrokerSender, ReadyBatch))state!;
+                try { sender.FailEnqueuedBatch(b); }
+                catch { /* Observe - disposal may have already cleaned up */ }
             },
-            batch,
+            (this, batch),
             CancellationToken.None,
             TaskContinuationOptions.NotOnRanToCompletion,
             TaskScheduler.Default);
@@ -414,21 +416,29 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // 1. No carry-over: normal fast path — read freely for maximum throughput.
                 // 2. Carry-over was all muted (coalescedCount==0): read to find sendable batches
                 //    — this prevents the starvation livelock.
-                // When carry-over produced a coalesced batch, skip channel reads to prevent
-                // carry-over growth. Carry-over drains by 1 per iteration; reading more from
-                // the channel (duplicate-partition for single-partition workloads) would cause
-                // unbounded growth and O(n²) scanning.
+                // When carry-over produced a coalesced batch, read at most 1 from channel
+                // to prevent carry-over growth while still draining the channel gradually.
+                // Without this limit, duplicate-partition batches (single-partition workloads)
+                // would cause unbounded carry-over growth and O(n²) scanning.
+                // With the limit of 1, carry-over growth is bounded by channel capacity
+                // (MaxInFlightRequestsPerConnection × 2) and drains naturally.
                 // No sorting needed — retry batches no longer come through the channel.
-                if (!hadCarryOver || coalescedCount == 0)
                 {
+                    var channelReadLimit = (hadCarryOver && coalescedCount > 0) ? 1 : maxCoalesce;
                     var channelReads = 0;
-                    while (channelReads < maxCoalesce && channelReader.TryRead(out var channelBatch))
+                    while (channelReads < channelReadLimit && channelReader.TryRead(out var channelBatch))
                     {
                         channelReads++;
                         CoalesceBatch(channelBatch, coalescedBatches, ref coalescedCount,
                             coalescedPartitions, newCarryOver);
                     }
                 }
+
+                // Sweep carry-over for expired batches. This prevents muted batches
+                // from sitting indefinitely while their partition's retry cycles, and
+                // ensures channel batches that were read above are deadline-checked.
+                if (newCarryOver.Count > 0)
+                    SweepExpiredCarryOver(newCarryOver);
 
                 // Send or wait
                 if (coalescedCount > 0)
@@ -501,25 +511,46 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         reusableWaitTasks.Add(responseSignal.Task);
                     }
 
-                    // Calculate earliest backoff from carry-over
+                    // Calculate earliest backoff and delivery deadline from carry-over
                     if (newCarryOver.Count > 0)
                     {
                         var earliestBackoff = long.MaxValue;
+                        var earliestDeadlineTicks = long.MaxValue;
+                        var now = Stopwatch.GetTimestamp();
+
                         for (var i = 0; i < newCarryOver.Count; i++)
                         {
                             if (newCarryOver[i].RetryNotBefore > 0 && newCarryOver[i].RetryNotBefore < earliestBackoff)
                                 earliestBackoff = newCarryOver[i].RetryNotBefore;
+
+                            var deadlineTicks = newCarryOver[i].StopwatchCreatedTicks +
+                                (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+                            if (deadlineTicks < earliestDeadlineTicks)
+                                earliestDeadlineTicks = deadlineTicks;
                         }
 
                         if (earliestBackoff < long.MaxValue)
                         {
-                            var delayTicks = earliestBackoff - Stopwatch.GetTimestamp();
+                            var delayTicks = earliestBackoff - now;
                             if (delayTicks > 0)
                             {
                                 var delayMs = (int)(delayTicks * 1000.0 / Stopwatch.Frequency);
                                 reusableWaitTasks.Add(Task.Delay(Math.Max(1, delayMs), cancellationToken));
                             }
                             // else: backoff already elapsed, will be processed next iteration
+                        }
+
+                        // Delivery deadline timer — ensures the loop wakes to expire
+                        // timed-out batches even when no other signals fire.
+                        if (earliestDeadlineTicks < long.MaxValue)
+                        {
+                            var delayTicks = earliestDeadlineTicks - now;
+                            if (delayTicks > 0)
+                            {
+                                var delayMs = (int)(delayTicks * 1000.0 / Stopwatch.Frequency);
+                                reusableWaitTasks.Add(Task.Delay(Math.Max(1, delayMs), cancellationToken));
+                            }
+                            // else: deadline already passed, will be swept next iteration
                         }
                     }
 
@@ -544,6 +575,41 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
         finally
         {
+            // Complete the channel FIRST to prevent KafkaProducer.SenderLoopAsync from
+            // writing new batches after we drain. Without this, EnqueueAsync blocks forever
+            // on the bounded channel because nobody is reading from it, causing producer hangs.
+            _batchChannel.Writer.TryComplete();
+
+            // Fail batches awaiting retry (set by SendCoalescedAsync catch blocks).
+            // Without this cleanup, completion sources in these batches are never resolved.
+            for (var i = 0; i < _sendFailedRetries.Count; i++)
+            {
+                CompleteInflightEntry(_sendFailedRetries[i]);
+                try { _sendFailedRetries[i].Fail(new ObjectDisposedException(nameof(BrokerSender))); }
+                catch { /* Observe */ }
+                CleanupBatch(_sendFailedRetries[i]);
+            }
+            _sendFailedRetries.Clear();
+
+            // Fail pending responses — the send loop won't process them anymore.
+            // Batches in pending responses have completion sources that callers are awaiting.
+            for (var i = 0; i < _pendingResponses.Count; i++)
+            {
+                var pr = _pendingResponses[i];
+                for (var j = 0; j < pr.Count; j++)
+                {
+                    if (pr.Batches[j] is not null)
+                    {
+                        CompleteInflightEntry(pr.Batches[j]);
+                        try { pr.Batches[j].Fail(new ObjectDisposedException(nameof(BrokerSender))); }
+                        catch { /* Observe */ }
+                        CleanupBatch(pr.Batches[j]);
+                    }
+                }
+                ArrayPool<ReadyBatch>.Shared.Return(pr.Batches, clearArray: true);
+            }
+            _pendingResponses.Clear();
+
             // Fail any carry-over batches that couldn't be sent.
             // Drain both swappable lists — if an exception occurred mid-iteration,
             // batches may be in either list depending on timing.
@@ -1240,6 +1306,41 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Interlocked.Exchange(ref _inFlightSlotAvailable, null)?.TrySetResult();
     }
 
+    /// <summary>
+    /// Sweeps carry-over for batches that have exceeded their delivery deadline.
+    /// Prevents muted batches from sitting indefinitely while their partition's retry cycles.
+    /// Called from the single-threaded send loop after coalescing.
+    /// </summary>
+    private void SweepExpiredCarryOver(List<ReadyBatch> carryOver)
+    {
+        var now = Stopwatch.GetTimestamp();
+        for (var i = carryOver.Count - 1; i >= 0; i--)
+        {
+            var batch = carryOver[i];
+            var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
+                (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+
+            if (now >= deliveryDeadlineTicks)
+            {
+                // Unmute partition for retry batches (they caused the mute).
+                // Non-retry muted batches: don't unmute — the retry batch for this
+                // partition may still be in play and will unmute on its own expiry.
+                if (batch.IsRetry)
+                {
+                    batch.IsRetry = false;
+                    batch.RetryNotBefore = 0;
+                    UnmutePartition(batch.TopicPartition);
+                }
+
+                LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic,
+                    batch.TopicPartition.Partition);
+                FailAndCleanupBatch(batch, new TimeoutException(
+                    $"Delivery timeout exceeded for {batch.TopicPartition}"));
+                carryOver.RemoveAt(i);
+            }
+        }
+    }
+
     private void FailCarryOverBatches(List<ReadyBatch> carryOver)
     {
         for (var i = 0; i < carryOver.Count; i++)
@@ -1290,8 +1391,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         LogDisposing(_brokerId);
 
-        // Complete channel — send loop will see channel completed and exit
-        _batchChannel.Writer.Complete();
+        // Complete channel — send loop will see channel completed and exit.
+        // Use TryComplete: the send loop's finally block may have already completed it.
+        _batchChannel.Writer.TryComplete();
 
         // Cancel CTS FIRST so WaitToReadAsync is interrupted promptly.
         await _cts.CancelAsync().ConfigureAwait(false);
