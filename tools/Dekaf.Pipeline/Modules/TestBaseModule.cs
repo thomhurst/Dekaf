@@ -51,6 +51,10 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
                 throw new InvalidOperationException($"Project {ProjectFileName} not found");
             }
 
+            // ThrowOnNonZeroExitCode = false: TUnit 1.14+ can hang after all tests
+            // pass due to cleanup running outside the timeout scope (PR #4782).
+            // The --hangdump-timeout kills the process (exit code 7) which we accept
+            // when no test failures are detected.
             var testResult = await context.DotNet().Run(
                 new DotNetRunOptions
                 {
@@ -68,12 +72,32 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
                 new CommandExecutionOptions
                 {
                     WorkingDirectory = project.Folder!.Path,
+                    ThrowOnNonZeroExitCode = false,
                     EnvironmentVariables = new Dictionary<string, string?>
                     {
                         ["NET_VERSION"] = framework,
                     }
                 },
                 cancellationToken);
+
+            if (testResult.ExitCode != 0)
+            {
+                var output = testResult.StandardOutput + "\n" + testResult.StandardError;
+                var isCleanupHangExitCode = testResult.ExitCode is 3 or 7;
+                var hasTestFailures = output.Contains("failed:") && !output.Contains("failed: 0");
+
+                if (isCleanupHangExitCode && !hasTestFailures)
+                {
+                    context.Logger.LogWarning(
+                        "Tests exited with code {ExitCode} (process didn't exit cleanly after test completion)",
+                        testResult.ExitCode);
+                }
+                else
+                {
+                    throw new InvalidOperationException(
+                        $"Tests failed with exit code {testResult.ExitCode}");
+                }
+            }
 
             results.Add(testResult);
         }
