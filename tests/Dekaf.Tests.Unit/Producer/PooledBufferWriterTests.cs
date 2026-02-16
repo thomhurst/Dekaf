@@ -142,17 +142,12 @@ public class PooledBufferWriterTests
         // Get the final data
         var result = writer.ToPooledMemory();
 
-        var length = result.Memory.Length;
-        var byte0 = result.Memory.Span[0];
-        var byte1 = result.Memory.Span[1];
-        var byte2 = result.Memory.Span[2];
+        await Assert.That(result.Memory.Length).IsEqualTo(3);
+        await Assert.That(result.Memory.Span[0]).IsEqualTo((byte)1);
+        await Assert.That(result.Memory.Span[1]).IsEqualTo((byte)2);
+        await Assert.That(result.Memory.Span[2]).IsEqualTo((byte)3);
 
         result.Return();
-
-        await Assert.That(length).IsEqualTo(3);
-        await Assert.That(byte0).IsEqualTo((byte)1);
-        await Assert.That(byte1).IsEqualTo((byte)2);
-        await Assert.That(byte2).IsEqualTo((byte)3);
     }
 
     [Test]
