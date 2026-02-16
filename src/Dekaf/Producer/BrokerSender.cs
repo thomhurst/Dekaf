@@ -180,6 +180,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
+    /// Returns true if the send loop is still running. When false, this BrokerSender
+    /// should be replaced — its send loop has exited and it can no longer process batches.
+    /// </summary>
+    internal bool IsAlive => !_sendLoopTask.IsCompleted;
+
+    /// <summary>
     /// Enqueues a batch for sending to this broker.
     /// Fast path: TryWrite succeeds when the bounded channel has capacity.
     /// Returns a ValueTask that completes asynchronously when the channel is full,
@@ -569,6 +575,41 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
         finally
         {
+            // Complete the channel FIRST to prevent KafkaProducer.SenderLoopAsync from
+            // writing new batches after we drain. Without this, EnqueueAsync blocks forever
+            // on the bounded channel because nobody is reading from it, causing producer hangs.
+            _batchChannel.Writer.TryComplete();
+
+            // Fail batches awaiting retry (set by SendCoalescedAsync catch blocks).
+            // Without this cleanup, completion sources in these batches are never resolved.
+            for (var i = 0; i < _sendFailedRetries.Count; i++)
+            {
+                CompleteInflightEntry(_sendFailedRetries[i]);
+                try { _sendFailedRetries[i].Fail(new ObjectDisposedException(nameof(BrokerSender))); }
+                catch { /* Observe */ }
+                CleanupBatch(_sendFailedRetries[i]);
+            }
+            _sendFailedRetries.Clear();
+
+            // Fail pending responses — the send loop won't process them anymore.
+            // Batches in pending responses have completion sources that callers are awaiting.
+            for (var i = 0; i < _pendingResponses.Count; i++)
+            {
+                var pr = _pendingResponses[i];
+                for (var j = 0; j < pr.Count; j++)
+                {
+                    if (pr.Batches[j] is not null)
+                    {
+                        CompleteInflightEntry(pr.Batches[j]);
+                        try { pr.Batches[j].Fail(new ObjectDisposedException(nameof(BrokerSender))); }
+                        catch { /* Observe */ }
+                        CleanupBatch(pr.Batches[j]);
+                    }
+                }
+                ArrayPool<ReadyBatch>.Shared.Return(pr.Batches, clearArray: true);
+            }
+            _pendingResponses.Clear();
+
             // Fail any carry-over batches that couldn't be sent.
             // Drain both swappable lists — if an exception occurred mid-iteration,
             // batches may be in either list depending on timing.
@@ -1350,8 +1391,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         LogDisposing(_brokerId);
 
-        // Complete channel — send loop will see channel completed and exit
-        _batchChannel.Writer.Complete();
+        // Complete channel — send loop will see channel completed and exit.
+        // Use TryComplete: the send loop's finally block may have already completed it.
+        _batchChannel.Writer.TryComplete();
 
         // Cancel CTS FIRST so WaitToReadAsync is interrupted promptly.
         await _cts.CancelAsync().ConfigureAwait(false);

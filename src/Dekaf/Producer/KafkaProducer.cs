@@ -2483,15 +2483,43 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// <summary>
     /// Gets or creates a BrokerSender for the given broker ID.
     /// Each broker gets a dedicated sender with its own channel and single-threaded send loop.
+    /// If the existing BrokerSender's send loop has exited, replaces it with a fresh one.
     /// </summary>
     private BrokerSender GetOrCreateBrokerSender(int brokerId)
+    {
+        var sender = _brokerSenders.GetOrAdd(brokerId, CreateBrokerSender);
+
+        if (sender.IsAlive)
+            return sender;
+
+        // Send loop exited — replace with a fresh BrokerSender.
+        // This handles transient connection errors that killed the send loop.
+        LogBrokerSenderReplaced(brokerId);
+        var replacement = CreateBrokerSender(brokerId);
+        if (_brokerSenders.TryUpdate(brokerId, replacement, sender))
+        {
+            // Dispose old sender asynchronously (its finally block already cleaned up).
+            _ = sender.DisposeAsync().AsTask().ContinueWith(static (t, _) =>
+            {
+                // Observe any disposal exceptions to prevent UnobservedTaskException
+                _ = t.Exception;
+            }, null, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+            return replacement;
+        }
+
+        // Another thread replaced it concurrently — dispose ours, use theirs
+        _ = replacement.DisposeAsync();
+        return _brokerSenders.GetOrAdd(brokerId, CreateBrokerSender);
+    }
+
+    private BrokerSender CreateBrokerSender(int brokerId)
     {
         // Epoch bump recovery is only for non-transactional producers.
         // Transactional producers manage epochs via InitTransactionsAsync.
         var isNonTransactional = _options.TransactionalId is null;
 
-        return _brokerSenders.GetOrAdd(brokerId, id => new BrokerSender(
-            id,
+        return new BrokerSender(
+            brokerId,
             _connectionPool,
             _metadataManager,
             _accumulator,
@@ -2507,7 +2535,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             getCurrentEpoch: isNonTransactional ? () => _producerEpoch : null,
             RerouteBatchToCurrentLeader,
             _interceptors is not null ? InvokeOnAcknowledgementForBatch : null,
-            _logger));
+            _logger);
     }
 
     /// <summary>
@@ -3155,6 +3183,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Failed to dispose broker sender")]
     private partial void LogDisposeBrokerSenderFailed(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender for broker {BrokerId} send loop exited — replacing with fresh sender")]
+    private partial void LogBrokerSenderReplaced(int brokerId);
 
     [LoggerMessage(Level = LogLevel.Trace, Message = "Batch routed: {Topic}-{Partition} -> broker {BrokerId}")]
     private partial void LogBatchRouted(string topic, int partition, int brokerId);
