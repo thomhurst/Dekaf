@@ -68,10 +68,12 @@ public class NetworkPartitionKafkaContainer : KafkaTestContainer
         var client = GetDockerClient();
         var containerId = GetContainerId();
         Console.WriteLine("[NetworkPartitionKafkaContainer] Stopping broker (SIGKILL)...");
-        await client.Containers.StopContainerAsync(containerId, new ContainerStopParameters
+        await client.Containers.KillContainerAsync(containerId, new ContainerKillParameters
         {
-            WaitBeforeKillSeconds = 0
+            Signal = "SIGKILL"
         }).ConfigureAwait(false);
+        // Wait for the container to fully stop
+        await client.Containers.WaitContainerAsync(containerId).ConfigureAwait(false);
         Console.WriteLine("[NetworkPartitionKafkaContainer] Broker stopped.");
     }
 
@@ -85,9 +87,13 @@ public class NetworkPartitionKafkaContainer : KafkaTestContainer
         var containerId = GetContainerId();
         Console.WriteLine("[NetworkPartitionKafkaContainer] Starting broker...");
         await client.Containers.StartContainerAsync(containerId, new ContainerStartParameters()).ConfigureAwait(false);
+
+        // Verify the container is actually running before polling Kafka
+        await VerifyContainerRunningAsync(client, containerId).ConfigureAwait(false);
+
         // Broker cold-start after SIGKILL requires log recovery, which takes longer than initial startup
         // especially on CI runners with constrained resources
-        await WaitForKafkaAsync(maxAttempts: 60).ConfigureAwait(false);
+        await WaitForKafkaAsync(maxAttempts: 90).ConfigureAwait(false);
         Console.WriteLine("[NetworkPartitionKafkaContainer] Broker started and ready.");
     }
 
@@ -109,6 +115,36 @@ public class NetworkPartitionKafkaContainer : KafkaTestContainer
         {
             Console.WriteLine($"[NetworkPartitionKafkaContainer] Unexpected error during cleanup start: {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    private static async Task VerifyContainerRunningAsync(DockerClient client, string containerId)
+    {
+        // Poll container state for up to 10 seconds to confirm it's running
+        for (var i = 0; i < 10; i++)
+        {
+            var inspection = await client.Containers.InspectContainerAsync(containerId).ConfigureAwait(false);
+            var state = inspection.State;
+
+            if (state.Running)
+            {
+                Console.WriteLine("[NetworkPartitionKafkaContainer] Container is running.");
+                return;
+            }
+
+            if (state.Status is "exited" or "dead")
+            {
+                // Container started but exited immediately - get logs for diagnostics
+                Console.WriteLine($"[NetworkPartitionKafkaContainer] Container exited (status={state.Status}, exitCode={state.ExitCode}).");
+
+                // Try starting again - sometimes container exits on first start after kill
+                await client.Containers.StartContainerAsync(containerId, new ContainerStartParameters()).ConfigureAwait(false);
+                Console.WriteLine("[NetworkPartitionKafkaContainer] Retried container start.");
+            }
+
+            await Task.Delay(1000).ConfigureAwait(false);
+        }
+
+        throw new InvalidOperationException("Container failed to reach running state after start.");
     }
 
     private string GetContainerId()
