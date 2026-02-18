@@ -59,10 +59,9 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
         return address.TrimEnd('/');
     }
 
-    protected async Task WaitForKafkaAsync()
+    protected async Task WaitForKafkaAsync(int maxAttempts = 30)
     {
         Console.WriteLine("[KafkaTestContainer] Waiting for Kafka to be ready...");
-        const int maxAttempts = 30;
 
         // Parse host and port from host:port format
         var colonIndex = _bootstrapServers.LastIndexOf(':');

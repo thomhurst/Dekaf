@@ -85,7 +85,9 @@ public class NetworkPartitionKafkaContainer : KafkaTestContainer
         var containerId = GetContainerId();
         Console.WriteLine("[NetworkPartitionKafkaContainer] Starting broker...");
         await client.Containers.StartContainerAsync(containerId, new ContainerStartParameters()).ConfigureAwait(false);
-        await WaitForKafkaAsync().ConfigureAwait(false);
+        // Broker cold-start after SIGKILL requires log recovery, which takes longer than initial startup
+        // especially on CI runners with constrained resources
+        await WaitForKafkaAsync(maxAttempts: 60).ConfigureAwait(false);
         Console.WriteLine("[NetworkPartitionKafkaContainer] Broker started and ready.");
     }
 

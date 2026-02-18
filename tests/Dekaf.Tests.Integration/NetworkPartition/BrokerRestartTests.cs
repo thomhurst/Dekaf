@@ -10,6 +10,7 @@ namespace Dekaf.Tests.Integration.NetworkPartition;
 /// </summary>
 [Category("NetworkPartition")]
 [ClassDataSource<NetworkPartitionKafkaContainer>(Shared = SharedType.PerClass)]
+[NotInParallel(nameof(BrokerRestartTests))]
 public class BrokerRestartTests(NetworkPartitionKafkaContainer kafka)
 {
     [Test]
