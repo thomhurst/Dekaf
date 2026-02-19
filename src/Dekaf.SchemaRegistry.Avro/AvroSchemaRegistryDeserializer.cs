@@ -200,9 +200,8 @@ public sealed class AvroSchemaRegistryDeserializer<T> : IDeserializer<T>, IAsync
         if (!typeof(ISpecificRecord).IsAssignableFrom(typeof(T)))
             return null;
 
-        // Avro generated classes have a static _SCHEMA field
-        var schemaField = typeof(T).GetField("_SCHEMA",
-            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+        // Avro generated classes have a static _SCHEMA field (cached lookup)
+        var schemaField = AvroSchemaFieldCache.GetSchemaField(typeof(T));
 
         if (schemaField?.GetValue(null) is AvroSchema schema)
             return schema;
