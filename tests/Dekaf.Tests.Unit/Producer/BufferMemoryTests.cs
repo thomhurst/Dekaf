@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Diagnostics;
+using Dekaf.Errors;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -256,7 +257,7 @@ public class BufferMemoryTests
     }
 
     [Test]
-    public async Task BufferMemory_ThrowsTimeoutException_WhenExhausted()
+    public async Task BufferMemory_ThrowsKafkaTimeoutException_WhenExhausted()
     {
         // Arrange: Create producer with very small buffer and short timeout
         var options = new ProducerOptions
@@ -303,7 +304,7 @@ public class BufferMemoryTests
                     messageCount++;
                 }
             }
-            catch (TimeoutException)
+            catch (KafkaTimeoutException)
             {
                 timeoutThrown = true;
             }
@@ -355,7 +356,7 @@ public class BufferMemoryTests
                 var pooledKey = new PooledMemory(null, 0, isNull: true);
                 var pooledValue = new PooledMemory(largeValue, 2000);
 
-                var exception = await Assert.ThrowsAsync<TimeoutException>(async () =>
+                var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
                 {
                     accumulator.TryAppendFireAndForget(
                         "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -391,7 +392,7 @@ public class BufferMemoryTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            await Assert.ThrowsAsync<TimeoutException>(async () =>
+            await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
             {
                 accumulator.TryAppendFireAndForget(
                     "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -431,7 +432,7 @@ public class BufferMemoryTests
                     successCount++;
                 }
             }
-            catch (TimeoutException)
+            catch (KafkaTimeoutException)
             {
                 threwTimeout = true;
             }
