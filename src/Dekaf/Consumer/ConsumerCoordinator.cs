@@ -788,15 +788,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             PartitionAssignmentStrategy.Range => PartitionAssignors.Range,
             PartitionAssignmentStrategy.RoundRobin => PartitionAssignors.RoundRobin,
-            PartitionAssignmentStrategy.Sticky or PartitionAssignmentStrategy.CooperativeSticky => FallbackToRange(),
+            PartitionAssignmentStrategy.Sticky or PartitionAssignmentStrategy.CooperativeSticky =>
+                throw new NotSupportedException(
+                    $"The '{_options.PartitionAssignmentStrategy}' assignment strategy is not yet implemented. " +
+                    "Use PartitionAssignmentStrategy.Range or PartitionAssignmentStrategy.RoundRobin instead."),
             _ => PartitionAssignors.Range
         };
-    }
-
-    private IPartitionAssignmentStrategy FallbackToRange()
-    {
-        LogStickyFallbackToRange(_options.PartitionAssignmentStrategy);
-        return PartitionAssignors.Range;
     }
 
     private async ValueTask<SyncGroupRequestAssignment[]> ComputeAssignmentsAsync(
@@ -1122,9 +1119,6 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Coordinator disposing")]
     private partial void LogCoordinatorDisposing();
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "{Strategy} assignment strategy is not yet implemented, falling back to Range assignor")]
-    private partial void LogStickyFallbackToRange(PartitionAssignmentStrategy strategy);
 
     #endregion
 }
