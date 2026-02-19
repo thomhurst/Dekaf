@@ -14,6 +14,7 @@ namespace Dekaf.Tests.Integration.NetworkPartition;
 public class NetworkPartitionKafkaContainer : KafkaTestContainer
 {
     private DockerClient? _dockerClient;
+    private bool _startupScriptPatched;
 
     public override string ContainerName => "apache/kafka:3.9.1";
     public override int Version => 391;
@@ -65,6 +66,17 @@ public class NetworkPartitionKafkaContainer : KafkaTestContainer
     /// </summary>
     public async Task StopBrokerAsync()
     {
+        // Patch the startup script (once) to resolve the container IP dynamically.
+        // Must be done while the container is running (before kill).
+        // Testcontainers generates /testcontainers.sh with a hardcoded container IP in the
+        // BROKER listener. After docker kill + start, the container may get a different IP,
+        // causing KRaft controller quorum failure. This patched version resolves the IP at boot.
+        if (!_startupScriptPatched)
+        {
+            await PatchStartupScriptAsync().ConfigureAwait(false);
+            _startupScriptPatched = true;
+        }
+
         var client = GetDockerClient();
         var containerId = GetContainerId();
         Console.WriteLine("[NetworkPartitionKafkaContainer] Stopping broker (SIGKILL)...");
@@ -87,10 +99,6 @@ public class NetworkPartitionKafkaContainer : KafkaTestContainer
         var containerId = GetContainerId();
         Console.WriteLine("[NetworkPartitionKafkaContainer] Starting broker...");
         await client.Containers.StartContainerAsync(containerId, new ContainerStartParameters()).ConfigureAwait(false);
-
-        // Verify the container is actually running before polling Kafka
-        await VerifyContainerRunningAsync(client, containerId).ConfigureAwait(false);
-
         // Broker cold-start after SIGKILL requires log recovery, which takes longer than initial startup
         // especially on CI runners with constrained resources
         await WaitForKafkaAsync(maxAttempts: 90).ConfigureAwait(false);
@@ -117,34 +125,40 @@ public class NetworkPartitionKafkaContainer : KafkaTestContainer
         }
     }
 
-    private static async Task VerifyContainerRunningAsync(DockerClient client, string containerId)
+    /// <summary>
+    /// Rewrites /testcontainers.sh with dynamic IP resolution so it survives container restarts.
+    /// Must be called while the container is running (uses docker exec).
+    /// </summary>
+    private async Task PatchStartupScriptAsync()
     {
-        // Poll container state for up to 10 seconds to confirm it's running
-        for (var i = 0; i < 10; i++)
+        var container = ContainerInstance
+            ?? throw new InvalidOperationException("Container has not been initialized.");
+
+        var colonIndex = BootstrapServers.LastIndexOf(':');
+        var hostPort = BootstrapServers[(colonIndex + 1)..];
+
+        // Use a heredoc with a single-quoted delimiter to write the script literally
+        // (no shell expansion within the heredoc body).
+        // At runtime, bash will expand $(hostname -i ...) and ${CONTAINER_IP}.
+        var shellCommand = string.Join("\n",
+            "cat > /testcontainers.sh << 'ENDOFSCRIPT'",
+            "#!/bin/bash",
+            "CONTAINER_IP=$(hostname -i | awk '{print $1}')",
+            $"export KAFKA_ADVERTISED_LISTENERS=\"PLAINTEXT://127.0.0.1:{hostPort},BROKER://${{CONTAINER_IP}}:9093\"",
+            "/etc/kafka/docker/run",
+            "ENDOFSCRIPT",
+            "chmod 755 /testcontainers.sh");
+
+        var result = await container.ExecAsync(["sh", "-c", shellCommand]).ConfigureAwait(false);
+
+        if (result.ExitCode != 0)
         {
-            var inspection = await client.Containers.InspectContainerAsync(containerId).ConfigureAwait(false);
-            var state = inspection.State;
-
-            if (state.Running)
-            {
-                Console.WriteLine("[NetworkPartitionKafkaContainer] Container is running.");
-                return;
-            }
-
-            if (state.Status is "exited" or "dead")
-            {
-                // Container started but exited immediately - get logs for diagnostics
-                Console.WriteLine($"[NetworkPartitionKafkaContainer] Container exited (status={state.Status}, exitCode={state.ExitCode}).");
-
-                // Try starting again - sometimes container exits on first start after kill
-                await client.Containers.StartContainerAsync(containerId, new ContainerStartParameters()).ConfigureAwait(false);
-                Console.WriteLine("[NetworkPartitionKafkaContainer] Retried container start.");
-            }
-
-            await Task.Delay(1000).ConfigureAwait(false);
+            Console.WriteLine($"[NetworkPartitionKafkaContainer] Warning: Failed to patch startup script (exit {result.ExitCode}): {result.Stderr}");
         }
-
-        throw new InvalidOperationException("Container failed to reach running state after start.");
+        else
+        {
+            Console.WriteLine("[NetworkPartitionKafkaContainer] Patched startup script for restart support.");
+        }
     }
 
     private string GetContainerId()
