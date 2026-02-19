@@ -34,6 +34,60 @@ namespace Dekaf.Producer;
 ///
 /// All writes go through the send loop — there are no out-of-loop write paths.
 /// </summary>
+/// <remarks>
+/// <para><b>Thread model:</b></para>
+/// <para>
+/// The core of BrokerSender is the <see cref="SendLoopAsync"/> method, which runs on a single
+/// dedicated thread (Task). This send loop owns and exclusively accesses the following mutable state:
+/// <see cref="_pendingResponses"/>, <see cref="_sendFailedRetries"/>, carry-over batch lists,
+/// coalesced batch arrays, and <see cref="_pinnedConnection"/>. No locks are needed for these
+/// because they are only ever touched by the send loop thread.
+/// </para>
+/// <para>
+/// External threads (producer callers, thread pool continuations) interact with BrokerSender
+/// only through the bounded <see cref="_batchChannel"/> (lock-free channel) and through
+/// <c>Volatile</c>/<c>Interlocked</c> operations on shared signal fields. Specifically:
+/// </para>
+/// <list type="bullet">
+///   <item><description>
+///     <see cref="_inFlightCount"/>: Incremented by the send loop (single writer), decremented
+///     by <c>ContinueWith</c> callbacks on response tasks via <c>Interlocked.Decrement</c>.
+///   </description></item>
+///   <item><description>
+///     <see cref="_inFlightSlotAvailable"/> and <see cref="_responseReadySignal"/>: Written by the
+///     send loop via <c>Volatile.Write</c>, read and completed by continuations via
+///     <c>Interlocked.Exchange</c> + <c>TrySetResult</c>. The exchange-then-signal pattern
+///     ensures at-most-once signaling without locks.
+///   </description></item>
+///   <item><description>
+///     <see cref="_unmuteSignal"/>: Same exchange-then-signal pattern, triggered from
+///     <see cref="UnmutePartition"/> which may be called from the send loop or from
+///     response continuations.
+///   </description></item>
+/// </list>
+/// <para><b>Epoch bump synchronization:</b></para>
+/// <para>
+/// When a response handler (running inline in <see cref="ProcessCompletedResponses"/>) encounters
+/// an <c>OutOfOrderSequenceNumber</c>, <c>InvalidProducerEpoch</c>, or <c>UnknownProducerId</c>
+/// error, it signals the need for an epoch bump by writing the stale epoch value into
+/// <see cref="_epochBumpRequestedForEpoch"/> via <c>Interlocked.CompareExchange</c> (CAS from -1
+/// to the stale epoch). The send loop checks this field at the top of each iteration using
+/// <c>Volatile.Read</c> and, if set, performs the epoch bump before coalescing any batches.
+/// After a successful bump, the flag is cleared via <c>Interlocked.CompareExchange</c> (CAS from
+/// stale epoch back to -1). If a new epoch error arrives concurrently, the CAS fails and the flag
+/// remains set for the next iteration. This design ensures that (1) the epoch bump always happens
+/// in the single-threaded send loop context, eliminating races between concurrent response handlers,
+/// and (2) no batches are sent with a stale epoch because the bump completes before coalescing.
+/// </para>
+/// <para>
+/// Memory ordering for <see cref="_epochBumpRequestedForEpoch"/>: All accesses use
+/// <c>Interlocked</c> operations (CompareExchange) or <c>Volatile.Read</c>, which provide
+/// acquire/release semantics on x86/x64 and explicit memory barriers on ARM. This guarantees
+/// that the send loop observes the flag set by response handlers without requiring a lock, and
+/// that the epoch bump's side effects (new producer ID and epoch) are visible before subsequent
+/// batches are coalesced.
+/// </para>
+/// </remarks>
 internal sealed partial class BrokerSender : IAsyncDisposable
 {
     private readonly int _brokerId;
