@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 
 namespace Dekaf.Statistics;
 
@@ -233,6 +234,10 @@ internal sealed class ConsumerStatisticsCollector
     private long _messagesConsumed;
     private long _bytesConsumed;
     private int _rebalanceCount;
+    private long _totalRebalances;
+    private long _lastRebalanceDurationMs = -1;
+    private long _totalRebalanceDurationMs;
+    private long _rebalanceStartTimestamp;
     private long _fetchRequestsSent;
     private long _fetchResponsesReceived;
     private long _totalFetchLatencyMs;
@@ -274,6 +279,32 @@ internal sealed class ConsumerStatisticsCollector
         Interlocked.Increment(ref _rebalanceCount);
     }
 
+    /// <summary>
+    /// Records the start of a rebalance. Captures a high-resolution timestamp.
+    /// </summary>
+    public void RecordRebalanceStarted()
+    {
+        Interlocked.Exchange(ref _rebalanceStartTimestamp, Stopwatch.GetTimestamp());
+    }
+
+    /// <summary>
+    /// Records the completion of a rebalance. Computes duration from the start timestamp,
+    /// increments the total rebalance count, and accumulates total rebalance time.
+    /// </summary>
+    public void RecordRebalanceCompleted()
+    {
+        var startTimestamp = Interlocked.Read(ref _rebalanceStartTimestamp);
+        if (startTimestamp == 0)
+            return;
+
+        var elapsed = Stopwatch.GetElapsedTime(startTimestamp);
+        var durationMs = (long)elapsed.TotalMilliseconds;
+
+        Interlocked.Exchange(ref _lastRebalanceDurationMs, durationMs);
+        Interlocked.Add(ref _totalRebalanceDurationMs, durationMs);
+        Interlocked.Increment(ref _totalRebalances);
+    }
+
     public void RecordFetchRequestSent()
     {
         Interlocked.Increment(ref _fetchRequestsSent);
@@ -298,6 +329,7 @@ internal sealed class ConsumerStatisticsCollector
     }
 
     public (long MessagesConsumed, long BytesConsumed, int RebalanceCount,
+        long TotalRebalances, long? LastRebalanceDurationMs, long TotalRebalanceDurationMs,
         long FetchRequestsSent, long FetchResponsesReceived, double AvgFetchLatencyMs) GetGlobalStats()
     {
         var latencyCount = Interlocked.Read(ref _fetchLatencyCount);
@@ -305,10 +337,15 @@ internal sealed class ConsumerStatisticsCollector
             ? (double)Interlocked.Read(ref _totalFetchLatencyMs) / latencyCount
             : 0;
 
+        var lastRebalanceMs = Interlocked.Read(ref _lastRebalanceDurationMs);
+
         return (
             Interlocked.Read(ref _messagesConsumed),
             Interlocked.Read(ref _bytesConsumed),
             Volatile.Read(ref _rebalanceCount),
+            Interlocked.Read(ref _totalRebalances),
+            lastRebalanceMs >= 0 ? lastRebalanceMs : null,
+            Interlocked.Read(ref _totalRebalanceDurationMs),
             Interlocked.Read(ref _fetchRequestsSent),
             Interlocked.Read(ref _fetchResponsesReceived),
             avgLatency
