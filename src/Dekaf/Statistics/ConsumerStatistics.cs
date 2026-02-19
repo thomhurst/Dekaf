@@ -97,4 +97,9 @@ public sealed class ConsumerStatistics
     /// </summary>
     public IReadOnlyDictionary<string, ConsumerTopicStatistics> Topics { get; init; } =
         new Dictionary<string, ConsumerTopicStatistics>();
+
+    /// <summary>
+    /// Connection pool statistics.
+    /// </summary>
+    public ConnectionPoolStatistics? ConnectionPool { get; init; }
 }

@@ -98,6 +98,43 @@ public class StatisticsModelTests
     }
 
     [Test]
+    public async Task ProducerStatistics_ConnectionPoolIsNullByDefault()
+    {
+        var stats = new ProducerStatistics
+        {
+            Timestamp = DateTimeOffset.UtcNow
+        };
+
+        await Assert.That(stats.ConnectionPool).IsNull();
+    }
+
+    [Test]
+    public async Task ProducerStatistics_ConnectionPoolCanBeSet()
+    {
+        var poolStats = new ConnectionPoolStatistics
+        {
+            ActiveConnections = 3,
+            IdleConnections = 1,
+            TotalConnectionsCreated = 5,
+            TotalConnectionsClosed = 2,
+            TotalErrors = 1
+        };
+
+        var stats = new ProducerStatistics
+        {
+            Timestamp = DateTimeOffset.UtcNow,
+            ConnectionPool = poolStats
+        };
+
+        await Assert.That(stats.ConnectionPool).IsNotNull();
+        await Assert.That(stats.ConnectionPool!.ActiveConnections).IsEqualTo(3);
+        await Assert.That(stats.ConnectionPool.IdleConnections).IsEqualTo(1);
+        await Assert.That(stats.ConnectionPool.TotalConnectionsCreated).IsEqualTo(5);
+        await Assert.That(stats.ConnectionPool.TotalConnectionsClosed).IsEqualTo(2);
+        await Assert.That(stats.ConnectionPool.TotalErrors).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task ConsumerStatistics_HasDefaultEmptyDictionaries()
     {
         var stats = new ConsumerStatistics
@@ -109,6 +146,39 @@ public class StatisticsModelTests
         await Assert.That(stats.Brokers).IsNotNull();
         await Assert.That(stats.Topics).IsEmpty();
         await Assert.That(stats.Brokers).IsEmpty();
+    }
+
+    [Test]
+    public async Task ConsumerStatistics_ConnectionPoolIsNullByDefault()
+    {
+        var stats = new ConsumerStatistics
+        {
+            Timestamp = DateTimeOffset.UtcNow
+        };
+
+        await Assert.That(stats.ConnectionPool).IsNull();
+    }
+
+    [Test]
+    public async Task ConsumerStatistics_ConnectionPoolCanBeSet()
+    {
+        var poolStats = new ConnectionPoolStatistics
+        {
+            ActiveConnections = 2,
+            IdleConnections = 2,
+            TotalConnectionsCreated = 2,
+            TotalConnectionsClosed = 0,
+            TotalErrors = 0
+        };
+
+        var stats = new ConsumerStatistics
+        {
+            Timestamp = DateTimeOffset.UtcNow,
+            ConnectionPool = poolStats
+        };
+
+        await Assert.That(stats.ConnectionPool).IsNotNull();
+        await Assert.That(stats.ConnectionPool!.ActiveConnections).IsEqualTo(2);
     }
 
     [Test]
