@@ -1,5 +1,6 @@
 using Dekaf.Metadata;
 using Dekaf.Protocol.Records;
+using Dekaf.Resilience;
 using Dekaf.Retry;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
@@ -262,6 +263,14 @@ public sealed class ProducerOptions
     /// retried according to this policy. When <c>null</c>, no application-level retries occur.
     /// </summary>
     public IRetryPolicy? RetryPolicy { get; init; }
+
+    /// <summary>
+    /// Circuit breaker options for protecting against repeated broker failures.
+    /// When set, a per-broker circuit breaker is created that tracks consecutive failures
+    /// and temporarily stops sending requests to unhealthy brokers.
+    /// When <c>null</c> (default), no circuit breaker is applied.
+    /// </summary>
+    public CircuitBreakerOptions? CircuitBreakerOptions { get; init; }
 
     /// <summary>
     /// Producer interceptors, called in order during the produce pipeline.

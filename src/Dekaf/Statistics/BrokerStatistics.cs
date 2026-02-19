@@ -1,3 +1,5 @@
+using Dekaf.Resilience;
+
 namespace Dekaf.Statistics;
 
 /// <summary>
@@ -54,6 +56,18 @@ public sealed class BrokerStatistics
     /// Average request latency in milliseconds.
     /// </summary>
     public double AvgRequestLatencyMs { get; init; }
+
+    /// <summary>
+    /// The current circuit breaker state for this broker, if circuit breaker is enabled.
+    /// <c>null</c> when circuit breaker is not configured.
+    /// </summary>
+    public CircuitBreakerState? CircuitBreakerState { get; init; }
+
+    /// <summary>
+    /// The number of consecutive failures tracked by the circuit breaker for this broker.
+    /// <c>null</c> when circuit breaker is not configured.
+    /// </summary>
+    public int? CircuitBreakerConsecutiveFailures { get; init; }
 }
 
 /// <summary>

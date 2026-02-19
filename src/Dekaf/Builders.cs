@@ -2,6 +2,7 @@ using System.Security.Cryptography.X509Certificates;
 using Dekaf.Consumer;
 using Dekaf.Metadata;
 using Dekaf.Producer;
+using Dekaf.Resilience;
 using Dekaf.Retry;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
@@ -50,6 +51,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int? _deliveryTimeoutMs;
     private int? _requestTimeoutMs;
     private IRetryPolicy? _retryPolicy;
+    private CircuitBreakerOptions? _circuitBreakerOptions;
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -516,6 +518,34 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Enables circuit breaker protection for broker connections with default options.
+    /// The circuit breaker tracks per-broker failures and temporarily stops sending requests
+    /// to unhealthy brokers, giving them time to recover.
+    /// </summary>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ProducerBuilder<TKey, TValue> WithCircuitBreaker()
+    {
+        _circuitBreakerOptions = new CircuitBreakerOptions();
+        return this;
+    }
+
+    /// <summary>
+    /// Enables circuit breaker protection for broker connections with custom options.
+    /// The circuit breaker tracks per-broker failures and temporarily stops sending requests
+    /// to unhealthy brokers, giving them time to recover.
+    /// </summary>
+    /// <param name="configure">An action to configure the circuit breaker options.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ProducerBuilder<TKey, TValue> WithCircuitBreaker(Action<CircuitBreakerOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new CircuitBreakerOptions();
+        configure(options);
+        _circuitBreakerOptions = options;
+        return this;
+    }
+
+    /// <summary>
     /// Builds and initializes the producer, ready for immediate use.
     /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IKafkaProducer{TKey,TValue}.InitializeAsync"/>.
     /// </summary>
@@ -590,7 +620,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
-            RetryPolicy = _retryPolicy
+            RetryPolicy = _retryPolicy,
+            CircuitBreakerOptions = _circuitBreakerOptions
         };
 
         var metadataOptions = _metadataMaxAge.HasValue
@@ -685,6 +716,7 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private PartitionAssignmentStrategy _partitionAssignmentStrategy = PartitionAssignmentStrategy.CooperativeSticky;
     private IPartitionAssignmentStrategy? _customPartitionAssignmentStrategy;
     private IRetryPolicy? _retryPolicy;
+    private CircuitBreakerOptions? _circuitBreakerOptions;
 
     public ConsumerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -1238,6 +1270,34 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
+    /// Enables circuit breaker protection for broker connections with default options.
+    /// The circuit breaker tracks per-broker failures and temporarily stops sending requests
+    /// to unhealthy brokers, giving them time to recover.
+    /// </summary>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> WithCircuitBreaker()
+    {
+        _circuitBreakerOptions = new CircuitBreakerOptions();
+        return this;
+    }
+
+    /// <summary>
+    /// Enables circuit breaker protection for broker connections with custom options.
+    /// The circuit breaker tracks per-broker failures and temporarily stops sending requests
+    /// to unhealthy brokers, giving them time to recover.
+    /// </summary>
+    /// <param name="configure">An action to configure the circuit breaker options.</param>
+    /// <returns>The builder instance for method chaining.</returns>
+    public ConsumerBuilder<TKey, TValue> WithCircuitBreaker(Action<CircuitBreakerOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        var options = new CircuitBreakerOptions();
+        configure(options);
+        _circuitBreakerOptions = options;
+        return this;
+    }
+
+    /// <summary>
     /// Builds and initializes the consumer, ready for immediate use.
     /// This is equivalent to calling <see cref="Build"/> followed by <see cref="IKafkaConsumer{TKey,TValue}.InitializeAsync"/>.
     /// </summary>
@@ -1306,7 +1366,8 @@ public sealed class ConsumerBuilder<TKey, TValue>
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
-            RetryPolicy = _retryPolicy
+            RetryPolicy = _retryPolicy,
+            CircuitBreakerOptions = _circuitBreakerOptions
         };
 
         var metadataOptions = _metadataMaxAge.HasValue

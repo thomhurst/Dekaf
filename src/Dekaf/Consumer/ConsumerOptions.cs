@@ -1,5 +1,6 @@
 using Dekaf.Metadata;
 using Dekaf.Protocol.Messages;
+using Dekaf.Resilience;
 using Dekaf.Retry;
 using Dekaf.Security;
 using Dekaf.Security.Sasl;
@@ -281,6 +282,14 @@ public sealed class ConsumerOptions
     /// When <c>null</c>, existing retry behavior is unchanged.
     /// </summary>
     public IRetryPolicy? RetryPolicy { get; init; }
+
+    /// <summary>
+    /// Circuit breaker options for protecting against repeated broker failures.
+    /// When set, a per-broker circuit breaker is created that tracks consecutive failures
+    /// and temporarily stops sending requests to unhealthy brokers.
+    /// When <c>null</c> (default), no circuit breaker is applied.
+    /// </summary>
+    public CircuitBreakerOptions? CircuitBreakerOptions { get; init; }
 
     /// <summary>
     /// Consumer interceptors, called in order during the consume pipeline.
