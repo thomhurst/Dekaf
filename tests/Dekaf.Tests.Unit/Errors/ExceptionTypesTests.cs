@@ -150,6 +150,29 @@ public class ExceptionTypesTests
         await Assert.That(ex.InnerException).IsSameReferenceAs(inner);
     }
 
+    [Test]
+    public async Task ConsumeException_TopicPartitionAndOffset_SetViaInit()
+    {
+        var ex = new ConsumeException(ErrorCode.OffsetOutOfRange, "offset error")
+        {
+            Topic = "my-topic",
+            Partition = 5,
+            Offset = 42L
+        };
+        await Assert.That(ex.Topic).IsEqualTo("my-topic");
+        await Assert.That(ex.Partition).IsEqualTo(5);
+        await Assert.That(ex.Offset).IsEqualTo(42L);
+    }
+
+    [Test]
+    public async Task ConsumeException_DefaultTopicPartitionAndOffset_AreNull()
+    {
+        var ex = new ConsumeException("consume failed");
+        await Assert.That(ex.Topic).IsNull();
+        await Assert.That(ex.Partition).IsNull();
+        await Assert.That(ex.Offset).IsNull();
+    }
+
     #endregion
 
     #region GroupException Tests

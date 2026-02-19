@@ -109,6 +109,21 @@ public sealed class ConsumeException : KafkaException
     public ConsumeException(string message, Exception innerException) : base(message, innerException)
     {
     }
+
+    /// <summary>
+    /// The topic the consume was for.
+    /// </summary>
+    public string? Topic { get; init; }
+
+    /// <summary>
+    /// The partition the consume was for.
+    /// </summary>
+    public int? Partition { get; init; }
+
+    /// <summary>
+    /// The offset at which the error occurred, if available.
+    /// </summary>
+    public long? Offset { get; init; }
 }
 
 /// <summary>
