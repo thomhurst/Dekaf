@@ -189,6 +189,26 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     ValueTask<WatermarkOffsets> QueryWatermarkOffsetsAsync(
         TopicPartition topicPartition,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the consumer lag for the specified partition.
+    /// Lag is calculated as the difference between the high watermark offset and the committed offset.
+    /// A value of zero means the consumer is fully caught up. A negative value should not occur under
+    /// normal circumstances but would indicate the committed offset is beyond the high watermark.
+    /// </summary>
+    /// <param name="topicPartition">The topic partition to get the lag for.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The consumer lag (high watermark minus committed offset).</returns>
+    ValueTask<long> GetLagAsync(TopicPartition topicPartition, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the consumer lag for all currently assigned partitions.
+    /// Lag is calculated as the difference between the high watermark offset and the committed offset
+    /// for each partition. A value of zero means the consumer is fully caught up for that partition.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A dictionary mapping each assigned topic partition to its consumer lag.</returns>
+    ValueTask<IReadOnlyDictionary<TopicPartition, long>> GetAllLagsAsync(CancellationToken cancellationToken = default);
 }
 
 /// <summary>
