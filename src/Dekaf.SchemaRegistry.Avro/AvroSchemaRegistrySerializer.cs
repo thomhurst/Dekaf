@@ -234,9 +234,8 @@ public sealed class AvroSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         if (!typeof(ISpecificRecord).IsAssignableFrom(typeof(T)))
             return null;
 
-        // Avro generated classes have a static _SCHEMA field
-        var schemaField = typeof(T).GetField("_SCHEMA",
-            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+        // Avro generated classes have a static _SCHEMA field (cached lookup)
+        var schemaField = AvroSchemaFieldCache.GetSchemaField(typeof(T));
 
         if (schemaField?.GetValue(null) is AvroSchema schema)
             return schema;
@@ -266,8 +265,8 @@ public sealed class AvroSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         // For Avro specific records, try to get the full name from schema
         if (typeof(ISpecificRecord).IsAssignableFrom(typeof(T)))
         {
-            var schemaField = typeof(T).GetField("_SCHEMA",
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            // Avro generated classes have a static _SCHEMA field (cached lookup)
+            var schemaField = AvroSchemaFieldCache.GetSchemaField(typeof(T));
 
             if (schemaField?.GetValue(null) is global::Avro.RecordSchema recordSchema)
                 return recordSchema.Fullname;
