@@ -428,6 +428,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private ConsumerStatistics CollectStatistics()
     {
         var (messagesConsumed, bytesConsumed, rebalanceCount,
+            totalRebalances, lastRebalanceDurationMs, totalRebalanceDurationMs,
             fetchRequestsSent, fetchResponsesReceived, avgFetchLatencyMs) = _statisticsCollector.GetGlobalStats();
 
         // Calculate total lag
@@ -451,6 +452,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             MessagesConsumed = messagesConsumed,
             BytesConsumed = bytesConsumed,
             RebalanceCount = rebalanceCount,
+            TotalRebalances = totalRebalances,
+            LastRebalanceDurationMs = lastRebalanceDurationMs,
+            TotalRebalanceDurationMs = totalRebalanceDurationMs,
             AssignedPartitions = _assignment.Count,
             PausedPartitions = _paused.Count,
             TotalLag = totalLag,
@@ -1712,6 +1716,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
             if (_subscription.Count > 0 && _coordinator is not null)
             {
+                // Record rebalance start before the group coordination begins
+                _statisticsCollector.RecordRebalanceStarted();
+
                 await _coordinator.EnsureActiveGroupAsync(_subscription, cancellationToken).ConfigureAwait(false);
 
                 // Check for new partitions that need initialization
@@ -1773,6 +1780,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 if (assignmentChanged)
                 {
                     _statisticsCollector.RecordRebalance();
+                    _statisticsCollector.RecordRebalanceCompleted();
                 }
 
                 // Initialize positions for new partitions

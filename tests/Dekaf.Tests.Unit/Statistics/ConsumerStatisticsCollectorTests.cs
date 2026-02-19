@@ -11,7 +11,7 @@ public class ConsumerStatisticsCollectorTests
 
         collector.RecordMessagesConsumedBatch("test-topic", 0, 1, 100);
 
-        var (messagesConsumed, bytesConsumed, _, _, _, _) = collector.GetGlobalStats();
+        var (messagesConsumed, bytesConsumed, _, _, _, _, _, _, _) = collector.GetGlobalStats();
         await Assert.That(messagesConsumed).IsEqualTo(1);
         await Assert.That(bytesConsumed).IsEqualTo(100);
     }
@@ -55,8 +55,71 @@ public class ConsumerStatisticsCollectorTests
         collector.RecordRebalance();
         collector.RecordRebalance();
 
-        var (_, _, rebalanceCount, _, _, _) = collector.GetGlobalStats();
+        var (_, _, rebalanceCount, _, _, _, _, _, _) = collector.GetGlobalStats();
         await Assert.That(rebalanceCount).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task RecordRebalanceStartedAndCompleted_TracksDuration()
+    {
+        var collector = new ConsumerStatisticsCollector();
+
+        collector.RecordRebalanceStarted();
+        // Simulate some rebalance work
+        await Task.Delay(10);
+        collector.RecordRebalanceCompleted();
+
+        var (_, _, _, totalRebalances, lastRebalanceDurationMs, totalRebalanceDurationMs, _, _, _) = collector.GetGlobalStats();
+        await Assert.That(totalRebalances).IsEqualTo(1);
+        await Assert.That(lastRebalanceDurationMs).IsNotNull();
+        await Assert.That(lastRebalanceDurationMs!.Value).IsGreaterThanOrEqualTo(0);
+        await Assert.That(totalRebalanceDurationMs).IsGreaterThanOrEqualTo(0);
+    }
+
+    [Test]
+    public async Task RecordRebalanceCompleted_WithoutStart_DoesNotIncrement()
+    {
+        var collector = new ConsumerStatisticsCollector();
+
+        // Calling completed without started should be a no-op
+        collector.RecordRebalanceCompleted();
+
+        var (_, _, _, totalRebalances, lastRebalanceDurationMs, totalRebalanceDurationMs, _, _, _) = collector.GetGlobalStats();
+        await Assert.That(totalRebalances).IsEqualTo(0);
+        await Assert.That(lastRebalanceDurationMs).IsNull();
+        await Assert.That(totalRebalanceDurationMs).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task MultipleRebalances_AccumulatesTotalDuration()
+    {
+        var collector = new ConsumerStatisticsCollector();
+
+        collector.RecordRebalanceStarted();
+        await Task.Delay(10);
+        collector.RecordRebalanceCompleted();
+
+        var (_, _, _, totalRebalances1, _, totalDuration1, _, _, _) = collector.GetGlobalStats();
+
+        collector.RecordRebalanceStarted();
+        await Task.Delay(10);
+        collector.RecordRebalanceCompleted();
+
+        var (_, _, _, totalRebalances2, _, totalDuration2, _, _, _) = collector.GetGlobalStats();
+
+        await Assert.That(totalRebalances2).IsEqualTo(2);
+        await Assert.That(totalDuration2).IsGreaterThanOrEqualTo(totalDuration1);
+    }
+
+    [Test]
+    public async Task GetGlobalStats_ReturnsNullLastRebalanceDuration_WhenNoRebalanceCompleted()
+    {
+        var collector = new ConsumerStatisticsCollector();
+
+        var (_, _, _, totalRebalances, lastRebalanceDurationMs, totalRebalanceDurationMs, _, _, _) = collector.GetGlobalStats();
+        await Assert.That(totalRebalances).IsEqualTo(0);
+        await Assert.That(lastRebalanceDurationMs).IsNull();
+        await Assert.That(totalRebalanceDurationMs).IsEqualTo(0);
     }
 
     [Test]
@@ -68,7 +131,7 @@ public class ConsumerStatisticsCollectorTests
         collector.RecordFetchRequestSent();
         collector.RecordFetchRequestSent();
 
-        var (_, _, _, fetchRequestsSent, _, _) = collector.GetGlobalStats();
+        var (_, _, _, _, _, _, fetchRequestsSent, _, _) = collector.GetGlobalStats();
         await Assert.That(fetchRequestsSent).IsEqualTo(3);
     }
 
@@ -81,7 +144,7 @@ public class ConsumerStatisticsCollectorTests
         collector.RecordFetchResponseReceived(25);
         collector.RecordFetchResponseReceived(35);
 
-        var (_, _, _, _, fetchResponsesReceived, avgFetchLatencyMs) = collector.GetGlobalStats();
+        var (_, _, _, _, _, _, _, fetchResponsesReceived, avgFetchLatencyMs) = collector.GetGlobalStats();
         await Assert.That(fetchResponsesReceived).IsEqualTo(3);
         await Assert.That(avgFetchLatencyMs).IsEqualTo(25.0);
     }
@@ -91,7 +154,7 @@ public class ConsumerStatisticsCollectorTests
     {
         var collector = new ConsumerStatisticsCollector();
 
-        var (_, _, _, _, _, avgFetchLatencyMs) = collector.GetGlobalStats();
+        var (_, _, _, _, _, _, _, _, avgFetchLatencyMs) = collector.GetGlobalStats();
         await Assert.That(avgFetchLatencyMs).IsEqualTo(0.0);
     }
 
@@ -179,7 +242,7 @@ public class ConsumerStatisticsCollectorTests
 
         await Task.WhenAll(tasks);
 
-        var (messagesConsumed, bytesConsumed, _, _, _, _) = collector.GetGlobalStats();
+        var (messagesConsumed, bytesConsumed, _, _, _, _, _, _, _) = collector.GetGlobalStats();
         await Assert.That(messagesConsumed).IsEqualTo(threadCount * operationsPerThread);
         await Assert.That(bytesConsumed).IsEqualTo(threadCount * operationsPerThread * 100L);
     }
