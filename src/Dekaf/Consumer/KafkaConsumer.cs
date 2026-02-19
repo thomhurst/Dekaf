@@ -322,6 +322,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     // Statistics collection
     private readonly ConsumerStatisticsCollector _statisticsCollector = new();
+    private readonly ConnectionPoolStatisticsCollector _connectionPoolStatisticsCollector = new();
     private readonly StatisticsEmitter<ConsumerStatistics>? _statisticsEmitter;
 
     // Interceptors - stored as typed array for zero-allocation iteration
@@ -380,7 +381,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 SendBufferSize = options.SocketSendBufferBytes,
                 ReceiveBufferSize = options.SocketReceiveBufferBytes
             },
-            loggerFactory);
+            loggerFactory,
+            connectionsPerBroker: 1,
+            statisticsCollector: _connectionPoolStatisticsCollector);
 
         _metadataManager = new MetadataManager(
             _connectionPool,
@@ -463,7 +466,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             MemberId = _coordinator?.MemberId,
             GenerationId = _coordinator?.GenerationId,
             IsLeader = _coordinator?.IsLeader,
-            Topics = topicStats
+            Topics = topicStats,
+            ConnectionPool = _connectionPoolStatisticsCollector.Collect()
         };
     }
 

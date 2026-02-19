@@ -72,4 +72,9 @@ public sealed class ProducerStatistics
     /// </summary>
     public IReadOnlyDictionary<string, TopicStatistics> Topics { get; init; } =
         new Dictionary<string, TopicStatistics>();
+
+    /// <summary>
+    /// Connection pool statistics.
+    /// </summary>
+    public ConnectionPoolStatistics? ConnectionPool { get; init; }
 }

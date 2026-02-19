@@ -77,6 +77,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     // Statistics collection - only tracks per-message counters when a handler is configured
     private readonly ProducerStatisticsCollector _statisticsCollector = new();
+    private readonly ConnectionPoolStatisticsCollector _connectionPoolStatisticsCollector = new();
     private readonly StatisticsEmitter<ProducerStatistics>? _statisticsEmitter;
     private readonly bool _statisticsEnabled;
 
@@ -190,7 +191,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 ReceiveBufferSize = options.SocketReceiveBufferBytes
             },
             loggerFactory,
-            options.ConnectionsPerBroker);
+            options.ConnectionsPerBroker,
+            _connectionPoolStatisticsCollector);
 
         _metadataManager = new MetadataManager(
             _connectionPool,
@@ -272,7 +274,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             ResponsesReceived = responsesReceived,
             Retries = retries,
             AvgRequestLatencyMs = avgLatencyMs,
-            Topics = _statisticsCollector.GetTopicStatistics()
+            Topics = _statisticsCollector.GetTopicStatistics(),
+            ConnectionPool = _connectionPoolStatisticsCollector.Collect()
         };
     }
 

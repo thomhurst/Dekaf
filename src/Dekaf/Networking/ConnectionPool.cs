@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Dekaf.Statistics;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Networking;
@@ -14,6 +15,7 @@ public sealed partial class ConnectionPool : IConnectionPool
     private readonly ILoggerFactory? _loggerFactory;
     private readonly ILogger _logger;
     private readonly int _connectionsPerBroker;
+    private readonly ConnectionPoolStatisticsCollector? _statisticsCollector;
 
     // Default BufferMemory if not configured (256 MB)
     private const ulong DefaultBufferMemory = 268435456;
@@ -42,12 +44,23 @@ public sealed partial class ConnectionPool : IConnectionPool
         ConnectionOptions? connectionOptions = null,
         ILoggerFactory? loggerFactory = null,
         int connectionsPerBroker = 1)
+        : this(clientId, connectionOptions, loggerFactory, connectionsPerBroker, statisticsCollector: null)
+    {
+    }
+
+    internal ConnectionPool(
+        string? clientId,
+        ConnectionOptions? connectionOptions,
+        ILoggerFactory? loggerFactory,
+        int connectionsPerBroker,
+        ConnectionPoolStatisticsCollector? statisticsCollector)
     {
         _clientId = clientId;
         _connectionOptions = connectionOptions ?? new ConnectionOptions();
         _loggerFactory = loggerFactory;
         _logger = loggerFactory?.CreateLogger<ConnectionPool>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
+        _statisticsCollector = statisticsCollector;
     }
 
     public void RegisterBroker(int brokerId, string host, int port)
@@ -242,8 +255,17 @@ public sealed partial class ConnectionPool : IConnectionPool
             DefaultBufferMemory,
             _connectionsPerBroker);
 
-        await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            _statisticsCollector?.RecordError(brokerId);
+            throw;
+        }
 
+        _statisticsCollector?.RecordConnectionCreated(brokerId, host, port);
         LogCreatedConnectionForGroup(index, brokerId, host, port);
 
         return connection;
@@ -348,7 +370,10 @@ public sealed partial class ConnectionPool : IConnectionPool
         {
             _connectionsByEndpoint.TryRemove(endpoint, out _);
             if (brokerId >= 0)
+            {
                 _connectionsById.TryRemove(brokerId, out _);
+                _statisticsCollector?.RecordConnectionClosed(brokerId);
+            }
             await existing.DisposeAsync().ConfigureAwait(false);
         }
 
@@ -365,12 +390,25 @@ public sealed partial class ConnectionPool : IConnectionPool
             DefaultBufferMemory,
             _connectionsPerBroker);
 
-        await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (brokerId >= 0)
+            {
+                _statisticsCollector?.RecordError(brokerId);
+            }
+
+            throw;
+        }
 
         _connectionsByEndpoint[endpoint] = connection;
         if (brokerId >= 0)
         {
             _connectionsById[brokerId] = connection;
+            _statisticsCollector?.RecordConnectionCreated(brokerId, host, port);
         }
 
         LogCreatedConnection(brokerId, host, port);
@@ -386,6 +424,7 @@ public sealed partial class ConnectionPool : IConnectionPool
             _connectionsByEndpoint.TryRemove(endpoint, out _);
             _connectionCreationTasks.TryRemove(endpoint, out _);
             await connection.DisposeAsync().ConfigureAwait(false);
+            _statisticsCollector?.RecordConnectionClosed(brokerId);
             LogRemovedConnection(brokerId);
         }
     }
@@ -405,16 +444,18 @@ public sealed partial class ConnectionPool : IConnectionPool
             foreach (var connection in _connectionsByEndpoint.Values)
             {
                 tasks.Add(connection.DisposeAsync());
+                _statisticsCollector?.RecordConnectionClosed(connection.BrokerId);
             }
 
             // Close connection groups (used when _connectionsPerBroker > 1)
-            foreach (var connectionGroup in _connectionGroupsById.Values)
+            foreach (var (brokerId, connectionGroup) in _connectionGroupsById)
             {
                 foreach (var connection in connectionGroup)
                 {
                     if (connection is not null)
                     {
                         tasks.Add(connection.DisposeAsync());
+                        _statisticsCollector?.RecordConnectionClosed(brokerId);
                     }
                 }
             }
