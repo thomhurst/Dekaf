@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Dekaf.Compression;
+using Dekaf.Errors;
 using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -1038,8 +1039,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         {
                             AutoOffsetReset.Latest => (-1L, "latest"),
                             AutoOffsetReset.Earliest => (-2L, "earliest"),
-                            AutoOffsetReset.None => throw new KafkaException(
-                                $"OffsetOutOfRange for {topic}-{partitionResponse.PartitionIndex} and auto.offset.reset is 'none'"),
+                            AutoOffsetReset.None => throw new ConsumeException(
+                                ErrorCode.OffsetOutOfRange,
+                                $"OffsetOutOfRange for {topic}-{partitionResponse.PartitionIndex} and auto.offset.reset is 'none'")
+                            {
+                                Topic = topic,
+                                Partition = partitionResponse.PartitionIndex,
+                                Offset = _fetchPositions.GetValueOrDefault(tp, -1)
+                            },
                             _ => throw new InvalidOperationException($"Unknown AutoOffsetReset value: {_options.AutoOffsetReset}")
                         };
                         _fetchPositions[tp] = resetTimestamp;
@@ -1228,6 +1235,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             _ctsPool.Return(timeoutCts);
         }
+    }
+
+    public ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneAsync(CancellationToken cancellationToken = default)
+    {
+        return ConsumeOneAsync(TimeSpan.FromMilliseconds(_options.FetchMaxWaitMs), cancellationToken);
     }
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)

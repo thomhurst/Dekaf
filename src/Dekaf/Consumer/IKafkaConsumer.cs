@@ -85,6 +85,12 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneAsync(TimeSpan timeout, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Consumes a single message using the configured FetchMaxWaitMs as the timeout.
+    /// Returns null if no message is available within the timeout period.
+    /// </summary>
+    ValueTask<ConsumeResult<TKey, TValue>?> ConsumeOneAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Commits the offsets of all consumed messages.
     /// Use with OffsetCommitMode.Manual to control when offsets are committed.
     /// </summary>
