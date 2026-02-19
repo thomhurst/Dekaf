@@ -45,6 +45,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int? _maxBlockMs;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
+    private bool _enableIdempotence = true;
     private List<IProducerInterceptor<TKey, TValue>>? _interceptors;
     private TimeSpan? _metadataMaxAge;
     private int? _deliveryTimeoutMs;
@@ -131,6 +132,29 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithTransactionalId(string transactionalId)
     {
         _transactionalId = transactionalId;
+        return this;
+    }
+
+    /// <summary>
+    /// Enables or disables idempotent producer mode.
+    /// <para>
+    /// Idempotence is enabled by default for safety. When enabled, the producer obtains a
+    /// producer ID from the broker and assigns sequence numbers to each batch, allowing the
+    /// broker to deduplicate retried messages.
+    /// </para>
+    /// <para>
+    /// Disabling idempotence reduces overhead slightly (no <c>InitProducerId</c> call during
+    /// initialization, no sequence number tracking) but allows duplicate messages on retry.
+    /// </para>
+    /// <para>
+    /// Cannot be disabled when <see cref="WithTransactionalId"/> is set, because transactions
+    /// require idempotence for correctness.
+    /// </para>
+    /// </summary>
+    /// <param name="enable">Whether to enable idempotence. Default is <c>true</c>.</param>
+    public ProducerBuilder<TKey, TValue> WithIdempotence(bool enable = true)
+    {
+        _enableIdempotence = enable;
         return this;
     }
 
@@ -565,6 +589,9 @@ public sealed class ProducerBuilder<TKey, TValue>
                 "where both producer and consumer use Dekaf with the Dekaf.Compression.Brotli package installed. " +
                 "For standard Kafka broker communication, use Gzip, Snappy, Lz4, or Zstd instead.");
 
+        if (_transactionalId is not null && !_enableIdempotence)
+            throw new InvalidOperationException("Idempotence cannot be disabled when TransactionalId is set. Transactions require idempotence for correctness.");
+
         var keySerializer = _keySerializer ?? GetDefaultSerializer<TKey>();
         var valueSerializer = _valueSerializer ?? GetDefaultSerializer<TValue>();
 
@@ -579,6 +606,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             MaxBlockMs = _maxBlockMs ?? 60000, // 60 seconds default
             DeliveryTimeoutMs = _deliveryTimeoutMs ?? 120000,
             RequestTimeoutMs = _requestTimeoutMs ?? 30000,
+            EnableIdempotence = _enableIdempotence,
             TransactionalId = _transactionalId,
             TransactionTimeoutMs = _transactionTimeoutMs ?? 60000,
             CompressionType = _compressionType,

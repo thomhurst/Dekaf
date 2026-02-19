@@ -256,4 +256,52 @@ public class ProducerBuilderValidationTests
     }
 
     #endregion
+
+    #region Idempotence Validation
+
+    [Test]
+    public async Task Build_WithTransactionalIdAndIdempotenceDisabled_ThrowsInvalidOperationException()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithTransactionalId("txn-1")
+            .WithIdempotence(false);
+
+        var act = () => builder.Build();
+
+        await Assert.That(act).Throws<InvalidOperationException>()
+            .And.HasMessageContaining("Idempotence cannot be disabled when TransactionalId is set");
+    }
+
+    [Test]
+    public async Task Build_WithIdempotenceDisabled_Succeeds()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithIdempotence(false)
+            .Build();
+
+        await Assert.That(producer).IsNotNull();
+    }
+
+    [Test]
+    public async Task Build_WithIdempotenceEnabled_Succeeds()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithIdempotence(true)
+            .Build();
+
+        await Assert.That(producer).IsNotNull();
+    }
+
+    [Test]
+    public async Task WithIdempotence_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithIdempotence(false);
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    #endregion
 }

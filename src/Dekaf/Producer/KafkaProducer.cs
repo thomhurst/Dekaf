@@ -2678,7 +2678,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     $"Ensure the Kafka cluster is reachable and the bootstrap servers are correct.");
             }
 
-            if (_options.TransactionalId is null && !_idempotentInitialized)
+            if (_options.EnableIdempotence && _options.TransactionalId is null && !_idempotentInitialized)
             {
                 await InitIdempotentProducerAsync(cancellationToken).ConfigureAwait(false);
             }

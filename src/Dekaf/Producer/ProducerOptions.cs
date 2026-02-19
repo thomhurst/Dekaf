@@ -102,6 +102,25 @@ public sealed class ProducerOptions
     public int DeliveryTimeoutMs { get; init; } = 120000;
 
     /// <summary>
+    /// Enables idempotent producer mode, which ensures that messages are delivered exactly once
+    /// to a particular topic partition during the lifetime of a single producer session.
+    /// <para>
+    /// Idempotence is enabled by default for safety. When enabled, the producer obtains a
+    /// producer ID from the broker and assigns sequence numbers to each batch, allowing the
+    /// broker to deduplicate retried messages.
+    /// </para>
+    /// <para>
+    /// Disabling idempotence reduces overhead slightly (no <c>InitProducerId</c> call during
+    /// initialization, no sequence number tracking) but allows duplicate messages on retry.
+    /// </para>
+    /// <para>
+    /// Cannot be disabled when <see cref="TransactionalId"/> is set, because transactions
+    /// require idempotence for correctness.
+    /// </para>
+    /// </summary>
+    public bool EnableIdempotence { get; init; } = true;
+
+    /// <summary>
     /// Transactional ID for exactly-once semantics.
     /// </summary>
     public string? TransactionalId { get; init; }
