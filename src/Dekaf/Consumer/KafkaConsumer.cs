@@ -1591,6 +1591,31 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     }
 
     /// <inheritdoc />
+    public async ValueTask<long> GetLagAsync(TopicPartition topicPartition, CancellationToken cancellationToken = default)
+    {
+        var watermarks = await QueryWatermarkOffsetsAsync(topicPartition, cancellationToken).ConfigureAwait(false);
+        var committedOffset = await GetCommittedOffsetAsync(topicPartition, cancellationToken).ConfigureAwait(false);
+
+        // If no committed offset exists, the entire partition is lag (consumer hasn't started)
+        return watermarks.High - (committedOffset ?? 0);
+    }
+
+    /// <inheritdoc />
+    public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> GetAllLagsAsync(CancellationToken cancellationToken = default)
+    {
+        var assignedPartitions = Assignment;
+        var result = new Dictionary<TopicPartition, long>(assignedPartitions.Count);
+
+        foreach (var topicPartition in assignedPartitions)
+        {
+            var lag = await GetLagAsync(topicPartition, cancellationToken).ConfigureAwait(false);
+            result[topicPartition] = lag;
+        }
+
+        return result;
+    }
+
+    /// <inheritdoc />
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
         if (_disposed)
