@@ -527,7 +527,14 @@ public enum CompressionType
     Gzip = 1,
     Snappy = 2,
     Lz4 = 3,
-    Zstd = 4
+    Zstd = 4,
+
+    /// <summary>
+    /// Brotli compression. This is NOT a standard Kafka compression type.
+    /// Both producer and consumer must have the Dekaf.Compression.Brotli codec installed.
+    /// Standard Kafka clients (Java, librdkafka) do not support this compression type.
+    /// </summary>
+    Brotli = 5
 }
 
 /// <summary>
