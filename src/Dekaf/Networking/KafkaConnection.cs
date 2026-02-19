@@ -26,7 +26,7 @@ internal static class ConnectionHelper
     /// Reads a variable-length unsigned integer from a span using Kafka's varint encoding.
     /// Shared by KafkaConnection and PooledPendingRequest for tagged field parsing.
     /// </summary>
-    public static (int value, int bytesRead) ReadUnsignedVarInt(ReadOnlySpan<byte> span)
+    public static (int value, int bytesRead, bool success) ReadUnsignedVarInt(ReadOnlySpan<byte> span)
     {
         var result = 0;
         var shift = 0;
@@ -38,12 +38,13 @@ internal static class ConnectionHelper
             result |= (b & 0x7F) << shift;
 
             if ((b & 0x80) == 0)
-                return (result, bytesRead);
+                return (result, bytesRead, true);
 
             shift += 7;
         }
 
-        return (result, bytesRead);
+        // Incomplete data (ran out of bytes) or malformed (exceeded 5-byte VarInt limit)
+        return (result, bytesRead, false);
     }
     // Minimum pause threshold for pipeline backpressure (16 MB)
     private const long MinimumPauseThresholdBytes = 16L * 1024 * 1024;
@@ -1378,17 +1379,32 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 {
                     // Skip tagged fields
                     var span = responseBuffer.AsSpan(offset);
-                    var (tagCount, bytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
+                    var (tagCount, bytesRead, tagCountSuccess) = ConnectionHelper.ReadUnsignedVarInt(span);
+                    if (!tagCountSuccess)
+                    {
+                        throw new InvalidOperationException(
+                            $"Failed to read tagged field count VarInt at offset {offset} in SASL response (buffer length: {responseSize})");
+                    }
                     offset += bytesRead;
 
                     for (var i = 0; i < tagCount; i++)
                     {
                         span = responseBuffer.AsSpan(offset);
-                        var (_, tagBytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
+                        var (_, tagBytesRead, tagSuccess) = ConnectionHelper.ReadUnsignedVarInt(span);
+                        if (!tagSuccess)
+                        {
+                            throw new InvalidOperationException(
+                                $"Failed to read tag key VarInt at offset {offset} in SASL response (buffer length: {responseSize}, tag index: {i}/{tagCount})");
+                        }
                         offset += tagBytesRead;
 
                         span = responseBuffer.AsSpan(offset);
-                        var (size, sizeBytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
+                        var (size, sizeBytesRead, sizeSuccess) = ConnectionHelper.ReadUnsignedVarInt(span);
+                        if (!sizeSuccess)
+                        {
+                            throw new InvalidOperationException(
+                                $"Failed to read tag size VarInt at offset {offset} in SASL response (buffer length: {responseSize}, tag index: {i}/{tagCount})");
+                        }
                         offset += sizeBytesRead + size;
                     }
                 }
@@ -1894,11 +1910,6 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         try
         {
             result = ParseAndSliceResponse(pooledBuffer);
-            if (!result.HasValue)
-            {
-                pooledBuffer.Dispose();
-                parseException = new InvalidOperationException("Failed to parse response header");
-            }
         }
         catch (Exception ex)
         {
@@ -1971,7 +1982,8 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         // Bounds check: ensure we have at least the correlation ID
         if (offset > bufferLength)
         {
-            return null;
+            throw new InvalidOperationException(
+                $"Response buffer too small for correlation ID: buffer length {bufferLength}, required offset {offset}");
         }
 
         if (_responseHeaderVersion >= 1)
@@ -1979,42 +1991,62 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
             // Skip tagged fields - read varint count and skip
             if (offset >= bufferLength)
             {
-                return null;
+                throw new InvalidOperationException(
+                    $"Response buffer truncated before tagged field count: offset {offset}, buffer length {bufferLength}");
             }
 
             var span = pooledBuffer.Data.Span[offset..];
-            var (tagCount, bytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
+            var (tagCount, bytesRead, tagCountSuccess) = ConnectionHelper.ReadUnsignedVarInt(span);
+            if (!tagCountSuccess)
+            {
+                throw new InvalidOperationException(
+                    $"Incomplete or malformed VarInt for tagged field count at offset {offset} (buffer length: {bufferLength})");
+            }
             offset += bytesRead;
 
             // Sanity check: tag count should be reasonable (< 1000)
             if (tagCount > 1000)
             {
-                return null;
+                throw new InvalidOperationException(
+                    $"Unreasonable tagged field count {tagCount} at offset {offset - bytesRead} (buffer length: {bufferLength}). Possible data corruption.");
             }
 
             for (var i = 0; i < tagCount; i++)
             {
                 if (offset >= bufferLength)
                 {
-                    return null;
+                    throw new InvalidOperationException(
+                        $"Response buffer truncated while reading tag key at offset {offset} (buffer length: {bufferLength}, tag index: {i}/{tagCount})");
                 }
 
                 span = pooledBuffer.Data.Span[offset..];
-                var (_, tagBytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
+                var (_, tagBytesRead, tagKeySuccess) = ConnectionHelper.ReadUnsignedVarInt(span);
+                if (!tagKeySuccess)
+                {
+                    throw new InvalidOperationException(
+                        $"Incomplete or malformed VarInt for tag key at offset {offset} (buffer length: {bufferLength}, tag index: {i}/{tagCount})");
+                }
                 offset += tagBytesRead;
 
                 if (offset >= bufferLength)
                 {
-                    return null;
+                    throw new InvalidOperationException(
+                        $"Response buffer truncated while reading tag size at offset {offset} (buffer length: {bufferLength}, tag index: {i}/{tagCount})");
                 }
 
                 span = pooledBuffer.Data.Span[offset..];
-                var (size, sizeBytesRead) = ConnectionHelper.ReadUnsignedVarInt(span);
+                var (size, sizeBytesRead, tagSizeSuccess) = ConnectionHelper.ReadUnsignedVarInt(span);
+                if (!tagSizeSuccess)
+                {
+                    throw new InvalidOperationException(
+                        $"Incomplete or malformed VarInt for tag size at offset {offset} (buffer length: {bufferLength}, tag index: {i}/{tagCount})");
+                }
                 offset += sizeBytesRead + size;
 
                 if (offset > bufferLength)
                 {
-                    return null;
+                    throw new InvalidOperationException(
+                        $"Tag data extends beyond buffer: offset {offset} after reading tag size {size} (buffer length: {bufferLength}, tag index: {i}/{tagCount})");
                 }
             }
         }
@@ -2022,7 +2054,8 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         // Final bounds check
         if (offset > bufferLength)
         {
-            return null;
+            throw new InvalidOperationException(
+                $"Response header parsing exceeded buffer: final offset {offset}, buffer length {bufferLength}");
         }
 
         return pooledBuffer.Slice(offset);
