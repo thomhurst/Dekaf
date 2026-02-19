@@ -539,6 +539,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 list.Clear();
             }
+            _commitTopicGroups.Clear();
 
             foreach (var offset in offsets)
             {
@@ -632,6 +633,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
             {
                 list.Clear();
             }
+            _fetchTopicGroups.Clear();
 
             foreach (var partition in partitions)
             {
@@ -883,6 +885,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
         {
             list.Clear();
         }
+        _assignmentByTopic.Clear();
 
         foreach (var p in partitions)
         {
