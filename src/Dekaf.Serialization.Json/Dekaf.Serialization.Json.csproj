@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+    <ProjectReference Include="..\Dekaf.Extensions.DependencyInjection\Dekaf.Extensions.DependencyInjection.csproj" />
   </ItemGroup>
 
 </Project>
