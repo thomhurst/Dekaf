@@ -11,6 +11,9 @@ public sealed class JsonSerializer<T> : ISerde<T>
 {
     private readonly JsonSerializerOptions _options;
 
+    [ThreadStatic]
+    private static ArrayBufferWriter<byte>? t_sharedBuffer;
+
     public JsonSerializer(JsonSerializerOptions? options = null)
     {
         _options = options ?? new JsonSerializerOptions
@@ -23,19 +26,29 @@ public sealed class JsonSerializer<T> : ISerde<T>
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
-        // Note: Utf8JsonWriter requires IBufferWriter<byte> directly, which is incompatible
-        // with the allows ref struct constraint. We use SerializeToUtf8Bytes as a workaround.
-        // For non-ref struct writers, this adds a copy but maintains compatibility.
-        var jsonBytes = JsonSerializer.SerializeToUtf8Bytes(value, _options);
-        var span = destination.GetSpan(jsonBytes.Length);
-        jsonBytes.AsSpan().CopyTo(span);
-        destination.Advance(jsonBytes.Length);
+        // Use a thread-local ArrayBufferWriter to avoid per-message byte[] allocations.
+        // Utf8JsonWriter cannot accept the generic TWriter directly because the
+        // 'allows ref struct' constraint prevents boxing to IBufferWriter<byte>.
+        // The thread-local buffer is reused across calls, eliminating GC pressure
+        // from the byte[] that SerializeToUtf8Bytes would allocate on every call.
+        var sharedBuffer = t_sharedBuffer ??= new ArrayBufferWriter<byte>();
+        sharedBuffer.ResetWrittenCount();
+
+        using (var jsonWriter = new Utf8JsonWriter(sharedBuffer))
+        {
+            System.Text.Json.JsonSerializer.Serialize(jsonWriter, value, _options);
+        }
+
+        var written = sharedBuffer.WrittenSpan;
+        var span = destination.GetSpan(written.Length);
+        written.CopyTo(span);
+        destination.Advance(written.Length);
     }
 
     public T Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
     {
         var reader = new Utf8JsonReader(data);
-        return JsonSerializer.Deserialize<T>(ref reader, _options)!;
+        return System.Text.Json.JsonSerializer.Deserialize<T>(ref reader, _options)!;
     }
 }
 
