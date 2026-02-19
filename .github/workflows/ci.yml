@@ -88,7 +88,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        category: [Producer, MultiInFlightProducer, Backpressure, Consumer, ConsumerLag, ConsumerGroup, Transaction, Admin, Serialization, Resilience, Messaging, Compression, Offsets]
+        category: [Producer, MultiInFlightProducer, Backpressure, Consumer, ConsumerLag, ConsumerGroup, Transaction, Admin, Serialization, Resilience, Messaging, Compression, Offsets, NetworkPartition]
       fail-fast: false
 
     steps:
