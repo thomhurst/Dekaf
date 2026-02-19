@@ -87,10 +87,19 @@ public sealed class AvroSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
     /// with Schema Registry wire format.
     /// </summary>
     /// <remarks>
-    /// This method uses cached schema IDs when available. If the schema is not yet cached,
-    /// the first call will block while fetching from the Schema Registry. Subsequent calls
-    /// for the same subject will use the cached value without blocking.
-    /// For best performance, use <see cref="WarmupAsync"/> before starting production.
+    /// <para>
+    /// <strong>WARNING: First-call blocking.</strong> If <see cref="WarmupAsync"/> has not been called
+    /// for the topic/component being serialized, the first invocation of this method will block the
+    /// calling thread synchronously while it fetches (or registers) the schema ID from the Schema
+    /// Registry. This can take up to 30 seconds (the default timeout) and may cause deadlocks in
+    /// environments with a synchronization context (e.g., UI applications, ASP.NET with legacy sync
+    /// pipelines).
+    /// </para>
+    /// <para>
+    /// To avoid this, call <see cref="WarmupAsync"/> for each topic you intend to produce to before
+    /// calling this method. After the schema ID is cached (either via warmup or after the first
+    /// successful serialization), subsequent calls return immediately without blocking.
+    /// </para>
     /// </remarks>
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct

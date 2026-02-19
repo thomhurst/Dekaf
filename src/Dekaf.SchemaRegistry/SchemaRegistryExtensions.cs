@@ -10,6 +10,14 @@ public static class SchemaRegistryExtensions
     /// <summary>
     /// Configures the producer to use JSON Schema Registry serialization for values.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Schema warmup:</strong> The serializer created by this method will block synchronously
+    /// on the first serialization call to fetch/register the schema ID from the Schema Registry.
+    /// To avoid this blocking behavior, retrieve the serializer after building and call
+    /// <see cref="JsonSchemaRegistrySerializer{T}.WarmupAsync"/> before producing messages.
+    /// </para>
+    /// </remarks>
     /// <typeparam name="TKey">Key type.</typeparam>
     /// <typeparam name="TValue">Value type.</typeparam>
     /// <param name="builder">The producer builder.</param>
@@ -61,6 +69,14 @@ public static class SchemaRegistryExtensions
     /// <summary>
     /// Configures the producer to use a custom Schema Registry serializer for values.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Schema warmup:</strong> The serializer created by this method will block synchronously
+    /// on the first serialization call to fetch/register the schema ID from the Schema Registry.
+    /// To avoid this blocking behavior, retrieve the serializer after building and call
+    /// <see cref="SchemaRegistrySerializer{T}.WarmupAsync"/> before producing messages.
+    /// </para>
+    /// </remarks>
     /// <typeparam name="TKey">Key type.</typeparam>
     /// <typeparam name="TValue">Value type.</typeparam>
     /// <param name="builder">The producer builder.</param>
@@ -92,6 +108,14 @@ public static class SchemaRegistryExtensions
     /// Configures the producer to use a custom Schema Registry serializer for values
     /// with a custom subject name strategy.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Schema warmup:</strong> The serializer created by this method will block synchronously
+    /// on the first serialization call to fetch/register the schema ID from the Schema Registry.
+    /// To avoid this blocking behavior, retrieve the serializer after building and call
+    /// <see cref="SchemaRegistrySerializer{T}.WarmupAsync"/> before producing messages.
+    /// </para>
+    /// </remarks>
     /// <typeparam name="TKey">Key type.</typeparam>
     /// <typeparam name="TValue">Value type.</typeparam>
     /// <param name="builder">The producer builder.</param>
