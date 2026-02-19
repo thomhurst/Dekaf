@@ -10,6 +10,15 @@ public static class ProtobufSchemaRegistryExtensions
     /// <summary>
     /// Configures the producer to use Protobuf Schema Registry serialization for values.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Schema warmup:</strong> The serializer created by this method will block synchronously
+    /// on the first serialization call to fetch/register the schema ID from the Schema Registry.
+    /// To avoid this blocking behavior, create the
+    /// <see cref="ProtobufSchemaRegistrySerializer{T}"/> directly and call
+    /// <see cref="ProtobufSchemaRegistrySerializer{T}.WarmupAsync"/> before producing messages.
+    /// </para>
+    /// </remarks>
     /// <typeparam name="TKey">Key type.</typeparam>
     /// <typeparam name="TValue">Value type (must implement IMessage).</typeparam>
     /// <param name="builder">The producer builder.</param>
@@ -32,6 +41,15 @@ public static class ProtobufSchemaRegistryExtensions
     /// <summary>
     /// Configures the producer to use Protobuf Schema Registry serialization for both keys and values.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Schema warmup:</strong> The serializers created by this method will block synchronously
+    /// on the first serialization call to fetch/register the schema ID from the Schema Registry.
+    /// To avoid this blocking behavior, create the
+    /// <see cref="ProtobufSchemaRegistrySerializer{T}"/> instances directly and call
+    /// <see cref="ProtobufSchemaRegistrySerializer{T}.WarmupAsync"/> on each before producing messages.
+    /// </para>
+    /// </remarks>
     /// <typeparam name="TKey">Key type (must implement IMessage).</typeparam>
     /// <typeparam name="TValue">Value type (must implement IMessage).</typeparam>
     /// <param name="builder">The producer builder.</param>

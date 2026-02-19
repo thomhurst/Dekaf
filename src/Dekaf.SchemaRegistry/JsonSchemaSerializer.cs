@@ -16,7 +16,13 @@ namespace Dekaf.SchemaRegistry;
 /// After the first fetch, subsequent serialization calls use the cached schema ID without blocking.
 /// </para>
 /// <para>
-/// The blocking call includes a timeout to prevent indefinite hangs.
+/// The blocking call includes a timeout of 30 seconds to prevent indefinite hangs. If the timeout
+/// is exceeded, a <see cref="TimeoutException"/> is thrown.
+/// </para>
+/// <para>
+/// For high-throughput scenarios, use <see cref="WarmupAsync"/> to pre-warm the cache before
+/// starting production. This ensures the synchronous <see cref="Serialize"/> method never
+/// blocks on Schema Registry calls.
 /// </para>
 /// </remarks>
 /// <typeparam name="T">The type to serialize.</typeparam>
@@ -100,6 +106,65 @@ public sealed class JsonSchemaRegistrySerializer<T> : ISerializer<T>, IAsyncDisp
         };
     }
 
+    /// <summary>
+    /// Pre-warms the schema cache for a specific topic and component.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Call this method after construction and before producing any messages to avoid synchronous
+    /// blocking on the first <see cref="Serialize"/> call. Without warmup, the first serialization
+    /// call for each subject will block the calling thread while fetching the schema ID from the
+    /// Schema Registry.
+    /// </para>
+    /// <para>
+    /// This method is safe to call multiple times and from multiple threads. Subsequent calls for
+    /// the same subject return the cached schema ID without contacting the registry.
+    /// </para>
+    /// </remarks>
+    /// <param name="topic">The topic name to warm up the cache for.</param>
+    /// <param name="isKey">Whether this is for the key (true) or value (false) component.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The schema ID that will be used for serialization.</returns>
+    /// <example>
+    /// <code>
+    /// var serializer = new JsonSchemaRegistrySerializer&lt;MyType&gt;(client, jsonSchema);
+    /// await serializer.WarmupAsync("my-topic");
+    /// // Serialize calls will now use the cached schema ID without blocking.
+    /// </code>
+    /// </example>
+    public async Task<int> WarmupAsync(string topic, bool isKey = false, CancellationToken cancellationToken = default)
+    {
+        var subject = GetSubjectName(topic, isKey);
+
+        var id = _autoRegisterSchemas
+            ? await _schemaRegistry.GetOrRegisterSchemaAsync(subject, _schema, cancellationToken).ConfigureAwait(false)
+            : (await _schemaRegistry.GetSchemaBySubjectAsync(subject, "latest", cancellationToken).ConfigureAwait(false)).Id;
+
+        _cachedSchemaId = id;
+        _cachedSubject = subject;
+
+        return id;
+    }
+
+    /// <summary>
+    /// Serializes the value to the output buffer using JSON encoding
+    /// with Schema Registry wire format.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>WARNING: First-call blocking.</strong> If <see cref="WarmupAsync"/> has not been called
+    /// for the topic/component being serialized, the first invocation of this method will block the
+    /// calling thread synchronously while it fetches (or registers) the schema ID from the Schema
+    /// Registry. This can take up to 30 seconds (the default timeout) and may cause deadlocks in
+    /// environments with a synchronization context (e.g., UI applications, ASP.NET with legacy sync
+    /// pipelines).
+    /// </para>
+    /// <para>
+    /// To avoid this, call <see cref="WarmupAsync"/> for each topic you intend to produce to before
+    /// calling this method. After the schema ID is cached (either via warmup or after the first
+    /// successful serialization), subsequent calls return immediately without blocking.
+    /// </para>
+    /// </remarks>
     public void Serialize<TWriter>(T value, ref TWriter destination, SerializationContext context)
         where TWriter : IBufferWriter<byte>, allows ref struct
     {

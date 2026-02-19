@@ -11,6 +11,15 @@ public static class AvroSchemaRegistryExtensions
     /// <summary>
     /// Configures the producer to use Avro Schema Registry serialization for values.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Schema warmup:</strong> The serializer created by this method will block synchronously
+    /// on the first serialization call to fetch/register the schema ID from the Schema Registry.
+    /// To avoid this blocking behavior, create the
+    /// <see cref="AvroSchemaRegistrySerializer{T}"/> directly and call
+    /// <see cref="AvroSchemaRegistrySerializer{T}.WarmupAsync"/> before producing messages.
+    /// </para>
+    /// </remarks>
     /// <typeparam name="TKey">Key type.</typeparam>
     /// <typeparam name="TValue">Value type. Must be ISpecificRecord or GenericRecord.</typeparam>
     /// <param name="builder">The producer builder.</param>
@@ -31,6 +40,15 @@ public static class AvroSchemaRegistryExtensions
     /// <summary>
     /// Configures the producer to use Avro Schema Registry serialization for keys.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Schema warmup:</strong> The serializer created by this method will block synchronously
+    /// on the first serialization call to fetch/register the schema ID from the Schema Registry.
+    /// To avoid this blocking behavior, create the
+    /// <see cref="AvroSchemaRegistrySerializer{T}"/> directly and call
+    /// <see cref="AvroSchemaRegistrySerializer{T}.WarmupAsync"/> before producing messages.
+    /// </para>
+    /// </remarks>
     /// <typeparam name="TKey">Key type. Must be ISpecificRecord or GenericRecord.</typeparam>
     /// <typeparam name="TValue">Value type.</typeparam>
     /// <param name="builder">The producer builder.</param>
