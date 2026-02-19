@@ -394,6 +394,11 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
         return size;
     }
 
+    /// <summary>
+    /// Calculates the number of bytes required to encode an integer as a varint.
+    /// This is the single source of truth for varint size computation, used by both
+    /// <see cref="CalculateVarintArraySize"/> and <see cref="WriteVarint"/>.
+    /// </summary>
     private static int CalculateVarintSize(int value)
     {
         var size = 1;
@@ -424,15 +429,15 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
 
     private static int WriteVarint(Span<byte> span, int value)
     {
-        var written = 0;
+        var size = CalculateVarintSize(value);
         var v = (uint)value;
-        while (v >= 0x80)
+        for (var i = 0; i < size - 1; i++)
         {
-            span[written++] = (byte)(v | 0x80);
+            span[i] = (byte)(v | 0x80);
             v >>= 7;
         }
-        span[written++] = (byte)v;
-        return written;
+        span[size - 1] = (byte)v;
+        return size;
     }
 
     /// <inheritdoc />
