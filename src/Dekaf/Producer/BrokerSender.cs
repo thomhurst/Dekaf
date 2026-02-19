@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Dekaf.Compression;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -881,7 +882,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
             UnmutePartition(batch.TopicPartition);
-            var ex = new TimeoutException(
+            var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+            var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
+            var ex = new KafkaTimeoutException(
+                TimeoutKind.Delivery,
+                elapsed,
+                configured,
                 $"Delivery timeout exceeded for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}" +
                 (errorCode != ErrorCode.None ? $" (last error: {errorCode})" : ""));
             FailAndCleanupBatch(batch, ex);
@@ -1148,7 +1154,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
                 {
                     UnmutePartition(batch.TopicPartition);
-                    FailAndCleanupBatch(batch, new TimeoutException(
+                    var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                    var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
+                    FailAndCleanupBatch(batch, new KafkaTimeoutException(
+                        TimeoutKind.Delivery,
+                        elapsed,
+                        configured,
                         $"Delivery timeout exceeded for {batch.TopicPartition}"));
                 }
                 else
@@ -1334,7 +1345,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic,
                     batch.TopicPartition.Partition);
-                FailAndCleanupBatch(batch, new TimeoutException(
+                var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
+                FailAndCleanupBatch(batch, new KafkaTimeoutException(
+                    TimeoutKind.Delivery,
+                    elapsed,
+                    configured,
                     $"Delivery timeout exceeded for {batch.TopicPartition}"));
                 carryOver.RemoveAt(i);
             }

@@ -58,6 +58,117 @@ public class KafkaException : Exception
 }
 
 /// <summary>
+/// Identifies the kind of timeout that occurred.
+/// </summary>
+public enum TimeoutKind
+{
+    /// <summary>
+    /// A metadata fetch operation timed out (e.g., initial metadata, topic metadata refresh).
+    /// </summary>
+    Metadata,
+
+    /// <summary>
+    /// Message delivery timed out after exhausting retries within the delivery timeout window.
+    /// </summary>
+    Delivery,
+
+    /// <summary>
+    /// A connection attempt to a broker timed out.
+    /// </summary>
+    Connection,
+
+    /// <summary>
+    /// A consumer poll operation timed out waiting for records.
+    /// </summary>
+    Poll,
+
+    /// <summary>
+    /// A flush operation timed out waiting for in-flight messages to be delivered.
+    /// </summary>
+    Flush,
+
+    /// <summary>
+    /// A transaction operation timed out.
+    /// </summary>
+    Transaction,
+}
+
+/// <summary>
+/// Exception thrown when a Kafka operation times out.
+/// Provides structured context about the kind of timeout, how long elapsed,
+/// and what the configured timeout was.
+/// </summary>
+public sealed class KafkaTimeoutException : KafkaException
+{
+    /// <summary>
+    /// Creates a new KafkaTimeoutException.
+    /// </summary>
+    public KafkaTimeoutException() : base()
+    {
+    }
+
+    /// <summary>
+    /// Creates a new KafkaTimeoutException with a message.
+    /// </summary>
+    public KafkaTimeoutException(string message) : base(message)
+    {
+    }
+
+    /// <summary>
+    /// Creates a new KafkaTimeoutException with a message and inner exception.
+    /// </summary>
+    public KafkaTimeoutException(string message, Exception innerException) : base(message, innerException)
+    {
+    }
+
+    /// <summary>
+    /// Creates a new KafkaTimeoutException with timeout context.
+    /// </summary>
+    /// <param name="timeoutKind">The kind of timeout that occurred.</param>
+    /// <param name="elapsed">The time that elapsed before the timeout.</param>
+    /// <param name="configured">The configured timeout duration.</param>
+    /// <param name="message">A descriptive error message.</param>
+    public KafkaTimeoutException(TimeoutKind timeoutKind, TimeSpan elapsed, TimeSpan configured, string message)
+        : base(message)
+    {
+        TimeoutKind = timeoutKind;
+        Elapsed = elapsed;
+        Configured = configured;
+    }
+
+    /// <summary>
+    /// Creates a new KafkaTimeoutException with timeout context and an inner exception.
+    /// </summary>
+    /// <param name="timeoutKind">The kind of timeout that occurred.</param>
+    /// <param name="elapsed">The time that elapsed before the timeout.</param>
+    /// <param name="configured">The configured timeout duration.</param>
+    /// <param name="message">A descriptive error message.</param>
+    /// <param name="innerException">The inner exception.</param>
+    public KafkaTimeoutException(TimeoutKind timeoutKind, TimeSpan elapsed, TimeSpan configured, string message,
+        Exception innerException) : base(message, innerException)
+    {
+        TimeoutKind = timeoutKind;
+        Elapsed = elapsed;
+        Configured = configured;
+    }
+
+    /// <summary>
+    /// The kind of timeout that occurred.
+    /// </summary>
+    public TimeoutKind TimeoutKind { get; init; }
+
+    /// <summary>
+    /// The amount of time that elapsed before the timeout.
+    /// </summary>
+    public TimeSpan Elapsed { get; init; }
+
+    /// <summary>
+    /// The configured timeout duration that was exceeded.
+    /// </summary>
+    public TimeSpan Configured { get; init; }
+}
+
+/// <summary>
 /// Exception thrown when a produce operation fails.
 /// </summary>
 public sealed class ProduceException : KafkaException

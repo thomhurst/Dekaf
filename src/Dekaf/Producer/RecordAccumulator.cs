@@ -5,6 +5,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
+using Dekaf.Errors;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Microsoft.Extensions.Logging;
@@ -903,7 +904,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Waits until buffer space is available, then reserves memory for a record.
-    /// Throws TimeoutException if buffer space doesn't become available within DeliveryTimeoutMs.
+    /// Throws KafkaTimeoutException if buffer space doesn't become available within MaxBlockMs.
     /// </summary>
     internal async ValueTask ReserveMemoryAsync(int recordSize, CancellationToken cancellationToken)
     {
@@ -935,7 +936,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var remainingMs = deadline - Environment.TickCount64;
             if (remainingMs <= 0)
             {
-                throw new TimeoutException(
+                var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
+                var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - currentTicks);
+                throw new KafkaTimeoutException(
+                    TimeoutKind.Flush,
+                    elapsed,
+                    configured,
                     $"Failed to allocate buffer within max.block.ms ({_options.MaxBlockMs}ms). " +
                     $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes. " +
                     $"Producer is generating messages faster than the network can send them. " +
@@ -1006,7 +1012,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var remainingMs = deadline - Environment.TickCount64;
             if (remainingMs <= 0)
             {
-                throw new TimeoutException(
+                var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
+                var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - currentTicks);
+                throw new KafkaTimeoutException(
+                    TimeoutKind.Flush,
+                    elapsed,
+                    configured,
                     $"Failed to allocate buffer within max.block.ms ({_options.MaxBlockMs}ms). " +
                     $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes. " +
                     $"Producer is generating messages faster than the network can send them. " +

@@ -1,3 +1,4 @@
+using Dekaf.Errors;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -200,7 +201,7 @@ public sealed class MaxBlockMsTests
         var act = async () => await accumulator.ReserveMemoryAsync(1024, CancellationToken.None)
             .ConfigureAwait(false);
 
-        await Assert.That(act).Throws<TimeoutException>();
+        await Assert.That(act).Throws<KafkaTimeoutException>();
     }
 
     [Test]
@@ -221,9 +222,9 @@ public sealed class MaxBlockMsTests
                 .ConfigureAwait(false);
 
             // Should not reach here
-            throw new InvalidOperationException("Expected TimeoutException was not thrown");
+            throw new InvalidOperationException("Expected KafkaTimeoutException was not thrown");
         }
-        catch (TimeoutException ex)
+        catch (KafkaTimeoutException ex)
         {
             await Assert.That(ex.Message).Contains("max.block.ms");
             await Assert.That(ex.Message).Contains("50");

@@ -1,4 +1,5 @@
 using System.Buffers;
+using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -82,14 +83,20 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 return;
 
             LogEnsureActiveGroupStarted(_options.GroupId!, _state);
-            var deadline = DateTime.UtcNow.AddMilliseconds(_options.RebalanceTimeoutMs);
+            var startedAt = DateTime.UtcNow;
+            var deadline = startedAt.AddMilliseconds(_options.RebalanceTimeoutMs);
             var retryDelayMs = 200;
 
             while (_state != CoordinatorState.Stable)
             {
                 if (DateTime.UtcNow > deadline)
                 {
-                    throw new TimeoutException(
+                    var configured = TimeSpan.FromMilliseconds(_options.RebalanceTimeoutMs);
+                    var elapsed = DateTime.UtcNow - startedAt;
+                    throw new KafkaTimeoutException(
+                        TimeoutKind.Poll,
+                        elapsed,
+                        configured,
                         $"Failed to join group '{_options.GroupId}' within rebalance timeout ({_options.RebalanceTimeoutMs}ms)");
                 }
 
