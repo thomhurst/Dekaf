@@ -194,6 +194,22 @@ public class SerializerTests
         await Assert.That(result).IsEqualTo(float.NegativeInfinity);
     }
 
+    [Test]
+    public async Task FloatSerializer_RoundTrip_NegativeZero()
+    {
+        var serializer = Serializers.Float;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var value = -0f;
+
+        serializer.Serialize(value, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        // -0f == 0f per IEEE 754 equality, but the sign bit must be preserved
+        await Assert.That(float.IsNegative(result)).IsTrue();
+        await Assert.That(BitConverter.SingleToInt32Bits(result)).IsEqualTo(BitConverter.SingleToInt32Bits(value));
+    }
+
     #endregion
 
     #region DateTime Serializer Tests
@@ -256,6 +272,40 @@ public class SerializerTests
 
         await Assert.That(result).IsEqualTo(value);
         await Assert.That(result.Kind).IsEqualTo(DateTimeKind.Utc);
+    }
+
+    [Test]
+    public async Task DateTimeSerializer_RoundTrip_LocalKind_NormalizesToUtc()
+    {
+        var serializer = Serializers.DateTime;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var localDateTime = new DateTime(2024, 6, 15, 14, 30, 45, DateTimeKind.Local);
+
+        serializer.Serialize(localDateTime, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        // Result must always be UTC regardless of input kind
+        await Assert.That(result.Kind).IsEqualTo(DateTimeKind.Utc);
+        // The UTC ticks must match what ToUniversalTime() produces
+        await Assert.That(result.Ticks).IsEqualTo(localDateTime.ToUniversalTime().Ticks);
+    }
+
+    [Test]
+    public async Task DateTimeSerializer_RoundTrip_UnspecifiedKind_NormalizesToUtc()
+    {
+        var serializer = Serializers.DateTime;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var unspecifiedDateTime = new DateTime(2024, 6, 15, 14, 30, 45, DateTimeKind.Unspecified);
+
+        serializer.Serialize(unspecifiedDateTime, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        // Result must always be UTC regardless of input kind
+        await Assert.That(result.Kind).IsEqualTo(DateTimeKind.Utc);
+        // Unspecified is treated as local by ToUniversalTime()
+        await Assert.That(result.Ticks).IsEqualTo(unspecifiedDateTime.ToUniversalTime().Ticks);
     }
 
     #endregion
