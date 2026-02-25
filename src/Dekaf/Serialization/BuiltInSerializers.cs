@@ -311,7 +311,7 @@ internal sealed class DateTimeOffsetSerde : ISerde<DateTimeOffset>
         where TWriter : IBufferWriter<byte>, allows ref struct
     {
         var span = destination.GetSpan(10);
-        BinaryPrimitives.WriteInt64BigEndian(span, value.Ticks);
+        BinaryPrimitives.WriteInt64BigEndian(span, value.UtcTicks);
         BinaryPrimitives.WriteInt16BigEndian(span.Slice(8), (short)(value.Offset.TotalMinutes));
         destination.Advance(10);
     }
@@ -320,9 +320,10 @@ internal sealed class DateTimeOffsetSerde : ISerde<DateTimeOffset>
     {
         Span<byte> buffer = stackalloc byte[10];
         data.Slice(0, 10).CopyTo(buffer);
-        var ticks = BinaryPrimitives.ReadInt64BigEndian(buffer);
+        var utcTicks = BinaryPrimitives.ReadInt64BigEndian(buffer);
         var offsetMinutes = BinaryPrimitives.ReadInt16BigEndian(buffer.Slice(8));
-        return new DateTimeOffset(ticks, TimeSpan.FromMinutes(offsetMinutes));
+        var offset = TimeSpan.FromMinutes(offsetMinutes);
+        return new DateTimeOffset(utcTicks + offset.Ticks, offset);
     }
 }
 

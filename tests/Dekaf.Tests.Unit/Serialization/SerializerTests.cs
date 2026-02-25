@@ -88,6 +88,330 @@ public class SerializerTests
         await Assert.That(result).IsEqualTo(3.14159);
     }
 
+    #region Float Serializer Tests
+
+    [Test]
+    public async Task FloatSerializer_RoundTrip_Zero()
+    {
+        var serializer = Serializers.Float;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+
+        serializer.Serialize(0f, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(0f);
+    }
+
+    [Test]
+    public async Task FloatSerializer_RoundTrip_PositiveValue()
+    {
+        var serializer = Serializers.Float;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+
+        serializer.Serialize(1.5f, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(1.5f);
+    }
+
+    [Test]
+    public async Task FloatSerializer_RoundTrip_NegativeValue()
+    {
+        var serializer = Serializers.Float;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+
+        serializer.Serialize(-1.5f, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(-1.5f);
+    }
+
+    [Test]
+    public async Task FloatSerializer_RoundTrip_MinValue()
+    {
+        var serializer = Serializers.Float;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+
+        serializer.Serialize(float.MinValue, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(float.MinValue);
+    }
+
+    [Test]
+    public async Task FloatSerializer_RoundTrip_MaxValue()
+    {
+        var serializer = Serializers.Float;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+
+        serializer.Serialize(float.MaxValue, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(float.MaxValue);
+    }
+
+    [Test]
+    public async Task FloatSerializer_RoundTrip_NaN()
+    {
+        var serializer = Serializers.Float;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+
+        serializer.Serialize(float.NaN, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(float.IsNaN(result)).IsTrue();
+    }
+
+    [Test]
+    public async Task FloatSerializer_RoundTrip_PositiveInfinity()
+    {
+        var serializer = Serializers.Float;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+
+        serializer.Serialize(float.PositiveInfinity, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(float.PositiveInfinity);
+    }
+
+    [Test]
+    public async Task FloatSerializer_RoundTrip_NegativeInfinity()
+    {
+        var serializer = Serializers.Float;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+
+        serializer.Serialize(float.NegativeInfinity, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(float.NegativeInfinity);
+    }
+
+    #endregion
+
+    #region DateTime Serializer Tests
+
+    [Test]
+    public async Task DateTimeSerializer_RoundTrip_MinValue()
+    {
+        var serializer = Serializers.DateTime;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var value = DateTime.MinValue.ToUniversalTime();
+
+        serializer.Serialize(value, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(value);
+        await Assert.That(result.Kind).IsEqualTo(DateTimeKind.Utc);
+    }
+
+    [Test]
+    public async Task DateTimeSerializer_RoundTrip_MaxValue()
+    {
+        var serializer = Serializers.DateTime;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var value = DateTime.MaxValue.ToUniversalTime();
+
+        serializer.Serialize(value, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(value);
+        await Assert.That(result.Kind).IsEqualTo(DateTimeKind.Utc);
+    }
+
+    [Test]
+    public async Task DateTimeSerializer_RoundTrip_UtcNow()
+    {
+        var serializer = Serializers.DateTime;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var value = DateTime.UtcNow;
+
+        serializer.Serialize(value, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(value);
+        await Assert.That(result.Kind).IsEqualTo(DateTimeKind.Utc);
+    }
+
+    [Test]
+    public async Task DateTimeSerializer_RoundTrip_SpecificDate()
+    {
+        var serializer = Serializers.DateTime;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var value = new DateTime(2024, 6, 15, 14, 30, 45, DateTimeKind.Utc);
+
+        serializer.Serialize(value, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(value);
+        await Assert.That(result.Kind).IsEqualTo(DateTimeKind.Utc);
+    }
+
+    #endregion
+
+    #region DateTimeOffset Serializer Tests
+
+    [Test]
+    public async Task DateTimeOffsetSerializer_RoundTrip_UtcOffset()
+    {
+        var serializer = Serializers.DateTimeOffset;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var value = new DateTimeOffset(2024, 6, 15, 14, 30, 45, TimeSpan.Zero);
+
+        serializer.Serialize(value, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(value);
+        await Assert.That(result.Offset).IsEqualTo(TimeSpan.Zero);
+    }
+
+    [Test]
+    public async Task DateTimeOffsetSerializer_RoundTrip_PositiveOffset()
+    {
+        var serializer = Serializers.DateTimeOffset;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var offset = new TimeSpan(5, 30, 0);
+        var value = new DateTimeOffset(2024, 6, 15, 14, 30, 45, offset);
+
+        serializer.Serialize(value, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(value);
+        await Assert.That(result.Offset).IsEqualTo(offset);
+    }
+
+    [Test]
+    public async Task DateTimeOffsetSerializer_RoundTrip_NegativeOffset()
+    {
+        var serializer = Serializers.DateTimeOffset;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var offset = new TimeSpan(-8, 0, 0);
+        var value = new DateTimeOffset(2024, 6, 15, 14, 30, 45, offset);
+
+        serializer.Serialize(value, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(value);
+        await Assert.That(result.Offset).IsEqualTo(offset);
+    }
+
+    [Test]
+    public async Task DateTimeOffsetSerializer_RoundTrip_MinValue()
+    {
+        var serializer = Serializers.DateTimeOffset;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var value = DateTimeOffset.MinValue;
+
+        serializer.Serialize(value, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(value);
+        await Assert.That(result.Offset).IsEqualTo(value.Offset);
+    }
+
+    [Test]
+    public async Task DateTimeOffsetSerializer_RoundTrip_MaxValue()
+    {
+        var serializer = Serializers.DateTimeOffset;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var value = DateTimeOffset.MaxValue;
+
+        serializer.Serialize(value, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(value);
+        await Assert.That(result.Offset).IsEqualTo(value.Offset);
+    }
+
+    #endregion
+
+    #region TimeSpan Serializer Tests
+
+    [Test]
+    public async Task TimeSpanSerializer_RoundTrip_Zero()
+    {
+        var serializer = Serializers.TimeSpan;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+
+        serializer.Serialize(TimeSpan.Zero, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(TimeSpan.Zero);
+    }
+
+    [Test]
+    public async Task TimeSpanSerializer_RoundTrip_OneHour()
+    {
+        var serializer = Serializers.TimeSpan;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var value = TimeSpan.FromHours(1);
+
+        serializer.Serialize(value, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(value);
+    }
+
+    [Test]
+    public async Task TimeSpanSerializer_RoundTrip_MinValue()
+    {
+        var serializer = Serializers.TimeSpan;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+
+        serializer.Serialize(TimeSpan.MinValue, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(TimeSpan.MinValue);
+    }
+
+    [Test]
+    public async Task TimeSpanSerializer_RoundTrip_MaxValue()
+    {
+        var serializer = Serializers.TimeSpan;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+
+        serializer.Serialize(TimeSpan.MaxValue, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(TimeSpan.MaxValue);
+    }
+
+    [Test]
+    public async Task TimeSpanSerializer_RoundTrip_NegativeValue()
+    {
+        var serializer = Serializers.TimeSpan;
+        var buffer = new ArrayBufferWriter<byte>();
+        var context = CreateContext();
+        var value = TimeSpan.FromMinutes(-90);
+
+        serializer.Serialize(value, ref buffer, context);
+        var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
+
+        await Assert.That(result).IsEqualTo(value);
+    }
+
+    #endregion
+
     #region RawBytes Serializer Tests
 
     [Test]
