@@ -9,6 +9,9 @@ namespace Dekaf.Serialization.Json;
 /// <typeparam name="T">Type to serialize.</typeparam>
 public sealed class JsonSerializer<T> : ISerde<T>
 {
+    [ThreadStatic]
+    private static ArrayBufferWriter<byte>? t_sharedBuffer;
+
     private readonly JsonSerializerOptions _options;
 
     public JsonSerializer(JsonSerializerOptions? options = null)
@@ -25,17 +28,18 @@ public sealed class JsonSerializer<T> : ISerde<T>
     {
         // Utf8JsonWriter cannot accept the generic TWriter directly because the
         // 'allows ref struct' constraint prevents boxing to IBufferWriter<byte>.
-        // A per-call ArrayBufferWriter is used as an intermediate buffer.
-        // This allocation is acceptable because serialization is a per-batch cost
-        // (amortized over ~1000 messages), not a per-message hot path allocation.
-        var tempBuffer = new ArrayBufferWriter<byte>();
+        // A ThreadStatic ArrayBufferWriter is used as an intermediate buffer.
+        // This is safe because Serialize is fully synchronous (no await points),
+        // so thread migration cannot occur mid-operation.
+        var sharedBuffer = t_sharedBuffer ??= new ArrayBufferWriter<byte>();
+        sharedBuffer.ResetWrittenCount();
 
-        using (var jsonWriter = new Utf8JsonWriter(tempBuffer))
+        using (var jsonWriter = new Utf8JsonWriter(sharedBuffer))
         {
             System.Text.Json.JsonSerializer.Serialize(jsonWriter, value, _options);
         }
 
-        var written = tempBuffer.WrittenSpan;
+        var written = sharedBuffer.WrittenSpan;
         var span = destination.GetSpan(written.Length);
         written.CopyTo(span);
         destination.Advance(written.Length);
