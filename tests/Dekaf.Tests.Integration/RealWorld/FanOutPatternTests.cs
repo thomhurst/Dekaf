@@ -12,7 +12,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// </summary>
 [Category("Messaging")]
 [ParallelLimiter<RealWorldMessagingLimit>]
-[Timeout(120_000)] // 2 minutes — prevents individual test hangs from blocking CI
+[Timeout(60_000)] // 1 minute — prevents individual test hangs from blocking CI
 public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -41,9 +41,9 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
         var shippingGroup = $"shipping-{Guid.NewGuid():N}";
         var notificationGroup = $"notification-{Guid.NewGuid():N}";
 
-        var billingMessages = await ConsumeAllAsync(topic, billingGroup, messageCount);
-        var shippingMessages = await ConsumeAllAsync(topic, shippingGroup, messageCount);
-        var notificationMessages = await ConsumeAllAsync(topic, notificationGroup, messageCount);
+        var billingMessages = await ConsumeAllAsync(topic, billingGroup, messageCount, cancellationToken);
+        var shippingMessages = await ConsumeAllAsync(topic, shippingGroup, messageCount, cancellationToken);
+        var notificationMessages = await ConsumeAllAsync(topic, notificationGroup, messageCount, cancellationToken);
 
         // Each group should get all messages independently
         await Assert.That(billingMessages).Count().IsEqualTo(messageCount);
@@ -92,7 +92,8 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
         fastConsumer.Subscribe(topic);
 
         var fastMessages = new List<ConsumeResult<string, string>>();
-        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts1 = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts1.CancelAfter(TimeSpan.FromSeconds(30));
         await foreach (var msg in fastConsumer.ConsumeAsync(cts1.Token))
         {
             fastMessages.Add(msg);
@@ -113,7 +114,8 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
         slowConsumer.Subscribe(topic);
 
         var slowMessages = new List<ConsumeResult<string, string>>();
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts2 = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts2.CancelAfter(TimeSpan.FromSeconds(30));
         await foreach (var msg in slowConsumer.ConsumeAsync(cts2.Token))
         {
             slowMessages.Add(msg);
@@ -157,7 +159,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Original consumer processes everything
         var originalGroup = $"original-{Guid.NewGuid():N}";
-        var originalMessages = await ConsumeAllAsync(topic, originalGroup, 5);
+        var originalMessages = await ConsumeAllAsync(topic, originalGroup, 5, cancellationToken);
         await Assert.That(originalMessages).Count().IsEqualTo(5);
 
         // Produce more messages
@@ -173,7 +175,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         // Late-joining consumer with Earliest offset reset gets ALL messages (0-9)
         var lateGroup = $"late-joiner-{Guid.NewGuid():N}";
-        var lateMessages = await ConsumeAllAsync(topic, lateGroup, 10);
+        var lateMessages = await ConsumeAllAsync(topic, lateGroup, 10, cancellationToken);
 
         await Assert.That(lateMessages).Count().IsEqualTo(10);
         await Assert.That(lateMessages[0].Value).IsEqualTo("historical-0");
@@ -217,7 +219,8 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
             consumer.Subscribe(topic);
 
             var messages = new List<ConsumeResult<string, string>>();
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(TimeSpan.FromSeconds(30));
 
             await foreach (var msg in consumer.ConsumeAsync(cts.Token))
             {
@@ -238,7 +241,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     private async Task<List<ConsumeResult<string, string>>> ConsumeAllAsync(
-        string topic, string groupId, int expectedCount)
+        string topic, string groupId, int expectedCount, CancellationToken testCancellationToken = default)
     {
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -249,7 +252,8 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
         consumer.Subscribe(topic);
 
         var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(testCancellationToken);
+        cts.CancelAfter(TimeSpan.FromSeconds(30));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {

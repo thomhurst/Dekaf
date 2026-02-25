@@ -90,10 +90,16 @@ public sealed class StaticMembershipTests(KafkaTestContainer kafka) : KafkaInteg
 
         consumer2.Subscribe(topic);
 
-        // Consume to trigger assignment
+        // Consume messages to trigger assignment and stabilize (matching the first consumer's pattern)
+        var messages2 = new List<ConsumeResult<string, string>>();
         using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var result = await consumer2.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts2.Token);
-        await Assert.That(result).IsNotNull();
+        await foreach (var msg in consumer2.ConsumeAsync(cts2.Token))
+        {
+            messages2.Add(msg);
+            if (messages2.Count >= 4) break;
+        }
+
+        await Assert.That(messages2).Count().IsGreaterThanOrEqualTo(1);
 
         var secondAssignment = consumer2.Assignment.ToArray().Select(tp => tp.Partition).ToHashSet();
 

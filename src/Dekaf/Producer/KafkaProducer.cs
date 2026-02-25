@@ -3610,9 +3610,12 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
         // Copy existing data
         _buffer.AsSpan(0, _written).CopyTo(newBuffer);
 
-        // Return old buffer
-        ArrayPool<byte>.Shared.Return(_buffer, clearArray: true);
+        // Return old buffer - use clearArray: false since data has already been copied
+        // and clearing could cause a race condition with ArrayPool returning the
+        // just-cleared buffer to a concurrent caller
+        var oldBuffer = _buffer;
         _buffer = newBuffer;
+        ArrayPool<byte>.Shared.Return(oldBuffer, clearArray: false);
     }
 }
 

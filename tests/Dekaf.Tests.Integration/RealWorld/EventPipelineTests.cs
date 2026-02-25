@@ -2,6 +2,8 @@ using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 
+#pragma warning disable CA2016 // Timeout cancellation token is a safety net; internal operations have their own timeouts
+
 namespace Dekaf.Tests.Integration.RealWorld;
 
 /// <summary>
@@ -10,10 +12,11 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// </summary>
 [Category("Messaging")]
 [ParallelLimiter<RealWorldMessagingLimit>]
+[Timeout(120_000)] // 2 minutes — prevents individual test hangs from blocking CI
 public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
-    public async Task Pipeline_ConsumeTransformProduce_MessagesFlowThroughPipeline()
+    public async Task Pipeline_ConsumeTransformProduce_MessagesFlowThroughPipeline(CancellationToken cancellationToken)
     {
         // Simulate: OrderService -> order-events -> EnrichmentService -> enriched-orders -> AnalyticsService
         var inputTopic = await KafkaContainer.CreateTestTopicAsync();
@@ -106,7 +109,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     [Test]
-    public async Task Pipeline_DeadLetterQueue_FailedMessagesRouteToDeadLetterTopic()
+    public async Task Pipeline_DeadLetterQueue_FailedMessagesRouteToDeadLetterTopic(CancellationToken cancellationToken)
     {
         // Simulate: process messages, route failures to DLQ
         var inputTopic = await KafkaContainer.CreateTestTopicAsync();
@@ -212,7 +215,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     [Test]
-    public async Task Pipeline_MessageEnrichment_HeadersAccumulateThroughStages()
+    public async Task Pipeline_MessageEnrichment_HeadersAccumulateThroughStages(CancellationToken cancellationToken)
     {
         // Simulate multi-stage pipeline where each stage adds headers
         var stage1Topic = await KafkaContainer.CreateTestTopicAsync();
@@ -308,7 +311,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     [Test]
-    public async Task Pipeline_MultiTopicAggregation_CombinesEventsFromMultipleSources()
+    public async Task Pipeline_MultiTopicAggregation_CombinesEventsFromMultipleSources(CancellationToken cancellationToken)
     {
         // Simulate: aggregate events from multiple source topics into a single stream
         var orderTopic = await KafkaContainer.CreateTestTopicAsync();
@@ -368,7 +371,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     [Test]
-    public async Task Pipeline_FilterAndRoute_MessagesRoutedByContent()
+    public async Task Pipeline_FilterAndRoute_MessagesRoutedByContent(CancellationToken cancellationToken)
     {
         // Simulate: consume events, route to different output topics based on content
         var inputTopic = await KafkaContainer.CreateTestTopicAsync();
@@ -459,7 +462,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
     }
 
     [Test]
-    public async Task Pipeline_BatchCollectAndForward_AggregatesBeforeProducing()
+    public async Task Pipeline_BatchCollectAndForward_AggregatesBeforeProducing(CancellationToken cancellationToken)
     {
         // Simulate: collect N messages, aggregate, then produce a single summary
         var inputTopic = await KafkaContainer.CreateTestTopicAsync();
