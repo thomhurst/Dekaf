@@ -328,8 +328,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     //      cache respectively; acquired under _assignmentLock (via InvalidatePartitionCache /
     //      InvalidateFetchRequestCache) and independently; never nested with each other or with
     //      _prefetchLock
-    private readonly object _prefetchLock = new();
+    private readonly SemaphoreSlim _initLock = new(1, 1);
     private readonly SemaphoreSlim _assignmentLock = new(1, 1);
+    private readonly object _prefetchLock = new();
 
     private CancellationTokenSource? _wakeupCts;
     private CancellationTokenSource? _autoCommitCts;
@@ -344,7 +345,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private volatile bool _disposed;
     private volatile bool _closed;
     private volatile bool _initialized;
-    private readonly SemaphoreSlim _initLock = new(1, 1);
     private bool _prefetchEnabled;
 
     // CancellationTokenSource pool to avoid allocations in hot paths

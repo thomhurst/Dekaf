@@ -54,15 +54,20 @@ namespace Dekaf.Producer;
 ///     by <c>ContinueWith</c> callbacks on response tasks via <c>Interlocked.Decrement</c>.
 ///   </description></item>
 ///   <item><description>
-///     <see cref="_inFlightSlotAvailable"/> and <see cref="_responseReadySignal"/>: Written by the
-///     send loop via <c>Volatile.Write</c>, read and completed by continuations via
-///     <c>Interlocked.Exchange</c> + <c>TrySetResult</c>. The exchange-then-signal pattern
-///     ensures at-most-once signaling without locks.
-///   </description></item>
-///   <item><description>
-///     <see cref="_unmuteSignal"/>: Same exchange-then-signal pattern, triggered from
+///     <see cref="_inFlightSlotAvailable"/> and <see cref="_unmuteSignal"/>: Written by the
+///     send loop via <c>Volatile.Write</c>, consumed by continuations via
+///     <c>Interlocked.Exchange(ref field, null)?.TrySetResult()</c>. The exchange-then-signal
+///     pattern atomically takes ownership and fires the signal, ensuring at-most-once
+///     signaling without locks. <see cref="_unmuteSignal"/> is triggered from
 ///     <see cref="UnmutePartition"/> which may be called from the send loop or from
 ///     response continuations.
+///   </description></item>
+///   <item><description>
+///     <see cref="_responseReadySignal"/>: Written by the send loop via <c>Volatile.Write</c>,
+///     signaled by continuations via <c>Volatile.Read(ref field)?.TrySetResult()</c> (no
+///     exchange). Unlike <c>_inFlightSlotAvailable</c>, the signal is not nulled out on
+///     completion because the send loop replaces it with a fresh <c>TaskCompletionSource</c>
+///     at the top of each iteration — the old instance becomes unreachable regardless.
 ///   </description></item>
 /// </list>
 /// <para><b>Epoch bump synchronization:</b></para>
