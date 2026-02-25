@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -83,16 +84,16 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                 return;
 
             LogEnsureActiveGroupStarted(_options.GroupId!, _state);
-            var startedAt = DateTime.UtcNow;
-            var deadline = startedAt.AddMilliseconds(_options.RebalanceTimeoutMs);
+            var startedAt = Stopwatch.GetTimestamp();
+            var rebalanceTimeout = TimeSpan.FromMilliseconds(_options.RebalanceTimeoutMs);
             var retryDelayMs = 200;
 
             while (_state != CoordinatorState.Stable)
             {
-                if (DateTime.UtcNow > deadline)
+                if (Stopwatch.GetElapsedTime(startedAt) > rebalanceTimeout)
                 {
-                    var configured = TimeSpan.FromMilliseconds(_options.RebalanceTimeoutMs);
-                    var elapsed = DateTime.UtcNow - startedAt;
+                    var configured = rebalanceTimeout;
+                    var elapsed = Stopwatch.GetElapsedTime(startedAt);
                     throw new KafkaTimeoutException(
                         TimeoutKind.Rebalance,
                         elapsed,

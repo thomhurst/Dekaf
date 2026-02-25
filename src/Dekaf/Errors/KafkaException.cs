@@ -63,6 +63,11 @@ public class KafkaException : Exception
 public enum TimeoutKind
 {
     /// <summary>
+    /// The timeout kind was not specified. Used by basic constructors that don't provide timeout context.
+    /// </summary>
+    Unspecified = 0,
+
+    /// <summary>
     /// A metadata fetch operation timed out (e.g., initial metadata, topic metadata refresh).
     /// </summary>
     Metadata,
@@ -79,7 +84,7 @@ public enum TimeoutKind
     Connection,
 
     /// <summary>
-    /// A consumer poll operation timed out waiting for records.
+    /// Reserved for future use: poll operations that exceed configured timeout.
     /// </summary>
     Poll,
 

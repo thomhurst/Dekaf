@@ -304,9 +304,12 @@ public class BufferMemoryTests
                     messageCount++;
                 }
             }
-            catch (KafkaTimeoutException)
+            catch (KafkaTimeoutException ex)
             {
                 timeoutThrown = true;
+                await Assert.That(ex.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
+                await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(500));
+                await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
             }
 
             var elapsedMs = Environment.TickCount64 - startTime;
@@ -366,6 +369,9 @@ public class BufferMemoryTests
 
                 // Assert: Should throw with descriptive message about max.block.ms
                 await Assert.That(exception!.Message).Contains("max.block.ms");
+                await Assert.That(exception.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
+                await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(60000));
+                await Assert.That(exception.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
             }
             finally
             {
@@ -392,13 +398,17 @@ public class BufferMemoryTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
+            var ex = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
             {
                 accumulator.TryAppendFireAndForget(
                     "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     pooledKey, pooledValue, null, null);
                 await Task.CompletedTask.ConfigureAwait(false);
             });
+
+            await Assert.That(ex!.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
+            await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(60000));
+            await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
         }
         finally
         {
@@ -432,9 +442,12 @@ public class BufferMemoryTests
                     successCount++;
                 }
             }
-            catch (KafkaTimeoutException)
+            catch (KafkaTimeoutException ex)
             {
                 threwTimeout = true;
+                await Assert.That(ex.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
+                await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(60000));
+                await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
             }
 
             // Assert: Should eventually hit backpressure
