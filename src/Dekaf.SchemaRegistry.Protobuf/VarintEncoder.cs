@@ -1,5 +1,3 @@
-using System.Diagnostics;
-
 namespace Dekaf.SchemaRegistry.Protobuf;
 
 /// <summary>
@@ -33,7 +31,7 @@ internal static class VarintEncoder
     /// <returns>The number of bytes written.</returns>
     internal static int WriteVarint(Span<byte> span, int value)
     {
-        Debug.Assert(value >= 0, "Varint value must be non-negative for Protobuf message indexes.");
+        ArgumentOutOfRangeException.ThrowIfNegative(value);
 
         var size = CalculateVarintSize(value);
         var v = (uint)value;
