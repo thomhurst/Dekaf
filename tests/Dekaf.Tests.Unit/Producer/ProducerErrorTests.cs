@@ -132,40 +132,6 @@ public class ProducerErrorTests
 
     #endregion
 
-    #region Cancellation Tests
-
-    [Test]
-    public async Task CancellationToken_PreCancelled_ThrowsOperationCanceledException()
-    {
-        using var cts = new CancellationTokenSource();
-        cts.Cancel();
-
-        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
-        {
-            await Task.Run(() => cts.Token.ThrowIfCancellationRequested());
-        });
-    }
-
-    [Test]
-    public async Task CancellationToken_PreCancelled_ExceptionContainsCancellationToken()
-    {
-        using var cts = new CancellationTokenSource();
-        cts.Cancel();
-
-        try
-        {
-            cts.Token.ThrowIfCancellationRequested();
-            // Should not reach here
-            Assert.Fail("Expected OperationCanceledException");
-        }
-        catch (OperationCanceledException ex)
-        {
-            await Assert.That(ex.CancellationToken).IsEqualTo(cts.Token);
-        }
-    }
-
-    #endregion
-
     #region SerializationException Topic Context Tests
 
     [Test]

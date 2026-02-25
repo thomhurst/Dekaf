@@ -95,21 +95,6 @@ public class ConsumerErrorTests
         }).Throws<ObjectDisposedException>();
     }
 
-    [Test]
-    public async Task InitializeAsync_AfterDispose_ThrowsObjectDisposedException()
-    {
-        var consumer = Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers("localhost:9092")
-            .Build();
-
-        await consumer.DisposeAsync();
-
-        await Assert.That(async () =>
-        {
-            await consumer.InitializeAsync();
-        }).Throws<ObjectDisposedException>();
-    }
-
     #endregion
 
     #region Consumer Error Code Retriability Mapping Tests

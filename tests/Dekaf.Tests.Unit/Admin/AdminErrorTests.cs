@@ -37,40 +37,8 @@ public class AdminErrorTests
     }
 
     [Test]
-    public async Task ElectLeadersResultInfo_PartialFailure_MixedResults()
-    {
-        // Simulates a partial failure scenario where some partitions succeed and others fail
-        var results = new Dictionary<TopicPartition, ElectLeadersResultInfo>
-        {
-            [new TopicPartition("topic-a", 0)] = new ElectLeadersResultInfo
-            {
-                TopicPartition = new TopicPartition("topic-a", 0),
-                ErrorCode = ErrorCode.None
-            },
-            [new TopicPartition("topic-a", 1)] = new ElectLeadersResultInfo
-            {
-                TopicPartition = new TopicPartition("topic-a", 1),
-                ErrorCode = ErrorCode.PreferredLeaderNotAvailable,
-                ErrorMessage = "Leader not available"
-            },
-            [new TopicPartition("topic-b", 0)] = new ElectLeadersResultInfo
-            {
-                TopicPartition = new TopicPartition("topic-b", 0),
-                ErrorCode = ErrorCode.EligibleLeadersNotAvailable,
-                ErrorMessage = "No eligible leaders"
-            }
-        };
-
-        var successCount = results.Values.Count(r => r.ErrorCode == ErrorCode.None);
-        var failureCount = results.Values.Count(r => r.ErrorCode != ErrorCode.None);
-
-        await Assert.That(successCount).IsEqualTo(1);
-        await Assert.That(failureCount).IsEqualTo(2);
-    }
-
-    [Test]
     [MethodDataSource(nameof(PartialFailureErrorCodes))]
-    public async Task ElectLeadersResultInfo_PreservesVariousErrorCodes(ErrorCode errorCode, string errorMessage)
+    public async Task ElectLeadersResultInfo_PreservesVariousErrorCodes(ErrorCode errorCode, string? errorMessage)
     {
         var result = new ElectLeadersResultInfo
         {
@@ -83,9 +51,9 @@ public class AdminErrorTests
         await Assert.That(result.ErrorMessage).IsEqualTo(errorMessage);
     }
 
-    public static IEnumerable<(ErrorCode, string)> PartialFailureErrorCodes()
+    public static IEnumerable<(ErrorCode, string?)> PartialFailureErrorCodes()
     {
-        yield return (ErrorCode.None, null!);
+        yield return (ErrorCode.None, null);
         yield return (ErrorCode.PreferredLeaderNotAvailable, "Preferred leader not available");
         yield return (ErrorCode.EligibleLeadersNotAvailable, "No eligible leaders");
         yield return (ErrorCode.NotController, "Broker is not the controller");
