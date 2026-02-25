@@ -1820,6 +1820,12 @@ internal sealed class PendingRequestPool
 /// </summary>
 internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuffer>
 {
+    /// <summary>
+    /// Maximum reasonable number of tagged fields in a Kafka response header.
+    /// Values exceeding this threshold indicate data corruption or protocol misalignment.
+    /// </summary>
+    private const int MaxReasonableTagCount = 1000;
+
     private ManualResetValueTaskSourceCore<PooledResponseBuffer> _core;
     private short _responseHeaderVersion;
     private CancellationTokenRegistration _cancellationRegistration;
@@ -1904,7 +1910,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         // SetResult/SetException invokes the continuation synchronously, which may
         // return this request to the pool. We must not access any mutable state after
         // calling SetResult/SetException.
-        PooledResponseBuffer? result = null;
+        PooledResponseBuffer result = default;
         Exception? parseException = null;
 
         try
@@ -1929,7 +1935,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         }
         else
         {
-            _core.SetResult(result!.Value);
+            _core.SetResult(result);
         }
 
         return true;
@@ -1973,7 +1979,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
         return true;
     }
 
-    private PooledResponseBuffer? ParseAndSliceResponse(PooledResponseBuffer pooledBuffer)
+    private PooledResponseBuffer ParseAndSliceResponse(PooledResponseBuffer pooledBuffer)
     {
         // Skip the response header (correlation ID already read, skip tagged fields if flexible)
         var offset = 4; // Correlation ID already parsed
@@ -2004,8 +2010,8 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
             }
             offset += bytesRead;
 
-            // Sanity check: tag count should be reasonable (< 1000)
-            if (tagCount > 1000)
+            // Sanity check: tag count should be reasonable
+            if (tagCount > MaxReasonableTagCount)
             {
                 throw new InvalidOperationException(
                     $"Unreasonable tagged field count {tagCount} at offset {offset - bytesRead} (buffer length: {bufferLength}). Possible data corruption.");
