@@ -939,7 +939,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
                 var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - currentTicks);
                 throw new KafkaTimeoutException(
-                    TimeoutKind.Flush,
+                    TimeoutKind.MaxBlock,
                     elapsed,
                     configured,
                     $"Failed to allocate buffer within max.block.ms ({_options.MaxBlockMs}ms). " +
@@ -1015,7 +1015,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
                 var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - currentTicks);
                 throw new KafkaTimeoutException(
-                    TimeoutKind.Flush,
+                    TimeoutKind.MaxBlock,
                     elapsed,
                     configured,
                     $"Failed to allocate buffer within max.block.ms ({_options.MaxBlockMs}ms). " +

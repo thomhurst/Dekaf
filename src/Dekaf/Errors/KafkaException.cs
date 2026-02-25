@@ -74,6 +74,7 @@ public enum TimeoutKind
 
     /// <summary>
     /// A connection attempt to a broker timed out.
+    /// Reserved for future use by the networking layer.
     /// </summary>
     Connection,
 
@@ -89,8 +90,21 @@ public enum TimeoutKind
 
     /// <summary>
     /// A transaction operation timed out.
+    /// Reserved for future use by the transaction coordinator.
     /// </summary>
     Transaction,
+
+    /// <summary>
+    /// A produce call timed out waiting for buffer memory to become available (max.block.ms exceeded).
+    /// This occurs when the producer is generating messages faster than they can be sent,
+    /// causing <see cref="Producer.ProducerOptions.BufferMemory"/> to be exhausted.
+    /// </summary>
+    MaxBlock,
+
+    /// <summary>
+    /// A consumer group rebalance operation timed out waiting to join or sync with the group.
+    /// </summary>
+    Rebalance,
 }
 
 /// <summary>

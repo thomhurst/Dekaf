@@ -94,7 +94,7 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
                     var configured = TimeSpan.FromMilliseconds(_options.RebalanceTimeoutMs);
                     var elapsed = DateTime.UtcNow - startedAt;
                     throw new KafkaTimeoutException(
-                        TimeoutKind.Poll,
+                        TimeoutKind.Rebalance,
                         elapsed,
                         configured,
                         $"Failed to join group '{_options.GroupId}' within rebalance timeout ({_options.RebalanceTimeoutMs}ms)");
