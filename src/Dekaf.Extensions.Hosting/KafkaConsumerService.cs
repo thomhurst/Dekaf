@@ -129,7 +129,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         // Then drain any remaining buffered messages
         if (_serviceOptions.DrainOnShutdown)
         {
-            await DrainBufferedMessagesAsync().ConfigureAwait(false);
+            await DrainBufferedMessagesAsync(cancellationToken).ConfigureAwait(false);
         }
 
         // Final offset commit before disposal
@@ -144,11 +144,12 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         }
     }
 
-    private async Task DrainBufferedMessagesAsync()
+    private async Task DrainBufferedMessagesAsync(CancellationToken cancellationToken)
     {
         LogDrainingBufferedMessages();
 
-        using var drainCts = new CancellationTokenSource(_serviceOptions.ShutdownTimeout);
+        using var drainCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        drainCts.CancelAfter(_serviceOptions.ShutdownTimeout);
         var drainedCount = 0;
 
         try
@@ -170,10 +171,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
                 drainedCount++;
                 await ProcessWithRetriesAsync(result.Value, drainCts.Token).ConfigureAwait(false);
 
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    LogDrainProgress(drainedCount);
-                }
+                LogDrainProgress(drainedCount);
             }
 
             LogDrainCompleted(drainedCount);
