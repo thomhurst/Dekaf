@@ -123,6 +123,10 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     {
         LogStoppingConsumerService();
 
+        // First, cancel ExecuteAsync to stop the normal consume loop
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+
+        // Then drain any remaining buffered messages
         if (_serviceOptions.DrainOnShutdown)
         {
             await DrainBufferedMessagesAsync().ConfigureAwait(false);
@@ -138,8 +142,6 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         {
             LogCommitOffsetsFailed(ex);
         }
-
-        await base.StopAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task DrainBufferedMessagesAsync()

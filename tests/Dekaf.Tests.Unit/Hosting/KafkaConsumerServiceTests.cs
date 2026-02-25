@@ -99,7 +99,7 @@ public sealed class KafkaConsumerServiceTests
         var service = new TestConsumerService(consumer, ["topic-a"]);
 
         await service.StartAsync(CancellationToken.None);
-        await Task.Delay(50);
+        await WaitForSubscribeAsync(consumer);
         await service.StopAsync(CancellationToken.None);
 
         await consumer.Received(1).CommitAsync(Arg.Any<CancellationToken>());
@@ -117,7 +117,7 @@ public sealed class KafkaConsumerServiceTests
         var service = new TestConsumerService(consumer, ["topic-a"]);
 
         await service.StartAsync(CancellationToken.None);
-        await Task.Delay(50);
+        await WaitForSubscribeAsync(consumer);
 
         // StopAsync should not throw even if commit fails
         var act = async () => await service.StopAsync(CancellationToken.None);
@@ -171,7 +171,7 @@ public sealed class KafkaConsumerServiceTests
         var service = new TestConsumerService(consumer, ["topic-a"], options);
 
         await service.StartAsync(CancellationToken.None);
-        await Task.Delay(50);
+        await WaitForSubscribeAsync(consumer);
         await service.StopAsync(CancellationToken.None);
 
         // The drain should have processed 2 messages via ConsumeOneAsync
@@ -193,7 +193,7 @@ public sealed class KafkaConsumerServiceTests
         var service = new TestConsumerService(consumer, ["topic-a"], options);
 
         await service.StartAsync(CancellationToken.None);
-        await Task.Delay(50);
+        await WaitForSubscribeAsync(consumer);
         await service.StopAsync(CancellationToken.None);
 
         // ConsumeOneAsync should never be called when drain is disabled
@@ -219,7 +219,7 @@ public sealed class KafkaConsumerServiceTests
         var service = new TestConsumerService(consumer, ["topic-a"], options);
 
         await service.StartAsync(CancellationToken.None);
-        await Task.Delay(50);
+        await WaitForSubscribeAsync(consumer);
         await service.StopAsync(CancellationToken.None);
 
         // CommitAsync should be called once (the final commit after drain)
@@ -251,6 +251,30 @@ public sealed class KafkaConsumerServiceTests
     #endregion
 
     #region Helpers
+
+    /// <summary>
+    /// Polls until Subscribe() has been called on the mock consumer, indicating
+    /// that ExecuteAsync has started. Uses deterministic synchronization instead
+    /// of a fixed Task.Delay.
+    /// </summary>
+    private static async Task WaitForSubscribeAsync(IKafkaConsumer<string, string> consumer)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (!timeout.IsCancellationRequested)
+        {
+            try
+            {
+                consumer.Received(1).Subscribe(Arg.Any<string[]>());
+                return;
+            }
+            catch (NSubstitute.Exceptions.ReceivedCallsException)
+            {
+                await Task.Delay(10, timeout.Token);
+            }
+        }
+
+        throw new TimeoutException("ExecuteAsync did not call Subscribe() within timeout");
+    }
 
     private static async IAsyncEnumerable<ConsumeResult<string, string>> WaitForCancellation(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
