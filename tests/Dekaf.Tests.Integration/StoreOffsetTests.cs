@@ -383,9 +383,10 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
                         break;
                     }
                 }
-                catch (IOException)
+                catch (IOException ex)
                 {
                     // Connection may be resetting, retry
+                    TestContext.Current?.OutputWriter?.WriteLine($"Auto-commit polling: IOException caught, retrying: {ex.Message}");
                 }
 
                 await Task.Delay(100).ConfigureAwait(false);
@@ -434,8 +435,9 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
                     committedValue = committed;
                     break;
                 }
-                catch (IOException) when (attempt < 2)
+                catch (IOException ex) when (attempt < 2)
                 {
+                    TestContext.Current?.OutputWriter?.WriteLine($"GetCommittedOffset retry {attempt + 1}: IOException caught: {ex.Message}");
                     await Task.Delay(1000).ConfigureAwait(false);
                 }
             }
