@@ -205,6 +205,7 @@ public sealed class MaxBlockMsTests
         await Assert.That(ex!.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
         await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(50));
         await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
+        await Assert.That(ex.Elapsed).IsLessThanOrEqualTo(ex.Configured + TimeSpan.FromSeconds(5));
     }
 
     [Test]
@@ -234,6 +235,7 @@ public sealed class MaxBlockMsTests
             await Assert.That(ex.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
             await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(50));
             await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
+            await Assert.That(ex.Elapsed).IsLessThanOrEqualTo(ex.Configured + TimeSpan.FromSeconds(5));
         }
     }
 

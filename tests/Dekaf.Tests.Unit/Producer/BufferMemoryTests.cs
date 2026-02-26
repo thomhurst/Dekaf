@@ -310,6 +310,7 @@ public class BufferMemoryTests
                 await Assert.That(ex.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
                 await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(500));
                 await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
+                await Assert.That(ex.Elapsed).IsLessThanOrEqualTo(ex.Configured + TimeSpan.FromSeconds(5));
             }
 
             var elapsedMs = Environment.TickCount64 - startTime;
@@ -372,6 +373,7 @@ public class BufferMemoryTests
                 await Assert.That(exception.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
                 await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(60000));
                 await Assert.That(exception.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
+                await Assert.That(exception.Elapsed).IsLessThanOrEqualTo(exception.Configured + TimeSpan.FromSeconds(5));
             }
             finally
             {
@@ -448,6 +450,7 @@ public class BufferMemoryTests
                 await Assert.That(ex.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
                 await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(60000));
                 await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
+                await Assert.That(ex.Elapsed).IsLessThanOrEqualTo(ex.Configured + TimeSpan.FromSeconds(5));
             }
 
             // Assert: Should eventually hit backpressure
