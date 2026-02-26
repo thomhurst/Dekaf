@@ -2514,9 +2514,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     private BrokerSender CreateBrokerSender(int brokerId)
     {
-        // Epoch bump recovery is only for non-transactional producers.
+        // Epoch bump recovery is only for non-transactional idempotent producers.
         // Transactional producers manage epochs via InitTransactionsAsync.
-        var isNonTransactional = _options.TransactionalId is null;
+        // Non-idempotent producers don't have producer IDs or epochs at all.
+        var useEpochRecovery = _options.TransactionalId is null && _options.EnableIdempotence;
 
         return new BrokerSender(
             brokerId,
@@ -2531,8 +2532,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             version => Interlocked.CompareExchange(ref _produceApiVersion, version, -1),
             () => _accumulator.IsTransactional,
             EnsurePartitionInTransactionAsync,
-            bumpEpoch: isNonTransactional ? BumpEpochAsync : null,
-            getCurrentEpoch: isNonTransactional ? () => _producerEpoch : null,
+            bumpEpoch: useEpochRecovery ? BumpEpochAsync : null,
+            getCurrentEpoch: useEpochRecovery ? () => _producerEpoch : null,
             RerouteBatchToCurrentLeader,
             _interceptors is not null ? InvokeOnAcknowledgementForBatch : null,
             _logger);

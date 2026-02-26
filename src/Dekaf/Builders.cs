@@ -151,8 +151,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// require idempotence for correctness.
     /// </para>
     /// </summary>
-    /// <param name="enable">Whether to enable idempotence. Default is <c>true</c>.</param>
-    public ProducerBuilder<TKey, TValue> WithIdempotence(bool enable = true)
+    /// <param name="enable">Whether to enable idempotence.</param>
+    public ProducerBuilder<TKey, TValue> WithIdempotence(bool enable)
     {
         _enableIdempotence = enable;
         return this;
@@ -591,6 +591,9 @@ public sealed class ProducerBuilder<TKey, TValue>
 
         if (_transactionalId is not null && !_enableIdempotence)
             throw new InvalidOperationException("Idempotence cannot be disabled when TransactionalId is set. Transactions require idempotence for correctness.");
+
+        if (_enableIdempotence && _acks == Acks.None)
+            throw new InvalidOperationException("Idempotence requires Acks.Leader or Acks.All. Acks.None is incompatible because the broker cannot acknowledge sequence numbers without sending a response.");
 
         var keySerializer = _keySerializer ?? GetDefaultSerializer<TKey>();
         var valueSerializer = _valueSerializer ?? GetDefaultSerializer<TValue>();
