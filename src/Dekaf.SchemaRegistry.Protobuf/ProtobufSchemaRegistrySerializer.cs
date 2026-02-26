@@ -80,7 +80,7 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
         var protoBytes = value.ToByteArray();
 
         // Calculate the varint-encoded message indexes size
-        var indexesSize = CalculateVarintArraySize(_messageIndexes);
+        var indexesSize = VarintEncoder.CalculateVarintArraySize(_messageIndexes);
 
         // Total size: magic byte + schema ID + indexes + message
         var totalSize = 1 + 4 + indexesSize + protoBytes.Length;
@@ -94,7 +94,7 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
 
         // Write message indexes as varints
         var offset = 5;
-        offset += WriteVarintArray(span.Slice(offset), _messageIndexes);
+        offset += VarintEncoder.WriteVarintArray(span.Slice(offset), _messageIndexes);
 
         // Write the protobuf message
         protoBytes.AsSpan().CopyTo(span.Slice(offset));
@@ -378,61 +378,6 @@ public sealed class ProtobufSchemaRegistrySerializer<T> : ISerializer<T>, IAsync
                 index++;
             }
         }
-    }
-
-    private static int CalculateVarintArraySize(int[] values)
-    {
-        // First, write the count of elements as varint
-        var size = CalculateVarintSize(values.Length);
-
-        // Then write each value as varint
-        foreach (var value in values)
-        {
-            size += CalculateVarintSize(value);
-        }
-
-        return size;
-    }
-
-    private static int CalculateVarintSize(int value)
-    {
-        var size = 1;
-        var v = (uint)value;
-        while (v >= 0x80)
-        {
-            size++;
-            v >>= 7;
-        }
-        return size;
-    }
-
-    private static int WriteVarintArray(Span<byte> span, int[] values)
-    {
-        var written = 0;
-
-        // Write the count first
-        written += WriteVarint(span.Slice(written), values.Length);
-
-        // Write each value
-        foreach (var value in values)
-        {
-            written += WriteVarint(span.Slice(written), value);
-        }
-
-        return written;
-    }
-
-    private static int WriteVarint(Span<byte> span, int value)
-    {
-        var written = 0;
-        var v = (uint)value;
-        while (v >= 0x80)
-        {
-            span[written++] = (byte)(v | 0x80);
-            v >>= 7;
-        }
-        span[written++] = (byte)v;
-        return written;
     }
 
     /// <inheritdoc />
