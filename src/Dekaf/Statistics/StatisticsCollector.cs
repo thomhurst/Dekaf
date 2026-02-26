@@ -233,7 +233,6 @@ internal sealed class ConsumerStatisticsCollector
     // Global counters
     private long _messagesConsumed;
     private long _bytesConsumed;
-    private int _rebalanceCount;
     private long _totalRebalances;
     private long _lastRebalanceDurationMs = -1;
     private long _totalRebalanceDurationMs;
@@ -274,11 +273,6 @@ internal sealed class ConsumerStatisticsCollector
         partitionSet.TryAdd(partition, 0);
     }
 
-    public void RecordRebalance()
-    {
-        Interlocked.Increment(ref _rebalanceCount);
-    }
-
     /// <summary>
     /// Records the start of a rebalance. Captures a high-resolution timestamp.
     /// </summary>
@@ -288,12 +282,21 @@ internal sealed class ConsumerStatisticsCollector
     }
 
     /// <summary>
+    /// Cancels a previously started rebalance timer without recording a completed rebalance.
+    /// Used when the group coordination did not result in an actual assignment change.
+    /// </summary>
+    public void CancelRebalanceStarted()
+    {
+        Interlocked.Exchange(ref _rebalanceStartTimestamp, 0);
+    }
+
+    /// <summary>
     /// Records the completion of a rebalance. Computes duration from the start timestamp,
     /// increments the total rebalance count, and accumulates total rebalance time.
     /// </summary>
     public void RecordRebalanceCompleted()
     {
-        var startTimestamp = Interlocked.Read(ref _rebalanceStartTimestamp);
+        var startTimestamp = Interlocked.Exchange(ref _rebalanceStartTimestamp, 0);
         if (startTimestamp == 0)
             return;
 
@@ -328,7 +331,7 @@ internal sealed class ConsumerStatisticsCollector
         partitionSet.TryAdd(partition, 0);
     }
 
-    public (long MessagesConsumed, long BytesConsumed, int RebalanceCount,
+    public (long MessagesConsumed, long BytesConsumed,
         long TotalRebalances, long? LastRebalanceDurationMs, long TotalRebalanceDurationMs,
         long FetchRequestsSent, long FetchResponsesReceived, double AvgFetchLatencyMs) GetGlobalStats()
     {
@@ -342,7 +345,6 @@ internal sealed class ConsumerStatisticsCollector
         return (
             Interlocked.Read(ref _messagesConsumed),
             Interlocked.Read(ref _bytesConsumed),
-            Volatile.Read(ref _rebalanceCount),
             Interlocked.Read(ref _totalRebalances),
             lastRebalanceMs >= 0 ? lastRebalanceMs : null,
             Interlocked.Read(ref _totalRebalanceDurationMs),

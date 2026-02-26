@@ -427,7 +427,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private ConsumerStatistics CollectStatistics()
     {
-        var (messagesConsumed, bytesConsumed, rebalanceCount,
+        var (messagesConsumed, bytesConsumed,
             totalRebalances, lastRebalanceDurationMs, totalRebalanceDurationMs,
             fetchRequestsSent, fetchResponsesReceived, avgFetchLatencyMs) = _statisticsCollector.GetGlobalStats();
 
@@ -451,7 +451,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             Timestamp = DateTimeOffset.UtcNow,
             MessagesConsumed = messagesConsumed,
             BytesConsumed = bytesConsumed,
-            RebalanceCount = rebalanceCount,
             TotalRebalances = totalRebalances,
             LastRebalanceDurationMs = lastRebalanceDurationMs,
             TotalRebalanceDurationMs = totalRebalanceDurationMs,
@@ -1716,7 +1715,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
             if (_subscription.Count > 0 && _coordinator is not null)
             {
-                // Record rebalance start before the group coordination begins
+                // Capture timestamp before group coordination so we can measure
+                // rebalance duration if an assignment change actually occurs.
                 _statisticsCollector.RecordRebalanceStarted();
 
                 await _coordinator.EnsureActiveGroupAsync(_subscription, cancellationToken).ConfigureAwait(false);
@@ -1776,11 +1776,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     }
                 }
 
-                // Track rebalance
+                // Track rebalance duration or cancel the timer
                 if (assignmentChanged)
                 {
-                    _statisticsCollector.RecordRebalance();
                     _statisticsCollector.RecordRebalanceCompleted();
+                }
+                else
+                {
+                    _statisticsCollector.CancelRebalanceStarted();
                 }
 
                 // Initialize positions for new partitions
