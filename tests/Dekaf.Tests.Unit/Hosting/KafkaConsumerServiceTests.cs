@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Dekaf.Consumer;
+using Dekaf.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 
@@ -95,10 +96,14 @@ public sealed class KafkaConsumerServiceTests
         consumer.ConsumeAsync(Arg.Any<CancellationToken>())
             .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
 
-        var service = new TestConsumerService(consumer, ["topic-a"]);
+        var options = new KafkaConsumerServiceOptions
+        {
+            DrainOnShutdown = false
+        };
+        var service = new TestConsumerService(consumer, ["topic-a"], options);
 
         await service.StartAsync(CancellationToken.None);
-        await Task.Delay(50);
+        await WaitForSubscribeAsync(consumer);
         await service.StopAsync(CancellationToken.None);
 
         await consumer.Received(1).CommitAsync(Arg.Any<CancellationToken>());
@@ -113,10 +118,12 @@ public sealed class KafkaConsumerServiceTests
         consumer.CommitAsync(Arg.Any<CancellationToken>())
             .Returns(_ => throw new InvalidOperationException("Commit failed"));
 
-        var service = new TestConsumerService(consumer, ["topic-a"]);
+        // DrainOnShutdown = false: this test is about commit failure, not drain behavior
+        var options = new KafkaConsumerServiceOptions { DrainOnShutdown = false };
+        var service = new TestConsumerService(consumer, ["topic-a"], options);
 
         await service.StartAsync(CancellationToken.None);
-        await Task.Delay(50);
+        await WaitForSubscribeAsync(consumer);
 
         // StopAsync should not throw even if commit fails
         var act = async () => await service.StopAsync(CancellationToken.None);
@@ -126,7 +133,208 @@ public sealed class KafkaConsumerServiceTests
 
     #endregion
 
+    #region Graceful Shutdown
+
+    [Test]
+    public async Task StopAsync_DrainOnShutdownTrue_DrainsBufferedMessages()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
+
+        // Set up ConsumeOneAsync to return one message then null (buffer empty)
+        var callCount = 0;
+        consumer.ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var count = Interlocked.Increment(ref callCount);
+                if (count <= 2)
+                {
+                    return new ValueTask<ConsumeResult<string, string>?>(
+                        new ConsumeResult<string, string>(
+                            topic: "topic-a",
+                            partition: 0,
+                            offset: count - 1,
+                            keyData: default,
+                            isKeyNull: true,
+                            valueData: default,
+                            isValueNull: true,
+                            headers: null,
+                            timestamp: default,
+                            timestampType: TimestampType.NotAvailable,
+                            leaderEpoch: null,
+                            keyDeserializer: null,
+                            valueDeserializer: null));
+                }
+                return new ValueTask<ConsumeResult<string, string>?>((ConsumeResult<string, string>?)null);
+            });
+
+        var options = new KafkaConsumerServiceOptions
+        {
+            DrainOnShutdown = true,
+            ShutdownTimeout = TimeSpan.FromSeconds(5)
+        };
+        var service = new TestConsumerService(consumer, ["topic-a"], options);
+
+        await service.StartAsync(CancellationToken.None);
+        await WaitForSubscribeAsync(consumer);
+        await service.StopAsync(CancellationToken.None);
+
+        // The drain should have processed 2 messages via ConsumeOneAsync
+        await Assert.That(service.ProcessedMessages).Count().IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task StopAsync_DrainOnShutdownFalse_SkipsDrain()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
+
+        var options = new KafkaConsumerServiceOptions
+        {
+            DrainOnShutdown = false,
+            ShutdownTimeout = TimeSpan.FromSeconds(5)
+        };
+        var service = new TestConsumerService(consumer, ["topic-a"], options);
+
+        await service.StartAsync(CancellationToken.None);
+        await WaitForSubscribeAsync(consumer);
+        await service.StopAsync(CancellationToken.None);
+
+        // ConsumeOneAsync should never be called when drain is disabled
+        await consumer.DidNotReceive().ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task StopAsync_DrainOnShutdown_CommitsOffsetsAfterDrain()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
+
+        // Buffer returns null immediately (no buffered messages)
+        consumer.ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<ConsumeResult<string, string>?>((ConsumeResult<string, string>?)null));
+
+        var options = new KafkaConsumerServiceOptions
+        {
+            DrainOnShutdown = true,
+            ShutdownTimeout = TimeSpan.FromSeconds(5)
+        };
+        var service = new TestConsumerService(consumer, ["topic-a"], options);
+
+        await service.StartAsync(CancellationToken.None);
+        await WaitForSubscribeAsync(consumer);
+        await service.StopAsync(CancellationToken.None);
+
+        // CommitAsync should be called once (the final commit after drain)
+        await consumer.Received(1).CommitAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task StopAsync_DrainTimeoutElapsed_CompletesAndCommits()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        consumer.ConsumeAsync(Arg.Any<CancellationToken>())
+            .Returns(callInfo => WaitForCancellation(callInfo.ArgAt<CancellationToken>(0)));
+
+        // ConsumeOneAsync keeps returning messages indefinitely (buffer never empties)
+        consumer.ConsumeOneAsync(Arg.Any<TimeSpan>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                callInfo.ArgAt<CancellationToken>(1).ThrowIfCancellationRequested();
+                return new ValueTask<ConsumeResult<string, string>?>(
+                    new ConsumeResult<string, string>(
+                        topic: "topic-a",
+                        partition: 0,
+                        offset: 0,
+                        keyData: default,
+                        isKeyNull: true,
+                        valueData: default,
+                        isValueNull: true,
+                        headers: null,
+                        timestamp: default,
+                        timestampType: TimestampType.NotAvailable,
+                        leaderEpoch: null,
+                        keyDeserializer: null,
+                        valueDeserializer: null));
+            });
+
+        var options = new KafkaConsumerServiceOptions
+        {
+            DrainOnShutdown = true,
+            // Use 100ms to avoid spinning CPU for a full second
+            ShutdownTimeout = TimeSpan.FromMilliseconds(100)
+        };
+        var service = new TestConsumerService(consumer, ["topic-a"], options);
+
+        await service.StartAsync(CancellationToken.None);
+        await WaitForSubscribeAsync(consumer);
+
+        // StopAsync should complete within a reasonable time despite infinite messages
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var stopTask = service.StopAsync(CancellationToken.None);
+        var completedTask = await Task.WhenAny(stopTask, Task.Delay(Timeout.Infinite, timeoutCts.Token));
+
+        await Assert.That(completedTask).IsEqualTo(stopTask);
+
+        // Observe any exceptions from stopTask to prevent unobserved task exception
+        await stopTask;
+
+        // CommitAsync should still be called after drain times out
+        await consumer.Received(1).CommitAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Test]
+    public async Task KafkaConsumerServiceOptions_DefaultValues()
+    {
+        var options = new KafkaConsumerServiceOptions();
+
+        await Assert.That(options.ShutdownTimeout).IsEqualTo(TimeSpan.FromSeconds(30));
+        await Assert.That(options.DrainOnShutdown).IsTrue();
+    }
+
+    [Test]
+    public async Task KafkaConsumerServiceOptions_CustomValues()
+    {
+        var options = new KafkaConsumerServiceOptions
+        {
+            ShutdownTimeout = TimeSpan.FromSeconds(10),
+            DrainOnShutdown = false
+        };
+
+        await Assert.That(options.ShutdownTimeout).IsEqualTo(TimeSpan.FromSeconds(10));
+        await Assert.That(options.DrainOnShutdown).IsFalse();
+    }
+
+    #endregion
+
     #region Helpers
+
+    /// <summary>
+    /// Polls until Subscribe() has been called on the mock consumer, indicating
+    /// that ExecuteAsync has started. Uses deterministic synchronization instead
+    /// of a fixed Task.Delay.
+    /// </summary>
+    private static async Task WaitForSubscribeAsync(IKafkaConsumer<string, string> consumer)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (!timeout.IsCancellationRequested)
+        {
+            try
+            {
+                consumer.Received(1).Subscribe(Arg.Any<string[]>());
+                return;
+            }
+            catch (NSubstitute.Exceptions.ReceivedCallsException)
+            {
+                await Task.Delay(10, timeout.Token);
+            }
+        }
+
+        throw new TimeoutException("ExecuteAsync did not call Subscribe() within timeout");
+    }
 
     private static async IAsyncEnumerable<ConsumeResult<string, string>> WaitForCancellation(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -171,8 +379,9 @@ public sealed class KafkaConsumerServiceTests
     {
         public List<ConsumeResult<string, string>> ProcessedMessages { get; } = [];
 
-        public TestConsumerService(IKafkaConsumer<string, string> consumer, string[] topics)
-            : base(consumer, topics)
+        public TestConsumerService(IKafkaConsumer<string, string> consumer, string[] topics,
+            KafkaConsumerServiceOptions? options = null)
+            : base(consumer, topics, options)
         {
         }
 
@@ -208,8 +417,9 @@ public sealed class KafkaConsumerServiceTests
     {
         private readonly string[] _topics;
 
-        protected TestableKafkaConsumerService(IKafkaConsumer<string, string> consumer, string[] topics)
-            : base(consumer, NullLogger.Instance)
+        protected TestableKafkaConsumerService(IKafkaConsumer<string, string> consumer, string[] topics,
+            KafkaConsumerServiceOptions? options = null)
+            : base(consumer, NullLogger.Instance, serviceOptions: options)
         {
             _topics = topics;
         }

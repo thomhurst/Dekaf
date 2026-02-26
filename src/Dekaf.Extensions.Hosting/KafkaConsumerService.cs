@@ -21,6 +21,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     private readonly DeadLetterOptions? _deadLetterOptions;
     private readonly IDeadLetterPolicy<TKey, TValue>? _deadLetterPolicy;
     private readonly IRetryPolicy? _retryPolicy;
+    private readonly KafkaConsumerServiceOptions _serviceOptions;
     private IKafkaProducer<byte[]?, byte[]?>? _dlqProducer;
 
     /// <summary>
@@ -30,16 +31,19 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     /// <param name="logger">The logger instance.</param>
     /// <param name="deadLetterOptions">Optional dead letter queue configuration.</param>
     /// <param name="retryPolicy">Optional retry policy for message processing failures.</param>
+    /// <param name="serviceOptions">Optional shutdown and service behavior configuration.</param>
     protected KafkaConsumerService(
         IKafkaConsumer<TKey, TValue> consumer,
         ILogger logger,
         DeadLetterOptions? deadLetterOptions = null,
-        IRetryPolicy? retryPolicy = null)
+        IRetryPolicy? retryPolicy = null,
+        KafkaConsumerServiceOptions? serviceOptions = null)
     {
         _consumer = consumer;
         _logger = logger;
         _deadLetterOptions = deadLetterOptions;
         _retryPolicy = retryPolicy;
+        _serviceOptions = serviceOptions ?? new KafkaConsumerServiceOptions();
         if (deadLetterOptions is not null)
         {
             _deadLetterPolicy = new DefaultDeadLetterPolicy<TKey, TValue>(deadLetterOptions);
@@ -119,17 +123,67 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     {
         LogStoppingConsumerService();
 
-        // Commit any pending offsets
+        // First, cancel ExecuteAsync to stop the normal consume loop
+        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+
+        // Then drain any remaining buffered messages
+        if (_serviceOptions.DrainOnShutdown)
+        {
+            await DrainBufferedMessagesAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        // Final offset commit before disposal
         try
         {
             await _consumer.CommitAsync(cancellationToken).ConfigureAwait(false);
+            LogFinalOffsetCommitSucceeded();
         }
         catch (Exception ex)
         {
             LogCommitOffsetsFailed(ex);
         }
+    }
 
-        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+    private async Task DrainBufferedMessagesAsync(CancellationToken cancellationToken)
+    {
+        LogDrainingBufferedMessages();
+
+        using var drainCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        drainCts.CancelAfter(_serviceOptions.ShutdownTimeout);
+        var drainedCount = 0;
+
+        try
+        {
+            // Use ConsumeOneAsync to drain remaining buffered messages
+            // with a short timeout to avoid blocking if the buffer is empty
+            while (!drainCts.Token.IsCancellationRequested)
+            {
+                var result = await _consumer.ConsumeOneAsync(
+                    TimeSpan.FromMilliseconds(100),
+                    drainCts.Token).ConfigureAwait(false);
+
+                if (result is null)
+                {
+                    // Buffer is empty, draining complete
+                    break;
+                }
+
+                drainedCount++;
+                await ProcessWithRetriesAsync(result.Value, drainCts.Token).ConfigureAwait(false);
+
+                LogDrainProgress(drainedCount);
+            }
+
+            LogDrainCompleted(drainedCount);
+        }
+        catch (OperationCanceledException) when (drainCts.Token.IsCancellationRequested)
+        {
+            LogDrainTimedOut(_serviceOptions.ShutdownTimeout, drainedCount);
+        }
+        catch (Exception ex)
+        {
+            LogDrainFailed(ex);
+        }
     }
 
     public override void Dispose()
@@ -170,14 +224,14 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
         try
         {
             _consumer.DisposeAsync().AsTask()
-                .WaitAsync(TimeSpan.FromSeconds(30))
+                .WaitAsync(_serviceOptions.ShutdownTimeout)
                 .ConfigureAwait(false)
                 .GetAwaiter()
                 .GetResult();
         }
         catch (TimeoutException)
         {
-            LogConsumerDisposalTimedOut();
+            LogConsumerDisposalTimedOut(_serviceOptions.ShutdownTimeout);
         }
         catch (Exception ex)
         {
@@ -362,8 +416,26 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to commit offsets during shutdown")]
     private partial void LogCommitOffsetsFailed(Exception ex);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Consumer disposal timed out after 30 seconds")]
-    private partial void LogConsumerDisposalTimedOut();
+    [LoggerMessage(Level = LogLevel.Information, Message = "Final offset commit succeeded during shutdown")]
+    private partial void LogFinalOffsetCommitSucceeded();
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Draining buffered messages before shutdown")]
+    private partial void LogDrainingBufferedMessages();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Drain progress: {DrainedCount} message(s) processed so far")]
+    private partial void LogDrainProgress(int drainedCount);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Drain completed, {DrainedCount} buffered message(s) processed")]
+    private partial void LogDrainCompleted(int drainedCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Drain timed out after {Timeout}, {DrainedCount} message(s) were processed before timeout")]
+    private partial void LogDrainTimedOut(TimeSpan timeout, int drainedCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Error during drain of buffered messages")]
+    private partial void LogDrainFailed(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Consumer disposal timed out after {Timeout}")]
+    private partial void LogConsumerDisposalTimedOut(TimeSpan timeout);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Error during consumer disposal")]
     private partial void LogConsumerDisposalError(Exception ex);
