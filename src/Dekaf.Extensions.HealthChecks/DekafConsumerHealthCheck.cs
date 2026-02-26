@@ -27,6 +27,7 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
     {
         ArgumentNullException.ThrowIfNull(consumer);
         ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
         _consumer = consumer;
         _options = options;
     }
@@ -66,7 +67,8 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
                     "Consumer has not yet consumed any messages.",
                     data: new Dictionary<string, object>
                     {
-                        ["PartitionCount"] = assignment.Count
+                        ["AssignedPartitionCount"] = assignment.Count,
+                        ["MeasuredPartitionCount"] = 0
                     });
             }
 
@@ -103,7 +105,8 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
             var data = new Dictionary<string, object>(lagData)
             {
                 ["MaxLag"] = maxLag,
-                ["PartitionCount"] = assignment.Count
+                ["AssignedPartitionCount"] = assignment.Count,
+                ["MeasuredPartitionCount"] = partitionsWithPositions.Count
             };
 
             if (maxLag >= _options.UnhealthyThreshold)

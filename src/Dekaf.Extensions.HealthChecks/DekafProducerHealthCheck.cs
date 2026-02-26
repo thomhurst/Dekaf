@@ -4,10 +4,22 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 namespace Dekaf.Extensions.HealthChecks;
 
 /// <summary>
-/// Health check that verifies the producer can reach Kafka brokers by flushing pending messages.
+/// Health check that flushes any pending producer messages and reports delivery success or failure.
 /// Reports <see cref="HealthStatus.Healthy"/> when the producer can successfully flush,
 /// and <see cref="HealthStatus.Unhealthy"/> when the flush fails or times out.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <b>Limitation:</b> This health check only validates that already-queued messages can be delivered.
+/// <see cref="IKafkaProducer{TKey, TValue}.FlushAsync"/> returns immediately when no messages are pending,
+/// even if all brokers are offline. This means the check will report <see cref="HealthStatus.Healthy"/>
+/// when the producer has an empty queue, regardless of actual broker connectivity.
+/// </para>
+/// <para>
+/// For a true broker connectivity check, use <see cref="DekafBrokerHealthCheck"/> with
+/// <see cref="Dekaf.Admin.IAdminClient.DescribeClusterAsync"/>, which actively queries the cluster metadata.
+/// </para>
+/// </remarks>
 /// <typeparam name="TKey">The producer key type.</typeparam>
 /// <typeparam name="TValue">The producer value type.</typeparam>
 public sealed class DekafProducerHealthCheck<TKey, TValue> : IHealthCheck

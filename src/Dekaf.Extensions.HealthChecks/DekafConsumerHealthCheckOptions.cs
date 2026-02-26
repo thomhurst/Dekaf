@@ -24,4 +24,19 @@ public sealed class DekafConsumerHealthCheckOptions
     /// Default is 5 seconds.
     /// </summary>
     public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Validates that the options are consistent.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <see cref="DegradedThreshold"/> is greater than or equal to <see cref="UnhealthyThreshold"/>.
+    /// </exception>
+    public void Validate()
+    {
+        if (DegradedThreshold >= UnhealthyThreshold)
+        {
+            throw new ArgumentException(
+                $"DegradedThreshold ({DegradedThreshold}) must be less than UnhealthyThreshold ({UnhealthyThreshold}).");
+        }
+    }
 }

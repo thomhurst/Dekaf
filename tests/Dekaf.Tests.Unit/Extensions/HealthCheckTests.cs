@@ -156,7 +156,8 @@ public class HealthCheckTests
 
         await Assert.That(result.Status).IsEqualTo(HealthStatus.Degraded);
         await Assert.That(result.Description).Contains("has not yet consumed any messages");
-        await Assert.That(result.Data["PartitionCount"]).IsEqualTo(2);
+        await Assert.That(result.Data["AssignedPartitionCount"]).IsEqualTo(2);
+        await Assert.That(result.Data["MeasuredPartitionCount"]).IsEqualTo(0);
     }
 
     [Test]
@@ -237,6 +238,58 @@ public class HealthCheckTests
         await Assert.That(() => new DekafConsumerHealthCheck<string, string>(
             consumer, null!))
             .Throws<ArgumentNullException>();
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_DegradedThresholdEqualToUnhealthy_ThrowsArgumentException()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var options = new DekafConsumerHealthCheckOptions
+        {
+            DegradedThreshold = 1000,
+            UnhealthyThreshold = 1000
+        };
+
+        await Assert.That(() => new DekafConsumerHealthCheck<string, string>(consumer, options))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_DegradedThresholdGreaterThanUnhealthy_ThrowsArgumentException()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var options = new DekafConsumerHealthCheckOptions
+        {
+            DegradedThreshold = 10000,
+            UnhealthyThreshold = 1000
+        };
+
+        await Assert.That(() => new DekafConsumerHealthCheck<string, string>(consumer, options))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_PartialNullPositions_ReportsBothPartitionCounts()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var tp0 = new TopicPartition("test-topic", 0);
+        var tp1 = new TopicPartition("test-topic", 1);
+        var tp2 = new TopicPartition("test-topic", 2);
+        consumer.Assignment.Returns(new HashSet<TopicPartition> { tp0, tp1, tp2 });
+        consumer.GetPosition(tp0).Returns(90L);
+        consumer.GetPosition(tp1).Returns((long?)null);
+        consumer.GetPosition(tp2).Returns(95L);
+        consumer.QueryWatermarkOffsetsAsync(tp0, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
+        consumer.QueryWatermarkOffsetsAsync(tp2, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer, new DekafConsumerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext());
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Healthy);
+        await Assert.That(result.Data["AssignedPartitionCount"]).IsEqualTo(3);
+        await Assert.That(result.Data["MeasuredPartitionCount"]).IsEqualTo(2);
     }
 
     #endregion
