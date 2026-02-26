@@ -58,6 +58,10 @@ public class ConsumerStatisticsCollectorTests
         var stats = collector.GetGlobalStats();
         await Assert.That(stats.TotalRebalances).IsEqualTo(1);
         await Assert.That(stats.LastRebalanceDurationMs).IsNotNull();
+        // Intentionally permissive bounds for CI timing safety: the elapsed time between
+        // RecordRebalanceStarted() and RecordRebalanceCompleted() may round to 0 ms on fast
+        // machines or under heavy load. The meaningful assertions are IsNotNull() above and
+        // TotalRebalances == 1 above — those confirm a rebalance was actually recorded.
         await Assert.That(stats.LastRebalanceDurationMs!.Value).IsGreaterThanOrEqualTo(0);
         await Assert.That(stats.TotalRebalanceDurationMs).IsGreaterThanOrEqualTo(0);
     }
