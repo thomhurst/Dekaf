@@ -557,6 +557,14 @@ public sealed class ProducerBuilder<TKey, TValue>
         if (_bootstrapServers.Count == 0)
             throw new InvalidOperationException("Bootstrap servers must be specified. Call WithBootstrapServers() before Build().");
 
+        if (_compressionType == Protocol.Records.CompressionType.Brotli)
+            throw new NotSupportedException(
+                "Brotli compression (CompressionType.Brotli = 5) is not part of the Apache Kafka protocol specification. " +
+                "Standard Kafka brokers will reject produce requests using this compression type. " +
+                "Brotli is only supported for client-side use cases such as local storage or inter-service communication " +
+                "where both producer and consumer use Dekaf with the Dekaf.Compression.Brotli package installed. " +
+                "For standard Kafka broker communication, use Gzip, Snappy, Lz4, or Zstd instead.");
+
         var keySerializer = _keySerializer ?? GetDefaultSerializer<TKey>();
         var valueSerializer = _valueSerializer ?? GetDefaultSerializer<TValue>();
 

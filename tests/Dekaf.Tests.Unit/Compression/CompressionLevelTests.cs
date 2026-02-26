@@ -2,6 +2,7 @@ using System.Buffers;
 using System.IO.Compression;
 using System.Text;
 using Dekaf.Compression;
+using Dekaf.Compression.Brotli;
 using Dekaf.Compression.Lz4;
 using Dekaf.Compression.Zstd;
 using Dekaf.Protocol.Records;
@@ -189,6 +190,62 @@ public sealed class CompressionLevelTests
 
     #endregion
 
+    #region Brotli Compression Level Tests
+
+    [Test]
+    public async Task BrotliCompressionCodec_NoCompression_RoundTripPreservesData()
+    {
+        var codec = new BrotliCompressionCodec(CompressionLevel.NoCompression);
+        var result = CompressAndDecompress(codec);
+        await Assert.That(result).IsEquivalentTo(TestData);
+    }
+
+    [Test]
+    public async Task BrotliCompressionCodec_Optimal_RoundTripPreservesData()
+    {
+        var codec = new BrotliCompressionCodec(CompressionLevel.Optimal);
+        var result = CompressAndDecompress(codec);
+        await Assert.That(result).IsEquivalentTo(TestData);
+    }
+
+    [Test]
+    public async Task BrotliCompressionCodec_SmallestSize_RoundTripPreservesData()
+    {
+        var codec = new BrotliCompressionCodec(CompressionLevel.SmallestSize);
+        var result = CompressAndDecompress(codec);
+        await Assert.That(result).IsEquivalentTo(TestData);
+    }
+
+    [Test]
+    public async Task BrotliCompressionCodec_HighLevel_ProducesSmallerOutput()
+    {
+        var codecLow = new BrotliCompressionCodec(CompressionLevel.NoCompression);
+        var codecHigh = new BrotliCompressionCodec(CompressionLevel.SmallestSize);
+
+        var compressedLow = Compress(codecLow, TestData);
+        var compressedHigh = Compress(codecHigh, TestData);
+
+        await Assert.That(compressedHigh.Length).IsLessThanOrEqualTo(compressedLow.Length);
+    }
+
+    [Test]
+    public async Task BrotliCompressionCodec_DefaultConstructor_UsesDefaultLevel()
+    {
+        var codec = new BrotliCompressionCodec();
+        var result = CompressAndDecompress(codec);
+        await Assert.That(result).IsEquivalentTo(TestData);
+    }
+
+    [Test]
+    public async Task BrotliCompressionCodec_EnumCompressionLevel_Fastest()
+    {
+        var codec = new BrotliCompressionCodec(CompressionLevel.Fastest);
+        var result = CompressAndDecompress(codec);
+        await Assert.That(result).IsEquivalentTo(TestData);
+    }
+
+    #endregion
+
     #region Registry Extension Method Tests
 
     [Test]
@@ -302,6 +359,28 @@ public sealed class CompressionLevelTests
         await Assert.That(result).IsEquivalentTo(TestData);
     }
 
+    [Test]
+    public async Task AddBrotli_WithSmallestSize_RegistersWorkingCodec()
+    {
+        var registry = new CompressionCodecRegistry();
+        registry.AddBrotli(compressionLevel: CompressionLevel.SmallestSize);
+
+        var codec = registry.GetCodec(CompressionType.Brotli);
+        var result = CompressAndDecompress(codec);
+        await Assert.That(result).IsEquivalentTo(TestData);
+    }
+
+    [Test]
+    public async Task AddBrotli_WithDefaultLevel_RegistersWorkingCodec()
+    {
+        var registry = new CompressionCodecRegistry();
+        registry.AddBrotli();
+
+        var codec = registry.GetCodec(CompressionType.Brotli);
+        var result = CompressAndDecompress(codec);
+        await Assert.That(result).IsEquivalentTo(TestData);
+    }
+
     #endregion
 
     #region DefaultCompressionLevel Property Tests
@@ -394,6 +473,21 @@ public sealed class CompressionLevelTests
     {
         var compressor = new Lz4CompressionCodec(LZ4Level.L12_MAX);
         var decompressor = new Lz4CompressionCodec(); // default level (L00_FAST)
+
+        var compressedBuffer = new ArrayBufferWriter<byte>();
+        compressor.Compress(new ReadOnlySequence<byte>(TestData), compressedBuffer);
+
+        var decompressedBuffer = new ArrayBufferWriter<byte>();
+        decompressor.Decompress(new ReadOnlySequence<byte>(compressedBuffer.WrittenMemory), decompressedBuffer);
+
+        await Assert.That(decompressedBuffer.WrittenSpan.ToArray()).IsEquivalentTo(TestData);
+    }
+
+    [Test]
+    public async Task BrotliCompressionCodec_CompressWithSmallestSize_DecompressWithDefaultCodec()
+    {
+        var compressor = new BrotliCompressionCodec(CompressionLevel.SmallestSize);
+        var decompressor = new BrotliCompressionCodec(); // default level (Fastest)
 
         var compressedBuffer = new ArrayBufferWriter<byte>();
         compressor.Compress(new ReadOnlySequence<byte>(TestData), compressedBuffer);
