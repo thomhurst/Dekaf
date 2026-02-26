@@ -21,9 +21,20 @@ public sealed class ConsumerStatistics
     public long BytesConsumed { get; init; }
 
     /// <summary>
-    /// Total number of rebalances that have occurred.
+    /// Total number of rebalances that have completed.
     /// </summary>
-    public int RebalanceCount { get; init; }
+    public long TotalRebalances { get; init; }
+
+    /// <summary>
+    /// Duration of the most recent rebalance in milliseconds.
+    /// Returns null if no rebalance has completed yet.
+    /// </summary>
+    public long? LastRebalanceDurationMs { get; init; }
+
+    /// <summary>
+    /// Cumulative time spent rebalancing in milliseconds.
+    /// </summary>
+    public long TotalRebalanceDurationMs { get; init; }
 
     /// <summary>
     /// Number of partitions currently assigned.

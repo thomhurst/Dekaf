@@ -427,8 +427,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private ConsumerStatistics CollectStatistics()
     {
-        var (messagesConsumed, bytesConsumed, rebalanceCount,
-            fetchRequestsSent, fetchResponsesReceived, avgFetchLatencyMs) = _statisticsCollector.GetGlobalStats();
+        var stats = _statisticsCollector.GetGlobalStats();
 
         // Calculate total lag
         long? totalLag = null;
@@ -448,17 +447,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         return new ConsumerStatistics
         {
             Timestamp = DateTimeOffset.UtcNow,
-            MessagesConsumed = messagesConsumed,
-            BytesConsumed = bytesConsumed,
-            RebalanceCount = rebalanceCount,
+            MessagesConsumed = stats.MessagesConsumed,
+            BytesConsumed = stats.BytesConsumed,
+            TotalRebalances = stats.TotalRebalances,
+            LastRebalanceDurationMs = stats.LastRebalanceDurationMs,
+            TotalRebalanceDurationMs = stats.TotalRebalanceDurationMs,
             AssignedPartitions = _assignment.Count,
             PausedPartitions = _paused.Count,
             TotalLag = totalLag,
             PrefetchedMessages = _pendingFetches.Count,
             PrefetchedBytes = Interlocked.Read(ref _prefetchedBytes),
-            FetchRequestsSent = fetchRequestsSent,
-            FetchResponsesReceived = fetchResponsesReceived,
-            AvgFetchLatencyMs = avgFetchLatencyMs,
+            FetchRequestsSent = stats.FetchRequestsSent,
+            FetchResponsesReceived = stats.FetchResponsesReceived,
+            AvgFetchLatencyMs = stats.AvgFetchLatencyMs,
             GroupId = _options.GroupId,
             MemberId = _coordinator?.MemberId,
             GenerationId = _coordinator?.GenerationId,
@@ -1712,6 +1713,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
             if (_subscription.Count > 0 && _coordinator is not null)
             {
+                // Capture timestamp before group coordination so we can measure
+                // rebalance duration if an assignment change actually occurs.
+                _statisticsCollector.RecordRebalanceStarted();
+
                 await _coordinator.EnsureActiveGroupAsync(_subscription, cancellationToken).ConfigureAwait(false);
 
                 // Check for new partitions that need initialization
@@ -1769,10 +1774,14 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     }
                 }
 
-                // Track rebalance
+                // Track rebalance duration or cancel the timer
                 if (assignmentChanged)
                 {
-                    _statisticsCollector.RecordRebalance();
+                    _statisticsCollector.RecordRebalanceCompleted();
+                }
+                else
+                {
+                    _statisticsCollector.CancelRebalanceStarted();
                 }
 
                 // Initialize positions for new partitions
