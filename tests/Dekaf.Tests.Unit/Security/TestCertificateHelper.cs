@@ -5,10 +5,9 @@ namespace Dekaf.Tests.Unit.Security;
 
 /// <summary>
 /// Shared helper for TLS certificate tests.
-/// Uses RSA.Create(2048) to generate a fresh key per certificate creation.
-/// Each call gets its own independent RSA key — no caching, no shared RSAParameters —
-/// which avoids the OpenSSL "iqmp not inverse of q" validation errors that occur
-/// when a single hard-coded key with invalid CRT parameters is reused on Linux.
+/// Each certificate creation generates a fresh RSA 2048-bit key to avoid
+/// OpenSSL "iqmp not inverse of q" errors caused by sharing RSAParameters
+/// across concurrent RSA instances on Linux.
 /// </summary>
 internal static class TestCertificateHelper
 {
@@ -35,7 +34,8 @@ internal static class TestCertificateHelper
     }
 
     /// <summary>
-    /// Creates a fresh RSA 2048-bit key.
+    /// Creates a fresh RSA 2048-bit key. Each call generates its own key material
+    /// to avoid OpenSSL CRT validation issues when sharing parameters across instances.
     /// Caller is responsible for disposing the returned instance.
     /// </summary>
     internal static RSA CreateRsaKey()
