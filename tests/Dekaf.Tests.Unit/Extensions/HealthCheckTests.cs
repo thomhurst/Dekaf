@@ -36,7 +36,7 @@ public class HealthCheckTests
         var tp = new TopicPartition("test-topic", 0);
         consumer.Assignment.Returns(new HashSet<TopicPartition> { tp });
         consumer.GetPosition(tp).Returns(90L);
-        consumer.GetWatermarkOffsets(tp).Returns(new WatermarkOffsets(0, 100));
+        consumer.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
 
         var healthCheck = new DekafConsumerHealthCheck<string, string>(
             consumer, new DekafConsumerHealthCheckOptions());
@@ -54,7 +54,7 @@ public class HealthCheckTests
         var tp = new TopicPartition("test-topic", 0);
         consumer.Assignment.Returns(new HashSet<TopicPartition> { tp });
         consumer.GetPosition(tp).Returns(0L);
-        consumer.GetWatermarkOffsets(tp).Returns(new WatermarkOffsets(0, 5000));
+        consumer.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 5000));
 
         var options = new DekafConsumerHealthCheckOptions
         {
@@ -77,7 +77,7 @@ public class HealthCheckTests
         var tp = new TopicPartition("test-topic", 0);
         consumer.Assignment.Returns(new HashSet<TopicPartition> { tp });
         consumer.GetPosition(tp).Returns(0L);
-        consumer.GetWatermarkOffsets(tp).Returns(new WatermarkOffsets(0, 50000));
+        consumer.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 50000));
 
         var options = new DekafConsumerHealthCheckOptions
         {
@@ -101,9 +101,9 @@ public class HealthCheckTests
         var tp1 = new TopicPartition("test-topic", 1);
         consumer.Assignment.Returns(new HashSet<TopicPartition> { tp0, tp1 });
         consumer.GetPosition(tp0).Returns(90L);
-        consumer.GetWatermarkOffsets(tp0).Returns(new WatermarkOffsets(0, 100));
+        consumer.QueryWatermarkOffsetsAsync(tp0, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
         consumer.GetPosition(tp1).Returns(0L);
-        consumer.GetWatermarkOffsets(tp1).Returns(new WatermarkOffsets(0, 2000));
+        consumer.QueryWatermarkOffsetsAsync(tp1, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 2000));
 
         var options = new DekafConsumerHealthCheckOptions
         {
@@ -120,16 +120,15 @@ public class HealthCheckTests
     }
 
     [Test]
-    public async Task ConsumerHealthCheck_NullPositionOrWatermarks_SkipsPartition()
+    public async Task ConsumerHealthCheck_NullPosition_SkipsPartition()
     {
         var consumer = Substitute.For<IKafkaConsumer<string, string>>();
         var tp0 = new TopicPartition("test-topic", 0);
         var tp1 = new TopicPartition("test-topic", 1);
         consumer.Assignment.Returns(new HashSet<TopicPartition> { tp0, tp1 });
         consumer.GetPosition(tp0).Returns((long?)null);
-        consumer.GetWatermarkOffsets(tp0).Returns((WatermarkOffsets?)null);
         consumer.GetPosition(tp1).Returns(95L);
-        consumer.GetWatermarkOffsets(tp1).Returns(new WatermarkOffsets(0, 100));
+        consumer.QueryWatermarkOffsetsAsync(tp1, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
 
         var healthCheck = new DekafConsumerHealthCheck<string, string>(
             consumer, new DekafConsumerHealthCheckOptions());
@@ -162,7 +161,7 @@ public class HealthCheckTests
         var tp = new TopicPartition("test-topic", 0);
         consumer.Assignment.Returns(new HashSet<TopicPartition> { tp });
         consumer.GetPosition(tp).Returns(200L);
-        consumer.GetWatermarkOffsets(tp).Returns(new WatermarkOffsets(0, 100));
+        consumer.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>()).Returns(new WatermarkOffsets(0, 100));
 
         var healthCheck = new DekafConsumerHealthCheck<string, string>(
             consumer, new DekafConsumerHealthCheckOptions());
@@ -287,10 +286,7 @@ public class HealthCheckTests
                 ]
             });
 
-        var options = new DekafBrokerHealthCheckOptions
-        {
-            BootstrapServers = "broker1:9092,broker2:9092"
-        };
+        var options = new DekafBrokerHealthCheckOptions();
 
         var healthCheck = new DekafBrokerHealthCheck(adminClient, options);
 
@@ -313,10 +309,7 @@ public class HealthCheckTests
                 Nodes = []
             });
 
-        var options = new DekafBrokerHealthCheckOptions
-        {
-            BootstrapServers = "broker1:9092"
-        };
+        var options = new DekafBrokerHealthCheckOptions();
 
         var healthCheck = new DekafBrokerHealthCheck(adminClient, options);
 
@@ -334,10 +327,7 @@ public class HealthCheckTests
             .Returns(_ => new ValueTask<ClusterDescription>(
                 Task.FromException<ClusterDescription>(new InvalidOperationException("Connection refused"))));
 
-        var options = new DekafBrokerHealthCheckOptions
-        {
-            BootstrapServers = "broker1:9092"
-        };
+        var options = new DekafBrokerHealthCheckOptions();
 
         var healthCheck = new DekafBrokerHealthCheck(adminClient, options);
 
@@ -362,7 +352,6 @@ public class HealthCheckTests
 
         var options = new DekafBrokerHealthCheckOptions
         {
-            BootstrapServers = "broker1:9092",
             Timeout = TimeSpan.FromMilliseconds(50)
         };
 
@@ -377,10 +366,7 @@ public class HealthCheckTests
     [Test]
     public async Task BrokerHealthCheck_NullAdminClient_ThrowsArgumentNullException()
     {
-        var options = new DekafBrokerHealthCheckOptions
-        {
-            BootstrapServers = "broker1:9092"
-        };
+        var options = new DekafBrokerHealthCheckOptions();
 
         await Assert.That(() => new DekafBrokerHealthCheck(null!, options))
             .Throws<ArgumentNullException>();
@@ -460,10 +446,7 @@ public class HealthCheckTests
         services.AddSingleton(Substitute.For<IAdminClient>());
 
         services.AddHealthChecks()
-            .AddDekafBrokerHealthCheck(new DekafBrokerHealthCheckOptions
-            {
-                BootstrapServers = "localhost:9092"
-            });
+            .AddDekafBrokerHealthCheck();
 
         var provider = services.BuildServiceProvider();
         var options = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<HealthCheckServiceOptions>>();
@@ -473,13 +456,18 @@ public class HealthCheckTests
     }
 
     [Test]
-    public async Task AddDekafBrokerHealthCheck_NullOptions_ThrowsArgumentNullException()
+    public async Task AddDekafBrokerHealthCheck_CustomName_UsesProvidedName()
     {
         var services = new ServiceCollection();
+        services.AddSingleton(Substitute.For<IAdminClient>());
 
-        await Assert.That(() => services.AddHealthChecks()
-            .AddDekafBrokerHealthCheck(null!))
-            .Throws<ArgumentNullException>();
+        services.AddHealthChecks()
+            .AddDekafBrokerHealthCheck(name: "my-broker-check");
+
+        var provider = services.BuildServiceProvider();
+        var options = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<HealthCheckServiceOptions>>();
+
+        await Assert.That(options.Value.Registrations.First().Name).IsEqualTo("my-broker-check");
     }
 
     [Test]
@@ -493,10 +481,7 @@ public class HealthCheckTests
         services.AddHealthChecks()
             .AddDekafConsumerHealthCheck<string, string>()
             .AddDekafProducerHealthCheck<string, string>()
-            .AddDekafBrokerHealthCheck(new DekafBrokerHealthCheckOptions
-            {
-                BootstrapServers = "localhost:9092"
-            });
+            .AddDekafBrokerHealthCheck();
 
         var provider = services.BuildServiceProvider();
         var options = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<HealthCheckServiceOptions>>();
@@ -528,10 +513,7 @@ public class HealthCheckTests
     [Test]
     public async Task BrokerHealthCheckOptions_DefaultTimeout()
     {
-        var options = new DekafBrokerHealthCheckOptions
-        {
-            BootstrapServers = "localhost:9092"
-        };
+        var options = new DekafBrokerHealthCheckOptions();
 
         await Assert.That(options.Timeout).IsEqualTo(TimeSpan.FromSeconds(5));
     }

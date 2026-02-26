@@ -92,18 +92,18 @@ public static class HealthCheckExtensions
     /// <returns>The <see cref="IHealthChecksBuilder"/> for chaining.</returns>
     public static IHealthChecksBuilder AddDekafBrokerHealthCheck(
         this IHealthChecksBuilder builder,
-        DekafBrokerHealthCheckOptions options,
         string name = "dekaf-broker",
         HealthStatus? failureStatus = null,
-        IEnumerable<string>? tags = null)
+        IEnumerable<string>? tags = null,
+        DekafBrokerHealthCheckOptions? options = null)
     {
-        ArgumentNullException.ThrowIfNull(options);
+        var healthCheckOptions = options ?? new DekafBrokerHealthCheckOptions();
 
         return builder.Add(new HealthCheckRegistration(
             name,
             sp => new DekafBrokerHealthCheck(
                 sp.GetRequiredService<IAdminClient>(),
-                options),
+                healthCheckOptions),
             failureStatus,
             tags));
     }

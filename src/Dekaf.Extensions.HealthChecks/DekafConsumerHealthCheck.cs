@@ -1,5 +1,4 @@
 using Dekaf.Consumer;
-using Dekaf.Producer;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 namespace Dekaf.Extensions.HealthChecks;
@@ -51,14 +50,15 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
             foreach (var topicPartition in assignment)
             {
                 var position = _consumer.GetPosition(topicPartition);
-                var watermarks = _consumer.GetWatermarkOffsets(topicPartition);
 
-                if (position is null || watermarks is null)
+                if (position is null)
                 {
                     continue;
                 }
 
-                var lag = watermarks.Value.High - position.Value;
+                var watermarks = await _consumer.QueryWatermarkOffsetsAsync(topicPartition, cancellationToken).ConfigureAwait(false);
+
+                var lag = watermarks.High - position.Value;
                 if (lag < 0)
                 {
                     lag = 0;
