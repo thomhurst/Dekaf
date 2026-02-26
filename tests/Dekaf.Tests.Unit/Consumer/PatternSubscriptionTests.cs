@@ -73,7 +73,7 @@ public sealed class PatternSubscriptionTests
             .Build();
 
         // Assign partitions first
-        consumer.Assign(new Dekaf.Producer.TopicPartition("topic-a", 0));
+        consumer.Assign(new TopicPartition("topic-a", 0));
         await Assert.That(consumer.Assignment.Count).IsEqualTo(1);
 
         // Subscribe with filter - should clear assignment

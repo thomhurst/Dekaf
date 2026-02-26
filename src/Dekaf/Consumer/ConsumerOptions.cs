@@ -366,15 +366,15 @@ public interface IRebalanceListener
     /// <summary>
     /// Called when partitions are assigned.
     /// </summary>
-    ValueTask OnPartitionsAssignedAsync(IEnumerable<Producer.TopicPartition> partitions, CancellationToken cancellationToken);
+    ValueTask OnPartitionsAssignedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken);
 
     /// <summary>
     /// Called when partitions are revoked.
     /// </summary>
-    ValueTask OnPartitionsRevokedAsync(IEnumerable<Producer.TopicPartition> partitions, CancellationToken cancellationToken);
+    ValueTask OnPartitionsRevokedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken);
 
     /// <summary>
     /// Called when partitions are lost (for cooperative rebalancing).
     /// </summary>
-    ValueTask OnPartitionsLostAsync(IEnumerable<Producer.TopicPartition> partitions, CancellationToken cancellationToken);
+    ValueTask OnPartitionsLostAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken);
 }

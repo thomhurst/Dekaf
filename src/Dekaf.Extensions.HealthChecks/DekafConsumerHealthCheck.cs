@@ -1,5 +1,4 @@
 using Dekaf.Consumer;
-using Dekaf.Producer;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 namespace Dekaf.Extensions.HealthChecks;
@@ -27,7 +26,6 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
     {
         ArgumentNullException.ThrowIfNull(consumer);
         ArgumentNullException.ThrowIfNull(options);
-        options.Validate();
         _consumer = consumer;
         _options = options;
     }
@@ -67,8 +65,7 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
                     "Consumer has not yet consumed any messages.",
                     data: new Dictionary<string, object>
                     {
-                        ["AssignedPartitionCount"] = assignment.Count,
-                        ["MeasuredPartitionCount"] = 0
+                        ["PartitionCount"] = assignment.Count
                     });
             }
 
@@ -105,8 +102,7 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
             var data = new Dictionary<string, object>(lagData)
             {
                 ["MaxLag"] = maxLag,
-                ["AssignedPartitionCount"] = assignment.Count,
-                ["MeasuredPartitionCount"] = partitionsWithPositions.Count
+                ["PartitionCount"] = assignment.Count
             };
 
             if (maxLag >= _options.UnhealthyThreshold)
