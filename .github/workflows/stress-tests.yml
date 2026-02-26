@@ -101,7 +101,7 @@ jobs:
             --output ./results
 
       - name: Upload Results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: results-${{ matrix.client }}-${{ matrix.scenario }}
           path: tools/Dekaf.StressTests/results/
@@ -309,7 +309,7 @@ jobs:
           EOF
 
       - name: Upload Merged Results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: stress-test-results-merged
           path: merged-results/

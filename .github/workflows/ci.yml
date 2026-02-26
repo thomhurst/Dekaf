@@ -53,7 +53,7 @@ jobs:
         run: dotnet run --project tools/Dekaf.Pipeline
 
       - name: Upload Test Results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-results-unit
@@ -63,7 +63,7 @@ jobs:
           retention-days: 7
 
       - name: Upload Packages
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: nuget-packages
           path: |
@@ -73,7 +73,7 @@ jobs:
           retention-days: 30
 
       - name: Upload HangDump artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: hangdump-artifacts-${{ matrix.category }}
@@ -121,7 +121,7 @@ jobs:
         run: dotnet run --project tools/Dekaf.Pipeline
 
       - name: Upload Test Results
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-results-integration-${{ matrix.category }}
@@ -131,7 +131,7 @@ jobs:
           retention-days: 7
 
       - name: Upload HangDump artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: hangdump-artifacts-${{ matrix.category }}
