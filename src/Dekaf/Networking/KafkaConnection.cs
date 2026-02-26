@@ -603,9 +603,35 @@ public sealed partial class KafkaConnection : IKafkaConnection
                     $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
             }
 
-            if (result.IsCompleted || result.IsCanceled)
+            // FlushResult state machine (System.IO.Pipelines):
+            //
+            // FlushAsync can complete in three ways:
+            //
+            // 1. IsCompleted=false, IsCanceled=false (normal success):
+            //    Data was flushed to the underlying transport. Continue normally.
+            //
+            // 2. IsCompleted=true:
+            //    The PipeReader was completed (PipeReader.Complete() was called), meaning the
+            //    consumer of the pipe is done reading. For PipeWriter.Create(stream), this
+            //    signals that the connection has been closed either by the remote peer or
+            //    locally via disposal. No further writes will be consumed.
+            //
+            // 3. IsCanceled=true:
+            //    The flush was canceled via PipeWriter.CancelPendingFlush(). This does NOT
+            //    throw OperationCanceledException — instead it returns a result with IsCanceled
+            //    set. Note: CancellationToken-based cancellation (via timeoutCts.Token above)
+            //    throws OperationCanceledException and is handled by the catch block above.
+            //    CancelPendingFlush() is not currently called in this codebase, but this check
+            //    provides defensive safety for future changes.
+            //
+            if (result.IsCompleted)
             {
                 throw new IOException("Connection closed while writing");
+            }
+
+            if (result.IsCanceled)
+            {
+                throw new IOException("Flush operation was canceled");
             }
         }
         finally
@@ -636,6 +662,30 @@ public sealed partial class KafkaConnection : IKafkaConnection
                         using var reg = cancellationToken.CanBeCanceled
                             ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
                             : default;
+
+                        // ReadResult state machine (System.IO.Pipelines):
+                        //
+                        // ReadAsync can complete in three ways:
+                        //
+                        // 1. IsCompleted=false, IsCanceled=false (normal data available):
+                        //    Data is available in result.Buffer. Process all complete responses,
+                        //    then call AdvanceTo to indicate consumed/examined positions.
+                        //
+                        // 2. IsCompleted=true:
+                        //    The PipeWriter was completed (end of stream). For PipeReader.Create(stream),
+                        //    this means the underlying stream reached EOF — the remote peer closed the
+                        //    connection. Any remaining data in the buffer is still valid and must be
+                        //    processed before exiting. We process responses first, then break out of
+                        //    the receive loop.
+                        //
+                        // 3. IsCanceled=true:
+                        //    The read was canceled via PipeReader.CancelPendingRead(). This does NOT
+                        //    throw OperationCanceledException — instead it returns a result with IsCanceled
+                        //    set. Note: CancellationToken-based cancellation (via timeoutCts.Token) throws
+                        //    OperationCanceledException and is handled by the catch block below.
+                        //    CancelPendingRead() is not currently called in this codebase, so IsCanceled
+                        //    is not explicitly checked here. If future code introduces CancelPendingRead(),
+                        //    an IsCanceled check should be added.
                         result = await _reader.ReadAsync(timeoutCts.Token).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
@@ -675,6 +725,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
                     _reader.AdvanceTo(buffer.Start, buffer.End);
 
+                    // After processing all available responses, check if the stream has ended.
+                    // IsCompleted=true means the remote peer closed the connection (EOF).
+                    // We break cleanly — any pending requests will be failed by FailAllPendingRequests
+                    // in the outer catch block or by subsequent connection health checks.
                     if (result.IsCompleted)
                     {
                         LogReceiveLoopCompleted(_host, _port);
