@@ -380,7 +380,7 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     private const int MaxPooledLists = 256;
 
     private readonly ReadOnlyMemory<byte> _rawData;
-    private readonly byte[]? _pooledArray; // Track pooled array for cleanup
+    private byte[]? _pooledArray; // Track pooled array for cleanup (mutable for idempotent dispose)
     private readonly int _count;
     private List<Record>? _parsedRecords;
     private int _nextParseOffset;
@@ -471,12 +471,19 @@ internal sealed class LazyRecordList : IReadOnlyList<Record>, IDisposable
     /// </summary>
     public void Dispose()
     {
+        if (_disposed)
+            return;
+
         _disposed = true;
 
-        // Return pooled decompression array if we own one
-        if (_pooledArray is not null)
+        // Return pooled array if we own one, and null out to prevent double-return.
+        // Double-return would allow ArrayPool to hand the same array to two different
+        // renters simultaneously, causing data corruption.
+        var pooledArray = _pooledArray;
+        _pooledArray = null;
+        if (pooledArray is not null)
         {
-            ArrayPool<byte>.Shared.Return(_pooledArray, clearArray: true);
+            ArrayPool<byte>.Shared.Return(pooledArray, clearArray: true);
         }
 
         // Return list to pool for reuse (soft limit - see MaxPooledLists comment)
