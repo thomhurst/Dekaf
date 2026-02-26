@@ -360,10 +360,10 @@ public sealed class CompressionLevelTests
     }
 
     [Test]
-    public async Task AddBrotliWithLevel_WithSmallestSize_RegistersWorkingCodec()
+    public async Task AddBrotli_WithSmallestSize_RegistersWorkingCodec()
     {
         var registry = new CompressionCodecRegistry();
-        registry.AddBrotliWithLevel(compressionLevel: CompressionLevel.SmallestSize);
+        registry.AddBrotli(compressionLevel: CompressionLevel.SmallestSize);
 
         var codec = registry.GetCodec(CompressionType.Brotli);
         var result = CompressAndDecompress(codec);
@@ -371,21 +371,10 @@ public sealed class CompressionLevelTests
     }
 
     [Test]
-    public async Task AddBrotliWithLevel_WithNullLevel_UsesDefaultFastest()
+    public async Task AddBrotli_WithDefaultLevel_RegistersWorkingCodec()
     {
         var registry = new CompressionCodecRegistry();
-        registry.AddBrotliWithLevel(compressionLevel: null);
-
-        var codec = registry.GetCodec(CompressionType.Brotli);
-        var result = CompressAndDecompress(codec);
-        await Assert.That(result).IsEquivalentTo(TestData);
-    }
-
-    [Test]
-    public async Task AddBrotliWithLevel_WithNoArgs_UsesDefaultFastest()
-    {
-        var registry = new CompressionCodecRegistry();
-        registry.AddBrotliWithLevel();
+        registry.AddBrotli();
 
         var codec = registry.GetCodec(CompressionType.Brotli);
         var result = CompressAndDecompress(codec);

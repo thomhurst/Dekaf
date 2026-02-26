@@ -252,65 +252,6 @@ public class BrotliCompressionCodecTests
         await Assert.That(decompressedBuffer.WrittenSpan.ToArray()).IsEquivalentTo(data);
     }
 
-    [Test]
-    public async Task AddBrotliWithLevel_WithNullLevel_UsesDefaultFastest()
-    {
-        var registry = new CompressionCodecRegistry();
-        registry.AddBrotliWithLevel(compressionLevel: null);
-
-        await Assert.That(registry.IsSupported(CompressionType.Brotli)).IsTrue();
-
-        var codec = registry.GetCodec(CompressionType.Brotli);
-        var data = "test"u8.ToArray();
-
-        var compressedBuffer = new ArrayBufferWriter<byte>();
-        codec.Compress(new ReadOnlySequence<byte>(data), compressedBuffer);
-
-        var decompressedBuffer = new ArrayBufferWriter<byte>();
-        codec.Decompress(new ReadOnlySequence<byte>(compressedBuffer.WrittenMemory), decompressedBuffer);
-
-        await Assert.That(decompressedBuffer.WrittenSpan.ToArray()).IsEquivalentTo(data);
-    }
-
-    [Test]
-    public async Task AddBrotliWithLevel_WithNoArgs_UsesDefaultFastest()
-    {
-        var registry = new CompressionCodecRegistry();
-        registry.AddBrotliWithLevel();
-
-        await Assert.That(registry.IsSupported(CompressionType.Brotli)).IsTrue();
-
-        var codec = registry.GetCodec(CompressionType.Brotli);
-        var data = "test"u8.ToArray();
-
-        var compressedBuffer = new ArrayBufferWriter<byte>();
-        codec.Compress(new ReadOnlySequence<byte>(data), compressedBuffer);
-
-        var decompressedBuffer = new ArrayBufferWriter<byte>();
-        codec.Decompress(new ReadOnlySequence<byte>(compressedBuffer.WrittenMemory), decompressedBuffer);
-
-        await Assert.That(decompressedBuffer.WrittenSpan.ToArray()).IsEquivalentTo(data);
-    }
-
-    [Test]
-    public async Task AddBrotliWithLevel_WithSmallestSize_RegistersWorkingCodec()
-    {
-        var registry = new CompressionCodecRegistry();
-        registry.AddBrotliWithLevel(CompressionLevel.SmallestSize);
-
-        await Assert.That(registry.IsSupported(CompressionType.Brotli)).IsTrue();
-
-        var codec = registry.GetCodec(CompressionType.Brotli);
-        var data = "test"u8.ToArray();
-
-        var compressedBuffer = new ArrayBufferWriter<byte>();
-        codec.Compress(new ReadOnlySequence<byte>(data), compressedBuffer);
-
-        var decompressedBuffer = new ArrayBufferWriter<byte>();
-        codec.Decompress(new ReadOnlySequence<byte>(compressedBuffer.WrittenMemory), decompressedBuffer);
-
-        await Assert.That(decompressedBuffer.WrittenSpan.ToArray()).IsEquivalentTo(data);
-    }
 
     #endregion
 

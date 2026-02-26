@@ -140,21 +140,4 @@ public static class BrotliCompressionExtensions
         return registry;
     }
 
-    /// <summary>
-    /// Registers the Brotli compression codec, using the specified .NET compression level if provided.
-    /// If no explicit level is provided, falls back to <see cref="CompressionLevel.Fastest"/>.
-    /// <para>
-    /// <strong>Important:</strong> Brotli is NOT a standard Kafka compression type.
-    /// Both the producer and consumer must have the <c>Dekaf.Compression.Brotli</c> package installed.
-    /// </para>
-    /// </summary>
-    /// <param name="registry">The compression codec registry.</param>
-    /// <param name="compressionLevel">The .NET <see cref="CompressionLevel"/> to use. Null uses the default (<see cref="CompressionLevel.Fastest"/>).</param>
-    /// <returns>The registry for fluent chaining.</returns>
-    public static CompressionCodecRegistry AddBrotliWithLevel(this CompressionCodecRegistry registry, CompressionLevel? compressionLevel = null)
-    {
-        var level = compressionLevel ?? CompressionLevel.Fastest;
-        registry.Register(new BrotliCompressionCodec(level));
-        return registry;
-    }
 }

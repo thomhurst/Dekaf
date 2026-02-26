@@ -47,6 +47,19 @@ public class ProducerBuilderValidationTests
     }
 
     [Test]
+    public async Task Build_WithBrotliCompression_ThrowsNotSupportedException()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .UseCompression(Dekaf.Protocol.Records.CompressionType.Brotli);
+
+        var act = () => builder.Build();
+
+        await Assert.That(act).Throws<NotSupportedException>()
+            .And.HasMessageContaining("Brotli");
+    }
+
+    [Test]
     public async Task BuildForTopic_WithNullTopic_ThrowsArgumentNullException()
     {
         var builder = Kafka.CreateProducer<string, string>()
