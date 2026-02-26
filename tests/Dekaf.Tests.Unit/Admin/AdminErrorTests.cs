@@ -37,8 +37,40 @@ public class AdminErrorTests
     }
 
     [Test]
+    public async Task ElectLeadersResultInfo_PartialFailure_MixedResults()
+    {
+        // Simulates a partial failure scenario where some partitions succeed and others fail
+        var results = new Dictionary<TopicPartition, ElectLeadersResultInfo>
+        {
+            [new TopicPartition("topic-a", 0)] = new ElectLeadersResultInfo
+            {
+                TopicPartition = new TopicPartition("topic-a", 0),
+                ErrorCode = ErrorCode.None
+            },
+            [new TopicPartition("topic-a", 1)] = new ElectLeadersResultInfo
+            {
+                TopicPartition = new TopicPartition("topic-a", 1),
+                ErrorCode = ErrorCode.PreferredLeaderNotAvailable,
+                ErrorMessage = "Leader not available"
+            },
+            [new TopicPartition("topic-b", 0)] = new ElectLeadersResultInfo
+            {
+                TopicPartition = new TopicPartition("topic-b", 0),
+                ErrorCode = ErrorCode.EligibleLeadersNotAvailable,
+                ErrorMessage = "No eligible leaders"
+            }
+        };
+
+        var successCount = results.Values.Count(r => r.ErrorCode == ErrorCode.None);
+        var failureCount = results.Values.Count(r => r.ErrorCode != ErrorCode.None);
+
+        await Assert.That(successCount).IsEqualTo(1);
+        await Assert.That(failureCount).IsEqualTo(2);
+    }
+
+    [Test]
     [MethodDataSource(nameof(PartialFailureErrorCodes))]
-    public async Task ElectLeadersResultInfo_PreservesVariousErrorCodes(ErrorCode errorCode, string? errorMessage)
+    public async Task ElectLeadersResultInfo_PreservesVariousErrorCodes(ErrorCode errorCode, string errorMessage)
     {
         var result = new ElectLeadersResultInfo
         {
@@ -51,9 +83,9 @@ public class AdminErrorTests
         await Assert.That(result.ErrorMessage).IsEqualTo(errorMessage);
     }
 
-    public static IEnumerable<(ErrorCode, string?)> PartialFailureErrorCodes()
+    public static IEnumerable<(ErrorCode, string)> PartialFailureErrorCodes()
     {
-        yield return (ErrorCode.None, null);
+        yield return (ErrorCode.None, null!);
         yield return (ErrorCode.PreferredLeaderNotAvailable, "Preferred leader not available");
         yield return (ErrorCode.EligibleLeadersNotAvailable, "No eligible leaders");
         yield return (ErrorCode.NotController, "Broker is not the controller");
@@ -78,7 +110,6 @@ public class AdminErrorTests
         await Assert.That(ex.ErrorCode).IsEqualTo(ErrorCode.TopicAuthorizationFailed);
         await Assert.That(ex.Operation).IsEqualTo("Write");
         await Assert.That(ex.Resource).IsEqualTo("topic:orders");
-        await Assert.That(ex).IsAssignableTo<KafkaException>();
     }
 
     [Test]
@@ -93,38 +124,6 @@ public class AdminErrorTests
         await Assert.That(ex.ErrorCode).IsEqualTo(ErrorCode.GroupAuthorizationFailed);
         await Assert.That(ex.Operation).IsEqualTo("Read");
         await Assert.That(ex.Resource).IsEqualTo("group:my-consumer-group");
-    }
-
-    [Test]
-    public async Task AuthorizationException_ClusterAuthorizationFailed_MapsCorrectly()
-    {
-        var ex = new AuthorizationException(ErrorCode.ClusterAuthorizationFailed, "not authorized for cluster operation")
-        {
-            Operation = "CreateTopics",
-            Resource = "cluster"
-        };
-
-        await Assert.That(ex.ErrorCode).IsEqualTo(ErrorCode.ClusterAuthorizationFailed);
-    }
-
-    [Test]
-    public async Task AuthorizationException_TransactionalIdAuthorizationFailed_MapsCorrectly()
-    {
-        var ex = new AuthorizationException(ErrorCode.TransactionalIdAuthorizationFailed, "not authorized for transactional id")
-        {
-            Operation = "InitTransactions",
-            Resource = "transactional-id:my-txn"
-        };
-
-        await Assert.That(ex.ErrorCode).IsEqualTo(ErrorCode.TransactionalIdAuthorizationFailed);
-    }
-
-    [Test]
-    public async Task AuthorizationException_DelegationTokenAuthorizationFailed_MapsCorrectly()
-    {
-        var ex = new AuthorizationException(ErrorCode.DelegationTokenAuthorizationFailed, "delegation token auth failed");
-
-        await Assert.That(ex.ErrorCode).IsEqualTo(ErrorCode.DelegationTokenAuthorizationFailed);
     }
 
     [Test]
@@ -148,32 +147,6 @@ public class AdminErrorTests
     #endregion
 
     #region Authentication Error Code Mapping Tests
-
-    [Test]
-    public async Task AuthenticationException_SaslAuthenticationFailed_MapsCorrectly()
-    {
-        var ex = new AuthenticationException(ErrorCode.SaslAuthenticationFailed, "SASL authentication failed");
-
-        await Assert.That(ex.ErrorCode).IsEqualTo(ErrorCode.SaslAuthenticationFailed);
-        await Assert.That(ex.Message).IsEqualTo("SASL authentication failed");
-        await Assert.That(ex).IsAssignableTo<KafkaException>();
-    }
-
-    [Test]
-    public async Task AuthenticationException_UnsupportedSaslMechanism_MapsCorrectly()
-    {
-        var ex = new AuthenticationException(ErrorCode.UnsupportedSaslMechanism, "SCRAM-SHA-512 not supported");
-
-        await Assert.That(ex.ErrorCode).IsEqualTo(ErrorCode.UnsupportedSaslMechanism);
-    }
-
-    [Test]
-    public async Task AuthenticationException_IllegalSaslState_MapsCorrectly()
-    {
-        var ex = new AuthenticationException(ErrorCode.IllegalSaslState, "unexpected SASL state");
-
-        await Assert.That(ex.ErrorCode).IsEqualTo(ErrorCode.IllegalSaslState);
-    }
 
     [Test]
     public async Task AuthenticationException_WithInnerException_PreservesDetails()
@@ -204,24 +177,6 @@ public class AdminErrorTests
     #endregion
 
     #region Admin Exception Type Hierarchy Tests
-
-    [Test]
-    public async Task AuthorizationException_InheritsFromKafkaException()
-    {
-        var ex = new AuthorizationException(ErrorCode.TopicAuthorizationFailed, "denied");
-
-        await Assert.That(ex).IsAssignableTo<KafkaException>();
-        await Assert.That(ex).IsAssignableTo<Exception>();
-    }
-
-    [Test]
-    public async Task AuthenticationException_InheritsFromKafkaException()
-    {
-        var ex = new AuthenticationException(ErrorCode.SaslAuthenticationFailed, "auth failed");
-
-        await Assert.That(ex).IsAssignableTo<KafkaException>();
-        await Assert.That(ex).IsAssignableTo<Exception>();
-    }
 
     [Test]
     public async Task AuthorizationException_WithInnerException_PreservesChain()

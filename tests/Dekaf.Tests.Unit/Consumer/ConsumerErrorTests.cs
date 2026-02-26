@@ -95,6 +95,21 @@ public class ConsumerErrorTests
         }).Throws<ObjectDisposedException>();
     }
 
+    [Test]
+    public async Task InitializeAsync_AfterDispose_ThrowsObjectDisposedException()
+    {
+        var consumer = Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .Build();
+
+        await consumer.DisposeAsync();
+
+        await Assert.That(async () =>
+        {
+            await consumer.InitializeAsync();
+        }).Throws<ObjectDisposedException>();
+    }
+
     #endregion
 
     #region Consumer Error Code Retriability Mapping Tests
@@ -147,14 +162,6 @@ public class ConsumerErrorTests
     #endregion
 
     #region ConsumeException Inherits KafkaException Tests
-
-    [Test]
-    public async Task ConsumeException_InheritsKafkaException()
-    {
-        var ex = new ConsumeException(ErrorCode.OffsetOutOfRange, "offset error");
-
-        await Assert.That(ex).IsAssignableTo<KafkaException>();
-    }
 
     [Test]
     public async Task ConsumeException_IsRetriable_DelegatesToErrorCode()

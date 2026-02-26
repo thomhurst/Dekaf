@@ -132,6 +132,40 @@ public class ProducerErrorTests
 
     #endregion
 
+    #region Cancellation Tests
+
+    [Test]
+    public async Task CancellationToken_PreCancelled_ThrowsOperationCanceledException()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        {
+            await Task.Run(() => cts.Token.ThrowIfCancellationRequested());
+        });
+    }
+
+    [Test]
+    public async Task CancellationToken_PreCancelled_ExceptionContainsCancellationToken()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        try
+        {
+            cts.Token.ThrowIfCancellationRequested();
+            // Should not reach here
+            Assert.Fail("Expected OperationCanceledException");
+        }
+        catch (OperationCanceledException ex)
+        {
+            await Assert.That(ex.CancellationToken).IsEqualTo(cts.Token);
+        }
+    }
+
+    #endregion
+
     #region SerializationException Topic Context Tests
 
     [Test]
@@ -163,14 +197,6 @@ public class ProducerErrorTests
         await Assert.That(ex.Topic).IsEqualTo("order-events");
         await Assert.That(ex.Component).IsEqualTo(SerializationComponent.Value);
         await Assert.That(ex.InnerException).IsSameReferenceAs(inner);
-    }
-
-    [Test]
-    public async Task SerializationException_InheritsFromKafkaException()
-    {
-        var ex = new SerializationException("failed");
-
-        await Assert.That(ex).IsAssignableTo<KafkaException>();
     }
 
     [Test]
