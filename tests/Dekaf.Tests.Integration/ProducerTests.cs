@@ -75,6 +75,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-acks-none")
             .WithAcks(Acks.None)
+            .WithIdempotence(false)
             .BuildAsync();
 
         // Act
