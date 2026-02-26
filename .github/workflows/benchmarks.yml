@@ -109,7 +109,7 @@ jobs:
 
     steps:
       - name: Download All Results
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: benchmark-results-*
           path: benchmark-results
@@ -227,7 +227,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download Benchmark Results
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: benchmark-results-*
           path: benchmark-results
@@ -290,7 +290,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download Benchmark Results
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: benchmark-results-*
           path: benchmark-results
