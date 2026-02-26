@@ -183,7 +183,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
 
         var invocation = invocations[0];
         await Assert.That(invocation.Topic).IsEqualTo(topic);
-        await Assert.That(invocation.KeyIsNull).IsEqualTo(false);
+        await Assert.That(invocation.KeyIsNull).IsFalse();
         await Assert.That(invocation.PartitionCount).IsEqualTo(partitionCount);
     }
 
@@ -217,7 +217,7 @@ public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaInte
         await Assert.That(invocations.Count).IsGreaterThanOrEqualTo(1);
 
         var invocation = invocations[0];
-        await Assert.That(invocation.KeyIsNull).IsEqualTo(true);
+        await Assert.That(invocation.KeyIsNull).IsTrue();
 
         // The message should have been produced to partition 0 (RecordingPartitioner always returns 0)
         await Assert.That(metadata.Partition).IsEqualTo(0);

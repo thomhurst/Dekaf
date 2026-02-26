@@ -53,7 +53,7 @@ public class AdminMessageEncodingTests
         await Assert.That(count).IsEqualTo(6);
         await Assert.That(assignmentsLength).IsEqualTo(-1);
         await Assert.That(timeoutMs).IsEqualTo(30000);
-        await Assert.That(validateOnly).IsEqualTo(false);
+        await Assert.That(validateOnly).IsFalse();
     }
 
     [Test]
@@ -102,7 +102,7 @@ public class AdminMessageEncodingTests
         await Assert.That(brokerId1).IsEqualTo(1);
         await Assert.That(brokerId2).IsEqualTo(2);
         await Assert.That(timeoutMs).IsEqualTo(10000);
-        await Assert.That(validateOnly).IsEqualTo(true);
+        await Assert.That(validateOnly).IsTrue();
     }
 
     [Test]
@@ -148,7 +148,7 @@ public class AdminMessageEncodingTests
         await Assert.That(count).IsEqualTo(10);
         await Assert.That(assignmentsIndicator).IsEqualTo(0); // null
         await Assert.That(timeoutMs).IsEqualTo(5000);
-        await Assert.That(validateOnly).IsEqualTo(false);
+        await Assert.That(validateOnly).IsFalse();
     }
 
     [Test]
@@ -626,7 +626,7 @@ public class AdminMessageEncodingTests
 
         await Assert.That(arrayLength).IsEqualTo(1);
         await Assert.That(group).IsEqualTo("my-group");
-        await Assert.That(includeAuth).IsEqualTo(true);
+        await Assert.That(includeAuth).IsTrue();
     }
 
     [Test]
@@ -654,7 +654,7 @@ public class AdminMessageEncodingTests
 
         await Assert.That(arrayLengthPlus1).IsEqualTo(2);
         await Assert.That(group).IsEqualTo("group-1");
-        await Assert.That(includeAuth).IsEqualTo(false);
+        await Assert.That(includeAuth).IsFalse();
     }
 
     #endregion
@@ -1591,7 +1591,7 @@ public class AdminMessageEncodingTests
         await Assert.That(b1).IsEqualTo(1);
         await Assert.That(b2).IsEqualTo(2);
         await Assert.That(timeout).IsEqualTo(60000);
-        await Assert.That(validate).IsEqualTo(true);
+        await Assert.That(validate).IsTrue();
     }
 
     [Test]
@@ -1675,7 +1675,7 @@ public class AdminMessageEncodingTests
         await Assert.That(g1).IsEqualTo("group-alpha");
         await Assert.That(g2).IsEqualTo("group-beta");
         await Assert.That(g3).IsEqualTo("group-gamma");
-        await Assert.That(includeAuth).IsEqualTo(true);
+        await Assert.That(includeAuth).IsTrue();
     }
 
     #endregion
