@@ -53,7 +53,6 @@ public class ConsumerStatisticsCollectorTests
         var collector = new ConsumerStatisticsCollector();
 
         collector.RecordRebalanceStarted();
-        await Task.Delay(15);
         collector.RecordRebalanceCompleted();
 
         var stats = collector.GetGlobalStats();
@@ -83,7 +82,6 @@ public class ConsumerStatisticsCollectorTests
         var collector = new ConsumerStatisticsCollector();
 
         collector.RecordRebalanceStarted();
-        await Task.Delay(15);
         collector.RecordRebalanceCompleted();
 
         // Second call without a new RecordRebalanceStarted should be a no-op
@@ -100,13 +98,11 @@ public class ConsumerStatisticsCollectorTests
         var collector = new ConsumerStatisticsCollector();
 
         collector.RecordRebalanceStarted();
-        await Task.Delay(15);
         collector.RecordRebalanceCompleted();
 
         var stats1 = collector.GetGlobalStats();
 
         collector.RecordRebalanceStarted();
-        await Task.Delay(15);
         collector.RecordRebalanceCompleted();
 
         var stats2 = collector.GetGlobalStats();
