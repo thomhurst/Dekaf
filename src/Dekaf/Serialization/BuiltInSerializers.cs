@@ -45,6 +45,26 @@ public static class Serializers
     public static ISerde<double> Double { get; } = new DoubleSerde();
 
     /// <summary>
+    /// Serializer for single-precision floats.
+    /// </summary>
+    public static ISerde<float> Float { get; } = new FloatSerde();
+
+    /// <summary>
+    /// Serializer for DateTime values. Serialized as UTC ticks (8 bytes).
+    /// </summary>
+    public static ISerde<DateTime> DateTime { get; } = new DateTimeSerde();
+
+    /// <summary>
+    /// Serializer for DateTimeOffset values. Serialized as ticks (8 bytes) + offset minutes (2 bytes).
+    /// </summary>
+    public static ISerde<DateTimeOffset> DateTimeOffset { get; } = new DateTimeOffsetSerde();
+
+    /// <summary>
+    /// Serializer for TimeSpan values. Serialized as ticks (8 bytes).
+    /// </summary>
+    public static ISerde<TimeSpan> TimeSpan { get; } = new TimeSpanSerde();
+
+    /// <summary>
     /// Zero-copy deserializer that returns raw bytes as ReadOnlyMemory.
     /// </summary>
     /// <remarks>
@@ -245,6 +265,84 @@ internal sealed class DoubleSerde : ISerde<double>
         Span<byte> buffer = stackalloc byte[8];
         data.Slice(0, 8).CopyTo(buffer);
         return BinaryPrimitives.ReadDoubleBigEndian(buffer);
+    }
+}
+
+internal sealed class FloatSerde : ISerde<float>
+{
+    public void Serialize<TWriter>(float value, ref TWriter destination, SerializationContext context)
+        where TWriter : IBufferWriter<byte>, allows ref struct
+    {
+        var span = destination.GetSpan(4);
+        BinaryPrimitives.WriteSingleBigEndian(span, value);
+        destination.Advance(4);
+    }
+
+    public float Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    {
+        Span<byte> buffer = stackalloc byte[4];
+        data.Slice(0, 4).CopyTo(buffer);
+        return BinaryPrimitives.ReadSingleBigEndian(buffer);
+    }
+}
+
+internal sealed class DateTimeSerde : ISerde<DateTime>
+{
+    public void Serialize<TWriter>(DateTime value, ref TWriter destination, SerializationContext context)
+        where TWriter : IBufferWriter<byte>, allows ref struct
+    {
+        var span = destination.GetSpan(8);
+        BinaryPrimitives.WriteInt64BigEndian(span, value.ToUniversalTime().Ticks);
+        destination.Advance(8);
+    }
+
+    public DateTime Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    {
+        Span<byte> buffer = stackalloc byte[8];
+        data.Slice(0, 8).CopyTo(buffer);
+        var ticks = BinaryPrimitives.ReadInt64BigEndian(buffer);
+        return new DateTime(ticks, DateTimeKind.Utc);
+    }
+}
+
+internal sealed class DateTimeOffsetSerde : ISerde<DateTimeOffset>
+{
+    public void Serialize<TWriter>(DateTimeOffset value, ref TWriter destination, SerializationContext context)
+        where TWriter : IBufferWriter<byte>, allows ref struct
+    {
+        var span = destination.GetSpan(10);
+        BinaryPrimitives.WriteInt64BigEndian(span, value.UtcTicks);
+        BinaryPrimitives.WriteInt16BigEndian(span.Slice(8), (short)(value.Offset.TotalMinutes));
+        destination.Advance(10);
+    }
+
+    public DateTimeOffset Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    {
+        Span<byte> buffer = stackalloc byte[10];
+        data.Slice(0, 10).CopyTo(buffer);
+        var utcTicks = BinaryPrimitives.ReadInt64BigEndian(buffer);
+        var offsetMinutes = BinaryPrimitives.ReadInt16BigEndian(buffer.Slice(8));
+        var offset = TimeSpan.FromMinutes(offsetMinutes);
+        return new DateTimeOffset(utcTicks + offset.Ticks, offset);
+    }
+}
+
+internal sealed class TimeSpanSerde : ISerde<TimeSpan>
+{
+    public void Serialize<TWriter>(TimeSpan value, ref TWriter destination, SerializationContext context)
+        where TWriter : IBufferWriter<byte>, allows ref struct
+    {
+        var span = destination.GetSpan(8);
+        BinaryPrimitives.WriteInt64BigEndian(span, value.Ticks);
+        destination.Advance(8);
+    }
+
+    public TimeSpan Deserialize(ReadOnlySequence<byte> data, SerializationContext context)
+    {
+        Span<byte> buffer = stackalloc byte[8];
+        data.Slice(0, 8).CopyTo(buffer);
+        var ticks = BinaryPrimitives.ReadInt64BigEndian(buffer);
+        return new TimeSpan(ticks);
     }
 }
 
