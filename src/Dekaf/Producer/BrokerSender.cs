@@ -76,8 +76,8 @@ namespace Dekaf.Producer;
 /// an <c>OutOfOrderSequenceNumber</c>, <c>InvalidProducerEpoch</c>, or <c>UnknownProducerId</c>
 /// error, it signals the need for an epoch bump by writing the stale epoch value into
 /// <see cref="_epochBumpRequestedForEpoch"/> via <c>Interlocked.CompareExchange</c> (CAS from -1
-/// to the stale epoch). The send loop checks this field at the top of each iteration using
-/// <c>Volatile.Read</c> and, if set, performs the epoch bump before coalescing any batches.
+/// to the stale epoch). The send loop checks this field after signal registration but before
+/// coalescing, using <c>Volatile.Read</c> and, if set, performs the epoch bump before coalescing any batches.
 /// After a successful bump, the flag is cleared via <c>Interlocked.CompareExchange</c> (CAS from
 /// stale epoch back to -1). If a new epoch error arrives concurrently, the CAS fails and the flag
 /// remains set for the next iteration. This design ensures that (1) the epoch bump always happens
