@@ -99,6 +99,19 @@ public class VarintEncoderTests
     }
 
     [Test]
+    public void WriteVarint_NegativeValue_ThrowsArgumentOutOfRangeException()
+    {
+        var buffer = new byte[8];
+        Assert.Throws<ArgumentOutOfRangeException>(() => VarintEncoder.WriteVarint(buffer, -1));
+    }
+
+    [Test]
+    public void CalculateVarintSize_NegativeValue_ThrowsArgumentOutOfRangeException()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => VarintEncoder.CalculateVarintSize(-1));
+    }
+
+    [Test]
     public async Task WriteVarintArray_WritesCountThenElements()
     {
         // Array [0, 1] should write: count=2 (varint), then 0 (varint), then 1 (varint)

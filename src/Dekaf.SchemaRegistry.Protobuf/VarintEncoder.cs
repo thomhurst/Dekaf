@@ -14,6 +14,8 @@ internal static class VarintEncoder
     /// </summary>
     internal static int CalculateVarintSize(int value)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(value);
+
         var size = 1;
         var v = (uint)value;
         while (v >= 0x80)
