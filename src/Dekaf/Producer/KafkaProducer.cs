@@ -257,21 +257,20 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     private ProducerStatistics CollectStatistics()
     {
-        var (messagesProduced, messagesDelivered, messagesFailed, bytesProduced,
-            requestsSent, responsesReceived, retries, avgLatencyMs) = _statisticsCollector.GetGlobalStats();
+        var stats = _statisticsCollector.GetGlobalStats();
 
         return new ProducerStatistics
         {
             Timestamp = DateTimeOffset.UtcNow,
-            MessagesProduced = messagesProduced,
-            MessagesDelivered = messagesDelivered,
-            MessagesFailed = messagesFailed,
-            BytesProduced = bytesProduced,
-            QueuedMessages = (int)(messagesProduced - messagesDelivered - messagesFailed),
-            RequestsSent = requestsSent,
-            ResponsesReceived = responsesReceived,
-            Retries = retries,
-            AvgRequestLatencyMs = avgLatencyMs,
+            MessagesProduced = stats.MessagesProduced,
+            MessagesDelivered = stats.MessagesDelivered,
+            MessagesFailed = stats.MessagesFailed,
+            BytesProduced = stats.BytesProduced,
+            QueuedMessages = (int)(stats.MessagesProduced - stats.MessagesDelivered - stats.MessagesFailed),
+            RequestsSent = stats.RequestsSent,
+            ResponsesReceived = stats.ResponsesReceived,
+            Retries = stats.Retries,
+            AvgRequestLatencyMs = stats.AvgLatencyMs,
             Topics = _statisticsCollector.GetTopicStatistics()
         };
     }

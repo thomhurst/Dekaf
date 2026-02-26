@@ -4,6 +4,36 @@ using System.Diagnostics;
 namespace Dekaf.Statistics;
 
 /// <summary>
+/// Snapshot of global producer statistics counters.
+/// </summary>
+internal readonly record struct ProducerGlobalStats
+{
+    public long MessagesProduced { get; init; }
+    public long MessagesDelivered { get; init; }
+    public long MessagesFailed { get; init; }
+    public long BytesProduced { get; init; }
+    public long RequestsSent { get; init; }
+    public long ResponsesReceived { get; init; }
+    public long Retries { get; init; }
+    public double AvgLatencyMs { get; init; }
+}
+
+/// <summary>
+/// Snapshot of global consumer statistics counters.
+/// </summary>
+internal readonly record struct ConsumerGlobalStats
+{
+    public long MessagesConsumed { get; init; }
+    public long BytesConsumed { get; init; }
+    public long TotalRebalances { get; init; }
+    public long? LastRebalanceDurationMs { get; init; }
+    public long TotalRebalanceDurationMs { get; init; }
+    public long FetchRequestsSent { get; init; }
+    public long FetchResponsesReceived { get; init; }
+    public double AvgFetchLatencyMs { get; init; }
+}
+
+/// <summary>
 /// Internal collector for producer statistics counters.
 /// Thread-safe for concurrent access from producer workers and sender.
 /// </summary>
@@ -104,24 +134,24 @@ internal sealed class ProducerStatisticsCollector
         Interlocked.Increment(ref _retries);
     }
 
-    public (long MessagesProduced, long MessagesDelivered, long MessagesFailed, long BytesProduced,
-        long RequestsSent, long ResponsesReceived, long Retries, double AvgLatencyMs) GetGlobalStats()
+    public ProducerGlobalStats GetGlobalStats()
     {
         var latencyCount = Interlocked.Read(ref _latencyCount);
         var avgLatency = latencyCount > 0
             ? (double)Interlocked.Read(ref _totalLatencyMs) / latencyCount
             : 0;
 
-        return (
-            Interlocked.Read(ref _messagesProduced),
-            Interlocked.Read(ref _messagesDelivered),
-            Interlocked.Read(ref _messagesFailed),
-            Interlocked.Read(ref _bytesProduced),
-            Interlocked.Read(ref _requestsSent),
-            Interlocked.Read(ref _responsesReceived),
-            Interlocked.Read(ref _retries),
-            avgLatency
-        );
+        return new ProducerGlobalStats
+        {
+            MessagesProduced = Interlocked.Read(ref _messagesProduced),
+            MessagesDelivered = Interlocked.Read(ref _messagesDelivered),
+            MessagesFailed = Interlocked.Read(ref _messagesFailed),
+            BytesProduced = Interlocked.Read(ref _bytesProduced),
+            RequestsSent = Interlocked.Read(ref _requestsSent),
+            ResponsesReceived = Interlocked.Read(ref _responsesReceived),
+            Retries = Interlocked.Read(ref _retries),
+            AvgLatencyMs = avgLatency
+        };
     }
 
     public IReadOnlyDictionary<string, TopicStatistics> GetTopicStatistics()
@@ -236,7 +266,7 @@ internal sealed class ConsumerStatisticsCollector
     private long _totalRebalances;
     private long _lastRebalanceDurationMs = -1;
     private long _totalRebalanceDurationMs;
-    private long _rebalanceStartTimestamp;
+    private long _rebalanceStartTimestamp = -1;
     private long _fetchRequestsSent;
     private long _fetchResponsesReceived;
     private long _totalFetchLatencyMs;
@@ -278,7 +308,7 @@ internal sealed class ConsumerStatisticsCollector
     /// </summary>
     public void RecordRebalanceStarted()
     {
-        Interlocked.Exchange(ref _rebalanceStartTimestamp, Stopwatch.GetTimestamp());
+        Volatile.Write(ref _rebalanceStartTimestamp, Stopwatch.GetTimestamp());
     }
 
     /// <summary>
@@ -287,7 +317,7 @@ internal sealed class ConsumerStatisticsCollector
     /// </summary>
     public void CancelRebalanceStarted()
     {
-        Interlocked.Exchange(ref _rebalanceStartTimestamp, 0);
+        Volatile.Write(ref _rebalanceStartTimestamp, -1);
     }
 
     /// <summary>
@@ -296,8 +326,8 @@ internal sealed class ConsumerStatisticsCollector
     /// </summary>
     public void RecordRebalanceCompleted()
     {
-        var startTimestamp = Interlocked.Exchange(ref _rebalanceStartTimestamp, 0);
-        if (startTimestamp == 0)
+        var startTimestamp = Interlocked.Exchange(ref _rebalanceStartTimestamp, -1);
+        if (startTimestamp < 0)
             return;
 
         var elapsed = Stopwatch.GetElapsedTime(startTimestamp);
@@ -331,9 +361,7 @@ internal sealed class ConsumerStatisticsCollector
         partitionSet.TryAdd(partition, 0);
     }
 
-    public (long MessagesConsumed, long BytesConsumed,
-        long TotalRebalances, long? LastRebalanceDurationMs, long TotalRebalanceDurationMs,
-        long FetchRequestsSent, long FetchResponsesReceived, double AvgFetchLatencyMs) GetGlobalStats()
+    public ConsumerGlobalStats GetGlobalStats()
     {
         var latencyCount = Interlocked.Read(ref _fetchLatencyCount);
         var avgLatency = latencyCount > 0
@@ -342,16 +370,17 @@ internal sealed class ConsumerStatisticsCollector
 
         var lastRebalanceMs = Interlocked.Read(ref _lastRebalanceDurationMs);
 
-        return (
-            Interlocked.Read(ref _messagesConsumed),
-            Interlocked.Read(ref _bytesConsumed),
-            Interlocked.Read(ref _totalRebalances),
-            lastRebalanceMs >= 0 ? lastRebalanceMs : null,
-            Interlocked.Read(ref _totalRebalanceDurationMs),
-            Interlocked.Read(ref _fetchRequestsSent),
-            Interlocked.Read(ref _fetchResponsesReceived),
-            avgLatency
-        );
+        return new ConsumerGlobalStats
+        {
+            MessagesConsumed = Interlocked.Read(ref _messagesConsumed),
+            BytesConsumed = Interlocked.Read(ref _bytesConsumed),
+            TotalRebalances = Interlocked.Read(ref _totalRebalances),
+            LastRebalanceDurationMs = lastRebalanceMs >= 0 ? lastRebalanceMs : null,
+            TotalRebalanceDurationMs = Interlocked.Read(ref _totalRebalanceDurationMs),
+            FetchRequestsSent = Interlocked.Read(ref _fetchRequestsSent),
+            FetchResponsesReceived = Interlocked.Read(ref _fetchResponsesReceived),
+            AvgFetchLatencyMs = avgLatency
+        };
     }
 
     public IReadOnlyDictionary<string, ConsumerTopicStatistics> GetTopicStatistics(

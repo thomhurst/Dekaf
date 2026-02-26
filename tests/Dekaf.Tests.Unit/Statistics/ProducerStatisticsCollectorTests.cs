@@ -11,9 +11,9 @@ public class ProducerStatisticsCollectorTests
 
         collector.RecordMessageProduced("test-topic", 0, 100);
 
-        var (messagesProduced, _, _, bytesProduced, _, _, _, _) = collector.GetGlobalStats();
-        await Assert.That(messagesProduced).IsEqualTo(1);
-        await Assert.That(bytesProduced).IsEqualTo(100);
+        var stats = collector.GetGlobalStats();
+        await Assert.That(stats.MessagesProduced).IsEqualTo(1);
+        await Assert.That(stats.BytesProduced).IsEqualTo(100);
     }
 
     [Test]
@@ -57,8 +57,8 @@ public class ProducerStatisticsCollectorTests
         collector.RecordMessageProduced("test-topic", 0, 100);
         collector.RecordBatchDelivered("test-topic", 0, 1);
 
-        var (_, messagesDelivered, _, _, _, _, _, _) = collector.GetGlobalStats();
-        await Assert.That(messagesDelivered).IsEqualTo(1);
+        var stats = collector.GetGlobalStats();
+        await Assert.That(stats.MessagesDelivered).IsEqualTo(1);
 
         var topicStats = collector.GetTopicStatistics();
         await Assert.That(topicStats["test-topic"].MessagesDelivered).IsEqualTo(1);
@@ -80,8 +80,8 @@ public class ProducerStatisticsCollectorTests
         // Deliver them as a batch
         collector.RecordBatchDelivered("test-topic", 0, 5);
 
-        var (_, messagesDelivered, _, _, _, _, _, _) = collector.GetGlobalStats();
-        await Assert.That(messagesDelivered).IsEqualTo(5);
+        var stats = collector.GetGlobalStats();
+        await Assert.That(stats.MessagesDelivered).IsEqualTo(5);
 
         var topicStats = collector.GetTopicStatistics();
         await Assert.That(topicStats["test-topic"].MessagesDelivered).IsEqualTo(5);
@@ -96,8 +96,8 @@ public class ProducerStatisticsCollectorTests
         collector.RecordMessageProduced("test-topic", 0, 100);
         collector.RecordBatchFailed("test-topic", 0, 1);
 
-        var (_, _, messagesFailed, _, _, _, _, _) = collector.GetGlobalStats();
-        await Assert.That(messagesFailed).IsEqualTo(1);
+        var stats = collector.GetGlobalStats();
+        await Assert.That(stats.MessagesFailed).IsEqualTo(1);
 
         var topicStats = collector.GetTopicStatistics();
         await Assert.That(topicStats["test-topic"].MessagesFailed).IsEqualTo(1);
@@ -119,8 +119,8 @@ public class ProducerStatisticsCollectorTests
         // Fail them as a batch
         collector.RecordBatchFailed("test-topic", 0, 3);
 
-        var (_, _, messagesFailed, _, _, _, _, _) = collector.GetGlobalStats();
-        await Assert.That(messagesFailed).IsEqualTo(3);
+        var stats = collector.GetGlobalStats();
+        await Assert.That(stats.MessagesFailed).IsEqualTo(3);
 
         var topicStats = collector.GetTopicStatistics();
         await Assert.That(topicStats["test-topic"].MessagesFailed).IsEqualTo(3);
@@ -135,8 +135,8 @@ public class ProducerStatisticsCollectorTests
         collector.RecordRequestSent();
         collector.RecordRequestSent();
 
-        var (_, _, _, _, requestsSent, _, _, _) = collector.GetGlobalStats();
-        await Assert.That(requestsSent).IsEqualTo(2);
+        var stats = collector.GetGlobalStats();
+        await Assert.That(stats.RequestsSent).IsEqualTo(2);
     }
 
     [Test]
@@ -148,9 +148,9 @@ public class ProducerStatisticsCollectorTests
         collector.RecordResponseReceived(20);
         collector.RecordResponseReceived(30);
 
-        var (_, _, _, _, _, responsesReceived, _, avgLatencyMs) = collector.GetGlobalStats();
-        await Assert.That(responsesReceived).IsEqualTo(3);
-        await Assert.That(avgLatencyMs).IsEqualTo(20.0);
+        var stats = collector.GetGlobalStats();
+        await Assert.That(stats.ResponsesReceived).IsEqualTo(3);
+        await Assert.That(stats.AvgLatencyMs).IsEqualTo(20.0);
     }
 
     [Test]
@@ -162,8 +162,8 @@ public class ProducerStatisticsCollectorTests
         collector.RecordRetry();
         collector.RecordRetry();
 
-        var (_, _, _, _, _, _, retries, _) = collector.GetGlobalStats();
-        await Assert.That(retries).IsEqualTo(3);
+        var stats = collector.GetGlobalStats();
+        await Assert.That(stats.Retries).IsEqualTo(3);
     }
 
     [Test]
@@ -171,8 +171,8 @@ public class ProducerStatisticsCollectorTests
     {
         var collector = new ProducerStatisticsCollector();
 
-        var (_, _, _, _, _, _, _, avgLatencyMs) = collector.GetGlobalStats();
-        await Assert.That(avgLatencyMs).IsEqualTo(0.0);
+        var stats = collector.GetGlobalStats();
+        await Assert.That(stats.AvgLatencyMs).IsEqualTo(0.0);
     }
 
     [Test]
@@ -210,8 +210,8 @@ public class ProducerStatisticsCollectorTests
 
         await Task.WhenAll(tasks);
 
-        var (messagesProduced, _, _, bytesProduced, _, _, _, _) = collector.GetGlobalStats();
-        await Assert.That(messagesProduced).IsEqualTo(threadCount * operationsPerThread);
-        await Assert.That(bytesProduced).IsEqualTo(threadCount * operationsPerThread * 100L);
+        var stats = collector.GetGlobalStats();
+        await Assert.That(stats.MessagesProduced).IsEqualTo(threadCount * operationsPerThread);
+        await Assert.That(stats.BytesProduced).IsEqualTo(threadCount * operationsPerThread * 100L);
     }
 }

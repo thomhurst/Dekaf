@@ -427,9 +427,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private ConsumerStatistics CollectStatistics()
     {
-        var (messagesConsumed, bytesConsumed,
-            totalRebalances, lastRebalanceDurationMs, totalRebalanceDurationMs,
-            fetchRequestsSent, fetchResponsesReceived, avgFetchLatencyMs) = _statisticsCollector.GetGlobalStats();
+        var stats = _statisticsCollector.GetGlobalStats();
 
         // Calculate total lag
         long? totalLag = null;
@@ -449,19 +447,19 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         return new ConsumerStatistics
         {
             Timestamp = DateTimeOffset.UtcNow,
-            MessagesConsumed = messagesConsumed,
-            BytesConsumed = bytesConsumed,
-            TotalRebalances = totalRebalances,
-            LastRebalanceDurationMs = lastRebalanceDurationMs,
-            TotalRebalanceDurationMs = totalRebalanceDurationMs,
+            MessagesConsumed = stats.MessagesConsumed,
+            BytesConsumed = stats.BytesConsumed,
+            TotalRebalances = stats.TotalRebalances,
+            LastRebalanceDurationMs = stats.LastRebalanceDurationMs,
+            TotalRebalanceDurationMs = stats.TotalRebalanceDurationMs,
             AssignedPartitions = _assignment.Count,
             PausedPartitions = _paused.Count,
             TotalLag = totalLag,
             PrefetchedMessages = _pendingFetches.Count,
             PrefetchedBytes = Interlocked.Read(ref _prefetchedBytes),
-            FetchRequestsSent = fetchRequestsSent,
-            FetchResponsesReceived = fetchResponsesReceived,
-            AvgFetchLatencyMs = avgFetchLatencyMs,
+            FetchRequestsSent = stats.FetchRequestsSent,
+            FetchResponsesReceived = stats.FetchResponsesReceived,
+            AvgFetchLatencyMs = stats.AvgFetchLatencyMs,
             GroupId = _options.GroupId,
             MemberId = _coordinator?.MemberId,
             GenerationId = _coordinator?.GenerationId,
