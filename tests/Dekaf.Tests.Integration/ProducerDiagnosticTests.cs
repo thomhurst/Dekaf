@@ -253,6 +253,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.None)
+            .WithIdempotence(false)
             .BuildAsync(cancellationToken);
 
         for (var i = 0; i < 100; i++)

@@ -54,6 +54,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.None)
+            .WithIdempotence(false)
             .BuildAsync();
 
         // AcksNone doesn't wait for broker confirmation
