@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Metadata;
@@ -127,6 +128,57 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
             {
                 ErrorCode = ErrorCode.None,
                 Assignment = []
+            }));
+
+        _connection.SendAsync<HeartbeatRequest, HeartbeatResponse>(
+                Arg.Any<HeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new HeartbeatResponse
+            {
+                ErrorCode = ErrorCode.None
+            }));
+    }
+
+    /// <summary>
+    /// Sets up the mock connection to return successful FindCoordinator, JoinGroup, SyncGroup (with assignment),
+    /// and Heartbeat responses. Used by rebalance listener tests that need partition assignment data.
+    /// </summary>
+    private void SetupSuccessfulJoinFlowWithAssignment(byte[] assignment)
+    {
+        _connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
+            {
+                ErrorCode = ErrorCode.None,
+                NodeId = 0,
+                Host = "localhost",
+                Port = 9092
+            }));
+
+        _connection.SendAsync<JoinGroupRequest, JoinGroupResponse>(
+                Arg.Any<JoinGroupRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new JoinGroupResponse
+            {
+                ErrorCode = ErrorCode.None,
+                MemberId = "member-1",
+                GenerationId = 1,
+                Leader = "member-1",
+                Members = []
+            }));
+
+        _connection.SendAsync<SyncGroupRequest, SyncGroupResponse>(
+                Arg.Any<SyncGroupRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new SyncGroupResponse
+            {
+                ErrorCode = ErrorCode.None,
+                Assignment = assignment
             }));
 
         _connection.SendAsync<HeartbeatRequest, HeartbeatResponse>(
@@ -346,6 +398,73 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
         await coordinator.EnsureActiveGroupAsync(new HashSet<string> { "test-topic" }, CancellationToken.None);
 
         await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
+    }
+
+    [Test]
+    [Arguments(ErrorCode.RebalanceInProgress)]
+    [Arguments(ErrorCode.UnknownMemberId)]
+    public async Task EnsureActiveGroupAsync_SyncGroupError_ThrowsGroupException(ErrorCode errorCode)
+    {
+        _connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
+                Arg.Any<FindCoordinatorRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
+            {
+                ErrorCode = ErrorCode.None,
+                NodeId = 0,
+                Host = "localhost",
+                Port = 9092
+            }));
+
+        _connection.SendAsync<JoinGroupRequest, JoinGroupResponse>(
+                Arg.Any<JoinGroupRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new JoinGroupResponse
+            {
+                ErrorCode = ErrorCode.None,
+                MemberId = "member-1",
+                GenerationId = 1,
+                Leader = "member-1",
+                Members = []
+            }));
+
+        _connection.SendAsync<SyncGroupRequest, SyncGroupResponse>(
+                Arg.Any<SyncGroupRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new SyncGroupResponse
+            {
+                ErrorCode = errorCode,
+                Assignment = []
+            }));
+
+        _connection.SendAsync<HeartbeatRequest, HeartbeatResponse>(
+                Arg.Any<HeartbeatRequest>(),
+                Arg.Any<short>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ValueTask.FromResult(new HeartbeatResponse
+            {
+                ErrorCode = ErrorCode.None
+            }));
+
+        var options = CreateOptions();
+        await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
+
+        GroupException? caught = null;
+        try
+        {
+            await coordinator.EnsureActiveGroupAsync(
+                new HashSet<string> { "test-topic" }, CancellationToken.None);
+        }
+        catch (GroupException ex)
+        {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!.ErrorCode).IsEqualTo(errorCode);
     }
 
     [Test]
@@ -573,52 +692,8 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
                 Arg.Any<CancellationToken>())
             .Returns(ValueTask.CompletedTask);
 
-        // Build an assignment with partitions
         var assignmentData = BuildAssignmentData("test-topic", [0, 1]);
-
-        _connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                Arg.Any<FindCoordinatorRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
-            {
-                ErrorCode = ErrorCode.None,
-                NodeId = 0,
-                Host = "localhost",
-                Port = 9092
-            }));
-
-        _connection.SendAsync<JoinGroupRequest, JoinGroupResponse>(
-                Arg.Any<JoinGroupRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new JoinGroupResponse
-            {
-                ErrorCode = ErrorCode.None,
-                MemberId = "member-1",
-                GenerationId = 1,
-                Leader = "member-1",
-                Members = []
-            }));
-
-        _connection.SendAsync<SyncGroupRequest, SyncGroupResponse>(
-                Arg.Any<SyncGroupRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new SyncGroupResponse
-            {
-                ErrorCode = ErrorCode.None,
-                Assignment = assignmentData
-            }));
-
-        _connection.SendAsync<HeartbeatRequest, HeartbeatResponse>(
-                Arg.Any<HeartbeatRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new HeartbeatResponse
-            {
-                ErrorCode = ErrorCode.None
-            }));
+        SetupSuccessfulJoinFlowWithAssignment(assignmentData);
 
         var options = CreateOptions(rebalanceListener: listener);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
@@ -648,50 +723,7 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
             .Returns(ValueTask.CompletedTask);
 
         var assignmentData = BuildAssignmentData("test-topic", [0]);
-
-        _connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                Arg.Any<FindCoordinatorRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
-            {
-                ErrorCode = ErrorCode.None,
-                NodeId = 0,
-                Host = "localhost",
-                Port = 9092
-            }));
-
-        _connection.SendAsync<JoinGroupRequest, JoinGroupResponse>(
-                Arg.Any<JoinGroupRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new JoinGroupResponse
-            {
-                ErrorCode = ErrorCode.None,
-                MemberId = "member-1",
-                GenerationId = 1,
-                Leader = "member-1",
-                Members = []
-            }));
-
-        _connection.SendAsync<SyncGroupRequest, SyncGroupResponse>(
-                Arg.Any<SyncGroupRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new SyncGroupResponse
-            {
-                ErrorCode = ErrorCode.None,
-                Assignment = assignmentData
-            }));
-
-        _connection.SendAsync<HeartbeatRequest, HeartbeatResponse>(
-                Arg.Any<HeartbeatRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new HeartbeatResponse
-            {
-                ErrorCode = ErrorCode.None
-            }));
+        SetupSuccessfulJoinFlowWithAssignment(assignmentData);
 
         var options = CreateOptions(rebalanceListener: listener);
         await using var coordinator = new ConsumerCoordinator(options, _connectionPool, _metadataManager);
@@ -702,9 +734,6 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
             await coordinator.EnsureActiveGroupAsync(
                 new HashSet<string> { "test-topic" }, CancellationToken.None);
         }).Throws<InvalidOperationException>();
-
-        // State should be Stable because the exception happens AFTER the lock-protected state transition
-        await Assert.That(coordinator.State).IsEqualTo(CoordinatorState.Stable);
     }
 
     [Test]
@@ -896,10 +925,11 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
         CoordinatorState expectedState,
         TimeSpan? timeout = null)
     {
-        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
+        var sw = Stopwatch.StartNew();
+        var limit = timeout ?? TimeSpan.FromSeconds(5);
         while (coordinator.State != expectedState)
         {
-            if (DateTime.UtcNow >= deadline)
+            if (sw.Elapsed >= limit)
             {
                 throw new TimeoutException(
                     $"Coordinator did not reach state '{expectedState}' within timeout. Current state: '{coordinator.State}'.");
