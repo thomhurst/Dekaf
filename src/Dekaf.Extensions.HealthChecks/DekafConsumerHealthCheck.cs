@@ -1,4 +1,5 @@
 using Dekaf.Consumer;
+using Dekaf.Producer;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 namespace Dekaf.Extensions.HealthChecks;
@@ -44,21 +45,47 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
                 return HealthCheckResult.Unhealthy("Consumer has no partition assignment.");
             }
 
-            var lagData = new Dictionary<string, object>();
-            long maxLag = 0;
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(_options.Timeout);
+
+            var partitionsWithPositions = new List<(TopicPartition TopicPartition, long Position)>();
 
             foreach (var topicPartition in assignment)
             {
                 var position = _consumer.GetPosition(topicPartition);
 
-                if (position is null)
+                if (position is not null)
                 {
-                    continue;
+                    partitionsWithPositions.Add((topicPartition, position.Value));
                 }
+            }
 
-                var watermarks = await _consumer.QueryWatermarkOffsetsAsync(topicPartition, cancellationToken).ConfigureAwait(false);
+            if (partitionsWithPositions.Count == 0)
+            {
+                return HealthCheckResult.Degraded(
+                    "Consumer has not yet consumed any messages.",
+                    data: new Dictionary<string, object>
+                    {
+                        ["PartitionCount"] = assignment.Count
+                    });
+            }
 
-                var lag = watermarks.High - position.Value;
+            var watermarkTasks = partitionsWithPositions
+                .Select(p => _consumer.QueryWatermarkOffsetsAsync(p.TopicPartition, timeoutCts.Token))
+                .ToArray();
+
+            var watermarkResults = await Task.WhenAll(
+                watermarkTasks.Select(static vt => vt.AsTask())).ConfigureAwait(false);
+
+            var lagData = new Dictionary<string, object>();
+            long maxLag = 0;
+
+            for (var i = 0; i < partitionsWithPositions.Count; i++)
+            {
+                var (topicPartition, position) = partitionsWithPositions[i];
+                var watermarks = watermarkResults[i];
+
+                var lag = watermarks.High - position;
                 if (lag < 0)
                 {
                     lag = 0;
@@ -96,6 +123,11 @@ public sealed class DekafConsumerHealthCheck<TKey, TValue> : IHealthCheck
             return HealthCheckResult.Healthy(
                 $"Consumer lag ({maxLag}) is within acceptable limits.",
                 data: data);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return HealthCheckResult.Unhealthy(
+                $"Consumer health check timed out after {_options.Timeout.TotalSeconds}s.");
         }
         catch (Exception ex)
         {

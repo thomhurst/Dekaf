@@ -140,6 +140,55 @@ public class HealthCheckTests
     }
 
     [Test]
+    public async Task ConsumerHealthCheck_AllNullPositions_ReturnsDegraded()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var tp0 = new TopicPartition("test-topic", 0);
+        var tp1 = new TopicPartition("test-topic", 1);
+        consumer.Assignment.Returns(new HashSet<TopicPartition> { tp0, tp1 });
+        consumer.GetPosition(tp0).Returns((long?)null);
+        consumer.GetPosition(tp1).Returns((long?)null);
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(
+            consumer, new DekafConsumerHealthCheckOptions());
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext());
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Degraded);
+        await Assert.That(result.Description).Contains("has not yet consumed any messages");
+        await Assert.That(result.Data["PartitionCount"]).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ConsumerHealthCheck_TimesOut_ReturnsUnhealthy()
+    {
+        var consumer = Substitute.For<IKafkaConsumer<string, string>>();
+        var tp = new TopicPartition("test-topic", 0);
+        consumer.Assignment.Returns(new HashSet<TopicPartition> { tp });
+        consumer.GetPosition(tp).Returns(90L);
+        consumer.QueryWatermarkOffsetsAsync(tp, Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var token = callInfo.Arg<CancellationToken>();
+                var tcs = new TaskCompletionSource<WatermarkOffsets>();
+                token.Register(() => tcs.TrySetCanceled(token));
+                return new ValueTask<WatermarkOffsets>(tcs.Task);
+            });
+
+        var options = new DekafConsumerHealthCheckOptions
+        {
+            Timeout = TimeSpan.FromMilliseconds(50)
+        };
+
+        var healthCheck = new DekafConsumerHealthCheck<string, string>(consumer, options);
+
+        var result = await healthCheck.CheckHealthAsync(CreateContext());
+
+        await Assert.That(result.Status).IsEqualTo(HealthStatus.Unhealthy);
+        await Assert.That(result.Description).Contains("timed out");
+    }
+
+    [Test]
     public async Task ConsumerHealthCheck_ExceptionThrown_ReturnsUnhealthy()
     {
         var consumer = Substitute.For<IKafkaConsumer<string, string>>();
@@ -500,6 +549,7 @@ public class HealthCheckTests
 
         await Assert.That(options.DegradedThreshold).IsEqualTo(1000L);
         await Assert.That(options.UnhealthyThreshold).IsEqualTo(10000L);
+        await Assert.That(options.Timeout).IsEqualTo(TimeSpan.FromSeconds(5));
     }
 
     [Test]

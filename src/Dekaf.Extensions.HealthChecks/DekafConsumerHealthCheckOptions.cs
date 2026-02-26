@@ -18,4 +18,10 @@ public sealed class DekafConsumerHealthCheckOptions
     /// Default is 10000.
     /// </summary>
     public long UnhealthyThreshold { get; init; } = 10000;
+
+    /// <summary>
+    /// The timeout for watermark offset queries.
+    /// Default is 5 seconds.
+    /// </summary>
+    public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(5);
 }
