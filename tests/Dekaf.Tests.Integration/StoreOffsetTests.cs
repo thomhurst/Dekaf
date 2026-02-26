@@ -371,21 +371,29 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             // On slow CI runners, 500ms may not be enough for the commit round-trip.
             var tp = new TopicPartition(topic, 0);
             using var commitCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            long? committedOffset = null;
             while (!commitCts.Token.IsCancellationRequested)
             {
                 try
                 {
-                    var committed = await consumer1.GetCommittedOffsetAsync(tp);
+                    var committed = await consumer1.GetCommittedOffsetAsync(tp).ConfigureAwait(false);
                     if (committed >= 3)
+                    {
+                        committedOffset = committed;
                         break;
+                    }
                 }
                 catch (IOException)
                 {
                     // Connection may be resetting, retry
                 }
 
-                await Task.Delay(100);
+                await Task.Delay(100).ConfigureAwait(false);
             }
+
+            // Ensure the polling loop did not exit due to timeout — auto-commit must have propagated.
+            await Assert.That(committedOffset).IsNotNull();
+            await Assert.That(committedOffset!.Value).IsGreaterThanOrEqualTo(3);
         }
 
         // Second consumer: should start after the auto-committed offset
