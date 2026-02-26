@@ -14,7 +14,6 @@ namespace Dekaf.Benchmarks.Benchmarks.Unit;
 /// Compares Brotli, Zstd, LZ4, Snappy, and Gzip across representative payload sizes.
 /// </summary>
 [MemoryDiagnoser]
-[SimpleJob(warmupCount: 3, iterationCount: 10)]
 public class CompressionCodecComparisonBenchmarks
 {
     private readonly GzipCompressionCodec _gzip = new();
@@ -76,11 +75,8 @@ public class CompressionCodecComparisonBenchmarks
         _brotliCompressedLarge = CompressData(_brotli, _largeData);
     }
 
-    [IterationSetup]
-    public void IterationSetup()
-    {
-        _outputBuffer.Clear();
-    }
+    [IterationCleanup]
+    public void IterationCleanup() => _outputBuffer.Clear();
 
     // ===== Compression 1KB =====
 
