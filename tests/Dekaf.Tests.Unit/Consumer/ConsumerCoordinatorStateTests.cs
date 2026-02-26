@@ -3,7 +3,7 @@ using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Networking;
-using Dekaf.Producer;
+using Dekaf.Producer; // TopicPartition is defined in this namespace
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using NSubstitute;
@@ -405,31 +405,9 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
     [Arguments(ErrorCode.UnknownMemberId)]
     public async Task EnsureActiveGroupAsync_SyncGroupError_ThrowsGroupException(ErrorCode errorCode)
     {
-        _connection.SendAsync<FindCoordinatorRequest, FindCoordinatorResponse>(
-                Arg.Any<FindCoordinatorRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new FindCoordinatorResponse
-            {
-                ErrorCode = ErrorCode.None,
-                NodeId = 0,
-                Host = "localhost",
-                Port = 9092
-            }));
+        SetupSuccessfulJoinFlow();
 
-        _connection.SendAsync<JoinGroupRequest, JoinGroupResponse>(
-                Arg.Any<JoinGroupRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new JoinGroupResponse
-            {
-                ErrorCode = ErrorCode.None,
-                MemberId = "member-1",
-                GenerationId = 1,
-                Leader = "member-1",
-                Members = []
-            }));
-
+        // Override just the SyncGroup response to return an error
         _connection.SendAsync<SyncGroupRequest, SyncGroupResponse>(
                 Arg.Any<SyncGroupRequest>(),
                 Arg.Any<short>(),
@@ -438,15 +416,6 @@ public sealed class ConsumerCoordinatorStateTests : IAsyncDisposable
             {
                 ErrorCode = errorCode,
                 Assignment = []
-            }));
-
-        _connection.SendAsync<HeartbeatRequest, HeartbeatResponse>(
-                Arg.Any<HeartbeatRequest>(),
-                Arg.Any<short>(),
-                Arg.Any<CancellationToken>())
-            .Returns(ValueTask.FromResult(new HeartbeatResponse
-            {
-                ErrorCode = ErrorCode.None
             }));
 
         var options = CreateOptions();
