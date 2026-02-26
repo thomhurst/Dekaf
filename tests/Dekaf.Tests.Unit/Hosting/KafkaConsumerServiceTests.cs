@@ -118,7 +118,9 @@ public sealed class KafkaConsumerServiceTests
         consumer.CommitAsync(Arg.Any<CancellationToken>())
             .Returns(_ => throw new InvalidOperationException("Commit failed"));
 
-        var service = new TestConsumerService(consumer, ["topic-a"]);
+        // DrainOnShutdown = false: this test is about commit failure, not drain behavior
+        var options = new KafkaConsumerServiceOptions { DrainOnShutdown = false };
+        var service = new TestConsumerService(consumer, ["topic-a"], options);
 
         await service.StartAsync(CancellationToken.None);
         await WaitForSubscribeAsync(consumer);
@@ -262,7 +264,8 @@ public sealed class KafkaConsumerServiceTests
         var options = new KafkaConsumerServiceOptions
         {
             DrainOnShutdown = true,
-            ShutdownTimeout = TimeSpan.FromSeconds(1)
+            // Use 100ms to avoid spinning CPU for a full second
+            ShutdownTimeout = TimeSpan.FromMilliseconds(100)
         };
         var service = new TestConsumerService(consumer, ["topic-a"], options);
 
@@ -275,6 +278,9 @@ public sealed class KafkaConsumerServiceTests
         var completedTask = await Task.WhenAny(stopTask, Task.Delay(Timeout.Infinite, timeoutCts.Token));
 
         await Assert.That(completedTask).IsEqualTo(stopTask);
+
+        // Observe any exceptions from stopTask to prevent unobserved task exception
+        await stopTask;
 
         // CommitAsync should still be called after drain times out
         await consumer.Received(1).CommitAsync(Arg.Any<CancellationToken>());
