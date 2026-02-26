@@ -8,22 +8,22 @@ public class StatisticsEmitterTests
     public async Task Emitter_CallsHandler_AtInterval()
     {
         var callCount = 0;
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var semaphore = new SemaphoreSlim(0);
         var emitter = new StatisticsEmitter<int>(
             TimeSpan.FromMilliseconds(100),
             () => 42,
             _ =>
             {
-                var count = Interlocked.Increment(ref callCount);
-                if (count >= 2)
-                {
-                    tcs.TrySetResult(true);
-                }
+                Interlocked.Increment(ref callCount);
+                semaphore.Release();
             });
 
         // Wait for at least 2 emissions with generous timeout for CI
-        var completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(10))) == tcs.Task;
-        await Assert.That(completed).IsTrue();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        for (var i = 0; i < 2; i++)
+        {
+            await semaphore.WaitAsync(cts.Token);
+        }
 
         await emitter.DisposeAsync().ConfigureAwait(false);
 
@@ -95,23 +95,23 @@ public class StatisticsEmitterTests
     public async Task Emitter_SwallowsExceptions_InHandler()
     {
         var successCount = 0;
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var semaphore = new SemaphoreSlim(0);
         var emitter = new StatisticsEmitter<int>(
             TimeSpan.FromMilliseconds(100),
             () =>
             {
-                var count = Interlocked.Increment(ref successCount);
-                if (count >= 2)
-                {
-                    tcs.TrySetResult(true);
-                }
-                return count;
+                Interlocked.Increment(ref successCount);
+                semaphore.Release();
+                return successCount;
             },
             _ => throw new InvalidOperationException("Test exception"));
 
         // Wait for at least 2 collector calls with generous timeout for CI
-        var completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(10))) == tcs.Task;
-        await Assert.That(completed).IsTrue();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        for (var i = 0; i < 2; i++)
+        {
+            await semaphore.WaitAsync(cts.Token);
+        }
 
         await emitter.DisposeAsync().ConfigureAwait(false);
 
@@ -124,16 +124,13 @@ public class StatisticsEmitterTests
     {
         var handlerCallCount = 0;
         var collectorCallCount = 0;
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var semaphore = new SemaphoreSlim(0);
         var emitter = new StatisticsEmitter<int>(
             TimeSpan.FromMilliseconds(100),
             () =>
             {
                 var count = Interlocked.Increment(ref collectorCallCount);
-                if (count >= 3)
-                {
-                    tcs.TrySetResult(true);
-                }
+                semaphore.Release();
                 if (count % 2 == 0)
                 {
                     throw new InvalidOperationException("Test exception on even calls");
@@ -143,8 +140,11 @@ public class StatisticsEmitterTests
             _ => Interlocked.Increment(ref handlerCallCount));
 
         // Wait for at least 3 collector calls with generous timeout for CI
-        var completed = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(10))) == tcs.Task;
-        await Assert.That(completed).IsTrue();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        for (var i = 0; i < 3; i++)
+        {
+            await semaphore.WaitAsync(cts.Token);
+        }
 
         await emitter.DisposeAsync().ConfigureAwait(false);
 

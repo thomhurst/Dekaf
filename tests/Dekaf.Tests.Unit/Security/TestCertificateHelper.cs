@@ -5,49 +5,13 @@ namespace Dekaf.Tests.Unit.Security;
 
 /// <summary>
 /// Shared helper for TLS certificate tests.
-/// Uses a fixed, pre-generated RSA 2048-bit key to eliminate randomness
-/// that causes intermittent "first 9 bits" ASN.1 encoding failures
-/// when RSA.Create(2048) produces parameters with leading zero bytes.
+/// Uses RSA.Create(2048) to generate a fresh key per certificate creation.
+/// Each call gets its own independent RSA key — no caching, no shared RSAParameters —
+/// which avoids the OpenSSL "iqmp not inverse of q" validation errors that occur
+/// when a single hard-coded key with invalid CRT parameters is reused on Linux.
 /// </summary>
 internal static class TestCertificateHelper
 {
-    /// <summary>
-    /// Pre-generated RSA 2048-bit private key in PKCS#8 PEM format.
-    /// PKCS#8 stores full CRT parameters, avoiding OpenSSL "iqmp not inverse of q"
-    /// validation errors that occur with some PKCS#1 keys on Linux.
-    /// This key has been verified to work for PEM and PFX export on both Windows and Linux.
-    /// </summary>
-    private const string FixedRsaPrivateKeyPem = """
-        -----BEGIN PRIVATE KEY-----
-        MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDbEmbq4ecg/TGs
-        VUWztR5dPrjbV1xQnQ+ixZZQPckmc8ywcEIJ8hEdaYVaORFkawZJfkuIDgpoDiwl
-        W7f3sCUhIfs18fB9Bonna8HiRUY5EAle9eujSEKdn8dTWnTKRaRtbvbLH05qTrYR
-        VQ09RZM30CMvW5Kc9cXo4z9DOnJJNltiiQi/fAbfOS+ES+dUER+R1eyrCRFghppL
-        pcPO5CZXdQ+gV+XV2l+Zczsa9SRLlbSiZqgGcn6lx8S8g6oobco47Pf4enqRBYyi
-        J4HgvUghZrI91O9m6QDNM+9bLLiOX2PaCXhviInNIb7ew+YGEx9qZHbVR/olmH+H
-        m+pisBWJAgMBAAECggEAap23FsLgcG6o+Rz68i3IXEsFPkJy/AykKmyM7fpT5fHf
-        gVLw4NQ9Pho3uyQg8cUgZy4e5lUm/WNAWuIbU2EXgNt/3c4kY0SGYulPj6Z1OZoz
-        ZVK73lhxizLSmB9izXo9PsENPOe8iwJJm3/QFKzCrBwQs6CWZus56VCHXlmYe0Yh
-        cbsTE5+hiwdxDNP9L1EkAqEvBY9HvmnTb55jBNXkDNh+NdkJmdpsiFDwNgQLLW0B
-        KKKdsjTOk4GuAuaeZosDrIMHuzWdsv7G7LP2jWacOSkkKKf8OowsWeNQIXJFvRoL
-        mmhWHJSu8LmvknnDZnvLGTyu1T31NWUPQBYZs5fNXQKBgQDl7VB0QHBBI7r7A2Q/
-        hh+bpA2vCE7LfxNI0lxLN6yONuvdiAWne/owkLefhK4Z9Qm7kfnDP2o+Pv3saBUJ
-        QLfh2/UmsbblegDZHeHJRxPh1FyYdMGvqYOaJh1st6latDGl4uKsELqV4rVYbBfS
-        d/laRLmxD1+6PzTczabhERFf4wKBgQDz6ffLA3mQNR2+czQhXGJa4D+MCfna7JYh
-        Myd/nKjlGg3nFg5MCW+BxYxy5NRHPPcix6kQf5PnToG5aF9eOJSjAuo4CzCSnvTj
-        1uNpmBZWCIw8t7qnu5hQFxUEayIHnUKxcuDFu7P1lwZXymGb6Zt8sXKONyLtMZoS
-        t3lmgc5YowKBgQDcqjppp6JUUedUmneuo5lYNUVQs6dzk9y9Ke6b3a3Eux74+F98
-        0vZVf75K4Pp6PPp/QuSypvzfCnOGXIm73JndsM0ButMuPz3rIcuc8ZM6TCYlxwBQ
-        B18fJO9edJGbVI7Fhw9GVbPMv8yNNQhT3QK5yHVyYa/cvmaMdu5u2IOVQwKBgQCs
-        WvoUZMIz2rTH7VQ69rMxkCCXbj02K9PyZdlVXXgjXAPS9UzpAgnfY57ZWUV/iV8B
-        HqEi3WPAIUOdplktlUHC5r5nF9Ec6mIV1bUg2q194dBm31VwTSlV/tmFI8cKJmAI
-        UCrwzrBdrHh49LOAntSWijVutRtjDJfY/fk1LCiJjQKBgEeS2pSLRNrlIdb4qhzK
-        +7xgFINesUruTJuSoezt2cbFWSP8gcQB7pYuiI+nDDU7ZIYgxA4WX8F63J5BH0VF
-        yDoA3gQ+5+q90wZh1gNjSTOeccWzJOU7QyCdoPfraW0WUlXlc1hm3LGw0wJrWybz
-        p/rS60ZgPDQeOJ8QDtM6YA7w
-        -----END PRIVATE KEY-----
-        """;
-
     /// <summary>
     /// Fixed serial number for certificate creation (used by tests that reference it directly).
     /// Starts with 0x01 to avoid leading-zero ASN.1 encoding issues.
@@ -71,14 +35,12 @@ internal static class TestCertificateHelper
     }
 
     /// <summary>
-    /// Creates an RSA instance loaded with the fixed pre-generated key.
+    /// Creates a fresh RSA 2048-bit key.
     /// Caller is responsible for disposing the returned instance.
     /// </summary>
     internal static RSA CreateRsaKey()
     {
-        var rsa = RSA.Create();
-        rsa.ImportFromPem(FixedRsaPrivateKeyPem);
-        return rsa;
+        return RSA.Create(2048);
     }
 
     /// <summary>
@@ -96,7 +58,7 @@ internal static class TestCertificateHelper
     /// <summary>
     /// Creates a self-signed certificate with the private key attached.
     /// Suitable for PFX export and client certificate tests.
-    /// Uses Create() with a fixed serial number instead of CreateSelfSigned()
+    /// Uses Create() with a derived serial number instead of CreateSelfSigned()
     /// because CreateSelfSigned generates a random serial number that can
     /// trigger ASN.1 "first 9 bits" encoding failures in .NET 10+.
     /// </summary>
@@ -135,7 +97,7 @@ internal static class TestCertificateHelper
     /// <summary>
     /// Creates a CA certificate with custom validity dates.
     /// Useful for expired certificate tests.
-    /// Uses Create() with a fixed serial number instead of CreateSelfSigned()
+    /// Uses Create() with a derived serial number instead of CreateSelfSigned()
     /// because CreateSelfSigned generates a random serial number that can
     /// trigger ASN.1 "first 9 bits" encoding failures in .NET 10+.
     /// </summary>
