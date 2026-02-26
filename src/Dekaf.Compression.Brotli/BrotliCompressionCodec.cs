@@ -24,8 +24,8 @@ namespace Dekaf.Compression.Brotli;
 /// // Register the Brotli codec with default settings
 /// CompressionCodecRegistry.Default.AddBrotli();
 ///
-/// // Register with a specific compression level (0-11)
-/// CompressionCodecRegistry.Default.AddBrotli(compressionLevel: 4);
+/// // Register with a specific compression level
+/// CompressionCodecRegistry.Default.AddBrotli(CompressionLevel.SmallestSize);
 ///
 /// // Use with a producer builder
 /// var producer = Kafka.CreateProducer&lt;string, string&gt;()
@@ -36,21 +36,6 @@ namespace Dekaf.Compression.Brotli;
 /// </example>
 public sealed class BrotliCompressionCodec : ICompressionCodec
 {
-    /// <summary>
-    /// The minimum Brotli compression level (no compression).
-    /// </summary>
-    public const int MinCompressionLevel = 0;
-
-    /// <summary>
-    /// The maximum Brotli compression level (best compression).
-    /// </summary>
-    public const int MaxCompressionLevel = 11;
-
-    /// <summary>
-    /// The default Brotli compression level, balancing speed and compression ratio.
-    /// </summary>
-    public const int DefaultCompressionLevel = 4;
-
     private readonly CompressionLevel _compressionLevel;
 
     /// <summary>
@@ -60,34 +45,6 @@ public sealed class BrotliCompressionCodec : ICompressionCodec
     public BrotliCompressionCodec(CompressionLevel compressionLevel = CompressionLevel.Fastest)
     {
         _compressionLevel = compressionLevel;
-    }
-
-    /// <summary>
-    /// Creates a new Brotli compression codec with an integer compression level (0-11).
-    /// </summary>
-    /// <param name="compressionLevel">
-    /// The compression level (0-11). 0 = no compression, 1 = fastest, 11 = best compression.
-    /// Default is 4 (a good balance between speed and ratio).
-    /// </param>
-    /// <exception cref="ArgumentOutOfRangeException">
-    /// Thrown when <paramref name="compressionLevel"/> is less than 0 or greater than 11.
-    /// </exception>
-    public BrotliCompressionCodec(int compressionLevel)
-    {
-        if (compressionLevel < MinCompressionLevel || compressionLevel > MaxCompressionLevel)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(compressionLevel),
-                $"Brotli compression level must be between {MinCompressionLevel} and {MaxCompressionLevel}, but was {compressionLevel}.");
-        }
-
-        _compressionLevel = compressionLevel switch
-        {
-            0 => CompressionLevel.NoCompression,
-            >= 1 and <= 3 => CompressionLevel.Fastest,
-            >= 4 and <= 8 => CompressionLevel.Optimal,
-            _ => CompressionLevel.SmallestSize
-        };
     }
 
     /// <inheritdoc />
@@ -103,6 +60,8 @@ public sealed class BrotliCompressionCodec : ICompressionCodec
         {
             brotliStream.Write(segment.Span);
         }
+
+        brotliStream.Flush();
     }
 
     /// <inheritdoc />
@@ -163,7 +122,7 @@ public static class BrotliProducerBuilderExtensions
 public static class BrotliCompressionExtensions
 {
     /// <summary>
-    /// Registers the Brotli compression codec with the specified compression level.
+    /// Registers the Brotli compression codec with the specified .NET compression level.
     /// <para>
     /// <strong>Important:</strong> Brotli is NOT a standard Kafka compression type.
     /// Both the producer and consumer must have the <c>Dekaf.Compression.Brotli</c> package installed.
@@ -172,48 +131,30 @@ public static class BrotliCompressionExtensions
     /// </summary>
     /// <param name="registry">The compression codec registry.</param>
     /// <param name="compressionLevel">
-    /// The compression level to use (0-11). Default is 4.
-    /// 0 = no compression, 1 = fastest, 11 = best compression.
+    /// The .NET <see cref="CompressionLevel"/> to use. Default is <see cref="CompressionLevel.Fastest"/>.
     /// </param>
     /// <returns>The registry for fluent chaining.</returns>
-    public static CompressionCodecRegistry AddBrotli(this CompressionCodecRegistry registry, int compressionLevel = BrotliCompressionCodec.DefaultCompressionLevel)
+    public static CompressionCodecRegistry AddBrotli(this CompressionCodecRegistry registry, CompressionLevel compressionLevel = CompressionLevel.Fastest)
     {
         registry.Register(new BrotliCompressionCodec(compressionLevel));
         return registry;
     }
 
     /// <summary>
-    /// Registers the Brotli compression codec, using the registry's default compression level if available.
-    /// If no explicit level is provided, falls back to <see cref="CompressionCodecRegistry.DefaultCompressionLevel"/>,
-    /// then to Brotli's default (4).
+    /// Registers the Brotli compression codec, using the specified .NET compression level if provided.
+    /// If no explicit level is provided, falls back to <see cref="CompressionLevel.Fastest"/>.
     /// <para>
     /// <strong>Important:</strong> Brotli is NOT a standard Kafka compression type.
     /// Both the producer and consumer must have the <c>Dekaf.Compression.Brotli</c> package installed.
     /// </para>
     /// </summary>
     /// <param name="registry">The compression codec registry.</param>
-    /// <param name="compressionLevel">The compression level (0-11). Null uses the registry default or codec default (4).</param>
+    /// <param name="compressionLevel">The .NET <see cref="CompressionLevel"/> to use. Null uses the default (<see cref="CompressionLevel.Fastest"/>).</param>
     /// <returns>The registry for fluent chaining.</returns>
-    public static CompressionCodecRegistry AddBrotliWithLevel(this CompressionCodecRegistry registry, int? compressionLevel = null)
+    public static CompressionCodecRegistry AddBrotliWithLevel(this CompressionCodecRegistry registry, CompressionLevel? compressionLevel = null)
     {
-        var level = compressionLevel ?? registry.DefaultCompressionLevel;
-
-        if (level.HasValue)
-        {
-            if (level.Value < BrotliCompressionCodec.MinCompressionLevel || level.Value > BrotliCompressionCodec.MaxCompressionLevel)
-            {
-                throw new ArgumentOutOfRangeException(
-                    nameof(compressionLevel),
-                    $"Brotli compression level must be between {BrotliCompressionCodec.MinCompressionLevel} and {BrotliCompressionCodec.MaxCompressionLevel}, but was {level.Value}.");
-            }
-
-            registry.Register(new BrotliCompressionCodec(level.Value));
-        }
-        else
-        {
-            registry.Register(new BrotliCompressionCodec());
-        }
-
+        var level = compressionLevel ?? CompressionLevel.Fastest;
+        registry.Register(new BrotliCompressionCodec(level));
         return registry;
     }
 }

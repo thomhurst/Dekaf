@@ -530,9 +530,13 @@ public enum CompressionType
     Zstd = 4,
 
     /// <summary>
-    /// Brotli compression. This is NOT a standard Kafka compression type.
-    /// Both producer and consumer must have the Dekaf.Compression.Brotli codec installed.
-    /// Standard Kafka clients (Java, librdkafka) do not support this compression type.
+    /// Brotli compression. This is a Dekaf-specific extension and is NOT part of the official
+    /// Apache Kafka protocol specification. Value 5 is not assigned by the Kafka protocol;
+    /// Kafka brokers will not understand this codec natively and will reject produce requests
+    /// that use it unless a custom broker plugin is installed.
+    /// Both producer and consumer must have the <c>Dekaf.Compression.Brotli</c> codec installed.
+    /// Standard Kafka clients (Java, librdkafka, Confluent.Kafka) cannot produce or consume
+    /// messages compressed with this type.
     /// </summary>
     Brotli = 5
 }

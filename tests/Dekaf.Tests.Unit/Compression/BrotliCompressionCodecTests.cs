@@ -114,10 +114,10 @@ public class BrotliCompressionCodecTests
     }
 
     [Test]
-    public async Task BrotliCompressionCodec_IntLevel0_RoundTripPreservesData()
+    public async Task BrotliCompressionCodec_NoCompression_RoundTripPreservesData()
     {
-        var codec = new BrotliCompressionCodec(compressionLevel: 0);
-        var originalData = "Test data for Brotli level 0"u8.ToArray();
+        var codec = new BrotliCompressionCodec(CompressionLevel.NoCompression);
+        var originalData = "Test data for Brotli NoCompression"u8.ToArray();
 
         var compressedBuffer = new ArrayBufferWriter<byte>();
         codec.Compress(new ReadOnlySequence<byte>(originalData), compressedBuffer);
@@ -129,10 +129,10 @@ public class BrotliCompressionCodecTests
     }
 
     [Test]
-    public async Task BrotliCompressionCodec_IntLevel11_RoundTripPreservesData()
+    public async Task BrotliCompressionCodec_SmallestSize_RoundTripPreservesData()
     {
-        var codec = new BrotliCompressionCodec(compressionLevel: 11);
-        var originalData = "Test data for Brotli level 11"u8.ToArray();
+        var codec = new BrotliCompressionCodec(CompressionLevel.SmallestSize);
+        var originalData = "Test data for Brotli SmallestSize"u8.ToArray();
 
         var compressedBuffer = new ArrayBufferWriter<byte>();
         codec.Compress(new ReadOnlySequence<byte>(originalData), compressedBuffer);
@@ -144,40 +144,26 @@ public class BrotliCompressionCodecTests
     }
 
     [Test]
-    public async Task BrotliCompressionCodec_IntLevel11_ProducesSmallerOutputThanLevel0()
+    public async Task BrotliCompressionCodec_SmallestSize_ProducesSmallerOutputThanNoCompression()
     {
-        var codec0 = new BrotliCompressionCodec(compressionLevel: 0);
-        var codec11 = new BrotliCompressionCodec(compressionLevel: 11);
+        var noCompressionCodec = new BrotliCompressionCodec(CompressionLevel.NoCompression);
+        var smallestSizeCodec = new BrotliCompressionCodec(CompressionLevel.SmallestSize);
 
         var originalData = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("Kafka message ", 1000)));
 
-        var compressed0 = new ArrayBufferWriter<byte>();
-        codec0.Compress(new ReadOnlySequence<byte>(originalData), compressed0);
+        var noCompressionBuffer = new ArrayBufferWriter<byte>();
+        noCompressionCodec.Compress(new ReadOnlySequence<byte>(originalData), noCompressionBuffer);
 
-        var compressed11 = new ArrayBufferWriter<byte>();
-        codec11.Compress(new ReadOnlySequence<byte>(originalData), compressed11);
+        var smallestSizeBuffer = new ArrayBufferWriter<byte>();
+        smallestSizeCodec.Compress(new ReadOnlySequence<byte>(originalData), smallestSizeBuffer);
 
-        await Assert.That(compressed11.WrittenCount).IsLessThan(compressed0.WrittenCount);
+        await Assert.That(smallestSizeBuffer.WrittenCount).IsLessThan(noCompressionBuffer.WrittenCount);
     }
 
     [Test]
-    public async Task BrotliCompressionCodec_IntLevelNegative_ThrowsArgumentOutOfRange()
+    public async Task BrotliCompressionCodec_CrossLevel_CompressSmallestSizeDecompressDefault()
     {
-        var act = () => new BrotliCompressionCodec(compressionLevel: -1);
-        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
-    }
-
-    [Test]
-    public async Task BrotliCompressionCodec_IntLevel12_ThrowsArgumentOutOfRange()
-    {
-        var act = () => new BrotliCompressionCodec(compressionLevel: 12);
-        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
-    }
-
-    [Test]
-    public async Task BrotliCompressionCodec_CrossLevel_CompressHighDecompressDefault()
-    {
-        var compressor = new BrotliCompressionCodec(compressionLevel: 9);
+        var compressor = new BrotliCompressionCodec(CompressionLevel.SmallestSize);
         var decompressor = new BrotliCompressionCodec(); // default level
 
         var originalData = "Cross-level Brotli decompression test"u8.ToArray();
@@ -249,7 +235,7 @@ public class BrotliCompressionCodecTests
     public async Task AddBrotliExtension_WithCompressionLevel_RegistersCodecWithLevel()
     {
         var registry = new CompressionCodecRegistry();
-        registry.AddBrotli(compressionLevel: 8);
+        registry.AddBrotli(compressionLevel: CompressionLevel.SmallestSize);
 
         await Assert.That(registry.IsSupported(CompressionType.Brotli)).IsTrue();
 
@@ -267,10 +253,9 @@ public class BrotliCompressionCodecTests
     }
 
     [Test]
-    public async Task AddBrotliWithLevel_WithNullLevel_UsesRegistryDefault()
+    public async Task AddBrotliWithLevel_WithNullLevel_UsesDefaultFastest()
     {
         var registry = new CompressionCodecRegistry();
-        registry.DefaultCompressionLevel = 5;
         registry.AddBrotliWithLevel(compressionLevel: null);
 
         await Assert.That(registry.IsSupported(CompressionType.Brotli)).IsTrue();
@@ -288,7 +273,7 @@ public class BrotliCompressionCodecTests
     }
 
     [Test]
-    public async Task AddBrotliWithLevel_WithNullLevelAndNoDefault_UsesCodecDefault()
+    public async Task AddBrotliWithLevel_WithNoArgs_UsesDefaultFastest()
     {
         var registry = new CompressionCodecRegistry();
         registry.AddBrotliWithLevel();
@@ -308,19 +293,23 @@ public class BrotliCompressionCodecTests
     }
 
     [Test]
-    public async Task AddBrotliWithLevel_OutOfRange_ThrowsArgumentOutOfRange()
+    public async Task AddBrotliWithLevel_WithSmallestSize_RegistersWorkingCodec()
     {
         var registry = new CompressionCodecRegistry();
-        var act = () => registry.AddBrotliWithLevel(compressionLevel: 12);
-        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
-    }
+        registry.AddBrotliWithLevel(CompressionLevel.SmallestSize);
 
-    [Test]
-    public async Task AddBrotliWithLevel_NegativeOutOfRange_ThrowsArgumentOutOfRange()
-    {
-        var registry = new CompressionCodecRegistry();
-        var act = () => registry.AddBrotliWithLevel(compressionLevel: -1);
-        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
+        await Assert.That(registry.IsSupported(CompressionType.Brotli)).IsTrue();
+
+        var codec = registry.GetCodec(CompressionType.Brotli);
+        var data = "test"u8.ToArray();
+
+        var compressedBuffer = new ArrayBufferWriter<byte>();
+        codec.Compress(new ReadOnlySequence<byte>(data), compressedBuffer);
+
+        var decompressedBuffer = new ArrayBufferWriter<byte>();
+        codec.Decompress(new ReadOnlySequence<byte>(compressedBuffer.WrittenMemory), decompressedBuffer);
+
+        await Assert.That(decompressedBuffer.WrittenSpan.ToArray()).IsEquivalentTo(data);
     }
 
     #endregion

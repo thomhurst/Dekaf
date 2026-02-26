@@ -193,25 +193,25 @@ public sealed class CompressionLevelTests
     #region Brotli Compression Level Tests
 
     [Test]
-    public async Task BrotliCompressionCodec_Level0_RoundTripPreservesData()
+    public async Task BrotliCompressionCodec_NoCompression_RoundTripPreservesData()
     {
-        var codec = new BrotliCompressionCodec(compressionLevel: 0);
+        var codec = new BrotliCompressionCodec(CompressionLevel.NoCompression);
         var result = CompressAndDecompress(codec);
         await Assert.That(result).IsEquivalentTo(TestData);
     }
 
     [Test]
-    public async Task BrotliCompressionCodec_Level6_RoundTripPreservesData()
+    public async Task BrotliCompressionCodec_Optimal_RoundTripPreservesData()
     {
-        var codec = new BrotliCompressionCodec(compressionLevel: 6);
+        var codec = new BrotliCompressionCodec(CompressionLevel.Optimal);
         var result = CompressAndDecompress(codec);
         await Assert.That(result).IsEquivalentTo(TestData);
     }
 
     [Test]
-    public async Task BrotliCompressionCodec_Level11_RoundTripPreservesData()
+    public async Task BrotliCompressionCodec_SmallestSize_RoundTripPreservesData()
     {
-        var codec = new BrotliCompressionCodec(compressionLevel: 11);
+        var codec = new BrotliCompressionCodec(CompressionLevel.SmallestSize);
         var result = CompressAndDecompress(codec);
         await Assert.That(result).IsEquivalentTo(TestData);
     }
@@ -219,27 +219,13 @@ public sealed class CompressionLevelTests
     [Test]
     public async Task BrotliCompressionCodec_HighLevel_ProducesSmallerOutput()
     {
-        var codecLow = new BrotliCompressionCodec(compressionLevel: 0);
-        var codecHigh = new BrotliCompressionCodec(compressionLevel: 11);
+        var codecLow = new BrotliCompressionCodec(CompressionLevel.NoCompression);
+        var codecHigh = new BrotliCompressionCodec(CompressionLevel.SmallestSize);
 
         var compressedLow = Compress(codecLow, TestData);
         var compressedHigh = Compress(codecHigh, TestData);
 
         await Assert.That(compressedHigh.Length).IsLessThanOrEqualTo(compressedLow.Length);
-    }
-
-    [Test]
-    public async Task BrotliCompressionCodec_LevelNegative_ThrowsArgumentOutOfRange()
-    {
-        var act = () => new BrotliCompressionCodec(compressionLevel: -1);
-        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
-    }
-
-    [Test]
-    public async Task BrotliCompressionCodec_Level12_ThrowsArgumentOutOfRange()
-    {
-        var act = () => new BrotliCompressionCodec(compressionLevel: 12);
-        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
     }
 
     [Test]
@@ -251,9 +237,9 @@ public sealed class CompressionLevelTests
     }
 
     [Test]
-    public async Task BrotliCompressionCodec_EnumCompressionLevel_StillWorks()
+    public async Task BrotliCompressionCodec_EnumCompressionLevel_Fastest()
     {
-        var codec = new BrotliCompressionCodec(CompressionLevel.SmallestSize);
+        var codec = new BrotliCompressionCodec(CompressionLevel.Fastest);
         var result = CompressAndDecompress(codec);
         await Assert.That(result).IsEquivalentTo(TestData);
     }
@@ -374,10 +360,10 @@ public sealed class CompressionLevelTests
     }
 
     [Test]
-    public async Task AddBrotliWithLevel_WithLevel8_RegistersWorkingCodec()
+    public async Task AddBrotliWithLevel_WithSmallestSize_RegistersWorkingCodec()
     {
         var registry = new CompressionCodecRegistry();
-        registry.AddBrotliWithLevel(compressionLevel: 8);
+        registry.AddBrotliWithLevel(compressionLevel: CompressionLevel.SmallestSize);
 
         var codec = registry.GetCodec(CompressionType.Brotli);
         var result = CompressAndDecompress(codec);
@@ -385,26 +371,9 @@ public sealed class CompressionLevelTests
     }
 
     [Test]
-    public async Task AddBrotliWithLevel_WithLevelNegative_ThrowsArgumentOutOfRange()
+    public async Task AddBrotliWithLevel_WithNullLevel_UsesDefaultFastest()
     {
         var registry = new CompressionCodecRegistry();
-        var act = () => registry.AddBrotliWithLevel(compressionLevel: -1);
-        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
-    }
-
-    [Test]
-    public async Task AddBrotliWithLevel_WithLevel12_ThrowsArgumentOutOfRange()
-    {
-        var registry = new CompressionCodecRegistry();
-        var act = () => registry.AddBrotliWithLevel(compressionLevel: 12);
-        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
-    }
-
-    [Test]
-    public async Task AddBrotliWithLevel_WithNullLevel_UsesRegistryDefault()
-    {
-        var registry = new CompressionCodecRegistry();
-        registry.DefaultCompressionLevel = 5;
         registry.AddBrotliWithLevel(compressionLevel: null);
 
         var codec = registry.GetCodec(CompressionType.Brotli);
@@ -413,7 +382,7 @@ public sealed class CompressionLevelTests
     }
 
     [Test]
-    public async Task AddBrotliWithLevel_WithNullLevelAndNoDefault_UsesCodecDefault()
+    public async Task AddBrotliWithLevel_WithNoArgs_UsesDefaultFastest()
     {
         var registry = new CompressionCodecRegistry();
         registry.AddBrotliWithLevel();
@@ -526,9 +495,9 @@ public sealed class CompressionLevelTests
     }
 
     [Test]
-    public async Task BrotliCompressionCodec_CompressWithLevel9_DecompressWithDefaultCodec()
+    public async Task BrotliCompressionCodec_CompressWithSmallestSize_DecompressWithDefaultCodec()
     {
-        var compressor = new BrotliCompressionCodec(compressionLevel: 9);
+        var compressor = new BrotliCompressionCodec(CompressionLevel.SmallestSize);
         var decompressor = new BrotliCompressionCodec(); // default level (Fastest)
 
         var compressedBuffer = new ArrayBufferWriter<byte>();
