@@ -367,8 +367,25 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
                 if (count >= 3) break;
             }
 
-            // Wait for auto-commit to occur
-            await Task.Delay(500).ConfigureAwait(false);
+            // Poll for auto-commit to propagate instead of using a fixed delay.
+            // On slow CI runners, 500ms may not be enough for the commit round-trip.
+            var tp = new TopicPartition(topic, 0);
+            using var commitCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (!commitCts.Token.IsCancellationRequested)
+            {
+                try
+                {
+                    var committed = await consumer1.GetCommittedOffsetAsync(tp);
+                    if (committed >= 3)
+                        break;
+                }
+                catch (IOException)
+                {
+                    // Connection may be resetting, retry
+                }
+
+                await Task.Delay(100);
+            }
         }
 
         // Second consumer: should start after the auto-committed offset

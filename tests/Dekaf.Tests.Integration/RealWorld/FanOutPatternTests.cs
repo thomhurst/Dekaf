@@ -12,7 +12,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// </summary>
 [Category("Messaging")]
 [ParallelLimiter<RealWorldMessagingLimit>]
-[Timeout(60_000)] // 1 minute — prevents individual test hangs from blocking CI
+[Timeout(120_000)] // 2 minutes — these tests create multiple producers/consumers and can be slow on CI
 public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

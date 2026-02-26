@@ -9,5 +9,5 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// </summary>
 public class RealWorldMessagingLimit : IParallelLimit
 {
-    public int Limit => 3;
+    public int Limit => 1;
 }
