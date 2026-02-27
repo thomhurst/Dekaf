@@ -12,7 +12,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// </summary>
 [Category("Messaging")]
 [ParallelLimiter<RealWorldMessagingLimit>]
-[Timeout(180_000)] // 3 minutes — generous margin for slow CI runners with serialized execution
+[Timeout(300_000)] // 5 minutes — generous margin for slow CI runners with serialized execution
 public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -93,7 +93,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         var fastMessages = new List<ConsumeResult<string, string>>();
         using var cts1 = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts1.CancelAfter(TimeSpan.FromSeconds(30));
+        cts1.CancelAfter(TimeSpan.FromSeconds(15));
         await foreach (var msg in fastConsumer.ConsumeAsync(cts1.Token))
         {
             fastMessages.Add(msg);
@@ -115,7 +115,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         var slowMessages = new List<ConsumeResult<string, string>>();
         using var cts2 = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts2.CancelAfter(TimeSpan.FromSeconds(30));
+        cts2.CancelAfter(TimeSpan.FromSeconds(15));
         await foreach (var msg in slowConsumer.ConsumeAsync(cts2.Token))
         {
             slowMessages.Add(msg);
@@ -220,7 +220,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
 
             var messages = new List<ConsumeResult<string, string>>();
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(TimeSpan.FromSeconds(30));
+            cts.CancelAfter(TimeSpan.FromSeconds(15));
 
             await foreach (var msg in consumer.ConsumeAsync(cts.Token))
             {
@@ -253,7 +253,7 @@ public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         var messages = new List<ConsumeResult<string, string>>();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(testCancellationToken);
-        cts.CancelAfter(TimeSpan.FromSeconds(30));
+        cts.CancelAfter(TimeSpan.FromSeconds(15));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {

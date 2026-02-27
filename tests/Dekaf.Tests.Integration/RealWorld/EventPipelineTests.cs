@@ -12,7 +12,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// </summary>
 [Category("Messaging")]
 [ParallelLimiter<RealWorldMessagingLimit>]
-[Timeout(180_000)] // 3 minutes — generous margin for slow CI runners with serialized execution
+[Timeout(300_000)] // 5 minutes — generous margin for slow CI runners with serialized execution
 public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
@@ -53,7 +53,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         pipelineConsumer.Subscribe(inputTopic);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var processedCount = 0;
 
         await foreach (var msg in pipelineConsumer.ConsumeAsync(cts.Token))
@@ -88,7 +88,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         outputConsumer.Subscribe(outputTopic);
 
         var outputMessages = new List<ConsumeResult<string, string>>();
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         await foreach (var msg in outputConsumer.ConsumeAsync(cts2.Token))
         {
@@ -149,7 +149,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         var successCount = 0;
         var dlqCount = 0;
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
@@ -195,7 +195,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         dlqConsumer.Subscribe(dlqTopic);
 
         var dlqMessages = new List<ConsumeResult<string, string>>();
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         await foreach (var msg in dlqConsumer.ConsumeAsync(cts2.Token))
         {
@@ -248,8 +248,8 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         stage1Consumer.Subscribe(stage1Topic);
 
-        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var stage1Msg = await stage1Consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token);
+        using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var stage1Msg = await stage1Consumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts1.Token);
         await Assert.That(stage1Msg).IsNotNull();
 
         // Forward with additional headers
@@ -274,8 +274,8 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         stage2Consumer.Subscribe(stage2Topic);
 
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var stage2Msg = await stage2Consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts2.Token);
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var stage2Msg = await stage2Consumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts2.Token);
         await Assert.That(stage2Msg).IsNotNull();
 
         var finalHeaders = new Headers(stage2Msg!.Value.Headers!);
@@ -299,8 +299,8 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         finalConsumer.Subscribe(stage3Topic);
 
-        using var cts3 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var finalMsg = await finalConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts3.Token);
+        using var cts3 = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var finalMsg = await finalConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts3.Token);
         await Assert.That(finalMsg).IsNotNull();
 
         var headers = finalMsg!.Value.Headers!;
@@ -354,7 +354,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         aggregator.Subscribe(orderTopic, paymentTopic, shipmentTopic);
 
         var events = new List<(string Topic, string Key, string Value)>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         await foreach (var msg in aggregator.ConsumeAsync(cts.Token))
         {
@@ -402,7 +402,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         router.Subscribe(inputTopic);
 
         var routed = 0;
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         await foreach (var msg in router.ConsumeAsync(cts.Token))
         {
@@ -422,7 +422,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         highConsumer.Subscribe(highPriorityTopic);
 
         var highMessages = new List<string>();
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         await foreach (var msg in highConsumer.ConsumeAsync(cts2.Token))
         {
@@ -446,7 +446,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         lowConsumer.Subscribe(lowPriorityTopic);
 
         var lowMessages = new List<string>();
-        using var cts3 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts3 = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         await foreach (var msg in lowConsumer.ConsumeAsync(cts3.Token))
         {
@@ -493,7 +493,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         consumer.Subscribe(inputTopic);
 
         var batch = new List<int>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
@@ -526,8 +526,8 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         summaryConsumer.Subscribe(summaryTopic);
 
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var summary = await summaryConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts2.Token);
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var summary = await summaryConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts2.Token);
 
         await Assert.That(summary).IsNotNull();
         await Assert.That(summary!.Value.Key).IsEqualTo("sensor-1-summary");
