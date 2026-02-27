@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for log compaction and tombstone behavior.
 /// </summary>
 [Category("Messaging")]
+[ParallelLimiter<MessagingTestLimit>]
 public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tombstones are critical for log compaction and delete semantics in Kafka.
 /// </summary>
 [Category("Messaging")]
+[ParallelLimiter<MessagingTestLimit>]
 public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

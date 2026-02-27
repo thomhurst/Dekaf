@@ -11,6 +11,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for Dekaf DI extension methods.
 /// </summary>
 [Category("Messaging")]
+[ParallelLimiter<MessagingTestLimit>]
 public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

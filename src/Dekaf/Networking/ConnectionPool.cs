@@ -421,28 +421,31 @@ public sealed partial class ConnectionPool : IConnectionPool
 
             LogDisposingConnections(tasks.Count);
 
-            // Apply graceful timeout to each connection disposal
-            foreach (var task in tasks)
+            // Dispose all connections concurrently with a single overall timeout.
+            // Connection.DisposeAsync() was already kicked off above; this just awaits completion.
+            // Using Task.WhenAll with one timeout prevents chaining: N connections complete in
+            // max(individual) time rather than sum(individual) time.
+            if (tasks.Count > 0)
             {
-                using var cts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
                 try
                 {
-                    await task.AsTask().WaitAsync(cts.Token).ConfigureAwait(false);
+                    var allTasks = new Task[tasks.Count];
+                    for (var i = 0; i < tasks.Count; i++)
+                    {
+                        allTasks[i] = tasks[i].AsTask();
+                    }
+
+                    await Task.WhenAll(allTasks)
+                        .WaitAsync(_connectionOptions.ConnectionTimeout)
+                        .ConfigureAwait(false);
                 }
                 catch (TimeoutException)
                 {
                     LogConnectionDisposalExceededTimeout(_connectionOptions.ConnectionTimeout.TotalMilliseconds);
-                    // Continue disposing other connections
-                }
-                catch (OperationCanceledException)
-                {
-                    LogConnectionDisposalTimedOut(_connectionOptions.ConnectionTimeout.TotalMilliseconds);
-                    // Continue disposing other connections
                 }
                 catch (Exception ex)
                 {
                     LogErrorDuringConnectionDisposal(ex);
-                    // Continue disposing other connections
                 }
             }
 
