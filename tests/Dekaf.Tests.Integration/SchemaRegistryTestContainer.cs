@@ -47,6 +47,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
             _externalRegistry = true;
             Console.WriteLine($"[KafkaWithSchemaRegistry] Using external Kafka at {_bootstrapServers}");
             Console.WriteLine($"[KafkaWithSchemaRegistry] Using external Schema Registry at {_registryUrl}");
+            await WaitForKafkaAsync().ConfigureAwait(false);
             await WaitForServicesAsync().ConfigureAwait(false);
             return;
         }
@@ -133,9 +134,9 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
                     return;
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // Ignore and retry
+                Console.WriteLine($"[KafkaWithSchemaRegistry] TCP connect attempt {attempt + 1} failed: {ex.Message}");
             }
 
             await Task.Delay(1000).ConfigureAwait(false);
@@ -146,12 +147,9 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
 
     private async Task WaitForServicesAsync()
     {
-        Console.WriteLine("[KafkaWithSchemaRegistry] Waiting for services to be ready...");
+        Console.WriteLine("[KafkaWithSchemaRegistry] Waiting for Schema Registry to be ready...");
 
-        // First verify Kafka is reachable (important for external/CI environments)
-        await WaitForKafkaAsync().ConfigureAwait(false);
-
-        // Then wait for Schema Registry
+        // Wait for Schema Registry HTTP endpoint
         const int maxAttempts = 30;
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
