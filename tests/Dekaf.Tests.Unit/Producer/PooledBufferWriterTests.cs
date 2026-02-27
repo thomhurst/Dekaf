@@ -139,15 +139,23 @@ public class PooledBufferWriterTests
         // Force buffer growth
         _ = writer.GetSpan(128);
 
-        // Get the final data
+        // Capture all values synchronously before any await yields to the thread pool.
+        // Reading from pooled memory across await boundaries is unreliable under heavy
+        // parallelism (26 instances via [assembly: Repeat(25)]) — matches the pattern
+        // used by ToPooledMemory_TransfersOwnership which is not flaky.
         var result = writer.ToPooledMemory();
 
-        await Assert.That(result.Memory.Length).IsEqualTo(3);
-        await Assert.That(result.Memory.Span[0]).IsEqualTo((byte)1);
-        await Assert.That(result.Memory.Span[1]).IsEqualTo((byte)2);
-        await Assert.That(result.Memory.Span[2]).IsEqualTo((byte)3);
+        var length = result.Memory.Length;
+        var byte0 = result.Memory.Span[0];
+        var byte1 = result.Memory.Span[1];
+        var byte2 = result.Memory.Span[2];
 
         result.Return();
+
+        await Assert.That(length).IsEqualTo(3);
+        await Assert.That(byte0).IsEqualTo((byte)1);
+        await Assert.That(byte1).IsEqualTo((byte)2);
+        await Assert.That(byte2).IsEqualTo((byte)3);
     }
 
     [Test]
