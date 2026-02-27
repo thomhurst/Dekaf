@@ -18,6 +18,7 @@
     <ProjectReference Include="..\..\src\Dekaf.Extensions.DependencyInjection\Dekaf.Extensions.DependencyInjection.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.Extensions.Hosting\Dekaf.Extensions.Hosting.csproj" />
     <ProjectReference Include="..\..\src\Dekaf.OpenTelemetry\Dekaf.OpenTelemetry.csproj" />
+    <ProjectReference Include="..\..\src\Dekaf.Extensions.HealthChecks\Dekaf.Extensions.HealthChecks.csproj" />
   </ItemGroup>
 
   <ItemGroup>

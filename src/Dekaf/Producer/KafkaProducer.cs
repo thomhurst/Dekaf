@@ -3565,7 +3565,7 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
     {
         if (_buffer is not null)
         {
-            ArrayPool<byte>.Shared.Return(_buffer, clearArray: true);
+            ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
             _buffer = null;
             _written = 0;
         }

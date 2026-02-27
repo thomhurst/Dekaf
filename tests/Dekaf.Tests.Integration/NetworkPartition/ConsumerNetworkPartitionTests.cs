@@ -207,7 +207,7 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
         List<int> revokedPartitions) : IRebalanceListener
     {
         public ValueTask OnPartitionsAssignedAsync(
-            IEnumerable<Producer.TopicPartition> partitions,
+            IEnumerable<TopicPartition> partitions,
             CancellationToken cancellationToken)
         {
             lock (assignedPartitions)
@@ -218,7 +218,7 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
         }
 
         public ValueTask OnPartitionsRevokedAsync(
-            IEnumerable<Producer.TopicPartition> partitions,
+            IEnumerable<TopicPartition> partitions,
             CancellationToken cancellationToken)
         {
             lock (revokedPartitions)
@@ -229,7 +229,7 @@ public class ConsumerNetworkPartitionTests(NetworkPartitionKafkaContainer kafka)
         }
 
         public ValueTask OnPartitionsLostAsync(
-            IEnumerable<Producer.TopicPartition> partitions,
+            IEnumerable<TopicPartition> partitions,
             CancellationToken cancellationToken)
         {
             return ValueTask.CompletedTask;

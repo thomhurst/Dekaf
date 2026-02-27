@@ -44,6 +44,7 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.OpenTelemetry", "src\Dekaf.OpenTelemetry\Dekaf.OpenTelemetry.csproj", "{B9AC6ECC-9F52-4F17-AF8A-4072AF3CBC69}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.Compression.Brotli", "src\Dekaf.Compression.Brotli\Dekaf.Compression.Brotli.csproj", "{94F26971-45A8-47CF-9E0F-8FF20CDF9131}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dekaf.Extensions.HealthChecks", "src\Dekaf.Extensions.HealthChecks\Dekaf.Extensions.HealthChecks.csproj", "{5C982DF4-7AC3-42E6-A20D-ED3CDF73067D}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -259,6 +260,18 @@ Global
 		{94F26971-45A8-47CF-9E0F-8FF20CDF9131}.Release|x64.Build.0 = Release|Any CPU
 		{94F26971-45A8-47CF-9E0F-8FF20CDF9131}.Release|x86.ActiveCfg = Release|Any CPU
 		{94F26971-45A8-47CF-9E0F-8FF20CDF9131}.Release|x86.Build.0 = Release|Any CPU
+		{5C982DF4-7AC3-42E6-A20D-ED3CDF73067D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5C982DF4-7AC3-42E6-A20D-ED3CDF73067D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5C982DF4-7AC3-42E6-A20D-ED3CDF73067D}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{5C982DF4-7AC3-42E6-A20D-ED3CDF73067D}.Debug|x64.Build.0 = Debug|Any CPU
+		{5C982DF4-7AC3-42E6-A20D-ED3CDF73067D}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{5C982DF4-7AC3-42E6-A20D-ED3CDF73067D}.Debug|x86.Build.0 = Debug|Any CPU
+		{5C982DF4-7AC3-42E6-A20D-ED3CDF73067D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5C982DF4-7AC3-42E6-A20D-ED3CDF73067D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5C982DF4-7AC3-42E6-A20D-ED3CDF73067D}.Release|x64.ActiveCfg = Release|Any CPU
+		{5C982DF4-7AC3-42E6-A20D-ED3CDF73067D}.Release|x64.Build.0 = Release|Any CPU
+		{5C982DF4-7AC3-42E6-A20D-ED3CDF73067D}.Release|x86.ActiveCfg = Release|Any CPU
+		{5C982DF4-7AC3-42E6-A20D-ED3CDF73067D}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -281,5 +294,6 @@ Global
 		{EE6D7023-23D8-4AFE-A7D2-BFDB345035A4} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 		{B9AC6ECC-9F52-4F17-AF8A-4072AF3CBC69} = {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
 		{94F26971-45A8-47CF-9E0F-8FF20CDF9131} = {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+		{5C982DF4-7AC3-42E6-A20D-ED3CDF73067D} = {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
 	EndGlobalSection
 EndGlobal

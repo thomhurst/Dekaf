@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Dekaf.Extensions.HealthChecks</PackageId>
+    <Description>ASP.NET Core health check integration for Dekaf Kafka client</Description>
+    <PackageTags>kafka;health-checks;aspnetcore;monitoring</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Dekaf\Dekaf.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="10.0.0-preview.*" />
+  </ItemGroup>
+
+</Project>

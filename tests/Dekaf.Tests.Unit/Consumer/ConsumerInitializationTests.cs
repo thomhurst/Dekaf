@@ -36,7 +36,7 @@ public sealed class ConsumerInitializationTests
         await Assert.That(async () =>
         {
             await consumer.QueryWatermarkOffsetsAsync(
-                new Dekaf.Producer.TopicPartition("test-topic", 0));
+                new TopicPartition("test-topic", 0));
         }).Throws<InvalidOperationException>();
     }
 
@@ -51,7 +51,7 @@ public sealed class ConsumerInitializationTests
         await Assert.That(async () =>
         {
             await consumer.GetOffsetsForTimesAsync([
-                new Dekaf.Producer.TopicPartitionTimestamp("test-topic", 0, -2)
+                new TopicPartitionTimestamp("test-topic", 0, -2)
             ]);
         }).Throws<InvalidOperationException>();
     }
