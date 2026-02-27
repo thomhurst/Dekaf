@@ -3565,6 +3565,9 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
     {
         if (_buffer is not null)
         {
+            // clearArray: false for performance — avoids unnecessary zero-fill overhead.
+            // No security requirement: buffer holds serialized Kafka protocol bytes, not credentials.
+            // Consistent with Grow() which also uses clearArray: false.
             ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
             _buffer = null;
             _written = 0;
@@ -3616,9 +3619,8 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
         // Copy existing data
         _buffer.AsSpan(0, _written).CopyTo(newBuffer);
 
-        // Return old buffer - use clearArray: false since data has already been copied
-        // and clearing could cause a race condition with ArrayPool returning the
-        // just-cleared buffer to a concurrent caller
+        // Return old buffer - use clearArray: false for performance (avoids zero-fill overhead).
+        // No security requirement: the buffer holds serialized protocol bytes, not credentials.
         var oldBuffer = _buffer;
         _buffer = newBuffer;
         ArrayPool<byte>.Shared.Return(oldBuffer, clearArray: false);

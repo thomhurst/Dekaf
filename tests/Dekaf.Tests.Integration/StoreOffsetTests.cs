@@ -367,8 +367,34 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
                 if (count >= 3) break;
             }
 
-            // Wait for auto-commit to occur
-            await Task.Delay(500).ConfigureAwait(false);
+            // Poll for auto-commit to propagate instead of using a fixed delay.
+            // On slow CI runners, 500ms may not be enough for the commit round-trip.
+            var tp = new TopicPartition(topic, 0);
+            using var commitCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            long? committedOffset = null;
+            while (!commitCts.Token.IsCancellationRequested)
+            {
+                try
+                {
+                    var committed = await consumer1.GetCommittedOffsetAsync(tp).ConfigureAwait(false);
+                    if (committed >= 3)
+                    {
+                        committedOffset = committed;
+                        break;
+                    }
+                }
+                catch (IOException ex)
+                {
+                    // Connection may be resetting, retry
+                    TestContext.Current?.OutputWriter?.WriteLine($"Auto-commit polling: IOException caught, retrying: {ex.Message}");
+                }
+
+                await Task.Delay(100).ConfigureAwait(false);
+            }
+
+            // Ensure the polling loop did not exit due to timeout — auto-commit must have propagated.
+            await Assert.That(committedOffset).IsNotNull();
+            await Assert.That(committedOffset!.Value).IsGreaterThanOrEqualTo(3);
         }
 
         // Second consumer: should start after the auto-committed offset
@@ -409,8 +435,9 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
                     committedValue = committed;
                     break;
                 }
-                catch (IOException) when (attempt < 2)
+                catch (IOException ex) when (attempt < 2)
                 {
+                    TestContext.Current?.OutputWriter?.WriteLine($"GetCommittedOffset retry {attempt + 1}: IOException caught: {ex.Message}");
                     await Task.Delay(1000).ConfigureAwait(false);
                 }
             }

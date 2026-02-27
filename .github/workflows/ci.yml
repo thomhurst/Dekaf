@@ -111,8 +111,10 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
           dotnet-quality: 'preview'
 
-      - name: Pre-pull Kafka Image
-        run: docker pull confluentinc/cp-kafka:7.5.0
+      - name: Pre-pull Kafka Images
+        run: |
+          docker pull confluentinc/cp-kafka:7.5.0
+          docker pull confluentinc/cp-schema-registry:7.5.0
 
       - name: Run Pipeline
         env:

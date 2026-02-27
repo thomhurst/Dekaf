@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net.Sockets;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
@@ -46,6 +47,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
             _externalRegistry = true;
             Console.WriteLine($"[KafkaWithSchemaRegistry] Using external Kafka at {_bootstrapServers}");
             Console.WriteLine($"[KafkaWithSchemaRegistry] Using external Schema Registry at {_registryUrl}");
+            await WaitForKafkaAsync().ConfigureAwait(false);
             await WaitForServicesAsync().ConfigureAwait(false);
             return;
         }
@@ -74,6 +76,10 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         await _kafkaContainer.StartAsync().ConfigureAwait(false);
         _bootstrapServers = ExtractHostPort(_kafkaContainer.GetBootstrapAddress());
         Console.WriteLine($"[KafkaWithSchemaRegistry] Kafka started at {_bootstrapServers}");
+
+        // Verify Kafka is accepting connections before starting Schema Registry.
+        // Without this, Schema Registry may fail to connect to Kafka on startup.
+        await WaitForKafkaAsync().ConfigureAwait(false);
 
         Console.WriteLine("[KafkaWithSchemaRegistry] Starting Schema Registry container...");
 
@@ -106,11 +112,44 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         return address.TrimEnd('/');
     }
 
+    private async Task WaitForKafkaAsync()
+    {
+        Console.WriteLine("[KafkaWithSchemaRegistry] Waiting for Kafka to be ready...");
+        const int maxAttempts = 30;
+
+        var colonIndex = _bootstrapServers.LastIndexOf(':');
+        var host = _bootstrapServers[..colonIndex];
+        var port = int.Parse(_bootstrapServers[(colonIndex + 1)..]);
+
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            try
+            {
+                using var client = new TcpClient();
+                await client.ConnectAsync(host, port).ConfigureAwait(false);
+                if (client.Connected)
+                {
+                    Console.WriteLine("[KafkaWithSchemaRegistry] Kafka is accepting connections");
+                    await Task.Delay(2000).ConfigureAwait(false);
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[KafkaWithSchemaRegistry] TCP connect attempt {attempt + 1} failed: {ex.Message}");
+            }
+
+            await Task.Delay(1000).ConfigureAwait(false);
+        }
+
+        throw new InvalidOperationException($"Kafka not ready after {maxAttempts} attempts at {_bootstrapServers}");
+    }
+
     private async Task WaitForServicesAsync()
     {
-        Console.WriteLine("[KafkaWithSchemaRegistry] Waiting for services to be ready...");
+        Console.WriteLine("[KafkaWithSchemaRegistry] Waiting for Schema Registry to be ready...");
 
-        // Wait for Schema Registry
+        // Wait for Schema Registry HTTP endpoint
         const int maxAttempts = 30;
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
