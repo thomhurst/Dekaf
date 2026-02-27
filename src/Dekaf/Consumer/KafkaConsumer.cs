@@ -240,9 +240,30 @@ internal sealed class PendingFetchData : IDisposable
 
 /// <summary>
 /// Kafka consumer implementation.
-/// NOT thread-safe - all methods must be called from a single thread.
-/// For parallel consumption, use multiple consumers in a consumer group.
 /// </summary>
+/// <remarks>
+/// <para><b>Thread-safety:</b> User-facing API methods (<see cref="ConsumeAsync"/>,
+/// <see cref="Subscribe(string[])"/>, <see cref="Assign(TopicPartition[])"/>, <see cref="Seek"/>,
+/// <see cref="CommitAsync(CancellationToken)"/>, etc.) are NOT thread-safe and must be called from
+/// a single application thread. For parallel consumption, use multiple consumers in a consumer group.</para>
+/// <para>However, internal background tasks run concurrently with the user thread:</para>
+/// <list type="bullet">
+///   <item><description><b>Prefetch loop</b> (<see cref="PrefetchLoopAsync"/>): Runs on a background
+///     thread when <c>QueuedMinMessages &gt; 1</c>, fetching records ahead of the consume loop.
+///     Coordinates with the user thread via the bounded <see cref="_prefetchChannel"/> and
+///     <see cref="_prefetchLock"/> for EOF state.</description></item>
+///   <item><description><b>Heartbeat</b> (managed by <see cref="ConsumerCoordinator"/>): Sends
+///     periodic heartbeats to the group coordinator on a background thread to keep the consumer
+///     alive in the group.</description></item>
+///   <item><description><b>Auto-commit</b> (<see cref="AutoCommitLoopAsync"/>): Periodically
+///     commits consumed offsets on a background thread when <c>OffsetCommitMode.Auto</c> is
+///     enabled.</description></item>
+/// </list>
+/// <para>Thread-safe data structures (<see cref="ConcurrentDictionary{TKey,TValue}"/>,
+/// <see cref="ConcurrentQueue{T}"/>, <see cref="System.Threading.Channels.Channel{T}"/>)
+/// and locks (<see cref="_assignmentLock"/>, <see cref="_prefetchLock"/>) are used to coordinate
+/// between the user thread and these background tasks.</para>
+/// </remarks>
 /// <typeparam name="TKey">Key type.</typeparam>
 /// <typeparam name="TValue">Value type.</typeparam>
 public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, TValue>, DeadLetter.IRawRecordAccessor
@@ -298,8 +319,18 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private CancellationTokenSource? _prefetchCts;
     private Task? _prefetchTask;
     private long _prefetchedBytes;
-    private readonly object _prefetchLock = new();
+
+    // Lock ordering (always acquire in this order to prevent deadlocks):
+    //   1. _initLock          — guards one-time initialization; never held while acquiring other locks
+    //   2. _assignmentLock    — serializes assignment changes between the consume loop and prefetch loop
+    //   3. _prefetchLock      — guards _eofEmitted; acquired under _assignmentLock in EnsureAssignmentAsync
+    //   4. _partitionCacheLock / _fetchCacheLock — guard per-broker partition cache and fetch request
+    //      cache respectively; acquired under _assignmentLock (via InvalidatePartitionCache /
+    //      InvalidateFetchRequestCache) and independently; never nested with each other or with
+    //      _prefetchLock
+    private readonly SemaphoreSlim _initLock = new(1, 1);
     private readonly SemaphoreSlim _assignmentLock = new(1, 1);
+    private readonly object _prefetchLock = new();
 
     private CancellationTokenSource? _wakeupCts;
     private CancellationTokenSource? _autoCommitCts;
@@ -314,7 +345,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private volatile bool _disposed;
     private volatile bool _closed;
     private volatile bool _initialized;
-    private readonly SemaphoreSlim _initLock = new(1, 1);
     private bool _prefetchEnabled;
 
     // CancellationTokenSource pool to avoid allocations in hot paths

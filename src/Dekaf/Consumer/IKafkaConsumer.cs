@@ -141,10 +141,21 @@ public interface IKafkaConsumer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     void Wakeup();
 
     /// <summary>
-    /// Gracefully closes the consumer: commits pending offsets,
-    /// leaves the consumer group, and releases resources.
-    /// This method is idempotent and safe to call multiple times.
+    /// Gracefully closes the consumer: stops background tasks (heartbeat, auto-commit, prefetch),
+    /// commits pending offsets, leaves the consumer group, and releases resources.
     /// </summary>
+    /// <remarks>
+    /// <para><b>Optional:</b> Calling <c>CloseAsync</c> explicitly is not required.
+    /// <see cref="IAsyncDisposable.DisposeAsync"/> calls <c>CloseAsync</c> automatically if it
+    /// has not already been called. Use <c>CloseAsync</c> when you need explicit control over
+    /// close timing before disposal — for example, to observe close errors, to ensure a final
+    /// commit completes before the <c>await using</c> block exits, or to close with a specific
+    /// cancellation token.</para>
+    /// <para><b>Idempotent:</b> Safe to call multiple times. Subsequent calls after the first
+    /// return immediately with no side effects. It is also safe to call <c>DisposeAsync</c>
+    /// after <c>CloseAsync</c> — disposal will detect that close has already completed and
+    /// skip the close step.</para>
+    /// </remarks>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A task representing the asynchronous close operation.</returns>
     ValueTask CloseAsync(CancellationToken cancellationToken = default);
