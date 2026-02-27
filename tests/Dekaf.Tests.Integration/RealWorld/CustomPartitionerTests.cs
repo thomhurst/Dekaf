@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// to the expected partitions when used with the producer builder API.
 /// </summary>
 [Category("Messaging")]
+[ParallelLimiter<MessagingTestLimit>]
 public sealed class CustomPartitionerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     /// <summary>

@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// Integration tests for producer and consumer statistics reporting.
 /// </summary>
 [Category("Messaging")]
+[ParallelLimiter<MessagingTestLimit>]
 public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
