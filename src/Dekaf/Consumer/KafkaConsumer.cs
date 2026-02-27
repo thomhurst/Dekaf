@@ -2644,30 +2644,37 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
 
         // Step 2: Stop auto-commit task
+        // Use WaitAsync with both a hard timeout and the caller's cancellation token so that
+        // DisposeAsync's 30s CTS actually bounds this step. Without this, a mid-flight
+        // CommitAsync (which waits up to RequestTimeoutMs=30s for network I/O) would cause
+        // CloseAsync to hang for the full network timeout, chaining across multiple consumers
+        // during sequential `await using` disposal and exceeding test timeouts.
         _autoCommitCts?.Cancel();
         if (_autoCommitTask is not null)
         {
             try
             {
-                await _autoCommitTask.ConfigureAwait(false);
+                await _autoCommitTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
             }
             catch
             {
-                // Ignore cancellation exceptions
+                // Ignore — task may not exit promptly after cancellation
             }
         }
 
         // Step 3: Stop prefetch task
+        // Same rationale as Step 2: a mid-flight FetchAsync network operation could hang for
+        // up to RequestTimeoutMs without the WaitAsync timeout bounding it.
         _prefetchCts?.Cancel();
         if (_prefetchTask is not null)
         {
             try
             {
-                await _prefetchTask.ConfigureAwait(false);
+                await _prefetchTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
             }
             catch
             {
-                // Ignore cancellation exceptions
+                // Ignore — task may not exit promptly after cancellation
             }
         }
 
