@@ -146,7 +146,7 @@ public sealed class ProducerOptions
     /// initial metadata when producing to a new topic for the first time.
     /// </para>
     /// <para>
-    /// If the timeout expires, a <see cref="TimeoutException"/> is thrown with a descriptive message.
+    /// If the timeout expires, a <see cref="Errors.KafkaTimeoutException"/> is thrown with a descriptive message.
     /// </para>
     /// <para>
     /// Equivalent to Kafka's <c>max.block.ms</c> configuration. Default is 60000ms (60 seconds).

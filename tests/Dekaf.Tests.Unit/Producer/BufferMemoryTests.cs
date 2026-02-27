@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Diagnostics;
+using Dekaf.Errors;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -256,7 +257,7 @@ public class BufferMemoryTests
     }
 
     [Test]
-    public async Task BufferMemory_ThrowsTimeoutException_WhenExhausted()
+    public async Task BufferMemory_ThrowsKafkaTimeoutException_WhenExhausted()
     {
         // Arrange: Create producer with very small buffer and short timeout
         var options = new ProducerOptions
@@ -303,9 +304,13 @@ public class BufferMemoryTests
                     messageCount++;
                 }
             }
-            catch (TimeoutException)
+            catch (KafkaTimeoutException ex)
             {
                 timeoutThrown = true;
+                await Assert.That(ex.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
+                await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(500));
+                await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
+                await Assert.That(ex.Elapsed).IsLessThanOrEqualTo(ex.Configured + TimeSpan.FromSeconds(5));
             }
 
             var elapsedMs = Environment.TickCount64 - startTime;
@@ -355,7 +360,7 @@ public class BufferMemoryTests
                 var pooledKey = new PooledMemory(null, 0, isNull: true);
                 var pooledValue = new PooledMemory(largeValue, 2000);
 
-                var exception = await Assert.ThrowsAsync<TimeoutException>(async () =>
+                var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
                 {
                     accumulator.TryAppendFireAndForget(
                         "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -365,6 +370,10 @@ public class BufferMemoryTests
 
                 // Assert: Should throw with descriptive message about max.block.ms
                 await Assert.That(exception!.Message).Contains("max.block.ms");
+                await Assert.That(exception.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
+                await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(60000));
+                await Assert.That(exception.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
+                await Assert.That(exception.Elapsed).IsLessThanOrEqualTo(exception.Configured + TimeSpan.FromSeconds(5));
             }
             finally
             {
@@ -391,13 +400,17 @@ public class BufferMemoryTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            await Assert.ThrowsAsync<TimeoutException>(async () =>
+            var ex = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
             {
                 accumulator.TryAppendFireAndForget(
                     "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     pooledKey, pooledValue, null, null);
                 await Task.CompletedTask.ConfigureAwait(false);
             });
+
+            await Assert.That(ex!.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
+            await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(60000));
+            await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
         }
         finally
         {
@@ -431,9 +444,13 @@ public class BufferMemoryTests
                     successCount++;
                 }
             }
-            catch (TimeoutException)
+            catch (KafkaTimeoutException ex)
             {
                 threwTimeout = true;
+                await Assert.That(ex.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
+                await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(60000));
+                await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
+                await Assert.That(ex.Elapsed).IsLessThanOrEqualTo(ex.Configured + TimeSpan.FromSeconds(5));
             }
 
             // Assert: Should eventually hit backpressure

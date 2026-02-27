@@ -1,3 +1,4 @@
+using Dekaf.Errors;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -197,10 +198,14 @@ public sealed class MaxBlockMsTests
         await using var accumulator = new RecordAccumulator(options);
 
         // Try to reserve more memory than available - should timeout with MaxBlockMs
-        var act = async () => await accumulator.ReserveMemoryAsync(1024, CancellationToken.None)
-            .ConfigureAwait(false);
+        var ex = await Assert.ThrowsAsync<KafkaTimeoutException>(
+            async () => await accumulator.ReserveMemoryAsync(1024, CancellationToken.None)
+                .ConfigureAwait(false));
 
-        await Assert.That(act).Throws<TimeoutException>();
+        await Assert.That(ex!.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
+        await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(50));
+        await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
+        await Assert.That(ex.Elapsed).IsLessThanOrEqualTo(ex.Configured + TimeSpan.FromSeconds(5));
     }
 
     [Test]
@@ -221,12 +226,16 @@ public sealed class MaxBlockMsTests
                 .ConfigureAwait(false);
 
             // Should not reach here
-            throw new InvalidOperationException("Expected TimeoutException was not thrown");
+            throw new InvalidOperationException("Expected KafkaTimeoutException was not thrown");
         }
-        catch (TimeoutException ex)
+        catch (KafkaTimeoutException ex)
         {
             await Assert.That(ex.Message).Contains("max.block.ms");
             await Assert.That(ex.Message).Contains("50");
+            await Assert.That(ex.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
+            await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(50));
+            await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
+            await Assert.That(ex.Elapsed).IsLessThanOrEqualTo(ex.Configured + TimeSpan.FromSeconds(5));
         }
     }
 

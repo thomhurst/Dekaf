@@ -636,7 +636,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     topicInfo);
                 activity?.SetStatus(ActivityStatusCode.Ok);
             }
-            catch (TimeoutException)
+            catch (KafkaTimeoutException)
             {
                 // BufferMemory backpressure or metadata timeout must propagate
                 throw;
@@ -705,7 +705,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 ProduceSyncCoreFireAndForgetDirect(topic, key, value, partition, timestamp, headers, topicInfo!);
             }
-            catch (TimeoutException)
+            catch (KafkaTimeoutException)
             {
                 // CRITICAL: BufferMemory backpressure timeout must propagate to caller
                 // This indicates producer is faster than network can drain
@@ -744,7 +744,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             ProduceSyncCoreFireAndForgetDirect(topic, key, value, partition, timestamp, headers, topicInfo);
         }
-        catch (TimeoutException)
+        catch (KafkaTimeoutException)
         {
             // CRITICAL: BufferMemory backpressure timeout must propagate to caller
             // This indicates producer is faster than network can drain
@@ -2667,13 +2667,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             if (_initialized)
                 return;
 
+            var startedAt = Stopwatch.GetTimestamp();
             try
             {
                 await _metadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new TimeoutException(
+                var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
+                var elapsed = Stopwatch.GetElapsedTime(startedAt);
+                throw new KafkaTimeoutException(
+                    TimeoutKind.Metadata,
+                    elapsed,
+                    configured,
                     $"Failed to fetch initial metadata within max.block.ms ({_options.MaxBlockMs}ms). " +
                     $"Ensure the Kafka cluster is reachable and the bootstrap servers are correct.");
             }
