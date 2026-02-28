@@ -96,10 +96,13 @@ public class SaslKafkaContainer : KafkaTestContainer
         {
             try
             {
-                await using var adminClient = CreateAdminClient();
-                await adminClient.ListTopicsAsync().ConfigureAwait(false);
-                Console.WriteLine("[SaslKafkaContainer] Kafka is ready (SASL/PLAIN authentication successful)");
-                return;
+                var adminClient = CreateAdminClient();
+                await using (adminClient.ConfigureAwait(false))
+                {
+                    await adminClient.ListTopicsAsync().ConfigureAwait(false);
+                    Console.WriteLine("[SaslKafkaContainer] Kafka is ready (SASL/PLAIN authentication successful)");
+                    return;
+                }
             }
             catch
             {
@@ -175,15 +178,18 @@ public class SaslKafkaContainer : KafkaTestContainer
         {
             try
             {
-                await using var adminClient = Kafka.CreateAdminClient()
+                var adminClient = Kafka.CreateAdminClient()
                     .WithBootstrapServers(BootstrapServers)
                     .WithSaslScramSha256(SaslUsername, SaslPassword)
                     .Build();
 
-                // If ListTopicsAsync succeeds, SCRAM authentication is working
-                await adminClient.ListTopicsAsync().ConfigureAwait(false);
-                Console.WriteLine("[SaslKafkaContainer] SCRAM credentials are ready");
-                return;
+                await using (adminClient.ConfigureAwait(false))
+                {
+                    // If ListTopicsAsync succeeds, SCRAM authentication is working
+                    await adminClient.ListTopicsAsync().ConfigureAwait(false);
+                    Console.WriteLine("[SaslKafkaContainer] SCRAM credentials are ready");
+                    return;
+                }
             }
             catch
             {

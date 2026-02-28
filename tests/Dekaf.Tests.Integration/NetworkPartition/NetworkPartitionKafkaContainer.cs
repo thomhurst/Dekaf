@@ -70,7 +70,7 @@ public class NetworkPartitionKafkaContainer : KafkaTestContainer
         return _dockerClient;
     }
 
-    public new async ValueTask DisposeAsync()
+    public override async ValueTask DisposeAsync()
     {
         // Always attempt to unpause before disposing to avoid Docker cleanup issues
         try
@@ -85,5 +85,7 @@ public class NetworkPartitionKafkaContainer : KafkaTestContainer
             _dockerClient?.Dispose();
             await base.DisposeAsync().ConfigureAwait(false);
         }
+
+        GC.SuppressFinalize(this);
     }
 }
