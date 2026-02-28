@@ -267,7 +267,6 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             });
         });
 
-        await Assert.That(exception).IsNotNull();
     }
 
     [Test]
@@ -296,7 +295,6 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             }
         });
 
-        await Assert.That(exception).IsNotNull();
     }
 
     // ==========================================
@@ -345,11 +343,9 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             }
         ]);
 
-        // Assert - verify by listing topics
-        // Allow time for metadata propagation
-        await Task.Delay(2000);
-        var topics = await adminClient.ListTopicsAsync();
-        await Assert.That(topics.Select(t => t.Name)).Contains(topicName);
+        // Assert - poll until topic appears in metadata
+        var topicFound = await PollUntilTopicExistsAsync(adminClient, topicName);
+        await Assert.That(topicFound).IsTrue();
     }
 
     [Test]
@@ -374,10 +370,9 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
             }
         ]);
 
-        // Assert - verify by listing topics
-        await Task.Delay(2000);
-        var topics = await adminClient.ListTopicsAsync();
-        await Assert.That(topics.Select(t => t.Name)).Contains(topicName);
+        // Assert - poll until topic appears in metadata
+        var topicFound = await PollUntilTopicExistsAsync(adminClient, topicName);
+        await Assert.That(topicFound).IsTrue();
     }
 
     // ==========================================
@@ -425,5 +420,36 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
         var r = result!.Value;
         await Assert.That(r.Key).IsEqualTo("cross-key");
         await Assert.That(r.Value).IsEqualTo("cross-value");
+    }
+
+    // ==========================================
+    // Helpers
+    // ==========================================
+
+    /// <summary>
+    /// Polls until the specified topic appears in the admin client's topic list.
+    /// Returns true if found within the timeout, false otherwise.
+    /// </summary>
+    private static async Task<bool> PollUntilTopicExistsAsync(Admin.IAdminClient adminClient, string topicName, int maxAttempts = 30)
+    {
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            try
+            {
+                var topics = await adminClient.ListTopicsAsync();
+                if (topics.Any(t => t.Name == topicName))
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+                // Metadata not yet available, retry
+            }
+
+            await Task.Delay(500);
+        }
+
+        return false;
     }
 }
