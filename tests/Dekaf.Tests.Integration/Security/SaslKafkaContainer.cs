@@ -65,7 +65,7 @@ public class SaslKafkaContainer : KafkaTestContainer
     /// <summary>
     /// Creates an admin client with SASL/PLAIN authentication.
     /// </summary>
-    protected override IAdminClient CreateAdminClient()
+    public override IAdminClient CreateAdminClient()
     {
         return Kafka.CreateAdminClient()
             .WithBootstrapServers(BootstrapServers)

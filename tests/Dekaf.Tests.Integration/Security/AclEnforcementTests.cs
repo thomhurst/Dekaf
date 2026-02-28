@@ -23,6 +23,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
     /// <summary>
     /// Waits for ACLs to propagate by polling DescribeAclsAsync until the expected
     /// number of ACL bindings appear for the given filter.
+    /// Checks immediately before delaying to avoid unnecessary waits.
     /// </summary>
     private static async Task WaitForAclPropagationAsync(
         IAdminClient admin,
@@ -33,10 +34,11 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
     {
         for (var i = 0; i < maxRetries; i++)
         {
-            await Task.Delay(initialDelayMs * (i + 1));
             var acls = await admin.DescribeAclsAsync(filter);
             if (acls.Count >= expectedCount)
                 return;
+
+            await Task.Delay(initialDelayMs * (i + 1));
         }
 
         throw new TimeoutException(
@@ -47,6 +49,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
     /// <summary>
     /// Waits for ACL deletion to propagate by polling DescribeAclsAsync until the
     /// ACL count drops to the expected value.
+    /// Checks immediately before delaying to avoid unnecessary waits.
     /// </summary>
     private static async Task WaitForAclDeletionAsync(
         IAdminClient admin,
@@ -57,10 +60,11 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
     {
         for (var i = 0; i < maxRetries; i++)
         {
-            await Task.Delay(initialDelayMs * (i + 1));
             var acls = await admin.DescribeAclsAsync(filter);
             if (acls.Count <= expectedCount)
                 return;
+
+            await Task.Delay(initialDelayMs * (i + 1));
         }
 
         throw new TimeoutException(
@@ -224,8 +228,8 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         }
         catch (OperationCanceledException)
         {
-            // Timeout without receiving data - this is acceptable as denial evidence,
-            // but only if no messages were received
+            // Timeout without authorization exception - the assertion below will fail,
+            // ensuring we don't silently pass when ACL enforcement is broken
         }
 
         // The test MUST fail if ACL enforcement is broken:
@@ -300,8 +304,8 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         }
         catch (OperationCanceledException)
         {
-            // Timeout without receiving data - acceptable as denial evidence,
-            // but only if no messages were received
+            // Timeout without authorization exception - the assertion below will fail,
+            // ensuring we don't silently pass when ACL enforcement is broken
         }
 
         // The test MUST fail if ACL enforcement is broken:
