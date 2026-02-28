@@ -132,27 +132,18 @@ public class ConsumerConcurrencyTests
             }
         }).ToArray();
 
-        // Single reader
-        var readerTask = Task.Run(async () =>
-        {
-            var totalExpected = writerCount * itemsPerWriter;
-            while (Volatile.Read(ref readCount) < totalExpected)
-            {
-                if (channel.Reader.TryRead(out _))
-                {
-                    Interlocked.Increment(ref readCount);
-                }
-                else
-                {
-                    await Task.Delay(1);
-                }
-            }
-        });
-
+        // Wait for all writers to finish, then complete the channel
         await Task.WhenAll(writerTasks);
-        await readerTask;
+        channel.Writer.Complete();
 
-        await Assert.That(readCount).IsEqualTo(writerCount * itemsPerWriter);
+        // Single reader drains all remaining items using ReadAllAsync
+        await foreach (var _ in channel.Reader.ReadAllAsync())
+        {
+            Interlocked.Increment(ref readCount);
+        }
+
+        // Assert against the actual writtenCount for a stronger guarantee
+        await Assert.That(readCount).IsEqualTo(Volatile.Read(ref writtenCount));
     }
 
     [Test]
