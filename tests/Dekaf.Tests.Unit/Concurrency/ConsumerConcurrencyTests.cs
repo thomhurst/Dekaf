@@ -22,7 +22,9 @@ public class ConsumerConcurrencyTests
         const int threadCount = 4;
         const int updatesPerThread = 500;
         var positions = new ConcurrentDictionary<TopicPartition, long>();
-        var partitions = Enumerable.Range(0, 4)
+        // Use only 2 partitions so threads 0,2 share partition 0 and threads 1,3
+        // share partition 1, creating real contention on the same keys.
+        var partitions = Enumerable.Range(0, 2)
             .Select(p => new TopicPartition("test-topic", p))
             .ToArray();
 
@@ -40,19 +42,21 @@ public class ConsumerConcurrencyTests
 
         await Task.WhenAll(tasks);
 
-        // Each partition should have its position at or above the last update
+        // Each partition should have the maximum offset written by any thread sharing it
         foreach (var tp in partitions)
         {
             await Assert.That(positions.TryGetValue(tp, out var pos)).IsTrue();
-            await Assert.That(pos).IsGreaterThanOrEqualTo(0);
+            await Assert.That(pos).IsEqualTo(updatesPerThread - 1);
         }
     }
 
     [Test]
     public async Task ConcurrentAssignAndUnassign_NoCorruption()
     {
-        // Tests that concurrent assign/unassign operations on a shared
-        // HashSet<TopicPartition> (protected by lock) do not corrupt state.
+        // Verifies the lock-protected assignment pattern used by KafkaConsumer
+        // (pattern test, not integration test). Tests that concurrent assign/unassign
+        // operations on a shared HashSet<TopicPartition> (protected by lock) do not
+        // corrupt state.
 
         const int iterations = 200;
         var assignment = new HashSet<TopicPartition>();
@@ -154,9 +158,10 @@ public class ConsumerConcurrencyTests
     [Test]
     public async Task CoordinatorStateMachine_ConcurrentStateTransitions_ProtectedByLock()
     {
-        // Simulates the coordinator's state machine transitions under
-        // concurrent access. The SemaphoreSlim(1,1) must prevent concurrent
-        // state transitions.
+        // Verifies the SemaphoreSlim-guarded state machine pattern used by
+        // ConsumerCoordinator (pattern test, not integration test). Simulates
+        // the coordinator's state machine transitions under concurrent access.
+        // The SemaphoreSlim(1,1) must prevent concurrent state transitions.
 
         const int threadCount = 4;
         const int transitionsPerThread = 100;
@@ -210,8 +215,10 @@ public class ConsumerConcurrencyTests
     [Test]
     public async Task ConcurrentOffsetCommitTracking_ConsistentState()
     {
-        // Simulates concurrent offset tracking between auto-commit
-        // background task and manual CommitAsync calls. The _committed
+        // Verifies the SemaphoreSlim-guarded offset commit pattern used by
+        // KafkaConsumer's auto-commit and manual CommitAsync paths (pattern test,
+        // not integration test). Simulates concurrent offset tracking between
+        // auto-commit background task and manual CommitAsync calls. The _committed
         // dictionary must remain consistent.
 
         const int threadCount = 4;
@@ -310,6 +317,7 @@ public class ConsumerConcurrencyTests
 
         var disposed = false;
         var consumedCount = 0;
+        var consumedAtLeastOne = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cts = new CancellationTokenSource();
 
         // Writer task (simulates prefetch)
@@ -341,6 +349,7 @@ public class ConsumerConcurrencyTests
                 await foreach (var item in channel.Reader.ReadAllAsync(cts.Token))
                 {
                     Interlocked.Increment(ref consumedCount);
+                    consumedAtLeastOne.TrySetResult();
                 }
             }
             catch (OperationCanceledException)
@@ -349,8 +358,8 @@ public class ConsumerConcurrencyTests
             }
         });
 
-        // Let it run briefly then "dispose"
-        await Task.Delay(50);
+        // Wait for the consumer to process at least one message, then "dispose"
+        await consumedAtLeastOne.Task.WaitAsync(TimeSpan.FromSeconds(10));
         Volatile.Write(ref disposed, true);
         cts.Cancel();
         channel.Writer.TryComplete();

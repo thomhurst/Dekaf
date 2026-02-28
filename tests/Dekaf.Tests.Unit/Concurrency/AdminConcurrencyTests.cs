@@ -195,6 +195,11 @@ public class AdminConcurrencyTests
     {
         // Multiple threads reading broker info concurrently during updates
         // must all get valid data or null, never corrupt data.
+        //
+        // NOTE: This test validates thread-safe read access specifically. The metadata
+        // is initialized once and only read concurrently — there are no concurrent writers.
+        // For concurrent read-during-write scenarios, see
+        // ClusterMetadata_ConcurrentReadDuringUpdate_ReadsConsistentSnapshot.
 
         var metadata = new ClusterMetadata();
         // Initialize with some data

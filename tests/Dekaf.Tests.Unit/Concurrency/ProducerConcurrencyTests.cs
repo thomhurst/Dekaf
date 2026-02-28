@@ -215,8 +215,7 @@ public class ProducerConcurrencyTests
             workerCts.Cancel();
             await accumulator.DisposeAsync();
 
-            var completed = Task.WhenAll(enqueueTasks).Wait(TimeSpan.FromSeconds(10));
-            await Assert.That(completed).IsTrue();
+            await Task.WhenAll(enqueueTasks).WaitAsync(TimeSpan.FromSeconds(10));
             await Assert.That(successCount + failedCount).IsEqualTo(taskCount * messagesPerTask);
         }
         finally
