@@ -131,9 +131,9 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
     }
 
     /// <summary>
-    /// Creates a TlsConfig suitable for connecting to this container.
+    /// A TlsConfig suitable for connecting to this container with CA-based server validation.
     /// </summary>
-    private TlsConfig CreateTlsConfig() => new()
+    public TlsConfig DefaultTlsConfig => new()
     {
         CaCertificateObject = CaCertificate,
         ValidateServerCertificate = true,
@@ -164,7 +164,7 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
 #pragma warning disable CA5359 // Intentionally accepting any cert for SSL readiness probe
                     using var sslStream = new SslStream(
                         networkStream,
-                        leaveInnerStreamOpen: false,
+                        leaveInnerStreamOpen: true,
                         (_, _, _, _) => true);
 #pragma warning restore CA5359
 
@@ -214,7 +214,7 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
 
         await using var adminClient = Kafka.CreateAdminClient()
             .WithBootstrapServers(BootstrapServers)
-            .UseTls(CreateTlsConfig())
+            .UseTls(DefaultTlsConfig)
             .Build();
 
         await adminClient.CreateTopicsAsync([
@@ -234,7 +234,7 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
     /// <summary>
     /// Polls ListTopicsAsync until the specified topic appears, with timeout.
     /// </summary>
-    private static async Task WaitForTopicAsync(Dekaf.Admin.IAdminClient adminClient, string topicName, int timeoutSeconds = 30)
+    internal static async Task WaitForTopicAsync(Dekaf.Admin.IAdminClient adminClient, string topicName, int timeoutSeconds = 30)
     {
         var deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
 

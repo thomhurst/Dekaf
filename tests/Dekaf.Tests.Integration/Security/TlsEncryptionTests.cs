@@ -1,4 +1,3 @@
-using System.Net.Security;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using Dekaf.Consumer;
@@ -30,17 +29,10 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         // Arrange
         var topic = await tlsKafka.CreateTestTopicAsync();
 
-        var tlsConfig = new TlsConfig
-        {
-            CaCertificateObject = tlsKafka.CaCertificate,
-            ValidateServerCertificate = true,
-            TargetHost = "localhost"
-        };
-
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-producer")
-            .UseTls(tlsConfig)
+            .UseTls(tlsKafka.DefaultTlsConfig)
             .WithAcks(Acks.All)
             .BuildAsync();
 
@@ -65,17 +57,10 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         var topic = await tlsKafka.CreateTestTopicAsync();
         const int messageCount = 10;
 
-        var tlsConfig = new TlsConfig
-        {
-            CaCertificateObject = tlsKafka.CaCertificate,
-            ValidateServerCertificate = true,
-            TargetHost = "localhost"
-        };
-
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-producer-multi")
-            .UseTls(tlsConfig)
+            .UseTls(tlsKafka.DefaultTlsConfig)
             .BuildAsync();
 
         // Act
@@ -116,18 +101,11 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         var topic = await tlsKafka.CreateTestTopicAsync();
         var groupId = $"test-tls-group-{Guid.NewGuid():N}";
 
-        var tlsConfig = new TlsConfig
-        {
-            CaCertificateObject = tlsKafka.CaCertificate,
-            ValidateServerCertificate = true,
-            TargetHost = "localhost"
-        };
-
         // Produce a message first over TLS
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-consumer-producer")
-            .UseTls(tlsConfig)
+            .UseTls(tlsKafka.DefaultTlsConfig)
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -143,7 +121,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithClientId("test-tls-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .UseTls(tlsConfig)
+            .UseTls(tlsKafka.DefaultTlsConfig)
             .BuildAsync();
 
         consumer.Subscribe(topic);
@@ -169,17 +147,10 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         // Arrange
         var topicName = $"test-tls-admin-{Guid.NewGuid():N}";
 
-        var tlsConfig = new TlsConfig
-        {
-            CaCertificateObject = tlsKafka.CaCertificate,
-            ValidateServerCertificate = true,
-            TargetHost = "localhost"
-        };
-
         await using var adminClient = Kafka.CreateAdminClient()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-admin")
-            .UseTls(tlsConfig)
+            .UseTls(tlsKafka.DefaultTlsConfig)
             .Build();
 
         // Act - create topic
@@ -192,25 +163,13 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             }
         ]);
 
-        // Poll for topic metadata propagation instead of fixed delay
-        var deadline = DateTime.UtcNow.AddSeconds(30);
-        var topicFound = false;
-        while (DateTime.UtcNow < deadline)
-        {
-            var topics = await adminClient.ListTopicsAsync();
-            if (topics.Any(t => t.Name == topicName))
-            {
-                topicFound = true;
-                break;
-            }
-            await Task.Delay(500);
-        }
+        // Wait for topic metadata propagation
+        await TlsKafkaContainer.WaitForTopicAsync(adminClient, topicName);
 
         // Act - describe cluster
         var cluster = await adminClient.DescribeClusterAsync();
 
         // Assert
-        await Assert.That(topicFound).IsTrue();
         await Assert.That(cluster.Nodes).Count().IsGreaterThan(0);
         await Assert.That(cluster.ClusterId).IsNotNull();
     }
@@ -622,18 +581,11 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         const string expectedKey = "roundtrip-key";
         const string expectedValue = "roundtrip-value-over-tls";
 
-        var tlsConfig = new TlsConfig
-        {
-            CaCertificateObject = tlsKafka.CaCertificate,
-            ValidateServerCertificate = true,
-            TargetHost = "localhost"
-        };
-
         // Act - produce
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-roundtrip-producer")
-            .UseTls(tlsConfig)
+            .UseTls(tlsKafka.DefaultTlsConfig)
             .WithAcks(Acks.All)
             .BuildAsync();
 
@@ -650,7 +602,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithClientId("test-tls-roundtrip-consumer")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .UseTls(tlsConfig)
+            .UseTls(tlsKafka.DefaultTlsConfig)
             .BuildAsync();
 
         consumer.Subscribe(topic);
