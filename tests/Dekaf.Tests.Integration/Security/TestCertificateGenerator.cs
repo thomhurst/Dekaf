@@ -165,7 +165,6 @@ internal sealed class TestCertificateGenerator : IDisposable
             sanBuilder.AddDnsName("kafka");
             sanBuilder.AddDnsName("broker");
             sanBuilder.AddIpAddress(System.Net.IPAddress.Loopback);
-            sanBuilder.AddIpAddress(System.Net.IPAddress.Parse("0.0.0.0"));
             // Add a wildcard for container networking
             sanBuilder.AddDnsName("*.docker.internal");
             request.CertificateExtensions.Add(sanBuilder.Build());
@@ -231,7 +230,7 @@ internal sealed class TestCertificateGenerator : IDisposable
         File.WriteAllText(ClientKeyPemPath, clientKeyPem);
     }
 
-    private static string ExportCertificateToPem(X509Certificate2 cert)
+    internal static string ExportCertificateToPem(X509Certificate2 cert)
     {
         var sb = new StringBuilder();
         sb.AppendLine("-----BEGIN CERTIFICATE-----");
@@ -240,7 +239,7 @@ internal sealed class TestCertificateGenerator : IDisposable
         return sb.ToString();
     }
 
-    private static string ExportPrivateKeyToPem(X509Certificate2 cert)
+    internal static string ExportPrivateKeyToPem(X509Certificate2 cert)
     {
         using var rsa = cert.GetRSAPrivateKey()
             ?? throw new InvalidOperationException("Certificate does not have an RSA private key");
@@ -251,6 +250,16 @@ internal sealed class TestCertificateGenerator : IDisposable
         sb.AppendLine(Convert.ToBase64String(privateKeyBytes, Base64FormattingOptions.InsertLineBreaks));
         sb.AppendLine("-----END PRIVATE KEY-----");
         return sb.ToString();
+    }
+
+    internal static void ExportCertificateToPemFile(X509Certificate2 cert, string path)
+    {
+        File.WriteAllText(path, ExportCertificateToPem(cert));
+    }
+
+    internal static void ExportPrivateKeyToPemFile(X509Certificate2 cert, string path)
+    {
+        File.WriteAllText(path, ExportPrivateKeyToPem(cert));
     }
 
     /// <summary>
@@ -281,40 +290,6 @@ internal sealed class TestCertificateGenerator : IDisposable
         return X509CertificateLoader.LoadPkcs12(
             cert.Export(X509ContentType.Pfx, "untrusted"),
             "untrusted",
-            X509KeyStorageFlags.Exportable);
-    }
-
-    /// <summary>
-    /// Generates an expired certificate signed by the CA.
-    /// Used for testing expired certificate rejection.
-    /// </summary>
-    public X509Certificate2 GenerateExpiredCertificate()
-    {
-        using var rsa = RSA.Create(2048);
-        var request = new CertificateRequest(
-            "CN=Expired Server, O=Dekaf Test, C=US",
-            rsa,
-            HashAlgorithmName.SHA256,
-            RSASignaturePadding.Pkcs1);
-
-        request.CertificateExtensions.Add(
-            new X509BasicConstraintsExtension(false, false, 0, true));
-
-        var serialNumber = new byte[16];
-        RandomNumberGenerator.Fill(serialNumber);
-        serialNumber[0] &= 0x7F;
-
-        var cert = request.Create(
-            CaCertificate,
-            DateTimeOffset.UtcNow.AddYears(-2),
-            DateTimeOffset.UtcNow.AddYears(-1), // Expired
-            serialNumber);
-
-        var certWithKey = cert.CopyWithPrivateKey(rsa);
-
-        return X509CertificateLoader.LoadPkcs12(
-            certWithKey.Export(X509ContentType.Pfx, StorePassword),
-            StorePassword,
             X509KeyStorageFlags.Exportable);
     }
 

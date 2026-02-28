@@ -1,5 +1,7 @@
+using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
+using Dekaf.Security;
 using Testcontainers.Kafka;
 using TUnit.Core.Interfaces;
 
@@ -78,8 +80,8 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
         // Export server cert and key as PEM for mounting
         var serverCertPemPath = Path.Combine(_certGenerator.CertificateDirectory, "server-cert.pem");
         var serverKeyPemPath = Path.Combine(_certGenerator.CertificateDirectory, "server-key.pem");
-        ExportCertificateToPem(_certGenerator.ServerCertificate, serverCertPemPath);
-        ExportPrivateKeyToPem(_certGenerator.ServerCertificate, serverKeyPemPath);
+        TestCertificateGenerator.ExportCertificateToPemFile(_certGenerator.ServerCertificate, serverCertPemPath);
+        TestCertificateGenerator.ExportPrivateKeyToPemFile(_certGenerator.ServerCertificate, serverKeyPemPath);
 
         _container = new KafkaBuilder("apache/kafka:3.9.1")
             .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")
@@ -128,6 +130,16 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
         return address.TrimEnd('/');
     }
 
+    /// <summary>
+    /// Creates a TlsConfig suitable for connecting to this container.
+    /// </summary>
+    private TlsConfig CreateTlsConfig() => new()
+    {
+        CaCertificateObject = CaCertificate,
+        ValidateServerCertificate = true,
+        TargetHost = "localhost"
+    };
+
     private async Task WaitForKafkaSslAsync()
     {
         Console.WriteLine("[TlsKafkaContainer] Waiting for Kafka SSL listener to be ready...");
@@ -137,7 +149,7 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
         var host = BootstrapServers[..colonIndex];
         var port = int.Parse(BootstrapServers[(colonIndex + 1)..]);
 
-        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             try
             {
@@ -145,15 +157,29 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
                 await client.ConnectAsync(host, port);
                 if (client.Connected)
                 {
-                    Console.WriteLine("[TlsKafkaContainer] Kafka SSL listener is accepting connections");
-                    // Give it a moment to fully initialize
-                    await Task.Delay(3000);
+                    // Perform an actual TLS handshake to verify the SSL listener is fully ready.
+                    // We accept any certificate during this probe since we only care that the
+                    // SSL listener is up and performing TLS handshakes.
+                    await using var networkStream = client.GetStream();
+#pragma warning disable CA5359 // Intentionally accepting any cert for SSL readiness probe
+                    using var sslStream = new SslStream(
+                        networkStream,
+                        leaveInnerStreamOpen: false,
+                        (_, _, _, _) => true);
+#pragma warning restore CA5359
+
+                    await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                    {
+                        TargetHost = host
+                    });
+
+                    Console.WriteLine("[TlsKafkaContainer] Kafka SSL listener is accepting TLS connections");
                     return;
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // Ignore and retry
+                Console.WriteLine($"[TlsKafkaContainer] SSL probe attempt {attempt}/{maxAttempts} failed: {ex.Message}");
             }
 
             await Task.Delay(1000);
@@ -188,7 +214,7 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
 
         await using var adminClient = Kafka.CreateAdminClient()
             .WithBootstrapServers(BootstrapServers)
-            .UseTls()
+            .UseTls(CreateTlsConfig())
             .Build();
 
         await adminClient.CreateTopicsAsync([
@@ -200,31 +226,30 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
             }
         ]);
 
-        // Wait for topic metadata to propagate
-        await Task.Delay(3000);
+        // Poll for topic metadata propagation instead of using a fixed delay
+        await WaitForTopicAsync(adminClient, topicName);
         Console.WriteLine($"[TlsKafkaContainer] Topic '{topicName}' created");
     }
 
-    private static void ExportCertificateToPem(X509Certificate2 cert, string path)
+    /// <summary>
+    /// Polls ListTopicsAsync until the specified topic appears, with timeout.
+    /// </summary>
+    private static async Task WaitForTopicAsync(Dekaf.Admin.IAdminClient adminClient, string topicName, int timeoutSeconds = 30)
     {
-        var pem = new System.Text.StringBuilder();
-        pem.AppendLine("-----BEGIN CERTIFICATE-----");
-        pem.AppendLine(Convert.ToBase64String(cert.RawData, Base64FormattingOptions.InsertLineBreaks));
-        pem.AppendLine("-----END CERTIFICATE-----");
-        File.WriteAllText(path, pem.ToString());
-    }
+        var deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
 
-    private static void ExportPrivateKeyToPem(X509Certificate2 cert, string path)
-    {
-        using var rsa = cert.GetRSAPrivateKey()
-            ?? throw new InvalidOperationException("Certificate does not have an RSA private key");
+        while (DateTime.UtcNow < deadline)
+        {
+            var topics = await adminClient.ListTopicsAsync();
+            if (topics.Any(t => t.Name == topicName))
+            {
+                return;
+            }
 
-        var privateKeyBytes = rsa.ExportPkcs8PrivateKey();
-        var pem = new System.Text.StringBuilder();
-        pem.AppendLine("-----BEGIN PRIVATE KEY-----");
-        pem.AppendLine(Convert.ToBase64String(privateKeyBytes, Base64FormattingOptions.InsertLineBreaks));
-        pem.AppendLine("-----END PRIVATE KEY-----");
-        File.WriteAllText(path, pem.ToString());
+            await Task.Delay(500);
+        }
+
+        throw new InvalidOperationException($"Topic '{topicName}' did not appear in metadata within {timeoutSeconds}s");
     }
 
     public async ValueTask DisposeAsync()

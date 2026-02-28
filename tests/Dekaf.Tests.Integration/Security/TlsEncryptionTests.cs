@@ -169,10 +169,17 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         // Arrange
         var topicName = $"test-tls-admin-{Guid.NewGuid():N}";
 
+        var tlsConfig = new TlsConfig
+        {
+            CaCertificateObject = tlsKafka.CaCertificate,
+            ValidateServerCertificate = true,
+            TargetHost = "localhost"
+        };
+
         await using var adminClient = Kafka.CreateAdminClient()
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-admin")
-            .UseTls()
+            .UseTls(tlsConfig)
             .Build();
 
         // Act - create topic
@@ -185,13 +192,25 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             }
         ]);
 
-        // Wait for metadata propagation
-        await Task.Delay(3000);
+        // Poll for topic metadata propagation instead of fixed delay
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        var topicFound = false;
+        while (DateTime.UtcNow < deadline)
+        {
+            var topics = await adminClient.ListTopicsAsync();
+            if (topics.Any(t => t.Name == topicName))
+            {
+                topicFound = true;
+                break;
+            }
+            await Task.Delay(500);
+        }
 
         // Act - describe cluster
         var cluster = await adminClient.DescribeClusterAsync();
 
         // Assert
+        await Assert.That(topicFound).IsTrue();
         await Assert.That(cluster.Nodes).Count().IsGreaterThan(0);
         await Assert.That(cluster.ClusterId).IsNotNull();
     }
@@ -376,15 +395,10 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
         // Arrange - use mTLS with in-memory certificates
         var topic = await tlsKafka.CreateTestTopicAsync();
 
-        var tlsConfig = TlsConfig.CreateMutualTls(
-            clientCertificate: tlsKafka.ClientCertificate,
-            caCertificate: tlsKafka.CaCertificate);
-
-        // Override target host for test certificates
-        tlsConfig = new TlsConfig
+        var tlsConfig = new TlsConfig
         {
-            ClientCertificate = tlsConfig.ClientCertificate,
-            CaCertificateObject = tlsConfig.CaCertificateObject,
+            ClientCertificate = tlsKafka.ClientCertificate,
+            CaCertificateObject = tlsKafka.CaCertificate,
             ValidateServerCertificate = true,
             TargetHost = "localhost"
         };
