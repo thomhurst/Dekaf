@@ -21,24 +21,51 @@ namespace Dekaf.Tests.Integration.Security;
 public class AclEnforcementTests(AclKafkaContainer kafka)
 {
     /// <summary>
-    /// Waits for a condition to become true with retries.
-    /// ACL propagation in Kafka can take a moment.
+    /// Waits for ACLs to propagate by polling DescribeAclsAsync until the expected
+    /// number of ACL bindings appear for the given filter.
     /// </summary>
-    private static async Task<T> WaitForConditionAsync<T>(
-        Func<Task<T>> check,
-        Func<T, bool> condition,
-        int maxRetries = 5,
+    private static async Task WaitForAclPropagationAsync(
+        IAdminClient admin,
+        AclBindingFilter filter,
+        int expectedCount,
+        int maxRetries = 10,
         int initialDelayMs = 500)
     {
-        T result = default!;
         for (var i = 0; i < maxRetries; i++)
         {
             await Task.Delay(initialDelayMs * (i + 1));
-            result = await check();
-            if (condition(result))
-                return result;
+            var acls = await admin.DescribeAclsAsync(filter);
+            if (acls.Count >= expectedCount)
+                return;
         }
-        return result;
+
+        throw new TimeoutException(
+            $"ACL propagation timed out: expected at least {expectedCount} ACL(s) for " +
+            $"resource {filter.ResourceType}/{filter.ResourceName}, but they did not appear.");
+    }
+
+    /// <summary>
+    /// Waits for ACL deletion to propagate by polling DescribeAclsAsync until the
+    /// ACL count drops to the expected value.
+    /// </summary>
+    private static async Task WaitForAclDeletionAsync(
+        IAdminClient admin,
+        AclBindingFilter filter,
+        int expectedCount = 0,
+        int maxRetries = 10,
+        int initialDelayMs = 500)
+    {
+        for (var i = 0; i < maxRetries; i++)
+        {
+            await Task.Delay(initialDelayMs * (i + 1));
+            var acls = await admin.DescribeAclsAsync(filter);
+            if (acls.Count <= expectedCount)
+                return;
+        }
+
+        throw new TimeoutException(
+            $"ACL deletion propagation timed out: expected at most {expectedCount} ACL(s) for " +
+            $"resource {filter.ResourceType}/{filter.ResourceName}.");
     }
 
     #region Producer ACL Enforcement
@@ -97,8 +124,11 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 AclOperation.Describe)
         ]);
 
-        // Wait for ACLs to propagate
-        await Task.Delay(2000);
+        // Wait for ACLs to propagate by polling
+        await WaitForAclPropagationAsync(
+            admin,
+            AclBindingFilter.ForResource(ResourceType.Topic, topic),
+            expectedCount: 2);
 
         // Act: produce as testuser with the new ACLs
         await using var producer = await Kafka.CreateProducer<string, string>()
@@ -155,9 +185,14 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 $"User:{AclKafkaContainer.TestUsername}",
                 AclOperation.Read)
         ]);
-        await Task.Delay(2000);
 
-        // Act: consume as testuser without READ on topic
+        // Wait for ACL to propagate by polling
+        await WaitForAclPropagationAsync(
+            admin,
+            AclBindingFilter.ForResource(ResourceType.Group, groupId),
+            expectedCount: 1);
+
+        // Act & Assert: consuming without READ permission on topic should fail
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithSaslPlain(AclKafkaContainer.TestUsername, AclKafkaContainer.TestPassword)
@@ -168,16 +203,16 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
 
         consumer.Subscribe(topic);
 
-        // Assert: consuming without READ permission on topic should fail
         var exceptionThrown = false;
-        KafkaException? caughtException = null;
+        var messageReceived = false;
 
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             await foreach (var _ in consumer.ConsumeAsync(cts.Token))
             {
-                // Should not reach here
+                // If we receive a message, ACL enforcement is broken
+                messageReceived = true;
                 break;
             }
         }
@@ -186,21 +221,20 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             ex.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAuthorizationFailed)
         {
             exceptionThrown = true;
-            caughtException = ex;
         }
         catch (OperationCanceledException)
         {
-            // If we timed out waiting, the broker may have silently denied.
-            // Some Kafka versions may not immediately throw but instead return no data.
-            // For this test, a timeout without data is also acceptable evidence of denial.
+            // Timeout without receiving data - this is acceptable as denial evidence,
+            // but only if no messages were received
         }
 
-        // The consumer should either throw AuthorizationException or receive no data
-        // (Kafka may handle topic auth failure differently depending on version)
-        if (caughtException is not null)
-        {
-            await Assert.That(exceptionThrown).IsTrue();
-        }
+        // The test MUST fail if ACL enforcement is broken:
+        // - If a message was received, ACLs are not being enforced
+        // - If no exception was thrown AND no timeout occurred, something is wrong
+        await Assert.That(messageReceived).IsFalse()
+            .Because("consumer should not receive messages without READ permission on topic");
+        await Assert.That(exceptionThrown).IsTrue()
+            .Because("consumer should throw AuthorizationException when READ permission on topic is missing");
     }
 
     #endregion
@@ -226,9 +260,14 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 $"User:{AclKafkaContainer.TestUsername}",
                 AclOperation.Describe)
         ]);
-        await Task.Delay(2000);
 
-        // Act: consume as testuser without READ on group
+        // Wait for ACLs to propagate by polling
+        await WaitForAclPropagationAsync(
+            admin,
+            AclBindingFilter.ForResource(ResourceType.Topic, topic),
+            expectedCount: 2);
+
+        // Act & Assert: joining consumer group without READ permission should fail
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithSaslPlain(AclKafkaContainer.TestUsername, AclKafkaContainer.TestPassword)
@@ -239,15 +278,16 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
 
         consumer.Subscribe(topic);
 
-        // Assert: joining consumer group without READ permission should fail
         var exceptionThrown = false;
-        KafkaException? caughtException = null;
+        var messageReceived = false;
 
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             await foreach (var _ in consumer.ConsumeAsync(cts.Token))
             {
+                // If we receive a message, ACL enforcement is broken
+                messageReceived = true;
                 break;
             }
         }
@@ -257,17 +297,20 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             ex.ErrorCode == Dekaf.Protocol.ErrorCode.GroupAuthorizationFailed)
         {
             exceptionThrown = true;
-            caughtException = ex;
         }
         catch (OperationCanceledException)
         {
-            // Timeout is acceptable - some versions may not throw immediately
+            // Timeout without receiving data - acceptable as denial evidence,
+            // but only if no messages were received
         }
 
-        if (caughtException is not null)
-        {
-            await Assert.That(exceptionThrown).IsTrue();
-        }
+        // The test MUST fail if ACL enforcement is broken:
+        // - If a message was received, ACLs are not being enforced
+        // - The consumer must throw an authorization/group exception
+        await Assert.That(messageReceived).IsFalse()
+            .Because("consumer should not receive messages without READ permission on group");
+        await Assert.That(exceptionThrown).IsTrue()
+            .Because("consumer should throw AuthorizationException when READ permission on group is missing");
     }
 
     #endregion
@@ -311,7 +354,16 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 $"User:{AclKafkaContainer.TestUsername}",
                 AclOperation.Read)
         ]);
-        await Task.Delay(2000);
+
+        // Wait for ACLs to propagate by polling
+        await WaitForAclPropagationAsync(
+            admin,
+            AclBindingFilter.ForResource(ResourceType.Topic, topic),
+            expectedCount: 2);
+        await WaitForAclPropagationAsync(
+            admin,
+            AclBindingFilter.ForResource(ResourceType.Group, groupId),
+            expectedCount: 1);
 
         // Act: consume as testuser with proper ACLs
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -455,7 +507,10 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 $"User:{AclKafkaContainer.TestUsername}",
                 AclOperation.Describe)
         ]);
-        await Task.Delay(2000);
+
+        // Wait for ACLs to propagate by polling
+        var topicFilter = AclBindingFilter.ForResource(ResourceType.Topic, topic);
+        await WaitForAclPropagationAsync(admin, topicFilter, expectedCount: 2);
 
         {
             await using var producer = await Kafka.CreateProducer<string, string>()
@@ -484,7 +539,9 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             Principal = $"User:{AclKafkaContainer.TestUsername}"
         };
         await admin.DeleteAclsAsync([filter]);
-        await Task.Delay(2000);
+
+        // Wait for ACL deletion to propagate by polling
+        await WaitForAclDeletionAsync(admin, topicFilter);
 
         {
             await using var producer = await Kafka.CreateProducer<string, string>()

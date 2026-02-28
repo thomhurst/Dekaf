@@ -90,14 +90,14 @@ public class AclKafkaContainer : IAsyncInitializer, IAsyncDisposable
             .WithEnvironment("KAFKA_LOG_CLEANUP_POLICY", "delete")
             .Build();
 
-        await _container.StartAsync();
+        await _container.StartAsync().ConfigureAwait(false);
 
         var rawAddress = _container.GetBootstrapAddress();
         _bootstrapServers = ExtractHostPort(rawAddress);
 
         Console.WriteLine($"[AclKafkaContainer] Kafka started at {_bootstrapServers}");
 
-        await WaitForKafkaReadyAsync();
+        await WaitForKafkaReadyAsync().ConfigureAwait(false);
     }
 
     private static string ExtractHostPort(string address)
@@ -123,12 +123,12 @@ public class AclKafkaContainer : IAsyncInitializer, IAsyncDisposable
             try
             {
                 using var client = new TcpClient();
-                await client.ConnectAsync(host, port);
+                await client.ConnectAsync(host, port).ConfigureAwait(false);
                 if (client.Connected)
                 {
                     Console.WriteLine("[AclKafkaContainer] Kafka is accepting connections");
                     // Wait for broker to fully initialize with SASL
-                    await Task.Delay(3000);
+                    await Task.Delay(2000).ConfigureAwait(false);
                     return;
                 }
             }
@@ -137,7 +137,7 @@ public class AclKafkaContainer : IAsyncInitializer, IAsyncDisposable
                 // Ignore and retry
             }
 
-            await Task.Delay(1000);
+            await Task.Delay(1000).ConfigureAwait(false);
         }
 
         throw new InvalidOperationException(
@@ -163,7 +163,7 @@ public class AclKafkaContainer : IAsyncInitializer, IAsyncDisposable
     public async Task<string> CreateTestTopicAsync(int partitions = 1)
     {
         var topicName = $"acl-test-topic-{Guid.NewGuid():N}";
-        await CreateTopicAsync(topicName, partitions);
+        await CreateTopicAsync(topicName, partitions).ConfigureAwait(false);
         return topicName;
     }
 
@@ -187,10 +187,10 @@ public class AclKafkaContainer : IAsyncInitializer, IAsyncDisposable
                 NumPartitions = partitions,
                 ReplicationFactor = (short)replicationFactor
             }
-        ]);
+        ]).ConfigureAwait(false);
 
         // Wait for topic metadata to propagate
-        await Task.Delay(3000);
+        await Task.Delay(3000).ConfigureAwait(false);
         Console.WriteLine($"[AclKafkaContainer] Topic '{topicName}' created");
     }
 
@@ -198,7 +198,7 @@ public class AclKafkaContainer : IAsyncInitializer, IAsyncDisposable
     {
         if (_container is not null)
         {
-            await _container.DisposeAsync();
+            await _container.DisposeAsync().ConfigureAwait(false);
         }
 
         GC.SuppressFinalize(this);
