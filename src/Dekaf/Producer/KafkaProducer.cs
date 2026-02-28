@@ -332,7 +332,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, message.Topic);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "publish");
-            if (message.Key is not null)
+            if (message.Key is string stringKey)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, stringKey);
+            else if (message.Key is not null and not byte[])
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, message.Key.ToString());
             message = message with { Headers = Diagnostics.TraceContextPropagator.InjectTraceContext(message.Headers, activity) };
         }
@@ -611,7 +613,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, message.Topic);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "publish");
-            if (message.Key is not null)
+            if (message.Key is string stringKey)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, stringKey);
+            else if (message.Key is not null and not byte[])
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, message.Key.ToString());
             message = message with { Headers = Diagnostics.TraceContextPropagator.InjectTraceContext(message.Headers, activity) };
         }

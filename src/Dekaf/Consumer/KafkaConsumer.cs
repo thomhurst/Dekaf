@@ -752,15 +752,22 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     // Use span links (not parent-child) per OTel messaging semantic conventions:
                     // the consumer span gets its own trace, linked to the producer span.
                     var producerContext = Diagnostics.TraceContextPropagator.ExtractTraceContext(headers);
-                    var links = producerContext.HasValue
-                        ? new[] { new System.Diagnostics.ActivityLink(producerContext.Value) }
-                        : null;
-                    var activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
-                        $"{pending.Topic} receive",
-                        System.Diagnostics.ActivityKind.Consumer,
-                        parentContext: default(System.Diagnostics.ActivityContext),
-                        tags: null,
-                        links: links);
+                    System.Diagnostics.Activity? activity;
+                    if (producerContext.HasValue && Diagnostics.DekafDiagnostics.Source.HasListeners())
+                    {
+                        activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
+                            $"{pending.Topic} receive",
+                            System.Diagnostics.ActivityKind.Consumer,
+                            parentContext: default(System.Diagnostics.ActivityContext),
+                            tags: null,
+                            links: [new System.Diagnostics.ActivityLink(producerContext.Value)]);
+                    }
+                    else
+                    {
+                        activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
+                            $"{pending.Topic} receive",
+                            System.Diagnostics.ActivityKind.Consumer);
+                    }
                     if (activity is not null)
                     {
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
