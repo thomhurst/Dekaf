@@ -749,20 +749,23 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         : TimestampType.CreateTime;
 
                     // Start consumer tracing activity (~2ns no-op when no listener)
-                    var parentContext = Diagnostics.TraceContextPropagator.ExtractTraceContext(headers);
-                    var activity = parentContext.HasValue
-                        ? Diagnostics.DekafDiagnostics.Source.StartActivity(
-                            $"{pending.Topic} process",
-                            System.Diagnostics.ActivityKind.Consumer,
-                            parentContext.Value)
-                        : Diagnostics.DekafDiagnostics.Source.StartActivity(
-                            $"{pending.Topic} process",
-                            System.Diagnostics.ActivityKind.Consumer);
+                    // Use span links (not parent-child) per OTel messaging semantic conventions:
+                    // the consumer span gets its own trace, linked to the producer span.
+                    var producerContext = Diagnostics.TraceContextPropagator.ExtractTraceContext(headers);
+                    var links = producerContext.HasValue
+                        ? new[] { new System.Diagnostics.ActivityLink(producerContext.Value) }
+                        : null;
+                    var activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
+                        $"{pending.Topic} receive",
+                        System.Diagnostics.ActivityKind.Consumer,
+                        parentContext: default(System.Diagnostics.ActivityContext),
+                        tags: null,
+                        links: links);
                     if (activity is not null)
                     {
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic);
-                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "process");
+                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "receive");
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, pending.PartitionIndex);
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageOffset, offset);
                         if (_options.GroupId is not null)

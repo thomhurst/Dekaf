@@ -326,12 +326,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Start tracing activity (~2ns no-op when no listener attached)
         var activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
-            $"{message.Topic} send", ActivityKind.Producer);
+            $"{message.Topic} publish", ActivityKind.Producer);
         if (activity is not null)
         {
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, message.Topic);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "send");
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "publish");
+            if (message.Key is not null)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, message.Key.ToString());
             message = message with { Headers = Diagnostics.TraceContextPropagator.InjectTraceContext(message.Headers, activity) };
         }
 
@@ -603,12 +605,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Start tracing activity (~2ns no-op when no listener attached)
         var activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
-            $"{message.Topic} send", ActivityKind.Producer);
+            $"{message.Topic} publish", ActivityKind.Producer);
         if (activity is not null)
         {
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, message.Topic);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "send");
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "publish");
+            if (message.Key is not null)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, message.Key.ToString());
             message = message with { Headers = Diagnostics.TraceContextPropagator.InjectTraceContext(message.Headers, activity) };
         }
 
