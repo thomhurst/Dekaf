@@ -1,6 +1,7 @@
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using Dekaf.Consumer;
+using Dekaf.Errors;
 using Dekaf.Producer;
 using Dekaf.Security;
 
@@ -206,7 +207,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Value = "value"
         });
 
-        await Assert.That(act).ThrowsException();
+        await Assert.That(act).Throws<KafkaException>();
     }
 
     [Test]
@@ -235,7 +236,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             Value = "value"
         });
 
-        await Assert.That(act).ThrowsException();
+        await Assert.That(act).Throws<KafkaException>();
     }
 
     // ──────────────────────────────────────────────────────────────
