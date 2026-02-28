@@ -41,6 +41,16 @@ public class AclKafkaContainer : KafkaTestContainer
     /// </summary>
     public const string TestPassword = "testuser-secret";
 
+    /// <summary>
+    /// The Kafka principal string for the test user (User:testuser).
+    /// </summary>
+    public const string TestPrincipal = $"User:{TestUsername}";
+
+    /// <summary>
+    /// The Kafka principal string for the admin user (User:admin).
+    /// </summary>
+    public const string AdminPrincipal = $"User:{AdminUsername}";
+
     public override string ContainerName => "apache/kafka:3.9.1";
     public override int Version => 391;
 
@@ -68,7 +78,7 @@ public class AclKafkaContainer : KafkaTestContainer
             .WithEnvironment("KAFKA_LISTENER_NAME_BROKER_PLAIN_SASL_JAAS_CONFIG", JaasConfig)
             // Inter-broker communication uses admin credentials
             .WithEnvironment("KAFKA_SASL_JAAS_CONFIG", JaasConfig)
-            // Allow the controller to communicate without SASL (KRaft controller listener)
+            // Configure SASL PLAIN on the KRaft controller listener for inter-controller communication
             .WithEnvironment("KAFKA_LISTENER_NAME_CONTROLLER_SASL_ENABLED_MECHANISMS", "PLAIN")
             .WithEnvironment("KAFKA_LISTENER_NAME_CONTROLLER_PLAIN_SASL_JAAS_CONFIG", JaasConfig);
 

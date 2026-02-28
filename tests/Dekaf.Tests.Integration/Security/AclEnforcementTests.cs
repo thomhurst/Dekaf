@@ -29,8 +29,8 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         IAdminClient admin,
         AclBindingFilter filter,
         int expectedCount,
-        int maxRetries = 10,
-        int initialDelayMs = 500)
+        int maxRetries = 30,
+        int initialDelayMs = 100)
     {
         for (var i = 0; i < maxRetries; i++)
         {
@@ -55,8 +55,8 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         IAdminClient admin,
         AclBindingFilter filter,
         int expectedCount = 0,
-        int maxRetries = 10,
-        int initialDelayMs = 500)
+        int maxRetries = 30,
+        int initialDelayMs = 100)
     {
         for (var i = 0; i < maxRetries; i++)
         {
@@ -119,12 +119,12 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         await admin.CreateAclsAsync([
             AclBinding.Allow(
                 ResourcePattern.Topic(topic),
-                $"User:{AclKafkaContainer.TestUsername}",
+                AclKafkaContainer.TestPrincipal,
                 AclOperation.Write),
             // DESCRIBE is needed for metadata lookup during produce
             AclBinding.Allow(
                 ResourcePattern.Topic(topic),
-                $"User:{AclKafkaContainer.TestUsername}",
+                AclKafkaContainer.TestPrincipal,
                 AclOperation.Describe)
         ]);
 
@@ -186,7 +186,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         await admin.CreateAclsAsync([
             AclBinding.Allow(
                 ResourcePattern.Group(groupId),
-                $"User:{AclKafkaContainer.TestUsername}",
+                AclKafkaContainer.TestPrincipal,
                 AclOperation.Read)
         ]);
 
@@ -257,11 +257,11 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         await admin.CreateAclsAsync([
             AclBinding.Allow(
                 ResourcePattern.Topic(topic),
-                $"User:{AclKafkaContainer.TestUsername}",
+                AclKafkaContainer.TestPrincipal,
                 AclOperation.Read),
             AclBinding.Allow(
                 ResourcePattern.Topic(topic),
-                $"User:{AclKafkaContainer.TestUsername}",
+                AclKafkaContainer.TestPrincipal,
                 AclOperation.Describe)
         ]);
 
@@ -347,15 +347,15 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         await admin.CreateAclsAsync([
             AclBinding.Allow(
                 ResourcePattern.Topic(topic),
-                $"User:{AclKafkaContainer.TestUsername}",
+                AclKafkaContainer.TestPrincipal,
                 AclOperation.Read),
             AclBinding.Allow(
                 ResourcePattern.Topic(topic),
-                $"User:{AclKafkaContainer.TestUsername}",
+                AclKafkaContainer.TestPrincipal,
                 AclOperation.Describe),
             AclBinding.Allow(
                 ResourcePattern.Group(groupId),
-                $"User:{AclKafkaContainer.TestUsername}",
+                AclKafkaContainer.TestPrincipal,
                 AclOperation.Read)
         ]);
 
@@ -504,11 +504,11 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         await admin.CreateAclsAsync([
             AclBinding.Allow(
                 ResourcePattern.Topic(topic),
-                $"User:{AclKafkaContainer.TestUsername}",
+                AclKafkaContainer.TestPrincipal,
                 AclOperation.Write),
             AclBinding.Allow(
                 ResourcePattern.Topic(topic),
-                $"User:{AclKafkaContainer.TestUsername}",
+                AclKafkaContainer.TestPrincipal,
                 AclOperation.Describe)
         ]);
 
@@ -540,7 +540,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         {
             ResourceType = ResourceType.Topic,
             ResourceName = topic,
-            Principal = $"User:{AclKafkaContainer.TestUsername}"
+            Principal = AclKafkaContainer.TestPrincipal
         };
         await admin.DeleteAclsAsync([filter]);
 
@@ -548,6 +548,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         await WaitForAclDeletionAsync(admin, topicFilter);
 
         {
+            // Create a fresh producer to avoid cached authorization state from step 2
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(kafka.BootstrapServers)
                 .WithSaslPlain(AclKafkaContainer.TestUsername, AclKafkaContainer.TestPassword)
