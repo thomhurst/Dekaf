@@ -6,7 +6,7 @@ sidebar_position: 13
 
 Live benchmark comparisons between Dekaf and Confluent.Kafka, automatically updated on every commit to main.
 
-**Last Updated:** 2026-02-27 19:30 UTC
+**Last Updated:** 2026-02-28 13:54 UTC
 
 :::info
 These benchmarks run on GitHub Actions (ubuntu-latest) using BenchmarkDotNet. 
@@ -56,30 +56,30 @@ Comparing Dekaf vs Confluent.Kafka for message production across different scena
 | Dekaf_ProduceSingle     | SingleProduce | 1000        | 1000      |   NA |    NA |     ? |       ? |           ? |
 
 Benchmarks with issues:
-  ProducerBenchmarks.Confluent_ProduceBatch: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=100]
-  ProducerBenchmarks.Dekaf_ProduceBatch: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=100]
-  ProducerBenchmarks.Confluent_ProduceBatch: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=1000]
-  ProducerBenchmarks.Dekaf_ProduceBatch: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=1000]
-  ProducerBenchmarks.Confluent_ProduceBatch: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=100]
-  ProducerBenchmarks.Dekaf_ProduceBatch: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=100]
-  ProducerBenchmarks.Confluent_ProduceBatch: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
-  ProducerBenchmarks.Dekaf_ProduceBatch: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
-  ProducerBenchmarks.Confluent_FireAndForget: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=100]
-  ProducerBenchmarks.Dekaf_FireAndForget: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=100]
-  ProducerBenchmarks.Confluent_FireAndForget: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=1000]
-  ProducerBenchmarks.Dekaf_FireAndForget: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=1000]
-  ProducerBenchmarks.Confluent_FireAndForget: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=100]
-  ProducerBenchmarks.Dekaf_FireAndForget: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=100]
-  ProducerBenchmarks.Confluent_FireAndForget: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
-  ProducerBenchmarks.Dekaf_FireAndForget: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
-  ProducerBenchmarks.Confluent_ProduceSingle: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=100]
-  ProducerBenchmarks.Dekaf_ProduceSingle: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=100]
-  ProducerBenchmarks.Confluent_ProduceSingle: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=1000]
-  ProducerBenchmarks.Dekaf_ProduceSingle: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=1000]
-  ProducerBenchmarks.Confluent_ProduceSingle: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=100]
-  ProducerBenchmarks.Dekaf_ProduceSingle: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=100]
-  ProducerBenchmarks.Confluent_ProduceSingle: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
-  ProducerBenchmarks.Dekaf_ProduceSingle: Job-VDSHUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+  ProducerBenchmarks.Confluent_ProduceBatch: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=100]
+  ProducerBenchmarks.Dekaf_ProduceBatch: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=100]
+  ProducerBenchmarks.Confluent_ProduceBatch: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+  ProducerBenchmarks.Dekaf_ProduceBatch: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+  ProducerBenchmarks.Confluent_ProduceBatch: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+  ProducerBenchmarks.Dekaf_ProduceBatch: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+  ProducerBenchmarks.Confluent_ProduceBatch: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+  ProducerBenchmarks.Dekaf_ProduceBatch: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+  ProducerBenchmarks.Confluent_FireAndForget: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=100]
+  ProducerBenchmarks.Dekaf_FireAndForget: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=100]
+  ProducerBenchmarks.Confluent_FireAndForget: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+  ProducerBenchmarks.Dekaf_FireAndForget: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+  ProducerBenchmarks.Confluent_FireAndForget: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+  ProducerBenchmarks.Dekaf_FireAndForget: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+  ProducerBenchmarks.Confluent_FireAndForget: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+  ProducerBenchmarks.Dekaf_FireAndForget: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+  ProducerBenchmarks.Confluent_ProduceSingle: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=100]
+  ProducerBenchmarks.Dekaf_ProduceSingle: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=100]
+  ProducerBenchmarks.Confluent_ProduceSingle: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+  ProducerBenchmarks.Dekaf_ProduceSingle: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=100, BatchSize=1000]
+  ProducerBenchmarks.Confluent_ProduceSingle: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+  ProducerBenchmarks.Dekaf_ProduceSingle: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=100]
+  ProducerBenchmarks.Confluent_ProduceSingle: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
+  ProducerBenchmarks.Dekaf_ProduceSingle: Job-RMMEUR(IterationCount=10, RunStrategy=Throughput, WarmupCount=3) [MessageSize=1000, BatchSize=1000]
 
 
 ## Consumer Benchmarks
@@ -88,39 +88,39 @@ Comparing Dekaf vs Confluent.Kafka for message consumption.
 
 | Method               | Categories | MessageCount | MessageSize | Mean    | Error    | StdDev   | Ratio | RatioSD | Allocated | Alloc Ratio |
 |--------------------- |----------- |------------- |------------ |--------:|---------:|---------:|------:|--------:|----------:|------------:|
-| **Confluent_ConsumeAll** | **ConsumeAll** | **100**          | **100**         | **3.170 s** | **0.0073 s** | **0.0011 s** |  **1.00** |    **0.00** |   **76880 B** |        **1.00** |
+| **Confluent_ConsumeAll** | **ConsumeAll** | **100**          | **100**         | **3.167 s** | **0.0029 s** | **0.0007 s** |  **1.00** |    **0.00** |   **76880 B** |        **1.00** |
 | Dekaf_ConsumeAll     | ConsumeAll | 100          | 100         |      NA |       NA |       NA |     ? |       ? |        NA |           ? |
 |                      |            |              |             |         |          |          |       |         |           |             |
-| **Confluent_ConsumeAll** | **ConsumeAll** | **100**          | **1000**        | **3.167 s** | **0.0056 s** | **0.0009 s** |  **1.00** |    **0.00** |  **256880 B** |        **1.00** |
+| **Confluent_ConsumeAll** | **ConsumeAll** | **100**          | **1000**        | **3.165 s** | **0.0037 s** | **0.0010 s** |  **1.00** |    **0.00** |  **256880 B** |        **1.00** |
 | Dekaf_ConsumeAll     | ConsumeAll | 100          | 1000        |      NA |       NA |       NA |     ? |       ? |        NA |           ? |
 |                      |            |              |             |         |          |          |       |         |           |             |
-| **Confluent_ConsumeAll** | **ConsumeAll** | **1000**         | **100**         | **3.168 s** | **0.0059 s** | **0.0015 s** |  **1.00** |    **0.00** |  **616880 B** |        **1.00** |
+| **Confluent_ConsumeAll** | **ConsumeAll** | **1000**         | **100**         | **3.165 s** | **0.0035 s** | **0.0009 s** |  **1.00** |    **0.00** |  **616880 B** |        **1.00** |
 | Dekaf_ConsumeAll     | ConsumeAll | 1000         | 100         |      NA |       NA |       NA |     ? |       ? |        NA |           ? |
 |                      |            |              |             |         |          |          |       |         |           |             |
-| **Confluent_ConsumeAll** | **ConsumeAll** | **1000**         | **1000**        | **3.168 s** | **0.0047 s** | **0.0012 s** |  **1.00** |    **0.00** | **2424896 B** |        **1.00** |
+| **Confluent_ConsumeAll** | **ConsumeAll** | **1000**         | **1000**        | **3.166 s** | **0.0026 s** | **0.0007 s** |  **1.00** |    **0.00** | **2424896 B** |        **1.00** |
 | Dekaf_ConsumeAll     | ConsumeAll | 1000         | 1000        |      NA |       NA |       NA |     ? |       ? |        NA |           ? |
 |                      |            |              |             |         |          |          |       |         |           |             |
-| **Confluent_PollSingle** | **PollSingle** | **100**          | **100**         | **3.162 s** | **0.0051 s** | **0.0008 s** |  **1.00** |    **0.00** |         **-** |          **NA** |
+| **Confluent_PollSingle** | **PollSingle** | **100**          | **100**         | **3.160 s** | **0.0018 s** | **0.0003 s** |  **1.00** |    **0.00** |         **-** |          **NA** |
 | Dekaf_PollSingle     | PollSingle | 100          | 100         |      NA |       NA |       NA |     ? |       ? |        NA |           ? |
 |                      |            |              |             |         |          |          |       |         |           |             |
-| **Confluent_PollSingle** | **PollSingle** | **100**          | **1000**        | **3.161 s** | **0.0041 s** | **0.0011 s** |  **1.00** |    **0.00** |         **-** |          **NA** |
+| **Confluent_PollSingle** | **PollSingle** | **100**          | **1000**        | **3.159 s** | **0.0028 s** | **0.0007 s** |  **1.00** |    **0.00** |         **-** |          **NA** |
 | Dekaf_PollSingle     | PollSingle | 100          | 1000        |      NA |       NA |       NA |     ? |       ? |        NA |           ? |
 |                      |            |              |             |         |          |          |       |         |           |             |
-| **Confluent_PollSingle** | **PollSingle** | **1000**         | **100**         | **3.162 s** | **0.0020 s** | **0.0005 s** |  **1.00** |    **0.00** |         **-** |          **NA** |
+| **Confluent_PollSingle** | **PollSingle** | **1000**         | **100**         | **3.160 s** | **0.0018 s** | **0.0005 s** |  **1.00** |    **0.00** |         **-** |          **NA** |
 | Dekaf_PollSingle     | PollSingle | 1000         | 100         |      NA |       NA |       NA |     ? |       ? |        NA |           ? |
 |                      |            |              |             |         |          |          |       |         |           |             |
-| **Confluent_PollSingle** | **PollSingle** | **1000**         | **1000**        | **3.160 s** | **0.0039 s** | **0.0010 s** |  **1.00** |    **0.00** |         **-** |          **NA** |
+| **Confluent_PollSingle** | **PollSingle** | **1000**         | **1000**        | **3.160 s** | **0.0012 s** | **0.0003 s** |  **1.00** |    **0.00** |         **-** |          **NA** |
 | Dekaf_PollSingle     | PollSingle | 1000         | 1000        |      NA |       NA |       NA |     ? |       ? |        NA |           ? |
 
 Benchmarks with issues:
-  ConsumerBenchmarks.Dekaf_ConsumeAll: Job-VTGNCZ(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=100, MessageSize=100]
-  ConsumerBenchmarks.Dekaf_ConsumeAll: Job-VTGNCZ(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=100, MessageSize=1000]
-  ConsumerBenchmarks.Dekaf_ConsumeAll: Job-VTGNCZ(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=1000, MessageSize=100]
-  ConsumerBenchmarks.Dekaf_ConsumeAll: Job-VTGNCZ(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=1000, MessageSize=1000]
-  ConsumerBenchmarks.Dekaf_PollSingle: Job-VTGNCZ(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=100, MessageSize=100]
-  ConsumerBenchmarks.Dekaf_PollSingle: Job-VTGNCZ(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=100, MessageSize=1000]
-  ConsumerBenchmarks.Dekaf_PollSingle: Job-VTGNCZ(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=1000, MessageSize=100]
-  ConsumerBenchmarks.Dekaf_PollSingle: Job-VTGNCZ(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=1000, MessageSize=1000]
+  ConsumerBenchmarks.Dekaf_ConsumeAll: Job-GNHOFU(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=100, MessageSize=100]
+  ConsumerBenchmarks.Dekaf_ConsumeAll: Job-GNHOFU(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=100, MessageSize=1000]
+  ConsumerBenchmarks.Dekaf_ConsumeAll: Job-GNHOFU(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=1000, MessageSize=100]
+  ConsumerBenchmarks.Dekaf_ConsumeAll: Job-GNHOFU(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=1000, MessageSize=1000]
+  ConsumerBenchmarks.Dekaf_PollSingle: Job-GNHOFU(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=100, MessageSize=100]
+  ConsumerBenchmarks.Dekaf_PollSingle: Job-GNHOFU(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=100, MessageSize=1000]
+  ConsumerBenchmarks.Dekaf_PollSingle: Job-GNHOFU(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=1000, MessageSize=100]
+  ConsumerBenchmarks.Dekaf_PollSingle: Job-GNHOFU(InvocationCount=1, IterationCount=5, RunStrategy=Throughput, UnrollFactor=1, WarmupCount=2) [MessageCount=1000, MessageSize=1000]
 
 
 ## Protocol Benchmarks
@@ -131,40 +131,40 @@ Zero-allocation wire protocol serialization/deserialization.
 **Allocated = `-` means zero heap allocations** - the goal of Dekaf's design!
 :::
 
-| Method                           | Mean      | Error      | StdDev    | Allocated |
-|--------------------------------- |----------:|-----------:|----------:|----------:|
-| &#39;Write 1000 Int32s&#39;              | 35.194 μs | 16.5521 μs | 9.8499 μs |         - |
-| &#39;Write 100 Strings (100 chars)&#39;  | 13.081 μs |  0.2662 μs | 0.1584 μs |         - |
-| &#39;Write 100 CompactStrings&#39;       | 10.849 μs |  0.2186 μs | 0.1301 μs |         - |
-| &#39;Write 1000 VarInts&#39;             | 34.433 μs | 12.2684 μs | 7.3007 μs |         - |
-| &#39;Read 1000 Int32s&#39;               | 15.193 μs |  9.8749 μs | 5.8764 μs |         - |
-| &#39;Read 1000 VarInts&#39;              | 24.895 μs |  9.2132 μs | 5.4826 μs |         - |
-| &#39;Write RecordBatch (10 records)&#39; | 16.810 μs |  0.1864 μs | 0.1110 μs |         - |
-| &#39;Read RecordBatch (10 records)&#39;  |  4.351 μs |  0.0589 μs | 0.0308 μs |         - |
+| Method                           | Mean      | Error      | StdDev     | Allocated |
+|--------------------------------- |----------:|-----------:|-----------:|----------:|
+| &#39;Write 1000 Int32s&#39;              | 32.441 μs | 11.8732 μs |  7.0656 μs |         - |
+| &#39;Write 100 Strings (100 chars)&#39;  | 13.431 μs |  0.3775 μs |  0.2246 μs |         - |
+| &#39;Write 100 CompactStrings&#39;       | 11.061 μs |  0.6116 μs |  0.3199 μs |         - |
+| &#39;Write 1000 VarInts&#39;             | 35.412 μs | 14.4422 μs |  8.5943 μs |         - |
+| &#39;Read 1000 Int32s&#39;               | 21.629 μs | 17.5015 μs | 10.4149 μs |         - |
+| &#39;Read 1000 VarInts&#39;              | 24.577 μs | 10.6730 μs |  5.5822 μs |         - |
+| &#39;Write RecordBatch (10 records)&#39; | 17.893 μs |  2.2557 μs |  1.3423 μs |         - |
+| &#39;Read RecordBatch (10 records)&#39;  |  4.281 μs |  0.2454 μs |  0.1283 μs |         - |
 
 
 ## Serializer Benchmarks
 
-| Method                               | Mean        | Error     | StdDev    | Ratio | RatioSD | Allocated | Alloc Ratio |
-|------------------------------------- |------------:|----------:|----------:|------:|--------:|----------:|------------:|
-| &#39;Serialize String (10 chars)&#39;        |  1,247.4 ns |  20.53 ns |  12.22 ns |  0.33 |    0.01 |         - |          NA |
-| &#39;Serialize String (100 chars)&#39;       |  1,700.9 ns | 153.62 ns | 101.61 ns |  0.44 |    0.03 |         - |          NA |
-| &#39;Serialize String (1000 chars)&#39;      |  1,816.2 ns | 169.24 ns | 100.71 ns |  0.47 |    0.03 |         - |          NA |
-| &#39;Deserialize String&#39;                 |  2,813.9 ns |  51.98 ns |  30.93 ns |  0.73 |    0.01 |         - |          NA |
-| &#39;Serialize Int32&#39;                    |    645.2 ns |  37.04 ns |  22.04 ns |  0.17 |    0.01 |         - |          NA |
-| &#39;Serialize 100 Messages (key+value)&#39; | 34,021.2 ns | 592.82 ns | 392.11 ns |  8.88 |    0.18 |         - |          NA |
-| &#39;ArrayBufferWriter + Copy&#39;           |  3,831.6 ns | 113.85 ns |  67.75 ns |  1.00 |    0.02 |         - |          NA |
-| &#39;PooledBufferWriter Direct&#39;          |  3,404.9 ns |  84.73 ns |  56.04 ns |  0.89 |    0.02 |         - |          NA |
+| Method                               | Mean        | Error       | StdDev    | Ratio | RatioSD | Allocated | Alloc Ratio |
+|------------------------------------- |------------:|------------:|----------:|------:|--------:|----------:|------------:|
+| &#39;Serialize String (10 chars)&#39;        |  1,478.8 ns |   181.81 ns | 108.19 ns |  0.36 |    0.06 |         - |          NA |
+| &#39;Serialize String (100 chars)&#39;       |  1,807.4 ns |   267.36 ns | 176.84 ns |  0.44 |    0.08 |         - |          NA |
+| &#39;Serialize String (1000 chars)&#39;      |  1,615.5 ns |   106.72 ns |  63.51 ns |  0.40 |    0.06 |         - |          NA |
+| &#39;Deserialize String&#39;                 |  2,869.6 ns |   114.77 ns |  68.30 ns |  0.70 |    0.11 |         - |          NA |
+| &#39;Serialize Int32&#39;                    |    710.8 ns |    56.82 ns |  33.81 ns |  0.17 |    0.03 |         - |          NA |
+| &#39;Serialize 100 Messages (key+value)&#39; | 33,524.4 ns |   862.70 ns | 451.21 ns |  8.24 |    1.27 |         - |          NA |
+| &#39;ArrayBufferWriter + Copy&#39;           |  4,182.5 ns | 1,175.54 ns | 777.55 ns |  1.03 |    0.24 |         - |          NA |
+| &#39;PooledBufferWriter Direct&#39;          |  3,514.0 ns |   441.95 ns | 292.32 ns |  0.86 |    0.15 |         - |          NA |
 
 
 ## Compression Benchmarks
 
 | Method                  | Mean         | Error      | StdDev     | Allocated |
 |------------------------ |-------------:|-----------:|-----------:|----------:|
-| &#39;Snappy Compress 1KB&#39;   |    14.215 μs |  1.4873 μs |  0.9837 μs |         - |
-| &#39;Snappy Compress 1MB&#39;   |   545.766 μs | 28.0401 μs | 18.5468 μs |         - |
-| &#39;Snappy Decompress 1KB&#39; |     9.758 μs |  0.3728 μs |  0.2466 μs |         - |
-| &#39;Snappy Decompress 1MB&#39; | 1,615.658 μs | 52.9051 μs | 34.9934 μs |         - |
+| &#39;Snappy Compress 1KB&#39;   |    15.739 μs |  0.8347 μs |  0.4967 μs |         - |
+| &#39;Snappy Compress 1MB&#39;   |   551.708 μs | 32.5474 μs | 17.0229 μs |         - |
+| &#39;Snappy Decompress 1KB&#39; |     9.111 μs |  1.1264 μs |  0.7451 μs |         - |
+| &#39;Snappy Decompress 1MB&#39; | 1,669.626 μs | 36.3302 μs | 24.0302 μs |         - |
 
 
 ---
