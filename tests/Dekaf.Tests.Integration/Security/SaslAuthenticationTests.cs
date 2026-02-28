@@ -249,7 +249,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
         // Arrange & Act & Assert
         // The authentication failure should happen during BuildAsync (connection establishment)
         // or during the first ProduceAsync call when the connection is established lazily.
-        var exception = await Assert.ThrowsAsync<AuthenticationException>(async () =>
+        await Assert.ThrowsAsync<AuthenticationException>(async () =>
         {
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(saslKafka.BootstrapServers)
@@ -266,7 +266,6 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
                 Value = "value"
             });
         });
-
     }
 
     [Test]
@@ -275,7 +274,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
         // Arrange & Act & Assert
         // The authentication failure should happen during BuildAsync (connection establishment)
         // or when the consumer tries to join the group / fetch metadata.
-        var exception = await Assert.ThrowsAsync<AuthenticationException>(async () =>
+        await Assert.ThrowsAsync<AuthenticationException>(async () =>
         {
             await using var consumer = await Kafka.CreateConsumer<string, string>()
                 .WithBootstrapServers(saslKafka.BootstrapServers)
@@ -294,7 +293,6 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
                 break; // Should not reach here
             }
         });
-
     }
 
     // ==========================================
@@ -344,8 +342,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
         ]);
 
         // Assert - poll until topic appears in metadata
-        var topicFound = await PollUntilTopicExistsAsync(adminClient, topicName);
-        await Assert.That(topicFound).IsTrue();
+        await saslKafka.WaitForTopicReadyAsync(topicName);
     }
 
     [Test]
@@ -371,8 +368,7 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
         ]);
 
         // Assert - poll until topic appears in metadata
-        var topicFound = await PollUntilTopicExistsAsync(adminClient, topicName);
-        await Assert.That(topicFound).IsTrue();
+        await saslKafka.WaitForTopicReadyAsync(topicName);
     }
 
     // ==========================================
@@ -420,36 +416,5 @@ public class SaslAuthenticationTests(SaslKafkaContainer saslKafka)
         var r = result!.Value;
         await Assert.That(r.Key).IsEqualTo("cross-key");
         await Assert.That(r.Value).IsEqualTo("cross-value");
-    }
-
-    // ==========================================
-    // Helpers
-    // ==========================================
-
-    /// <summary>
-    /// Polls until the specified topic appears in the admin client's topic list.
-    /// Returns true if found within the timeout, false otherwise.
-    /// </summary>
-    private static async Task<bool> PollUntilTopicExistsAsync(Admin.IAdminClient adminClient, string topicName, int maxAttempts = 30)
-    {
-        for (var attempt = 0; attempt < maxAttempts; attempt++)
-        {
-            try
-            {
-                var topics = await adminClient.ListTopicsAsync();
-                if (topics.Any(t => t.Name == topicName))
-                {
-                    return true;
-                }
-            }
-            catch
-            {
-                // Metadata not yet available, retry
-            }
-
-            await Task.Delay(500);
-        }
-
-        return false;
     }
 }

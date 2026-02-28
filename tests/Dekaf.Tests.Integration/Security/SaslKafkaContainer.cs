@@ -1,14 +1,11 @@
-using System.Collections.Concurrent;
-using System.Net.Sockets;
 using Dekaf.Admin;
 using Testcontainers.Kafka;
-using TUnit.Core.Interfaces;
 
 namespace Dekaf.Tests.Integration.Security;
 
 /// <summary>
 /// Kafka container configured with SASL authentication (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512).
-/// Uses the apache/kafka:3.9.1 image in KRaft mode with SASL_PLAINTEXT listeners.
+/// Extends <see cref="KafkaTestContainer"/> with SASL-specific configuration.
 ///
 /// The container exposes a SASL_PLAINTEXT listener on the external port. The inter-broker
 /// communication uses PLAINTEXT (no SASL) to simplify startup. All three SASL mechanisms
@@ -17,7 +14,7 @@ namespace Dekaf.Tests.Integration.Security;
 /// SCRAM credentials are created via kafka-configs.sh after the broker starts, since SCRAM
 /// stores credentials in the cluster metadata (KRaft) and requires a running broker.
 /// </summary>
-public class SaslKafkaContainer : IAsyncInitializer, IAsyncDisposable
+public class SaslKafkaContainer : KafkaTestContainer
 {
     /// <summary>
     /// Username for SASL authentication.
@@ -34,10 +31,6 @@ public class SaslKafkaContainer : IAsyncInitializer, IAsyncDisposable
     /// </summary>
     private const string InternalBootstrapServer = "localhost:9092";
 
-    private KafkaContainer? _container;
-    private string _bootstrapServers = string.Empty;
-    private readonly ConcurrentDictionary<string, byte> _createdTopics = new();
-
     // JAAS config for PLAIN mechanism on the external listener.
     // Defines both the broker's own credentials (for inter-broker if needed) and the user credentials.
     private static readonly string PlainJaasConfig =
@@ -46,52 +39,77 @@ public class SaslKafkaContainer : IAsyncInitializer, IAsyncDisposable
         $"password=\"{SaslPassword}\" " +
         $"user_{SaslUsername}=\"{SaslPassword}\";";
 
+    public override string ContainerName => "apache/kafka:3.9.1";
+    public override int Version => 391;
+
     /// <summary>
-    /// The Kafka bootstrap servers connection string (host:port).
+    /// Adds SASL-specific environment variables to the Kafka container builder.
     /// </summary>
-    public string BootstrapServers => _bootstrapServers;
+    protected override KafkaBuilder ConfigureBuilder(KafkaBuilder builder) => builder
+        // Override the listener security protocol map:
+        // PLAINTEXT -> SASL_PLAINTEXT for the external listener
+        // BROKER -> PLAINTEXT for inter-broker (keeps startup simple)
+        .WithEnvironment("KAFKA_LISTENER_SECURITY_PROTOCOL_MAP", "PLAINTEXT:SASL_PLAINTEXT,BROKER:PLAINTEXT,CONTROLLER:PLAINTEXT")
+        // Enable all three SASL mechanisms on the external (PLAINTEXT-named) listener
+        .WithEnvironment("KAFKA_SASL_ENABLED_MECHANISMS", "PLAIN,SCRAM-SHA-256,SCRAM-SHA-512")
+        .WithEnvironment("KAFKA_LISTENER_NAME_PLAINTEXT_SASL_ENABLED_MECHANISMS", "PLAIN,SCRAM-SHA-256,SCRAM-SHA-512")
+        // JAAS configuration for PLAIN on the external listener
+        .WithEnvironment("KAFKA_LISTENER_NAME_PLAINTEXT_PLAIN_SASL_JAAS_CONFIG", PlainJaasConfig)
+        // SCRAM JAAS configs for the listener (broker-side module with no predefined users;
+        // SCRAM users are added dynamically via kafka-configs.sh after startup)
+        .WithEnvironment("KAFKA_LISTENER_NAME_PLAINTEXT_SCRAM__SHA__256_SASL_JAAS_CONFIG",
+            "org.apache.kafka.common.security.scram.ScramLoginModule required;")
+        .WithEnvironment("KAFKA_LISTENER_NAME_PLAINTEXT_SCRAM__SHA__512_SASL_JAAS_CONFIG",
+            "org.apache.kafka.common.security.scram.ScramLoginModule required;");
 
-    public async Task InitializeAsync()
+    /// <summary>
+    /// Creates an admin client with SASL/PLAIN authentication.
+    /// </summary>
+    protected override IAdminClient CreateAdminClient()
     {
-        Console.WriteLine("[SaslKafkaContainer] Starting SASL-enabled Kafka container...");
-
-        // Build the container with SASL configuration.
-        // The Testcontainers.Kafka KafkaBuilder for apache/kafka sets up:
-        //   - PLAINTEXT listener on the external port (mapped to host)
-        //   - BROKER listener for inter-broker communication
-        // We override the security protocol map to make the external listener use SASL_PLAINTEXT.
-        _container = new KafkaBuilder("apache/kafka:3.9.1")
-            .WithEnvironment("KAFKA_HEAP_OPTS", "-Xmx512m -Xms512m")
-            .WithEnvironment("KAFKA_LOG_RETENTION_MS", "30000")
-            .WithEnvironment("KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS", "10000")
-            .WithEnvironment("KAFKA_LOG_SEGMENT_BYTES", "1048576")
-            .WithEnvironment("KAFKA_LOG_CLEANUP_POLICY", "delete")
-            // Override the listener security protocol map:
-            // PLAINTEXT -> SASL_PLAINTEXT for the external listener
-            // BROKER -> PLAINTEXT for inter-broker (keeps startup simple)
-            .WithEnvironment("KAFKA_LISTENER_SECURITY_PROTOCOL_MAP", "PLAINTEXT:SASL_PLAINTEXT,BROKER:PLAINTEXT,CONTROLLER:PLAINTEXT")
-            // Enable all three SASL mechanisms on the external (PLAINTEXT-named) listener
-            .WithEnvironment("KAFKA_SASL_ENABLED_MECHANISMS", "PLAIN,SCRAM-SHA-256,SCRAM-SHA-512")
-            .WithEnvironment("KAFKA_LISTENER_NAME_PLAINTEXT_SASL_ENABLED_MECHANISMS", "PLAIN,SCRAM-SHA-256,SCRAM-SHA-512")
-            // JAAS configuration for PLAIN on the external listener
-            .WithEnvironment("KAFKA_LISTENER_NAME_PLAINTEXT_PLAIN_SASL_JAAS_CONFIG", PlainJaasConfig)
-            // SCRAM JAAS configs for the listener (broker-side module with no predefined users;
-            // SCRAM users are added dynamically via kafka-configs.sh after startup)
-            .WithEnvironment("KAFKA_LISTENER_NAME_PLAINTEXT_SCRAM__SHA__256_SASL_JAAS_CONFIG",
-                "org.apache.kafka.common.security.scram.ScramLoginModule required;")
-            .WithEnvironment("KAFKA_LISTENER_NAME_PLAINTEXT_SCRAM__SHA__512_SASL_JAAS_CONFIG",
-                "org.apache.kafka.common.security.scram.ScramLoginModule required;")
+        return Kafka.CreateAdminClient()
+            .WithBootstrapServers(BootstrapServers)
+            .WithSaslPlain(SaslUsername, SaslPassword)
             .Build();
+    }
 
-        await _container.StartAsync().ConfigureAwait(false);
-
-        var rawAddress = _container.GetBootstrapAddress();
-        _bootstrapServers = ExtractHostPort(rawAddress);
-
-        Console.WriteLine($"[SaslKafkaContainer] Kafka started at {_bootstrapServers}");
-
-        await WaitForKafkaReadyAsync().ConfigureAwait(false);
+    /// <summary>
+    /// After the base container is started and TCP-ready, verify SASL/PLAIN authentication
+    /// works and create SCRAM credentials.
+    /// </summary>
+    protected override async ValueTask OnAfterInitializeAsync()
+    {
+        await WaitForSaslReadyAsync().ConfigureAwait(false);
         await CreateScramCredentialsAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Polls until the broker accepts SASL/PLAIN authentication.
+    /// The base class only waits for TCP connectivity; this verifies the SASL handshake works.
+    /// </summary>
+    private async Task WaitForSaslReadyAsync()
+    {
+        Console.WriteLine("[SaslKafkaContainer] Waiting for SASL/PLAIN authentication to be ready...");
+        const int maxAttempts = 30;
+
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            try
+            {
+                await using var adminClient = CreateAdminClient();
+                await adminClient.ListTopicsAsync().ConfigureAwait(false);
+                Console.WriteLine("[SaslKafkaContainer] Kafka is ready (SASL/PLAIN authentication successful)");
+                return;
+            }
+            catch
+            {
+                // Broker not fully ready yet, retry
+            }
+
+            await Task.Delay(1000).ConfigureAwait(false);
+        }
+
+        throw new InvalidOperationException($"SASL Kafka not ready for authentication after {maxAttempts} attempts");
     }
 
     /// <summary>
@@ -102,8 +120,11 @@ public class SaslKafkaContainer : IAsyncInitializer, IAsyncDisposable
     {
         Console.WriteLine("[SaslKafkaContainer] Creating SCRAM credentials...");
 
+        var container = ContainerInstance
+            ?? throw new InvalidOperationException("Container has not been initialized.");
+
         // Create SCRAM-SHA-256 credentials
-        var scram256Result = await _container!.ExecAsync([
+        var scram256Result = await container.ExecAsync([
             "/opt/kafka/bin/kafka-configs.sh",
             "--bootstrap-server", InternalBootstrapServer,
             "--alter",
@@ -121,7 +142,7 @@ public class SaslKafkaContainer : IAsyncInitializer, IAsyncDisposable
         Console.WriteLine("[SaslKafkaContainer] SCRAM-SHA-256 credentials created");
 
         // Create SCRAM-SHA-512 credentials
-        var scram512Result = await _container.ExecAsync([
+        var scram512Result = await container.ExecAsync([
             "/opt/kafka/bin/kafka-configs.sh",
             "--bootstrap-server", InternalBootstrapServer,
             "--alter",
@@ -173,155 +194,5 @@ public class SaslKafkaContainer : IAsyncInitializer, IAsyncDisposable
         }
 
         throw new InvalidOperationException($"SCRAM credentials not ready after {maxAttempts} attempts");
-    }
-
-    /// <summary>
-    /// Creates a unique topic for a test and returns the topic name.
-    /// Uses SASL/PLAIN authentication for the admin client.
-    /// </summary>
-    public async Task<string> CreateTestTopicAsync(int partitions = 1)
-    {
-        var topicName = $"sasl-test-topic-{Guid.NewGuid():N}";
-        await CreateTopicAsync(topicName, partitions).ConfigureAwait(false);
-        return topicName;
-    }
-
-    /// <summary>
-    /// Creates a topic with the specified name using an authenticated admin client.
-    /// </summary>
-    public async Task CreateTopicAsync(string topicName, int partitions = 1, int replicationFactor = 1)
-    {
-        if (!_createdTopics.TryAdd(topicName, 0))
-        {
-            Console.WriteLine($"[SaslKafkaContainer] Topic '{topicName}' already created");
-            return;
-        }
-
-        Console.WriteLine($"[SaslKafkaContainer] Creating topic '{topicName}' with {partitions} partition(s)...");
-
-        await using var adminClient = Kafka.CreateAdminClient()
-            .WithBootstrapServers(BootstrapServers)
-            .WithSaslPlain(SaslUsername, SaslPassword)
-            .Build();
-
-        await adminClient.CreateTopicsAsync([
-            new NewTopic
-            {
-                Name = topicName,
-                NumPartitions = partitions,
-                ReplicationFactor = (short)replicationFactor
-            }
-        ]).ConfigureAwait(false);
-
-        // Poll until topic appears in metadata
-        await WaitForTopicReadyAsync(adminClient, topicName).ConfigureAwait(false);
-        Console.WriteLine($"[SaslKafkaContainer] Topic '{topicName}' created");
-    }
-
-    /// <summary>
-    /// Polls until the specified topic appears in the broker's topic list.
-    /// </summary>
-    private static async Task WaitForTopicReadyAsync(IAdminClient adminClient, string topicName)
-    {
-        const int maxAttempts = 30;
-
-        for (var attempt = 0; attempt < maxAttempts; attempt++)
-        {
-            try
-            {
-                var topics = await adminClient.ListTopicsAsync().ConfigureAwait(false);
-                if (topics.Any(t => t.Name == topicName))
-                {
-                    return;
-                }
-            }
-            catch
-            {
-                // Metadata not yet available, retry
-            }
-
-            await Task.Delay(500).ConfigureAwait(false);
-        }
-
-        throw new InvalidOperationException($"Topic '{topicName}' not visible in metadata after {maxAttempts} attempts");
-    }
-
-    private static string ExtractHostPort(string address)
-    {
-        if (Uri.TryCreate(address, UriKind.Absolute, out var uri))
-        {
-            return $"{uri.Host}:{uri.Port}";
-        }
-        return address.TrimEnd('/');
-    }
-
-    private async Task WaitForKafkaReadyAsync()
-    {
-        Console.WriteLine("[SaslKafkaContainer] Waiting for Kafka to be ready...");
-        const int maxAttempts = 30;
-
-        var colonIndex = _bootstrapServers.LastIndexOf(':');
-        var host = _bootstrapServers[..colonIndex];
-        var port = int.Parse(_bootstrapServers[(colonIndex + 1)..]);
-
-        // First wait for TCP connectivity
-        for (var attempt = 0; attempt < maxAttempts; attempt++)
-        {
-            try
-            {
-                using var client = new TcpClient();
-                await client.ConnectAsync(host, port).ConfigureAwait(false);
-                if (client.Connected)
-                {
-                    Console.WriteLine("[SaslKafkaContainer] Kafka is accepting TCP connections");
-                    break;
-                }
-            }
-            catch
-            {
-                // Ignore and retry
-            }
-
-            if (attempt == maxAttempts - 1)
-            {
-                throw new InvalidOperationException($"SASL Kafka not accepting TCP connections after {maxAttempts} attempts");
-            }
-
-            await Task.Delay(1000).ConfigureAwait(false);
-        }
-
-        // Then verify broker is fully ready by authenticating with SASL/PLAIN and listing topics
-        for (var attempt = 0; attempt < maxAttempts; attempt++)
-        {
-            try
-            {
-                await using var adminClient = Kafka.CreateAdminClient()
-                    .WithBootstrapServers(BootstrapServers)
-                    .WithSaslPlain(SaslUsername, SaslPassword)
-                    .Build();
-
-                await adminClient.ListTopicsAsync().ConfigureAwait(false);
-                Console.WriteLine("[SaslKafkaContainer] Kafka is ready (SASL/PLAIN authentication successful)");
-                return;
-            }
-            catch
-            {
-                // Broker not fully ready yet, retry
-            }
-
-            await Task.Delay(1000).ConfigureAwait(false);
-        }
-
-        throw new InvalidOperationException($"SASL Kafka not ready for authentication after {maxAttempts} attempts");
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (_container is not null)
-        {
-            await _container.DisposeAsync().ConfigureAwait(false);
-        }
-
-        GC.SuppressFinalize(this);
     }
 }
