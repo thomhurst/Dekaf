@@ -21,56 +21,49 @@ namespace Dekaf.Tests.Integration.Security;
 public class AclEnforcementTests(AclKafkaContainer kafka)
 {
     /// <summary>
-    /// Waits for ACLs to propagate by polling DescribeAclsAsync until the expected
-    /// number of ACL bindings appear for the given filter.
-    /// Checks immediately before delaying to avoid unnecessary waits.
+    /// Polls DescribeAclsAsync until the ACL count satisfies the given predicate.
+    /// Uses exponential backoff capped at 2 seconds per iteration to avoid exceeding
+    /// consumer test timeouts (typically 30s).
     /// </summary>
-    private static async Task WaitForAclPropagationAsync(
+    private static async Task WaitForAclCountAsync(
+        IAdminClient admin,
+        AclBindingFilter filter,
+        Func<int, bool> predicate,
+        string description,
+        int maxRetries = 30,
+        int initialDelayMs = 100)
+    {
+        for (var i = 0; i < maxRetries; i++)
+        {
+            var acls = await admin.DescribeAclsAsync(filter);
+            if (predicate(acls.Count))
+                return;
+
+            var delayMs = Math.Min(initialDelayMs * (i + 1), 2000);
+            await Task.Delay(delayMs);
+        }
+
+        throw new TimeoutException(
+            $"ACL {description} timed out for resource {filter.ResourceType}/{filter.ResourceName}.");
+    }
+
+    private static Task WaitForAclPropagationAsync(
         IAdminClient admin,
         AclBindingFilter filter,
         int expectedCount,
         int maxRetries = 30,
-        int initialDelayMs = 100)
-    {
-        for (var i = 0; i < maxRetries; i++)
-        {
-            var acls = await admin.DescribeAclsAsync(filter);
-            if (acls.Count >= expectedCount)
-                return;
+        int initialDelayMs = 100) =>
+        WaitForAclCountAsync(admin, filter, count => count >= expectedCount,
+            $"propagation (expected >= {expectedCount})", maxRetries, initialDelayMs);
 
-            await Task.Delay(initialDelayMs * (i + 1));
-        }
-
-        throw new TimeoutException(
-            $"ACL propagation timed out: expected at least {expectedCount} ACL(s) for " +
-            $"resource {filter.ResourceType}/{filter.ResourceName}, but they did not appear.");
-    }
-
-    /// <summary>
-    /// Waits for ACL deletion to propagate by polling DescribeAclsAsync until the
-    /// ACL count drops to the expected value.
-    /// Checks immediately before delaying to avoid unnecessary waits.
-    /// </summary>
-    private static async Task WaitForAclDeletionAsync(
+    private static Task WaitForAclDeletionAsync(
         IAdminClient admin,
         AclBindingFilter filter,
         int expectedCount = 0,
         int maxRetries = 30,
-        int initialDelayMs = 100)
-    {
-        for (var i = 0; i < maxRetries; i++)
-        {
-            var acls = await admin.DescribeAclsAsync(filter);
-            if (acls.Count <= expectedCount)
-                return;
-
-            await Task.Delay(initialDelayMs * (i + 1));
-        }
-
-        throw new TimeoutException(
-            $"ACL deletion propagation timed out: expected at most {expectedCount} ACL(s) for " +
-            $"resource {filter.ResourceType}/{filter.ResourceName}.");
-    }
+        int initialDelayMs = 100) =>
+        WaitForAclCountAsync(admin, filter, count => count <= expectedCount,
+            $"deletion (expected <= {expectedCount})", maxRetries, initialDelayMs);
 
     #region Producer ACL Enforcement
 

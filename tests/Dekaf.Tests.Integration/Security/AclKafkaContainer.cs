@@ -46,11 +46,6 @@ public class AclKafkaContainer : KafkaTestContainer
     /// </summary>
     public const string TestPrincipal = $"User:{TestUsername}";
 
-    /// <summary>
-    /// The Kafka principal string for the admin user (User:admin).
-    /// </summary>
-    public const string AdminPrincipal = $"User:{AdminUsername}";
-
     public override string ContainerName => "apache/kafka:3.9.1";
     public override int Version => 391;
 
