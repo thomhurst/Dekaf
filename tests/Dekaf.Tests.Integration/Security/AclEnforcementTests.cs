@@ -400,6 +400,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
 
         // Connect as testuser (no ALTER permission on topic configs)
+        // AdminClientBuilder uses synchronous Build() (connection is established lazily on first operation)
         await using var restrictedAdmin = Kafka.CreateAdminClient()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithSaslPlain(AclKafkaContainer.TestUsername, AclKafkaContainer.TestPassword)
@@ -436,6 +437,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
         var topic = await kafka.CreateTestTopicAsync();
 
         // Connect as testuser (no DESCRIBE permission)
+        // AdminClientBuilder uses synchronous Build() (connection is established lazily on first operation)
         await using var restrictedAdmin = Kafka.CreateAdminClient()
             .WithBootstrapServers(kafka.BootstrapServers)
             .WithSaslPlain(AclKafkaContainer.TestUsername, AclKafkaContainer.TestPassword)
