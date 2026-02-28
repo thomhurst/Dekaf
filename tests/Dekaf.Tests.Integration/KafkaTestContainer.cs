@@ -52,8 +52,9 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
     /// <summary>
     /// Creates an admin client configured for this container.
     /// Subclasses can override to add authentication (e.g., SASL credentials).
+    /// The caller is responsible for disposing the returned client (use <c>await using</c>).
     /// </summary>
-    protected virtual IAdminClient CreateAdminClient()
+    public virtual IAdminClient CreateAdminClient()
     {
         return Kafka.CreateAdminClient()
             .WithBootstrapServers(BootstrapServers)
