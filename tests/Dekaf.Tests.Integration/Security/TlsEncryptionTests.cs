@@ -83,6 +83,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
 
         // Assert
         await Assert.That(results).Count().IsEqualTo(messageCount);
+        await Assert.That(results.Select(r => r.Offset).Distinct().Count()).IsEqualTo(messageCount);
         foreach (var result in results)
         {
             await Assert.That(result.Topic).IsEqualTo(topic);

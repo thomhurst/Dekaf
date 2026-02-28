@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Dekaf.Metadata;
 using Dekaf.Networking;
@@ -1622,6 +1623,38 @@ public sealed class AdminClientBuilder
     {
         _useTls = true;
         _tlsConfig = config;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures mutual TLS (mTLS) authentication using certificate files.
+    /// </summary>
+    /// <param name="caCertPath">Path to the CA certificate file (PEM format).</param>
+    /// <param name="clientCertPath">Path to the client certificate file (PEM format).</param>
+    /// <param name="clientKeyPath">Path to the client private key file (PEM format).</param>
+    /// <param name="keyPassword">Optional password for the private key.</param>
+    public AdminClientBuilder UseMutualTls(
+        string caCertPath,
+        string clientCertPath,
+        string clientKeyPath,
+        string? keyPassword = null)
+    {
+        _useTls = true;
+        _tlsConfig = TlsConfig.CreateMutualTls(caCertPath, clientCertPath, clientKeyPath, keyPassword);
+        return this;
+    }
+
+    /// <summary>
+    /// Configures mutual TLS (mTLS) authentication using in-memory certificates.
+    /// </summary>
+    /// <param name="clientCertificate">The client certificate with private key.</param>
+    /// <param name="caCertificate">Optional CA certificate for server validation.</param>
+    public AdminClientBuilder UseMutualTls(
+        X509Certificate2 clientCertificate,
+        X509Certificate2? caCertificate = null)
+    {
+        _useTls = true;
+        _tlsConfig = TlsConfig.CreateMutualTls(clientCertificate, caCertificate);
         return this;
     }
 

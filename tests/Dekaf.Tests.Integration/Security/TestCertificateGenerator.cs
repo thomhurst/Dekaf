@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using System.Text;
 
 namespace Dekaf.Tests.Integration.Security;
 
@@ -117,7 +116,7 @@ internal sealed class TestCertificateGenerator : IDisposable
         request.CertificateExtensions.Add(
             new X509SubjectKeyIdentifierExtension(request.PublicKey, critical: false));
 
-        var cert = request.CreateSelfSigned(
+        using var cert = request.CreateSelfSigned(
             DateTimeOffset.UtcNow.AddMinutes(-5),
             DateTimeOffset.UtcNow.AddYears(5));
 
@@ -190,14 +189,14 @@ internal sealed class TestCertificateGenerator : IDisposable
         using var caPrivateKey = caCert.GetRSAPrivateKey()
             ?? throw new InvalidOperationException("CA certificate does not have an RSA private key");
 
-        var cert = request.Create(
+        using var cert = request.Create(
             caCert,
             DateTimeOffset.UtcNow.AddMinutes(-5),
             DateTimeOffset.UtcNow.AddYears(2),
             serialNumber);
 
         // Combine signed certificate with private key
-        var certWithKey = cert.CopyWithPrivateKey(rsa);
+        using var certWithKey = cert.CopyWithPrivateKey(rsa);
 
         // Re-import to ensure private key is exportable
         return X509CertificateLoader.LoadPkcs12(
@@ -217,7 +216,7 @@ internal sealed class TestCertificateGenerator : IDisposable
         File.WriteAllBytes(ServerKeystorePath, serverP12);
 
         // Export truststore as PKCS12 (contains CA cert only, no private key)
-        var caCertOnly = X509CertificateLoader.LoadCertificate(CaCertificate.RawData);
+        using var caCertOnly = X509CertificateLoader.LoadCertificate(CaCertificate.RawData);
         var truststoreP12 = caCertOnly.Export(X509ContentType.Pfx, StorePassword);
         File.WriteAllBytes(ServerTruststorePath, truststoreP12);
 
@@ -231,25 +230,13 @@ internal sealed class TestCertificateGenerator : IDisposable
     }
 
     internal static string ExportCertificateToPem(X509Certificate2 cert)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine("-----BEGIN CERTIFICATE-----");
-        sb.AppendLine(Convert.ToBase64String(cert.RawData, Base64FormattingOptions.InsertLineBreaks));
-        sb.AppendLine("-----END CERTIFICATE-----");
-        return sb.ToString();
-    }
+        => cert.ExportCertificatePem();
 
     internal static string ExportPrivateKeyToPem(X509Certificate2 cert)
     {
         using var rsa = cert.GetRSAPrivateKey()
             ?? throw new InvalidOperationException("Certificate does not have an RSA private key");
-
-        var privateKeyBytes = rsa.ExportPkcs8PrivateKey();
-        var sb = new StringBuilder();
-        sb.AppendLine("-----BEGIN PRIVATE KEY-----");
-        sb.AppendLine(Convert.ToBase64String(privateKeyBytes, Base64FormattingOptions.InsertLineBreaks));
-        sb.AppendLine("-----END PRIVATE KEY-----");
-        return sb.ToString();
+        return rsa.ExportPkcs8PrivateKeyPem();
     }
 
     internal static void ExportCertificateToPemFile(X509Certificate2 cert, string path)
@@ -283,7 +270,7 @@ internal sealed class TestCertificateGenerator : IDisposable
                 X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment,
                 critical: true));
 
-        var cert = request.CreateSelfSigned(
+        using var cert = request.CreateSelfSigned(
             DateTimeOffset.UtcNow.AddMinutes(-5),
             DateTimeOffset.UtcNow.AddYears(1));
 

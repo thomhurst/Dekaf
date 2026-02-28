@@ -133,12 +133,14 @@ public class TlsKafkaContainer : IAsyncInitializer, IAsyncDisposable
     /// <summary>
     /// A TlsConfig suitable for connecting to this container with CA-based server validation.
     /// </summary>
-    public TlsConfig DefaultTlsConfig => new()
-    {
-        CaCertificateObject = CaCertificate,
-        ValidateServerCertificate = true,
-        TargetHost = "localhost"
-    };
+    private TlsConfig? _defaultTlsConfig;
+    public TlsConfig DefaultTlsConfig =>
+        _defaultTlsConfig ??= new TlsConfig
+        {
+            CaCertificateObject = CaCertificate,
+            ValidateServerCertificate = true,
+            TargetHost = "localhost"
+        };
 
     private async Task WaitForKafkaSslAsync()
     {
