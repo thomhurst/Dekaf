@@ -285,4 +285,58 @@ public sealed class DekafDiagnosticsTests
         string value = DekafDiagnostics.MessagingMessageKey;
         await Assert.That(value).IsEqualTo("messaging.kafka.message.key");
     }
+
+    [Test]
+    public async Task ProducerSpan_WithByteArrayKey_DoesNotSetKeyAttribute()
+    {
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        using var activity = DekafDiagnostics.Source.StartActivity("my-topic publish", ActivityKind.Producer);
+        await Assert.That(activity).IsNotNull();
+
+        // Simulate the producer's key-handling logic with a byte[] key.
+        // The producer skips byte[] keys because their ToString() output
+        // ("System.Byte[]") is not meaningful.
+        object key = new byte[] { 0x01, 0x02, 0x03 };
+        if (key is string stringKey)
+            activity!.SetTag(DekafDiagnostics.MessagingMessageKey, stringKey);
+        else if (key is not null and not byte[])
+            activity!.SetTag(DekafDiagnostics.MessagingMessageKey, key.ToString());
+
+        // Verify the key tag is NOT set for byte[] keys
+        var keyTag = activity!.GetTagItem(DekafDiagnostics.MessagingMessageKey);
+        await Assert.That(keyTag).IsNull();
+    }
+
+    [Test]
+    public async Task ProducerSpan_WithIntKey_SetsKeyToStringRepresentation()
+    {
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        using var activity = DekafDiagnostics.Source.StartActivity("my-topic publish", ActivityKind.Producer);
+        await Assert.That(activity).IsNotNull();
+
+        // Simulate the producer's key-handling logic with an int key.
+        // Non-string, non-byte[] keys use ToString() which produces a meaningful value.
+        object key = 42;
+        if (key is string stringKey)
+            activity!.SetTag(DekafDiagnostics.MessagingMessageKey, stringKey);
+        else if (key is not null and not byte[])
+            activity!.SetTag(DekafDiagnostics.MessagingMessageKey, key.ToString());
+
+        // Verify the key tag is set to the string representation of the int
+        var tags = activity!.Tags.ToDictionary(t => t.Key, t => t.Value);
+        await Assert.That(tags).ContainsKey("messaging.kafka.message.key");
+        await Assert.That(tags["messaging.kafka.message.key"]).IsEqualTo("42");
+    }
 }

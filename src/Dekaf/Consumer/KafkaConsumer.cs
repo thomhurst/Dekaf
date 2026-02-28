@@ -750,23 +750,35 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                     // Start consumer tracing activity (~2ns no-op when no listener)
                     // Use span links (not parent-child) per OTel messaging semantic conventions:
-                    // the consumer span gets its own trace, linked to the producer span.
+                    // the consumer span gets its own trace root, linked to the producer span.
+                    // We temporarily null out Activity.Current to prevent StartActivity from
+                    // inheriting an ambient parent, which would defeat the "new trace root" intent
+                    // of passing parentContext: default(ActivityContext).
                     var producerContext = Diagnostics.TraceContextPropagator.ExtractTraceContext(headers);
                     System.Diagnostics.Activity? activity;
-                    if (producerContext.HasValue && Diagnostics.DekafDiagnostics.Source.HasListeners())
+                    var savedActivity = System.Diagnostics.Activity.Current;
+                    System.Diagnostics.Activity.Current = null;
+                    try
                     {
-                        activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
-                            $"{pending.Topic} receive",
-                            System.Diagnostics.ActivityKind.Consumer,
-                            parentContext: default(System.Diagnostics.ActivityContext),
-                            tags: null,
-                            links: [new System.Diagnostics.ActivityLink(producerContext.Value)]);
+                        if (producerContext.HasValue && Diagnostics.DekafDiagnostics.Source.HasListeners())
+                        {
+                            activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
+                                $"{pending.Topic} receive",
+                                System.Diagnostics.ActivityKind.Consumer,
+                                parentContext: default(System.Diagnostics.ActivityContext),
+                                tags: null,
+                                links: [new System.Diagnostics.ActivityLink(producerContext.Value)]);
+                        }
+                        else
+                        {
+                            activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
+                                $"{pending.Topic} receive",
+                                System.Diagnostics.ActivityKind.Consumer);
+                        }
                     }
-                    else
+                    finally
                     {
-                        activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
-                            $"{pending.Topic} receive",
-                            System.Diagnostics.ActivityKind.Consumer);
+                        System.Diagnostics.Activity.Current = savedActivity;
                     }
                     if (activity is not null)
                     {
