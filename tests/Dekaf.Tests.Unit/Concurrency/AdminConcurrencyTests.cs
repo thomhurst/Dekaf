@@ -263,7 +263,10 @@ public class AdminConcurrencyTests
 
             await Task.WhenAll(tasks);
 
-            // Registration completed without errors
+            // This test verifies that concurrent RegisterBroker calls complete without exceptions.
+            // ConnectionPool does not expose a public lookup API, so we cannot assert that all 400
+            // registrations are individually reachable — the no-exception guarantee is the primary
+            // correctness signal for concurrent registration.
         }
         finally
         {

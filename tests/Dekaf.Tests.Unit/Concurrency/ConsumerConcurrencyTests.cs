@@ -289,6 +289,9 @@ public class ConsumerConcurrencyTests
         {
             await Assert.That(positions.ContainsKey(tp)).IsTrue();
             await Assert.That(fetchPositions.ContainsKey(tp)).IsTrue();
+            // positions[tp] and fetchPositions[tp] may differ due to an intentional benign race:
+            // KafkaConsumer writes to _positions and _fetchPositions in sequence, not atomically,
+            // so concurrent reads can observe different values (documented in KafkaConsumer.cs)
             await Assert.That(positions[tp]).IsGreaterThanOrEqualTo(0);
             await Assert.That(fetchPositions[tp]).IsGreaterThanOrEqualTo(0);
         }
