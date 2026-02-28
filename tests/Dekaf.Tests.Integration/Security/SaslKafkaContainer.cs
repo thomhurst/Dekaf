@@ -126,15 +126,29 @@ public class SaslKafkaContainer : KafkaTestContainer
         var container = ContainerInstance
             ?? throw new InvalidOperationException("Container has not been initialized.");
 
-        // Create SCRAM-SHA-256 credentials
-        var scram256Result = await container.ExecAsync([
+        // Create SCRAM-SHA-256 and SCRAM-SHA-512 credentials in parallel
+        var scram256Task = container.ExecAsync([
             "/opt/kafka/bin/kafka-configs.sh",
             "--bootstrap-server", InternalBootstrapServer,
             "--alter",
             "--add-config", $"SCRAM-SHA-256=[password={SaslPassword}]",
             "--entity-type", "users",
             "--entity-name", SaslUsername
-        ]).ConfigureAwait(false);
+        ]);
+
+        var scram512Task = container.ExecAsync([
+            "/opt/kafka/bin/kafka-configs.sh",
+            "--bootstrap-server", InternalBootstrapServer,
+            "--alter",
+            "--add-config", $"SCRAM-SHA-512=[password={SaslPassword}]",
+            "--entity-type", "users",
+            "--entity-name", SaslUsername
+        ]);
+
+        await Task.WhenAll(scram256Task, scram512Task).ConfigureAwait(false);
+
+        var scram256Result = await scram256Task.ConfigureAwait(false);
+        var scram512Result = await scram512Task.ConfigureAwait(false);
 
         if (scram256Result.ExitCode != 0)
         {
@@ -143,16 +157,6 @@ public class SaslKafkaContainer : KafkaTestContainer
         }
 
         Console.WriteLine("[SaslKafkaContainer] SCRAM-SHA-256 credentials created");
-
-        // Create SCRAM-SHA-512 credentials
-        var scram512Result = await container.ExecAsync([
-            "/opt/kafka/bin/kafka-configs.sh",
-            "--bootstrap-server", InternalBootstrapServer,
-            "--alter",
-            "--add-config", $"SCRAM-SHA-512=[password={SaslPassword}]",
-            "--entity-type", "users",
-            "--entity-name", SaslUsername
-        ]).ConfigureAwait(false);
 
         if (scram512Result.ExitCode != 0)
         {
@@ -167,13 +171,15 @@ public class SaslKafkaContainer : KafkaTestContainer
     }
 
     /// <summary>
-    /// Polls until SCRAM-SHA-256 authentication succeeds, indicating credentials have propagated.
+    /// Polls until both SCRAM-SHA-256 and SCRAM-SHA-512 authentication succeed,
+    /// indicating credentials have propagated for both mechanisms.
     /// </summary>
     private async Task WaitForScramCredentialsReadyAsync()
     {
         Console.WriteLine("[SaslKafkaContainer] Waiting for SCRAM credentials to propagate...");
         const int maxAttempts = 30;
 
+        // Wait for SCRAM-SHA-256
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             try
@@ -185,10 +191,9 @@ public class SaslKafkaContainer : KafkaTestContainer
 
                 await using (adminClient.ConfigureAwait(false))
                 {
-                    // If ListTopicsAsync succeeds, SCRAM authentication is working
                     await adminClient.ListTopicsAsync().ConfigureAwait(false);
-                    Console.WriteLine("[SaslKafkaContainer] SCRAM credentials are ready");
-                    return;
+                    Console.WriteLine("[SaslKafkaContainer] SCRAM-SHA-256 credentials are ready");
+                    break;
                 }
             }
             catch
@@ -196,9 +201,44 @@ public class SaslKafkaContainer : KafkaTestContainer
                 // Credentials not yet propagated, retry
             }
 
+            if (attempt == maxAttempts - 1)
+            {
+                throw new InvalidOperationException($"SCRAM-SHA-256 credentials not ready after {maxAttempts} attempts");
+            }
+
             await Task.Delay(500).ConfigureAwait(false);
         }
 
-        throw new InvalidOperationException($"SCRAM credentials not ready after {maxAttempts} attempts");
+        // Wait for SCRAM-SHA-512
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            try
+            {
+                var adminClient = Kafka.CreateAdminClient()
+                    .WithBootstrapServers(BootstrapServers)
+                    .WithSaslScramSha512(SaslUsername, SaslPassword)
+                    .Build();
+
+                await using (adminClient.ConfigureAwait(false))
+                {
+                    await adminClient.ListTopicsAsync().ConfigureAwait(false);
+                    Console.WriteLine("[SaslKafkaContainer] SCRAM-SHA-512 credentials are ready");
+                    break;
+                }
+            }
+            catch
+            {
+                // Credentials not yet propagated, retry
+            }
+
+            if (attempt == maxAttempts - 1)
+            {
+                throw new InvalidOperationException($"SCRAM-SHA-512 credentials not ready after {maxAttempts} attempts");
+            }
+
+            await Task.Delay(500).ConfigureAwait(false);
+        }
+
+        Console.WriteLine("[SaslKafkaContainer] All SCRAM credentials are ready");
     }
 }
