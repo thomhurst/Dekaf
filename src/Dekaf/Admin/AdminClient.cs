@@ -1,9 +1,11 @@
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
 using Dekaf.Protocol.Messages;
+using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Microsoft.Extensions.Logging;
 
@@ -30,6 +32,7 @@ public sealed class AdminClient : IAdminClient
             new ConnectionOptions
             {
                 UseTls = options.UseTls,
+                TlsConfig = options.TlsConfig,
                 RequestTimeout = TimeSpan.FromMilliseconds(options.RequestTimeoutMs),
                 SaslMechanism = options.SaslMechanism,
                 SaslUsername = options.SaslUsername,
@@ -1556,6 +1559,7 @@ public sealed class AdminClientOptions
     public string? ClientId { get; init; } = "dekaf-admin";
     public int RequestTimeoutMs { get; init; } = 30000;
     public bool UseTls { get; init; }
+    public TlsConfig? TlsConfig { get; init; }
     public SaslMechanism SaslMechanism { get; init; } = SaslMechanism.None;
     public string? SaslUsername { get; init; }
     public string? SaslPassword { get; init; }
@@ -1583,6 +1587,7 @@ public sealed class AdminClientBuilder
     private readonly List<string> _bootstrapServers = [];
     private string? _clientId;
     private bool _useTls;
+    private TlsConfig? _tlsConfig;
     private SaslMechanism _saslMechanism = SaslMechanism.None;
     private string? _saslUsername;
     private string? _saslPassword;
@@ -1607,6 +1612,49 @@ public sealed class AdminClientBuilder
     public AdminClientBuilder UseTls()
     {
         _useTls = true;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures TLS with custom settings.
+    /// </summary>
+    /// <param name="config">The TLS configuration.</param>
+    public AdminClientBuilder UseTls(TlsConfig config)
+    {
+        _useTls = true;
+        _tlsConfig = config;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures mutual TLS (mTLS) authentication using certificate files.
+    /// </summary>
+    /// <param name="caCertPath">Path to the CA certificate file (PEM format).</param>
+    /// <param name="clientCertPath">Path to the client certificate file (PEM format).</param>
+    /// <param name="clientKeyPath">Path to the client private key file (PEM format).</param>
+    /// <param name="keyPassword">Optional password for the private key.</param>
+    public AdminClientBuilder UseMutualTls(
+        string caCertPath,
+        string clientCertPath,
+        string clientKeyPath,
+        string? keyPassword = null)
+    {
+        _useTls = true;
+        _tlsConfig = TlsConfig.CreateMutualTls(caCertPath, clientCertPath, clientKeyPath, keyPassword);
+        return this;
+    }
+
+    /// <summary>
+    /// Configures mutual TLS (mTLS) authentication using in-memory certificates.
+    /// </summary>
+    /// <param name="clientCertificate">The client certificate with private key.</param>
+    /// <param name="caCertificate">Optional CA certificate for server validation.</param>
+    public AdminClientBuilder UseMutualTls(
+        X509Certificate2 clientCertificate,
+        X509Certificate2? caCertificate = null)
+    {
+        _useTls = true;
+        _tlsConfig = TlsConfig.CreateMutualTls(clientCertificate, caCertificate);
         return this;
     }
 
@@ -1688,6 +1736,7 @@ public sealed class AdminClientBuilder
             BootstrapServers = _bootstrapServers,
             ClientId = _clientId,
             UseTls = _useTls,
+            TlsConfig = _tlsConfig,
             SaslMechanism = _saslMechanism,
             SaslUsername = _saslUsername,
             SaslPassword = _saslPassword,

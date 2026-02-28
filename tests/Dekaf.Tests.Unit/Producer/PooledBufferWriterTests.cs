@@ -136,26 +136,28 @@ public class PooledBufferWriterTests
         span1[2] = 3;
         writer.Advance(3);
 
-        // Force buffer growth
+        // Force buffer growth by requesting more than the remaining capacity.
+        // Grow() copies existing data to the new buffer via Span.CopyTo.
         _ = writer.GetSpan(128);
 
-        // Capture all values synchronously before any await yields to the thread pool.
-        // Reading from pooled memory across await boundaries is unreliable under heavy
-        // parallelism (26 instances via [assembly: Repeat(25)]) — matches the pattern
-        // used by ToPooledMemory_TransfersOwnership which is not flaky.
+        // Verify written count survived the growth.
+        var writtenCount = writer.WrittenCount;
+
+        // Copy written bytes to a local (non-pooled) array immediately via
+        // ToArray(). This eliminates any possibility of ArrayPool reuse
+        // corrupting the backing array under heavy parallelism (26 instances
+        // via [assembly: Repeat(25)]). Previous fix captured individual byte
+        // locals from PooledMemory.Span but that still read from a pooled
+        // buffer that could be affected by concurrent pool operations.
         var result = writer.ToPooledMemory();
-
-        var length = result.Memory.Length;
-        var byte0 = result.Memory.Span[0];
-        var byte1 = result.Memory.Span[1];
-        var byte2 = result.Memory.Span[2];
-
+        var data = result.Memory.Span.ToArray();
         result.Return();
 
-        await Assert.That(length).IsEqualTo(3);
-        await Assert.That(byte0).IsEqualTo((byte)1);
-        await Assert.That(byte1).IsEqualTo((byte)2);
-        await Assert.That(byte2).IsEqualTo((byte)3);
+        await Assert.That(writtenCount).IsEqualTo(3);
+        await Assert.That(data.Length).IsEqualTo(3);
+        await Assert.That(data[0]).IsEqualTo((byte)1);
+        await Assert.That(data[1]).IsEqualTo((byte)2);
+        await Assert.That(data[2]).IsEqualTo((byte)3);
     }
 
     [Test]
