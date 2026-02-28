@@ -749,20 +749,42 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         : TimestampType.CreateTime;
 
                     // Start consumer tracing activity (~2ns no-op when no listener)
-                    var parentContext = Diagnostics.TraceContextPropagator.ExtractTraceContext(headers);
-                    var activity = parentContext.HasValue
-                        ? Diagnostics.DekafDiagnostics.Source.StartActivity(
-                            $"{pending.Topic} process",
-                            System.Diagnostics.ActivityKind.Consumer,
-                            parentContext.Value)
-                        : Diagnostics.DekafDiagnostics.Source.StartActivity(
-                            $"{pending.Topic} process",
-                            System.Diagnostics.ActivityKind.Consumer);
+                    // Use span links (not parent-child) per OTel messaging semantic conventions:
+                    // the consumer span gets its own trace root, linked to the producer span.
+                    // We temporarily null out Activity.Current to prevent StartActivity from
+                    // inheriting an ambient parent, which would defeat the "new trace root" intent
+                    // of passing parentContext: default(ActivityContext).
+                    var producerContext = Diagnostics.TraceContextPropagator.ExtractTraceContext(headers);
+                    System.Diagnostics.Activity? activity;
+                    var savedActivity = System.Diagnostics.Activity.Current;
+                    System.Diagnostics.Activity.Current = null;
+                    try
+                    {
+                        if (producerContext.HasValue && Diagnostics.DekafDiagnostics.Source.HasListeners())
+                        {
+                            activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
+                                $"{pending.Topic} receive",
+                                System.Diagnostics.ActivityKind.Consumer,
+                                parentContext: default(System.Diagnostics.ActivityContext),
+                                tags: null,
+                                links: [new System.Diagnostics.ActivityLink(producerContext.Value)]);
+                        }
+                        else
+                        {
+                            activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
+                                $"{pending.Topic} receive",
+                                System.Diagnostics.ActivityKind.Consumer);
+                        }
+                    }
+                    finally
+                    {
+                        System.Diagnostics.Activity.Current = savedActivity;
+                    }
                     if (activity is not null)
                     {
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic);
-                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "process");
+                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "receive");
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, pending.PartitionIndex);
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageOffset, offset);
                         if (_options.GroupId is not null)
