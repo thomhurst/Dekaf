@@ -353,7 +353,7 @@ internal sealed class BatchArena
             // Only return buffer to ArrayPool when arena is discarded
             var buffer = Interlocked.Exchange(ref arena._buffer, null!);
             if (buffer is not null)
-                ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+                ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
         }
     }
 
