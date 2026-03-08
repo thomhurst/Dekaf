@@ -876,7 +876,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Step 5: FAST PATH - Try to append to cached batch with arena (no side effects)
         // This succeeds when: same partition as recent message AND batch has space
-        if (TryAppendToArenaFast(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, ref pooledHeaderArray))
+        if (TryAppendToArena(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, ref pooledHeaderArray))
         {
             if (_statisticsEnabled)
             {
@@ -896,11 +896,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <summary>
-    /// FAST PATH: Try to append to an existing batch's arena.
-    /// No side effects - if anything is wrong, just return false.
+    /// Try to append to an existing batch's arena.
+    /// First attempts non-blocking reserve. If buffer is full, block-waits for space then retries.
+    /// Returns false only if arena append fails for non-backpressure reasons (cache miss, arena full).
+    /// May throw <see cref="KafkaTimeoutException"/> or <see cref="OperationCanceledException"/>.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryAppendToArenaFast(
+    private bool TryAppendToArena(
         string topic,
         int partition,
         long timestampMs,
@@ -911,89 +913,138 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         IReadOnlyList<Header>? recordHeaders,
         ref Header[]? pooledHeaderArray)
     {
-        // STEP 1: Calculate record size BEFORE any work
+        // Calculate record size BEFORE any work
         var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, recordHeaders);
 
-        // STEP 2: Try to reserve BufferMemory (non-blocking check)
-        if (!_accumulator.TryReserveMemory(recordSize))
+        // FAST: Non-blocking reserve + arena append
+        if (_accumulator.TryReserveMemory(recordSize))
         {
-            return false; // Buffer full - fall back to slow path with backpressure
+            if (TryAppendToArenaWithReservedMemory(
+                topic, partition, timestampMs,
+                keyIsNull, keyLength, valueIsNull, valueLength,
+                recordHeaders, ref pooledHeaderArray, recordSize))
+            {
+                return true;
+            }
+            // Arena failed (cache miss or arena full) - don't retry, fall through
+            // Memory already released by TryAppendToArenaWithReservedMemory
+            return false;
         }
 
-        // STEP 3: Memory reserved - must ensure cleanup on ANY failure from this point
+        // MEDIUM: Buffer full - block-wait for space, then retry arena.
+        // This avoids falling to the slow path (ArrayPool allocations) when
+        // backpressure is the only reason the fast path failed.
+        // NOTE: If the arena append fails after blocking (e.g. stale cache), we return false
+        // and the caller falls to AppendWithSlowPath which will block on ReserveMemorySync again.
+        // This double-wait is rare (requires both backpressure AND cache miss simultaneously).
+        return TryAppendToArenaWithBackpressure(
+            topic, partition, timestampMs,
+            keyIsNull, keyLength, valueIsNull, valueLength,
+            recordHeaders, ref pooledHeaderArray, recordSize);
+    }
+
+    /// <summary>
+    /// Core arena-append logic assuming memory is already reserved.
+    /// On success: returns true, memory ownership transfers to batch.
+    /// On failure: releases memory and returns false.
+    /// On exception: releases memory and rethrows.
+    /// </summary>
+    private bool TryAppendToArenaWithReservedMemory(
+        string topic,
+        int partition,
+        long timestampMs,
+        bool keyIsNull,
+        int keyLength,
+        bool valueIsNull,
+        int valueLength,
+        IReadOnlyList<Header>? recordHeaders,
+        ref Header[]? pooledHeaderArray,
+        int recordSize)
+    {
         try
         {
-            // Check thread-local batch cache first (avoids dictionary lookup)
             var cachedBatch = GetCachedBatch(topic, partition);
             if (cachedBatch is null)
             {
                 _accumulator.ReleaseMemory(recordSize);
-                return false; // No cached batch, use slow path
+                return false;
             }
 
             var arena = cachedBatch.Arena;
             if (arena is null)
             {
                 _accumulator.ReleaseMemory(recordSize);
-                return false; // Batch completed, use slow path
+                return false;
             }
 
-            // Calculate total size needed for key + value combined
             var totalSize = keyLength + valueLength;
 
-            // Single CAS allocation for both key and value together
-            // This reduces atomic operations from 2 per message to 1
             if (!arena.TryAllocate(totalSize, out var combinedSpan, out var combinedOffset))
             {
                 _accumulator.ReleaseMemory(recordSize);
-                return false; // Allocation failed, use slow path
+                return false;
             }
 
-            // Split the combined allocation into key and value slices
             ArenaSlice keySlice = default;
             ArenaSlice valueSlice = default;
 
             if (!keyIsNull && keyLength > 0)
             {
-                // Copy key to first part of combined allocation
                 t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(combinedSpan.Slice(0, keyLength));
                 keySlice = new ArenaSlice(combinedOffset, keyLength);
 
                 if (!valueIsNull)
                 {
-                    // Copy value to second part
                     t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan.Slice(keyLength, valueLength));
                     valueSlice = new ArenaSlice(combinedOffset + keyLength, valueLength);
                 }
             }
             else if (!valueIsNull)
             {
-                // No key - value uses entire allocation
                 t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan);
                 valueSlice = new ArenaSlice(combinedOffset, valueLength);
             }
 
-            // Append using arena-based method
             var result = cachedBatch.TryAppendFromArena(timestampMs, keySlice, keyIsNull, valueSlice, valueIsNull, recordHeaders, pooledHeaderArray);
 
             if (!result.Success)
             {
                 _accumulator.ReleaseMemory(recordSize);
-                return false; // Batch full or completed, use slow path
+                return false;
             }
 
-            // Success - batch now owns the pooled header array
-            // Memory stays reserved until batch completes (no ReleaseMemory call)
             pooledHeaderArray = null;
             return true;
         }
         catch
         {
-            // CRITICAL: If any exception occurs after memory reservation, release it
-            // Prevents permanent BufferMemory leak
             _accumulator.ReleaseMemory(recordSize);
             throw;
         }
+    }
+
+    /// <summary>
+    /// MEDIUM PATH: Block-wait for buffer space, then retry arena append.
+    /// Avoids ArrayPool allocations when backpressure is the only issue.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool TryAppendToArenaWithBackpressure(
+        string topic,
+        int partition,
+        long timestampMs,
+        bool keyIsNull,
+        int keyLength,
+        bool valueIsNull,
+        int valueLength,
+        IReadOnlyList<Header>? recordHeaders,
+        ref Header[]? pooledHeaderArray,
+        int recordSize)
+    {
+        _accumulator.ReserveMemorySync(recordSize);
+        return TryAppendToArenaWithReservedMemory(
+            topic, partition, timestampMs,
+            keyIsNull, keyLength, valueIsNull, valueLength,
+            recordHeaders, ref pooledHeaderArray, recordSize);
     }
 
     /// <summary>
@@ -1425,7 +1476,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         // Step 5: FAST PATH - Try to append to cached batch with arena and callback
-        if (TryAppendToArenaFastWithCallback(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, ref pooledHeaderArray, callback))
+        if (TryAppendToArenaWithCallback(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, ref pooledHeaderArray, callback))
         {
             if (_statisticsEnabled)
             {
@@ -1445,11 +1496,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <summary>
-    /// FAST PATH with callback: Try to append to an existing batch's arena with a delivery callback.
-    /// No side effects - if anything is wrong, just return false.
+    /// Try to append to an existing batch's arena with a delivery callback.
+    /// First attempts non-blocking reserve. If buffer is full, block-waits for space then retries.
+    /// Returns false only if arena append fails for non-backpressure reasons (cache miss, arena full).
+    /// May throw <see cref="KafkaTimeoutException"/> or <see cref="OperationCanceledException"/>.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryAppendToArenaFastWithCallback(
+    private bool TryAppendToArenaWithCallback(
         string topic,
         int partition,
         long timestampMs,
@@ -1461,88 +1514,133 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ref Header[]? pooledHeaderArray,
         Action<RecordMetadata, Exception?> callback)
     {
-        // STEP 1: Calculate record size BEFORE any work
         var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, recordHeaders);
 
-        // STEP 2: Try to reserve BufferMemory (non-blocking check)
-        if (!_accumulator.TryReserveMemory(recordSize))
+        // FAST: Non-blocking reserve + arena append
+        if (_accumulator.TryReserveMemory(recordSize))
         {
-            return false; // Buffer full - fall back to slow path with backpressure
+            if (TryAppendToArenaWithReservedMemoryAndCallback(
+                topic, partition, timestampMs,
+                keyIsNull, keyLength, valueIsNull, valueLength,
+                recordHeaders, ref pooledHeaderArray, callback, recordSize))
+            {
+                return true;
+            }
+            // Arena failed (cache miss or arena full) - don't retry, fall through
+            // Memory already released by TryAppendToArenaWithReservedMemoryAndCallback
+            return false;
         }
 
-        // STEP 3: Memory reserved - must ensure cleanup on ANY failure from this point
+        // MEDIUM: Buffer full - block-wait for space, then retry arena
+        return TryAppendToArenaWithBackpressureAndCallback(
+            topic, partition, timestampMs,
+            keyIsNull, keyLength, valueIsNull, valueLength,
+            recordHeaders, ref pooledHeaderArray, callback, recordSize);
+    }
+
+    /// <summary>
+    /// Core arena-append logic with callback, assuming memory is already reserved.
+    /// On success: returns true, memory ownership transfers to batch.
+    /// On failure: releases memory and returns false.
+    /// On exception: releases memory and rethrows.
+    /// </summary>
+    private bool TryAppendToArenaWithReservedMemoryAndCallback(
+        string topic,
+        int partition,
+        long timestampMs,
+        bool keyIsNull,
+        int keyLength,
+        bool valueIsNull,
+        int valueLength,
+        IReadOnlyList<Header>? recordHeaders,
+        ref Header[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?> callback,
+        int recordSize)
+    {
         try
         {
-            // Check thread-local batch cache first (avoids dictionary lookup)
             var cachedBatch = GetCachedBatch(topic, partition);
             if (cachedBatch is null)
             {
                 _accumulator.ReleaseMemory(recordSize);
-                return false; // No cached batch, use slow path
+                return false;
             }
 
             var arena = cachedBatch.Arena;
             if (arena is null)
             {
                 _accumulator.ReleaseMemory(recordSize);
-                return false; // Batch completed, use slow path
+                return false;
             }
 
-            // Calculate total size needed for key + value combined
             var totalSize = keyLength + valueLength;
 
-            // Single CAS allocation for both key and value together
-            // This reduces atomic operations from 2 per message to 1
             if (!arena.TryAllocate(totalSize, out var combinedSpan, out var combinedOffset))
             {
                 _accumulator.ReleaseMemory(recordSize);
-                return false; // Allocation failed, use slow path
+                return false;
             }
 
-            // Split the combined allocation into key and value slices
             ArenaSlice keySlice = default;
             ArenaSlice valueSlice = default;
 
             if (!keyIsNull && keyLength > 0)
             {
-                // Copy key to first part of combined allocation
                 t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(combinedSpan.Slice(0, keyLength));
                 keySlice = new ArenaSlice(combinedOffset, keyLength);
 
                 if (!valueIsNull)
                 {
-                    // Copy value to second part
                     t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan.Slice(keyLength, valueLength));
                     valueSlice = new ArenaSlice(combinedOffset + keyLength, valueLength);
                 }
             }
             else if (!valueIsNull)
             {
-                // No key - value uses entire allocation
                 t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan);
                 valueSlice = new ArenaSlice(combinedOffset, valueLength);
             }
 
-            // Append using arena-based method with callback
             var result = cachedBatch.TryAppendFromArenaWithCallback(timestampMs, keySlice, keyIsNull, valueSlice, valueIsNull, recordHeaders, pooledHeaderArray, callback);
 
             if (!result.Success)
             {
                 _accumulator.ReleaseMemory(recordSize);
-                return false; // Batch full or completed, use slow path
+                return false;
             }
 
-            // Success - batch now owns the pooled header array
-            // Memory stays reserved until batch completes (no ReleaseMemory call)
             pooledHeaderArray = null;
             return true;
         }
         catch
         {
-            // CRITICAL: If any exception occurs after memory reservation, release it
             _accumulator.ReleaseMemory(recordSize);
             throw;
         }
+    }
+
+    /// <summary>
+    /// MEDIUM PATH with callback: Block-wait for buffer space, then retry arena append.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool TryAppendToArenaWithBackpressureAndCallback(
+        string topic,
+        int partition,
+        long timestampMs,
+        bool keyIsNull,
+        int keyLength,
+        bool valueIsNull,
+        int valueLength,
+        IReadOnlyList<Header>? recordHeaders,
+        ref Header[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?> callback,
+        int recordSize)
+    {
+        _accumulator.ReserveMemorySync(recordSize);
+        return TryAppendToArenaWithReservedMemoryAndCallback(
+            topic, partition, timestampMs,
+            keyIsNull, keyLength, valueIsNull, valueLength,
+            recordHeaders, ref pooledHeaderArray, callback, recordSize);
     }
 
     /// <summary>
