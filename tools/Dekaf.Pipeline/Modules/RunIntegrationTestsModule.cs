@@ -38,24 +38,6 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
             return null;
         }
 
-        // When SKIP_INTEGRATION_TESTS is set, skip all integration tests (used by build-and-unit-test CI job)
-        if (string.Equals(Environment.GetEnvironmentVariable("SKIP_INTEGRATION_TESTS"), "true", StringComparison.OrdinalIgnoreCase))
-        {
-            context.Logger.LogInformation("Skipping integration tests (SKIP_INTEGRATION_TESTS=true)");
-            return null;
-        }
-
-        // When INTEGRATION_TEST_CATEGORY is set (CI matrix), only run the matching category
-        var targetCategory = Environment.GetEnvironmentVariable("INTEGRATION_TEST_CATEGORY");
-        if (!string.IsNullOrEmpty(targetCategory) &&
-            !string.Equals(targetCategory, Category, StringComparison.OrdinalIgnoreCase))
-        {
-            context.Logger.LogInformation(
-                "Skipping {Category} integration tests (INTEGRATION_TEST_CATEGORY={TargetCategory})",
-                Category, targetCategory);
-            return null;
-        }
-
         var results = new List<CommandResult>();
 
         var project = context.Git().RootDirectory.FindFile(x => x.Name == "Dekaf.Tests.Integration.csproj");

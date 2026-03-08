@@ -34,13 +34,6 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
     protected sealed override async Task<IReadOnlyList<CommandResult>?> ExecuteAsync(
         IModuleContext context, CancellationToken cancellationToken)
     {
-        // When SKIP_UNIT_TESTS is set, skip unit tests (used by integration-tests CI job)
-        if (string.Equals(Environment.GetEnvironmentVariable("SKIP_UNIT_TESTS"), "true", StringComparison.OrdinalIgnoreCase))
-        {
-            context.Logger.LogInformation("Skipping unit tests (SKIP_UNIT_TESTS=true)");
-            return null;
-        }
-
         var results = new List<CommandResult>();
 
         foreach (var framework in TestableFrameworks)
