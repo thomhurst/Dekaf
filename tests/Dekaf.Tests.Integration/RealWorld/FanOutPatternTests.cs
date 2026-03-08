@@ -10,9 +10,8 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// each receive a full copy of all messages from the same topic.
 /// Common in event-driven architectures where different services need the same data.
 /// </summary>
-[Category("Messaging")]
-[ParallelLimiter<RealWorldMessagingLimit>]
-[Timeout(300_000)] // 5 minutes — generous margin for slow CI runners with serialized execution
+[Category("MessagingPatterns")]
+[ParallelLimiter<MessagingTestLimit>]
 public sealed class FanOutPatternTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
