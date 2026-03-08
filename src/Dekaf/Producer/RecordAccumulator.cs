@@ -971,7 +971,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
     }
 
-    private void ReserveMemorySync(int recordSize)
+    internal void ReserveMemorySync(int recordSize)
     {
         // Fast path: try to reserve immediately
         if (TryReserveMemory(recordSize))
