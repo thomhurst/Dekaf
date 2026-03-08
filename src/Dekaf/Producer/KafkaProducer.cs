@@ -946,7 +946,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// On failure: releases memory and returns false.
     /// On exception: releases memory and rethrows.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryAppendToArenaWithReservedMemory(
         string topic,
         int partition,
@@ -1542,7 +1541,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// On failure: releases memory and returns false.
     /// On exception: releases memory and rethrows.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryAppendToArenaWithReservedMemoryAndCallback(
         string topic,
         int partition,
