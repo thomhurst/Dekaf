@@ -14,6 +14,8 @@ Dekaf is a high-performance, pure C# Apache Kafka client library for .NET 10+. T
 
 5. **Interface-First Design**: Public APIs expose interfaces (`IKafkaProducer<TKey, TValue>`, `IKafkaConsumer<TKey, TValue>`). Implementations are internal or sealed.
 
+6. **Code Cleanup Before PRs**: Before creating any pull request, and after finishing implementation work, run `/simplify` to review the final code for reuse, quality, and efficiency. This ensures code is clean, simple, and production-ready before review.
+
 ## Important Warnings
 
 - **Test Projects Require Docker**: Integration tests use Testcontainers.Kafka. Ensure Docker is running before executing integration tests.
