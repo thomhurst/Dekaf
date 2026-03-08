@@ -217,7 +217,7 @@ public readonly struct PooledMemory
     {
         if (_array is not null)
         {
-            ArrayPool<byte>.Shared.Return(_array, clearArray: true);
+            ArrayPool<byte>.Shared.Return(_array, clearArray: false);
         }
     }
 }
@@ -370,7 +370,7 @@ internal sealed class BatchArena
         }
 
         if (_buffer is not null)
-            ArrayPool<byte>.Shared.Return(_buffer, clearArray: true);
+            ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
 
         _buffer = ArrayPool<byte>.Shared.Rent(capacity);
         _position = 0;
@@ -448,7 +448,7 @@ internal sealed class BatchArena
         var buffer = Interlocked.Exchange(ref _buffer, null!);
         if (buffer is not null)
         {
-            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
         }
     }
 }
