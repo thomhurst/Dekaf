@@ -876,7 +876,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Step 5: FAST PATH - Try to append to cached batch with arena (no side effects)
         // This succeeds when: same partition as recent message AND batch has space
-        if (TryAppendToArenaFast(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, ref pooledHeaderArray))
+        if (TryAppendToArena(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, ref pooledHeaderArray))
         {
             if (_statisticsEnabled)
             {
@@ -896,13 +896,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <summary>
-    /// FAST/MEDIUM PATH: Try to append to an existing batch's arena.
+    /// Try to append to an existing batch's arena.
     /// First attempts non-blocking reserve. If buffer is full, block-waits for space then retries.
     /// Returns false only if arena append fails for non-backpressure reasons (cache miss, arena full).
     /// May throw <see cref="KafkaTimeoutException"/> or <see cref="OperationCanceledException"/>.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryAppendToArenaFast(
+    private bool TryAppendToArena(
         string topic,
         int partition,
         long timestampMs,
@@ -931,9 +931,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             return false;
         }
 
-        // MEDIUM: Buffer full - block-wait for space, then retry arena
+        // MEDIUM: Buffer full - block-wait for space, then retry arena.
         // This avoids falling to the slow path (ArrayPool allocations) when
         // backpressure is the only reason the fast path failed.
+        // NOTE: If the arena append fails after blocking (e.g. stale cache), we return false
+        // and the caller falls to AppendWithSlowPath which will block on ReserveMemorySync again.
+        // This double-wait is rare (requires both backpressure AND cache miss simultaneously).
         return TryAppendToArenaWithBackpressure(
             topic, partition, timestampMs,
             keyIsNull, keyLength, valueIsNull, valueLength,
@@ -1473,7 +1476,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         // Step 5: FAST PATH - Try to append to cached batch with arena and callback
-        if (TryAppendToArenaFastWithCallback(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, ref pooledHeaderArray, callback))
+        if (TryAppendToArenaWithCallback(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, ref pooledHeaderArray, callback))
         {
             if (_statisticsEnabled)
             {
@@ -1493,13 +1496,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <summary>
-    /// FAST/MEDIUM PATH with callback: Try to append to an existing batch's arena with a delivery callback.
+    /// Try to append to an existing batch's arena with a delivery callback.
     /// First attempts non-blocking reserve. If buffer is full, block-waits for space then retries.
     /// Returns false only if arena append fails for non-backpressure reasons (cache miss, arena full).
     /// May throw <see cref="KafkaTimeoutException"/> or <see cref="OperationCanceledException"/>.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryAppendToArenaFastWithCallback(
+    private bool TryAppendToArenaWithCallback(
         string topic,
         int partition,
         long timestampMs,
