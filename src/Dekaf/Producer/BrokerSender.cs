@@ -311,13 +311,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             batch.IsRetry = false;
             UnmutePartition(batch.TopicPartition);
         }
-        // Every operation wrapped to guarantee cleanup runs even if earlier steps throw.
-        try { CompleteInflightEntry(batch); }
-        catch { /* Must not prevent Fail or CleanupBatch */ }
-        try { batch.Fail(new ObjectDisposedException(nameof(BrokerSender))); }
-        catch { /* Must not prevent CleanupBatch */ }
-        try { CleanupBatch(batch); }
-        catch { /* Must not propagate */ }
+        FailAndCleanupBatch(batch, new ObjectDisposedException(nameof(BrokerSender)));
     }
 
     /// <summary>
@@ -901,7 +895,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                         // Non-retriable error — unmute so subsequent batches can proceed
                         UnmutePartition(batch.TopicPartition);
-                        CompleteInflightEntry(batch);
+                        try { CompleteInflightEntry(batch); }
+                        catch { /* Must not prevent Fail or CleanupBatch */ }
                         _statisticsCollector.RecordBatchFailed(expectedTopic, expectedPartition,
                             batch.CompletionSourcesCount);
                         try
@@ -931,7 +926,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var timestamp = partitionResponse.LogAppendTimeMs > 0
                         ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
                         : DateTimeOffset.UtcNow;
-                    CompleteInflightEntry(batch);
+                    try { CompleteInflightEntry(batch); }
+                    catch { /* Must not prevent CompleteSend or CleanupBatch */ }
                     batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
                     try
                     {
@@ -943,11 +939,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     CleanupBatch(batch);
                     pending.Batches[j] = null!;
                 }
-                catch
+                catch (Exception batchEx)
                 {
                     // Per-batch exception must not skip remaining batches.
                     try { FailAndCleanupBatch(batch, new InvalidOperationException(
-                        "Unexpected exception during response processing")); }
+                        "Unexpected exception during response processing", batchEx)); }
                     catch { /* Already exception-safe, but belt-and-suspenders */ }
                     pending.Batches[j] = null!;
                 }

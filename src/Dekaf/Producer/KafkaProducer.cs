@@ -2518,17 +2518,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                         {
                             // Still no leader — fail the batch
                             LogLeaderStillUnavailable(batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                            try { CompleteInflightEntry(batch); }
-                            catch { /* Must not prevent Fail or cleanup */ }
-                            try { batch.Fail(new KafkaException(ErrorCode.LeaderNotAvailable, "No leader available")); }
-                            catch { /* Observe */ }
-                            if (!batch.MemoryReleased)
-                            {
-                                _accumulator.ReleaseMemory(batch.DataSize);
-                                batch.MemoryReleased = true;
-                            }
-                            _accumulator.ReturnReadyBatch(batch);
-                            _accumulator.OnBatchExitsPipeline();
+                            FailAndCleanupBatch(batch, new KafkaException(ErrorCode.LeaderNotAvailable, "No leader available"));
                             continue;
                         }
 
@@ -2538,32 +2528,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {
-                        try { CompleteInflightEntry(batch); }
-                        catch { /* Must not prevent Fail or cleanup */ }
-                        try { batch.Fail(new OperationCanceledException(cancellationToken)); }
-                        catch { /* Observe */ }
-                        if (!batch.MemoryReleased)
-                        {
-                            _accumulator.ReleaseMemory(batch.DataSize);
-                            batch.MemoryReleased = true;
-                        }
-                        _accumulator.ReturnReadyBatch(batch);
-                        _accumulator.OnBatchExitsPipeline();
+                        FailAndCleanupBatch(batch, new OperationCanceledException(cancellationToken));
                         throw;
                     }
                     catch (Exception ex)
                     {
-                        try { CompleteInflightEntry(batch); }
-                        catch { /* Must not prevent Fail or cleanup */ }
-                        try { batch.Fail(ex); }
-                        catch { /* Observe */ }
-                        if (!batch.MemoryReleased)
-                        {
-                            _accumulator.ReleaseMemory(batch.DataSize);
-                            batch.MemoryReleased = true;
-                        }
-                        _accumulator.ReturnReadyBatch(batch);
-                        _accumulator.OnBatchExitsPipeline();
+                        FailAndCleanupBatch(batch, ex);
                     }
                 }
             }
@@ -2586,6 +2556,32 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             _inflightTracker.Complete(entry);
             batch.InflightEntry = null;
         }
+    }
+
+    /// <summary>
+    /// Fails a batch and cleans up all associated resources (inflight entry, memory, pool).
+    /// Every operation is wrapped in try/catch to guarantee cleanup completes even if
+    /// earlier steps throw — preventing orphaned completion sources that cause producer hangs.
+    /// </summary>
+    private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)
+    {
+        try { CompleteInflightEntry(batch); }
+        catch { /* Must not prevent Fail or cleanup */ }
+        try { batch.Fail(ex); }
+        catch { /* Observe */ }
+        try
+        {
+            if (!batch.MemoryReleased)
+            {
+                _accumulator.ReleaseMemory(batch.DataSize);
+                batch.MemoryReleased = true;
+            }
+        }
+        catch { /* Must not prevent ReturnReadyBatch */ }
+        try { _accumulator.ReturnReadyBatch(batch); }
+        catch { /* Must not prevent OnBatchExitsPipeline */ }
+        try { _accumulator.OnBatchExitsPipeline(); }
+        catch { /* Must not propagate — batch lifecycle ends here */ }
     }
 
     /// <summary>
@@ -2662,17 +2658,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             if (_disposed)
             {
                 LogRerouteBlockedByDisposal(batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                try { CompleteInflightEntry(batch); }
-                catch { /* Must not prevent Fail or cleanup */ }
-                try { batch.Fail(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>))); }
-                catch { /* Observe */ }
-                if (!batch.MemoryReleased)
-                {
-                    _accumulator.ReleaseMemory(batch.DataSize);
-                    batch.MemoryReleased = true;
-                }
-                _accumulator.ReturnReadyBatch(batch);
-                _accumulator.OnBatchExitsPipeline();
+                FailAndCleanupBatch(batch, new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
                 return;
             }
 
@@ -2681,17 +2667,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             if (leader is null)
             {
-                try { CompleteInflightEntry(batch); }
-                catch { /* Must not prevent Fail or cleanup */ }
-                try { batch.Fail(new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader available for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}")); }
-                catch { /* Observe */ }
-                if (!batch.MemoryReleased)
-                {
-                    _accumulator.ReleaseMemory(batch.DataSize);
-                    batch.MemoryReleased = true;
-                }
-                _accumulator.ReturnReadyBatch(batch);
-                _accumulator.OnBatchExitsPipeline();
+                FailAndCleanupBatch(batch, new KafkaException(ErrorCode.LeaderNotAvailable,
+                    $"No leader available for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}"));
                 return;
             }
 
@@ -2700,17 +2677,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         catch (Exception ex)
         {
-            try { CompleteInflightEntry(batch); }
-            catch { /* Must not prevent Fail or cleanup */ }
-            try { batch.Fail(ex); }
-            catch { /* Observe */ }
-            if (!batch.MemoryReleased)
-            {
-                _accumulator.ReleaseMemory(batch.DataSize);
-                batch.MemoryReleased = true;
-            }
-            _accumulator.ReturnReadyBatch(batch);
-            _accumulator.OnBatchExitsPipeline();
+            FailAndCleanupBatch(batch, ex);
         }
     }
 
