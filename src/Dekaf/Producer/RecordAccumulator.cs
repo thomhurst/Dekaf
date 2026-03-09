@@ -649,10 +649,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // that occurred with SemaphoreSlim(1,1) which only woke one thread per Release().
     private readonly ManualResetEventSlim _bufferSpaceAvailable = new(true); // Initially signaled (space available)
     private readonly CancellationTokenSource _disposalCts = new();
-    private readonly ManualResetEventSlim _disposalEvent = new(false);
-    // Pre-allocated WaitHandle array for ReserveMemorySync to avoid per-wait allocation.
-    // Index 0 = buffer space available, Index 1 = disposal signal.
-    private readonly WaitHandle[] _syncWaitHandles;
+    // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
+    // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
+    private readonly SemaphoreSlim _asyncBufferSpaceSignal = new(0, 1);
 
     // Thread-local cache for fast path when consecutive messages go to the same partition.
     // This eliminates ConcurrentDictionary lookups for the common case of sending multiple
@@ -716,8 +715,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = options.BufferMemory;
 
-        // Pre-allocate WaitHandle array for sync wait path to avoid per-iteration allocation
-        _syncWaitHandles = [_bufferSpaceAvailable.WaitHandle, _disposalEvent.WaitHandle];
 
         // Use unbounded channel for ready batches - backpressure is now handled by buffer memory tracking
         // Single channel design: batches go directly to sender loop (no intermediate CompletionLoop)
@@ -1035,16 +1032,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 throw new OperationCanceledException(_disposalCts.Token);
             }
 
-            // Wait for either: buffer space available, disposal, or timeout.
-            // Use WaitHandle.WaitAny with pre-allocated array to avoid per-iteration allocation.
-            // Sync path uses 10ms (vs 5ms async) because: (1) WaitAny provides true signal-based
-            // wake-up so this is max sleep not actual latency, (2) shorter interval reduces
-            // idle time after backpressure relief, improving throughput under sustained load.
-            var waitMs = Math.Min(10, (int)remainingMs);
-            var signaled = WaitHandle.WaitAny(_syncWaitHandles, waitMs);
-
-            // Check if disposal was signaled (index 1)
-            if (signaled == 1 || _disposed)
+            // Wait for buffer space or disposal/cancellation.
+            // MRES.Wait with CancellationToken handles both wake-on-signal and disposal.
+            try
+            {
+                _bufferSpaceAvailable.Wait((int)Math.Min(remainingMs, int.MaxValue), _disposalCts.Token);
+            }
+            catch (OperationCanceledException) when (_disposed)
             {
                 throw new OperationCanceledException(_disposalCts.Token);
             }
@@ -1076,16 +1070,29 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 #endif
         }
 
-        // Signal that space is available - wakes ALL waiting threads so they can race
-        // to reserve via lock-free TryReserveMemory(). This is more efficient than
-        // SemaphoreSlim which only wakes one thread per Release().
+        // Signal that space is available.
+        // MRES.Set() wakes ALL sync waiters so they can race via lock-free TryReserveMemory().
+        // SemaphoreSlim.Release() wakes ONE async waiter (who will retry and re-wait if CAS fails).
         try
         {
             _bufferSpaceAvailable.Set();
         }
         catch (ObjectDisposedException)
         {
-            // Accumulator is disposed, event no longer valid - ignore
+            // Accumulator is disposed, event no longer valid — ignore
+        }
+
+        try
+        {
+            _asyncBufferSpaceSignal.Release();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Accumulator is disposed — ignore
+        }
+        catch (SemaphoreFullException)
+        {
+            // Already signaled (count at max 1) — fine, waiter will see it
         }
     }
 
@@ -2549,13 +2556,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // (CloseAsync checks _disposed and returns immediately, so channels may not be completed)
         CompleteAppendWorkerChannels();
 
-        // Cancel the disposal token and signal the disposal event to interrupt any blocked operations
-        // (e.g., workers stuck in ReserveMemoryAsync). Do this AFTER graceful shutdown attempt
+        // Cancel the disposal token to interrupt any blocked operations
+        // (e.g., workers stuck in ReserveMemorySync/Async). Do this AFTER graceful shutdown attempt
         // so FlushAsync can complete normally.
         try
         {
             _disposalCts.Cancel();
-            _disposalEvent.Set();
         }
         catch
         {
@@ -2676,7 +2682,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Dispose resources to prevent leaks
         _bufferSpaceAvailable?.Dispose();
         _disposalCts?.Dispose();
-        _disposalEvent?.Dispose();
+        _asyncBufferSpaceSignal?.Dispose();
         _flushLingerLock.Dispose();
         // _flushTcs doesn't need disposal - it's a TaskCompletionSource
     }
