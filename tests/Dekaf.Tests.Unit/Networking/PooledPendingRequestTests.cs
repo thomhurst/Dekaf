@@ -142,11 +142,8 @@ public class PooledPendingRequestTests
 
         request.Initialize(responseHeaderVersion: 0, cts.Token);
 
-        // Cancel before completion
+        // Cancel before completion — callback fires synchronously
         cts.Cancel();
-
-        // Small delay to allow cancellation registration to fire
-        await Task.Delay(10).ConfigureAwait(false);
 
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
         {
@@ -374,11 +371,8 @@ public class PooledPendingRequestTests
         var cts = new CancellationTokenSource();
         request.RegisterCancellation(cts.Token);
 
-        // Cancel via registered token
+        // Cancel via registered token — callback fires synchronously
         cts.Cancel();
-
-        // Small delay to allow cancellation registration to fire
-        await Task.Delay(10).ConfigureAwait(false);
 
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
         {
@@ -408,9 +402,9 @@ public class PooledPendingRequestTests
             await request.AsValueTask().ConfigureAwait(false);
         });
 
-        // Wait for the task to actually start awaiting
+        // Wait for the task to actually start, then yield to let it reach the await point
         await awaiterStarted.Task.ConfigureAwait(false);
-        await Task.Delay(50).ConfigureAwait(false); // Extra delay to ensure continuation is registered
+        await Task.Yield();
 
         // Cancel while awaiting - this should wake up the task
         cts.Cancel();
@@ -500,8 +494,8 @@ public class PooledPendingRequestTests
             continuationRan.SetResult(true);
         });
 
-        // Small delay to ensure task is awaiting
-        await Task.Delay(50).ConfigureAwait(false);
+        // Yield to let the task reach its await point
+        await Task.Yield();
 
         // Complete the request
         var testData = new byte[] { 0, 0, 0, 1, 10 };
@@ -704,7 +698,10 @@ public class PooledPendingRequestTests
         });
 
         await awaiterStarted.Task;
-        await Task.Delay(50); // Let continuation register
+        // Yield to let the Task.Run lambda reach its await point.
+        // The test is correct regardless — if the exception is set before the
+        // continuation registers, the await completes synchronously with the error.
+        await Task.Yield();
 
         return (pool, request, pendingRequests, awaiterTask);
     }
