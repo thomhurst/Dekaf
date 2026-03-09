@@ -755,6 +755,11 @@ public sealed partial class KafkaConnection : IKafkaConnection
                     _timeoutCtsPool.Return(timeoutCts);
                 }
             }
+
+            // While loop exited normally — cancellation was requested between iterations.
+            // We won't enter the OperationCanceledException catch block (no exception was thrown),
+            // so fail pending requests here to prevent callers from hanging indefinitely.
+            FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
