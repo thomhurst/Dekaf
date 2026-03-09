@@ -538,6 +538,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
                     coalescedBatches = null;
+                    coalescedCount = 0;
 
                     // All batches are for muted partitions or in backoff. Wait for either:
                     // 1. A response completes (may produce carry-over retry batches), or
@@ -652,15 +653,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // on the bounded channel because nobody is reading from it, causing producer hangs.
             _batchChannel.Writer.TryComplete();
 
+            var disposedException = new ObjectDisposedException(nameof(BrokerSender));
+
             // Fail batches awaiting retry (set by SendCoalescedAsync catch blocks).
             // Without this cleanup, completion sources in these batches are never resolved.
             for (var i = 0; i < _sendFailedRetries.Count; i++)
-            {
-                CompleteInflightEntry(_sendFailedRetries[i]);
-                try { _sendFailedRetries[i].Fail(new ObjectDisposedException(nameof(BrokerSender))); }
-                catch { /* Observe */ }
-                CleanupBatch(_sendFailedRetries[i]);
-            }
+                FailAndCleanupBatch(_sendFailedRetries[i], disposedException);
             _sendFailedRetries.Clear();
 
             // Fail pending responses — the send loop won't process them anymore.
@@ -671,12 +669,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 for (var j = 0; j < pr.Count; j++)
                 {
                     if (pr.Batches[j] is not null)
-                    {
-                        CompleteInflightEntry(pr.Batches[j]);
-                        try { pr.Batches[j].Fail(new ObjectDisposedException(nameof(BrokerSender))); }
-                        catch { /* Observe */ }
-                        CleanupBatch(pr.Batches[j]);
-                    }
+                        FailAndCleanupBatch(pr.Batches[j], disposedException);
                 }
                 ArrayPool<ReadyBatch>.Shared.Return(pr.Batches, clearArray: true);
             }
@@ -694,23 +687,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (coalescedBatches is not null)
             {
                 for (var i = 0; i < coalescedCount; i++)
-                {
-                    CompleteInflightEntry(coalescedBatches[i]);
-                    try { coalescedBatches[i].Fail(new ObjectDisposedException(nameof(BrokerSender))); }
-                    catch { /* Observe */ }
-                    CleanupBatch(coalescedBatches[i]);
-                }
+                    FailAndCleanupBatch(coalescedBatches[i], disposedException);
                 ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
             }
 
             // Drain any remaining batches from channel and fail them
             while (channelReader.TryRead(out var remaining))
-            {
-                CompleteInflightEntry(remaining);
-                try { remaining.Fail(new ObjectDisposedException(nameof(BrokerSender))); }
-                catch { /* Observe */ }
-                CleanupBatch(remaining);
-            }
+                FailAndCleanupBatch(remaining, disposedException);
         }
     }
 
@@ -1445,13 +1428,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private void FailCarryOverBatches(List<ReadyBatch> carryOver)
     {
+        var disposedException = new ObjectDisposedException(nameof(BrokerSender));
         for (var i = 0; i < carryOver.Count; i++)
-        {
-            CompleteInflightEntry(carryOver[i]);
-            try { carryOver[i].Fail(new ObjectDisposedException(nameof(BrokerSender))); }
-            catch { /* Observe */ }
-            CleanupBatch(carryOver[i]);
-        }
+            FailAndCleanupBatch(carryOver[i], disposedException);
     }
 
     private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)
