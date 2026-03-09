@@ -732,11 +732,16 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
                     // After processing all available responses, check if the stream has ended.
                     // IsCompleted=true means the remote peer closed the connection (EOF).
-                    // We break cleanly — any pending requests will be failed by FailAllPendingRequests
-                    // in the outer catch block or by subsequent connection health checks.
+                    // The remote peer closed the connection. Fail any pending requests
+                    // immediately so callers don't hang waiting for responses that will
+                    // never arrive. Without this, pending requests rely on their individual
+                    // RequestTimeout (30s default), which delays error detection and can
+                    // cause indefinite hangs when combined with BrokerSender retry cycles.
                     if (result.IsCompleted)
                     {
                         LogReceiveLoopCompleted(_host, _port);
+                        FailAllPendingRequests(new KafkaException(
+                            "Connection closed by remote peer (EOF)"));
                         break;
                     }
                 }
