@@ -7,6 +7,7 @@ namespace Dekaf.Tests.Unit.Concurrency;
 /// Concurrency tests for BatchArena verifying thread-safety of the CAS-based
 /// TryAllocate method and the pool's RentOrCreate/ReturnToPool operations.
 /// </summary>
+[Repeat(25)]
 public class BatchArenaConcurrencyTests
 {
     [Test]

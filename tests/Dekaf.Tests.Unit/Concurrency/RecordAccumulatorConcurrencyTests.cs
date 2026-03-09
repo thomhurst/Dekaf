@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Unit.Concurrency;
 /// AppendAsync, TryAppendSync, ReleaseMemory, FlushAsync, and batch rotation
 /// under contention from multiple concurrent producers.
 /// </summary>
+[Repeat(25)]
 public class RecordAccumulatorConcurrencyTests
 {
     private static ProducerOptions CreateTestOptions(

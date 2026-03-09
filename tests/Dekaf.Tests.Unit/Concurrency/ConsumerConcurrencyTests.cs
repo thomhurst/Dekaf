@@ -11,6 +11,7 @@ namespace Dekaf.Tests.Unit.Concurrency;
 /// concurrent operations on shared consumer state do not corrupt data or
 /// deadlock.
 /// </summary>
+[Repeat(25)]
 public class ConsumerConcurrencyTests
 {
     [Test]
