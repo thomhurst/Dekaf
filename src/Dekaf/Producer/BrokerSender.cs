@@ -409,10 +409,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                         if (!AnyPendingResponseCompleted())
                         {
-                            // Fast path: if channel already has data, skip WhenAny allocation.
-                            // WaitToReadAsync completes synchronously when data is buffered.
                             var channelWaitVt = channelReader.WaitToReadAsync(cancellationToken);
-                            if (!channelWaitVt.IsCompleted)
+                            if (channelWaitVt.IsCompleted)
+                            {
+                                // Channel completed synchronously. Two cases:
+                                // 1. Has data (true) — fall through to coalescing.
+                                // 2. Closed (false) — no more batches will arrive.
+                                //    Must still await pending responses to avoid a tight spin loop
+                                //    where we'd loop indefinitely without ever awaiting the stuck
+                                //    response task, preventing graceful shutdown from completing.
+                                if (!channelWaitVt.Result)
+                                    await WaitForAnyPendingResponseAsync()
+                                        .WaitAsync(cancellationToken).ConfigureAwait(false);
+                            }
+                            else
                             {
                                 var anyResponseTask = WaitForAnyPendingResponseAsync();
                                 await Task.WhenAny(channelWaitVt.AsTask(), anyResponseTask).ConfigureAwait(false);
@@ -558,10 +568,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // 4. Retry backoff elapses (earliest RetryNotBefore from carry-over).
                     reusableWaitTasks.Clear();
 
-                    // Fast path: if channel already has data, skip wait entirely
+                    // Fast path: if channel already has data, skip wait entirely.
+                    // But if channel is closed (false), we must still await pending
+                    // responses — otherwise the loop spins without yielding.
                     var channelWaitVt2 = channelReader.WaitToReadAsync(cancellationToken);
                     if (channelWaitVt2.IsCompleted)
                     {
+                        if (!channelWaitVt2.Result && _pendingResponses.Count > 0)
+                            await WaitForAnyPendingResponseAsync()
+                                .WaitAsync(cancellationToken).ConfigureAwait(false);
+
                         pendingCarryOver = newCarryOver;
                         continue;
                     }
