@@ -1637,4 +1637,268 @@ public class RecordAccumulatorTests
     }
 
     #endregion
+
+    #region Pool Reuse Race Condition Tests
+
+    /// <summary>
+    /// Creates a minimal ReadyBatch with completion sources for lifecycle testing.
+    /// Uses the pool + Initialize pattern matching production code.
+    /// </summary>
+    private static ReadyBatch CreateTestReadyBatch(
+        ValueTaskSourcePool<RecordMetadata> pool,
+        TopicPartition tp,
+        int messageCount = 1)
+    {
+        var batch = new ReadyBatch();
+
+        // Rent from ArrayPool to match production code — Cleanup() returns these arrays
+        // to ArrayPool, so using 'new' would cause "buffer not associated with this pool".
+        var sources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(messageCount);
+        for (var i = 0; i < messageCount; i++)
+            sources[i] = pool.Rent();
+
+        batch.Initialize(
+            tp,
+            new RecordBatch { Records = Array.Empty<Record>() },
+            sources,
+            messageCount,
+            pooledDataArrays: null,
+            pooledDataArraysCount: 0,
+            pooledHeaderArrays: null,
+            pooledHeaderArraysCount: 0,
+            dataSize: 100);
+
+        return batch;
+    }
+
+    /// <summary>
+    /// Calls the private OnBatchEntersPipeline method via reflection.
+    /// </summary>
+    private static void InvokeOnBatchEntersPipeline(RecordAccumulator accumulator, ReadyBatch batch)
+    {
+        var method = typeof(RecordAccumulator).GetMethod("OnBatchEntersPipeline",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        method!.Invoke(accumulator, [batch]);
+    }
+
+    [Test]
+    public async Task OnBatchExitsPipeline_CalledTwice_ReturnsFalseAndDoesNotDoubleDecrement()
+    {
+        // Regression test: DisposeAsync and SendLoopAsync's finally block can race,
+        // both calling CleanupBatch → OnBatchExitsPipeline on the same batch.
+        // OnBatchExitsPipeline must return false on the second call and NOT decrement
+        // _inFlightBatchCount again, which would make it negative and hang FlushAsync.
+
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var tp = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            var batch = CreateTestReadyBatch(pool, tp);
+            InvokeOnBatchEntersPipeline(accumulator, batch);
+
+            // First exit — should succeed
+            var firstResult = accumulator.OnBatchExitsPipeline(batch);
+            await Assert.That(firstResult).IsTrue();
+
+            // Second exit — should return false (already removed)
+            var secondResult = accumulator.OnBatchExitsPipeline(batch);
+            await Assert.That(secondResult).IsFalse();
+
+            // In-flight count should be 0, not -1
+            var countField = typeof(RecordAccumulator).GetField("_inFlightBatchCount",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var count = (long)countField!.GetValue(accumulator)!;
+            await Assert.That(count).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task ReadyBatch_AfterReset_CompleteSendIsNoOp()
+    {
+        // Regression test: after a batch is cleaned up, returned to pool, and Reset()
+        // is called, _cleanedUp must stay armed (=1). A stale reference calling
+        // CompleteSend on the recycled batch must be a no-op. Previously, Reset()
+        // cleared _cleanedUp to 0, allowing stale CompleteSend to corrupt the pool.
+
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var tp = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            var batch = CreateTestReadyBatch(pool, tp, messageCount: 1);
+
+            // Simulate normal lifecycle: CompleteSend → Cleanup sets _cleanedUp=1
+            batch.CompleteSend(0, DateTimeOffset.UtcNow);
+
+            var cleanedUpField = typeof(ReadyBatch).GetField("_cleanedUp",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+            // _cleanedUp should be 1 after CompleteSend
+            await Assert.That((int)cleanedUpField!.GetValue(batch)!).IsEqualTo(1);
+
+            // Simulate pool return: Reset() should NOT clear _cleanedUp
+            batch.Reset();
+            await Assert.That((int)cleanedUpField.GetValue(batch)!).IsEqualTo(1);
+
+            // Stale reference calls CompleteSend — should be a no-op
+            // (would corrupt state if _cleanedUp was reset to 0)
+            batch.CompleteSend(999, DateTimeOffset.UtcNow);
+
+            // _cleanedUp should still be 1
+            await Assert.That((int)cleanedUpField.GetValue(batch)!).IsEqualTo(1);
+        }
+        finally
+        {
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task ReadyBatch_AfterReset_FailIsNoOp()
+    {
+        // Same as above but for Fail() path.
+
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var tp = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            var batch = CreateTestReadyBatch(pool, tp, messageCount: 1);
+
+            // Normal lifecycle: Fail → Cleanup sets _cleanedUp=1
+            batch.Fail(new InvalidOperationException("expected"));
+
+            var cleanedUpField = typeof(ReadyBatch).GetField("_cleanedUp",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            await Assert.That((int)cleanedUpField!.GetValue(batch)!).IsEqualTo(1);
+
+            // Pool return
+            batch.Reset();
+            await Assert.That((int)cleanedUpField.GetValue(batch)!).IsEqualTo(1);
+
+            // Stale Fail — should be a no-op
+            batch.Fail(new InvalidOperationException("stale"));
+            await Assert.That((int)cleanedUpField.GetValue(batch)!).IsEqualTo(1);
+        }
+        finally
+        {
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task ReadyBatch_InitializeResetsGuards_NewLifecycleWorks()
+    {
+        // Verifies that Initialize() properly resets _cleanedUp and _completed,
+        // allowing a recycled batch to go through a new lifecycle.
+
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var tp = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            var batch = CreateTestReadyBatch(pool, tp, messageCount: 1);
+
+            // First lifecycle
+            batch.CompleteSend(0, DateTimeOffset.UtcNow);
+            batch.Reset();
+
+            var cleanedUpField = typeof(ReadyBatch).GetField("_cleanedUp",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            await Assert.That((int)cleanedUpField!.GetValue(batch)!).IsEqualTo(1);
+
+            // Re-initialize for second lifecycle — guards should reset
+            var newSource = pool.Rent();
+            var newSources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(1);
+            newSources[0] = newSource;
+            batch.Initialize(
+                new TopicPartition("test-topic-2", 1),
+                new RecordBatch { Records = Array.Empty<Record>() },
+                newSources,
+                completionSourcesCount: 1,
+                pooledDataArrays: null,
+                pooledDataArraysCount: 0,
+                pooledHeaderArrays: null,
+                pooledHeaderArraysCount: 0,
+                dataSize: 200);
+
+            await Assert.That((int)cleanedUpField.GetValue(batch)!).IsEqualTo(0);
+
+            // Second lifecycle CompleteSend should work
+            batch.CompleteSend(100, DateTimeOffset.UtcNow);
+            await Assert.That((int)cleanedUpField.GetValue(batch)!).IsEqualTo(1);
+
+            // Verify completion source got the right metadata (from second lifecycle, not first)
+            var metadata = await newSource.Task;
+            await Assert.That(metadata.Topic).IsEqualTo("test-topic-2");
+            await Assert.That(metadata.Partition).IsEqualTo(1);
+            await Assert.That(metadata.Offset).IsEqualTo(100);
+        }
+        finally
+        {
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Repeat(50)]
+    public async Task ConcurrentFail_SameBatch_DoesNotCorruptInFlightCount()
+    {
+        // Regression test: DisposeAsync and SendLoopAsync's finally block can race,
+        // both calling FailAndCleanupBatch on the same batch. The in-flight count
+        // must not go negative, which would hang FlushAsync forever.
+
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var tp = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            var batch = CreateTestReadyBatch(pool, tp, messageCount: 3);
+            InvokeOnBatchEntersPipeline(accumulator, batch);
+
+            var countField = typeof(RecordAccumulator).GetField("_inFlightBatchCount",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+            // Verify in-flight count is 1
+            await Assert.That((long)countField!.GetValue(accumulator)!).IsEqualTo(1);
+
+            // Simulate the race: two threads both call Fail + OnBatchExitsPipeline
+            var barrier = new Barrier(2);
+            var task1 = Task.Run(() =>
+            {
+                barrier.SignalAndWait();
+                batch.Fail(new ObjectDisposedException("thread1"));
+                accumulator.OnBatchExitsPipeline(batch);
+            });
+            var task2 = Task.Run(() =>
+            {
+                barrier.SignalAndWait();
+                batch.Fail(new ObjectDisposedException("thread2"));
+                accumulator.OnBatchExitsPipeline(batch);
+            });
+
+            await Task.WhenAll(task1, task2);
+
+            // Count must be exactly 0, never -1
+            var finalCount = (long)countField.GetValue(accumulator)!;
+            await Assert.That(finalCount).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    #endregion
 }

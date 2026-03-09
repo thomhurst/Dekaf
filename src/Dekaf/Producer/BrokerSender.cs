@@ -1600,10 +1600,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _accumulator.ReleaseMemory(batch.DataSize);
             batch.MemoryReleased = true;
         }
-        // Remove from tracking BEFORE returning to pool. If ReturnReadyBatch resets
-        // the batch and another thread immediately rents it, OnBatchExitsPipeline must
-        // have already removed the OLD entry to avoid removing the NEW one.
-        _accumulator.OnBatchExitsPipeline(batch);
+        // Remove from tracking BEFORE returning to pool. OnBatchExitsPipeline uses
+        // TryRemove as an atomic guard — if another thread already removed this batch
+        // (e.g., DisposeAsync racing with SendLoopAsync's finally block), skip
+        // ReturnReadyBatch to prevent double-return to the object pool.
+        if (!_accumulator.OnBatchExitsPipeline(batch))
+            return;
+
         try { _accumulator.ReturnReadyBatch(batch); }
         catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx, _brokerId); }
     }

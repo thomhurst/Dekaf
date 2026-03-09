@@ -2321,15 +2321,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Called after a batch is sent (CompleteSend) or failed (Fail).
     /// Must be called by KafkaProducer's SenderLoopAsync after processing each batch.
     /// </summary>
-    internal void OnBatchExitsPipeline(ReadyBatch batch)
+    /// <returns>true if the batch was successfully removed from tracking; false if it was already removed by another thread.</returns>
+    internal bool OnBatchExitsPipeline(ReadyBatch batch)
     {
 #if DEBUG
         batch.DebugLastTransition = (int)BatchTransition.ExitsPipeline;
         Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} ExitsPipeline (was transition={(BatchTransition)batch.DebugLastTransition} broker={batch.DebugLastBrokerId})");
 #endif
-        _inFlightBatches.TryRemove(batch, out _);
-        // Use <= 0 instead of == 0 to handle the rare race where the orphan sweep in
-        // DisposeAsync resets the counter while a concurrent exit is in progress.
+        // TryRemove acts as a natural atomic guard: only the first thread to remove the batch
+        // proceeds with the decrement. This prevents double-decrement from concurrent cleanup
+        // paths (e.g., DisposeAsync racing with SendLoopAsync's finally block).
+        if (!_inFlightBatches.TryRemove(batch, out _))
+            return false;
+
         var count = Interlocked.Decrement(ref _inFlightBatchCount);
         Debug.Assert(count >= 0, $"In-flight batch count went negative ({count}) — mismatched Enter/Exit calls");
         if (count <= 0)
@@ -2337,6 +2341,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // All batches processed - complete any waiting flush and clear the TCS
             Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
         }
+
+        return true;
     }
 
     /// <summary>
@@ -4375,6 +4381,12 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         Action<RecordMetadata, Exception?>?[]? callbacks = null,
         int callbackCount = 0)
     {
+        // Reset lifecycle flags at the START of a new lifecycle (not in Reset()).
+        // This ensures stale references from a previous lifecycle see _cleanedUp=1
+        // and return early from CompleteSend/Fail, preventing pool corruption.
+        Interlocked.Exchange(ref _cleanedUp, 0);
+        Interlocked.Exchange(ref _completed, 0);
+
         _topicPartition = topicPartition;
         _recordBatch = recordBatch;
         _completionSourcesArray = completionSourcesArray;
@@ -4400,7 +4412,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // If CompleteSend/Fail was properly called, TrySetException returns false (already completed).
         // If something went wrong and sources are still pending, this prevents permanent hangs
         // where ProduceAsync callers wait forever on completion sources that were silently orphaned.
-        if (Volatile.Read(ref _cleanedUp) == 0 && _completionSourcesArray is not null)
+        if (Interlocked.CompareExchange(ref _cleanedUp, 0, 0) == 0 && _completionSourcesArray is not null)
         {
             var orphanedException = new InvalidOperationException("Batch recycled without completing delivery — this indicates a bug in the producer pipeline");
             for (var i = 0; i < _completionSourcesCount; i++)
@@ -4412,7 +4424,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // Defensive cleanup: ensure pooled arrays are returned even if Cleanup() wasn't called.
         // This handles edge cases like exceptions between CompleteSend and ReturnReadyBatch.
         // Cleanup() is idempotent (uses Interlocked.Exchange), so double-call is safe.
-        if (Volatile.Read(ref _cleanedUp) == 0)
+        if (Interlocked.CompareExchange(ref _cleanedUp, 0, 0) == 0)
         {
             Cleanup();
         }
@@ -4440,9 +4452,10 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         DebugLastBrokerId = -1;
 #endif
 
-        // Reset state flags
-        Volatile.Write(ref _cleanedUp, 0);
-        Volatile.Write(ref _completed, 0);
+        // NOTE: _cleanedUp and _completed are NOT reset here. They stay at 1 (armed)
+        // while the batch is in the pool, so that stale references from a previous lifecycle
+        // calling CompleteSend/Fail will hit the guard and return early. These flags are
+        // reset in Initialize() when the batch starts a new lifecycle.
 
         // Reset the ValueTaskSourceCore for reuse
         _doneCore.Reset();
@@ -4469,7 +4482,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // Check _cleanedUp AFTER winning the CAS to avoid TOCTOU race.
         // If Cleanup() ran between our CAS and this check, _doneCore may be reset.
         // In that case, skip SetResult to avoid calling it on a reset core.
-        if (Volatile.Read(ref _cleanedUp) != 0)
+        if (Interlocked.CompareExchange(ref _cleanedUp, 0, 0) != 0)
             return;
 
         // Signal batch is done (ready for fire-and-forget semantic)
@@ -4484,8 +4497,9 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// </summary>
     public void CompleteSend(long baseOffset, DateTimeOffset timestamp)
     {
-        // Guard against calling after Cleanup
-        if (Volatile.Read(ref _cleanedUp) != 0)
+        // Guard against concurrent or stale calls (including stale references to recycled batches).
+        // Cleanup() below has its own Interlocked.Exchange guard for array returns.
+        if (Interlocked.CompareExchange(ref _cleanedUp, 0, 0) != 0)
             return;
 
         try
@@ -4570,7 +4584,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     public void Fail(Exception exception)
     {
         // Guard against calling Fail after Cleanup has been performed
-        if (Volatile.Read(ref _cleanedUp) != 0)
+        if (Interlocked.CompareExchange(ref _cleanedUp, 0, 0) != 0)
             return;
 
         try
