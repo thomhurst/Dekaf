@@ -11,7 +11,7 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public class BufferMemoryTests
 {
-    private static ProducerOptions CreateTestOptions(ulong bufferMemory = 10_000_000)
+    private static ProducerOptions CreateTestOptions(ulong bufferMemory = 10_000_000, int maxBlockMs = 60000)
     {
         return new ProducerOptions
         {
@@ -19,7 +19,8 @@ public class BufferMemoryTests
             ClientId = "test-producer",
             BufferMemory = bufferMemory,
             BatchSize = 16384,
-            LingerMs = 100
+            LingerMs = 100,
+            MaxBlockMs = maxBlockMs
         };
     }
 
@@ -348,7 +349,7 @@ public class BufferMemoryTests
     public async Task BufferMemory_MessageLargerThanLimit_ThrowsImmediately()
     {
         // Arrange: Buffer limit 1KB, message 2KB
-        var options = CreateTestOptions(1000); // 1KB limit
+        var options = CreateTestOptions(1000, maxBlockMs: 100); // 1KB limit, short timeout
         var accumulator = new RecordAccumulator(options);
 
         try
@@ -371,7 +372,7 @@ public class BufferMemoryTests
                 // Assert: Should throw with descriptive message about max.block.ms
                 await Assert.That(exception!.Message).Contains("max.block.ms");
                 await Assert.That(exception.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
-                await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(60000));
+                await Assert.That(exception.Configured).IsEqualTo(TimeSpan.FromMilliseconds(100));
                 await Assert.That(exception.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
                 await Assert.That(exception.Elapsed).IsLessThanOrEqualTo(exception.Configured + TimeSpan.FromSeconds(5));
             }
@@ -391,7 +392,7 @@ public class BufferMemoryTests
     public async Task BufferMemory_ZeroLimit_AllAppendsThrowImmediately()
     {
         // Arrange: Zero buffer memory (edge case)
-        var options = CreateTestOptions(0);
+        var options = CreateTestOptions(0, maxBlockMs: 100);
         var accumulator = new RecordAccumulator(options);
 
         try
@@ -409,7 +410,7 @@ public class BufferMemoryTests
             });
 
             await Assert.That(ex!.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
-            await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(60000));
+            await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(100));
             await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
         }
         finally
@@ -422,7 +423,7 @@ public class BufferMemoryTests
     public async Task BufferMemory_MinimalLimit_EnforcesStrictBackpressure()
     {
         // Arrange: Minimal buffer (100 bytes)
-        var options = CreateTestOptions(100);
+        var options = CreateTestOptions(100, maxBlockMs: 100);
         var accumulator = new RecordAccumulator(options);
 
         try
@@ -448,7 +449,7 @@ public class BufferMemoryTests
             {
                 threwTimeout = true;
                 await Assert.That(ex.TimeoutKind).IsEqualTo(TimeoutKind.MaxBlock);
-                await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(60000));
+                await Assert.That(ex.Configured).IsEqualTo(TimeSpan.FromMilliseconds(100));
                 await Assert.That(ex.Elapsed).IsGreaterThanOrEqualTo(TimeSpan.Zero);
                 await Assert.That(ex.Elapsed).IsLessThanOrEqualTo(ex.Configured + TimeSpan.FromSeconds(5));
             }

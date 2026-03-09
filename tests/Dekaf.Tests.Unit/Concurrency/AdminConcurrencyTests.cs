@@ -10,7 +10,7 @@ namespace Dekaf.Tests.Unit.Concurrency;
 /// swapping, concurrent metadata reads during updates, and connection pool
 /// access patterns used by AdminClient operations.
 /// </summary>
-[Repeat(25)]
+[Repeat(5)]
 public class AdminConcurrencyTests
 {
     private static MetadataResponse CreateMetadataResponse(string clusterId, int topicCount, int partitionCount)

@@ -553,7 +553,7 @@ public class SerializerTests
         var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         await Assert.That(result.Length).IsEqualTo(1024);
-        await Assert.That(result.ToArray()).IsEquivalentTo(data);
+        await Assert.That(result.ToArray().SequenceEqual(data)).IsTrue();
     }
 
     [Test]
@@ -569,7 +569,7 @@ public class SerializerTests
         var result = serializer.Deserialize(new ReadOnlySequence<byte>(buffer.WrittenMemory), context);
 
         await Assert.That(result.Length).IsEqualTo(1024 * 1024);
-        await Assert.That(result.ToArray()).IsEquivalentTo(data);
+        await Assert.That(result.ToArray().SequenceEqual(data)).IsTrue();
     }
 
     [Test]
