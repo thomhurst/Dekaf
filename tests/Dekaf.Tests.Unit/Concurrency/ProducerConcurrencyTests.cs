@@ -8,6 +8,7 @@ namespace Dekaf.Tests.Unit.Concurrency;
 /// PartitionInflightTracker. Tests real race conditions using multiple
 /// concurrent tasks hitting the same objects simultaneously.
 /// </summary>
+[Repeat(25)]
 public class ProducerConcurrencyTests
 {
     [Test]
