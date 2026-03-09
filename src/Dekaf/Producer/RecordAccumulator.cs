@@ -2355,6 +2355,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         foreach (var (orphanedBatch, _) in _inFlightBatches)
         {
+            // TryRemove per entry instead of bulk Clear() to avoid racing with
+            // concurrent OnBatchExitsPipeline calls during disposal.
+            if (!_inFlightBatches.TryRemove(orphanedBatch, out _))
+                continue; // Another thread already handled this batch
+
             try { orphanedBatch.Fail(disposedException); }
             catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
             try
@@ -2369,8 +2374,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             try { ReturnReadyBatch(orphanedBatch); }
             catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
         }
-
-        _inFlightBatches.Clear();
 
         // Reset counter and unblock any waiting flush
         Interlocked.Exchange(ref _inFlightBatchCount, 0);
