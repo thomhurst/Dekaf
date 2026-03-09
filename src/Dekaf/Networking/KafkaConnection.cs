@@ -286,15 +286,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         pending.Initialize(responseHeaderVersion, cancellationToken);
         _pendingRequests[correlationId] = pending;
 
-        // Double-check _disposed AFTER adding to _pendingRequests (same pattern as SendPipelinedAsync).
-        if (_disposed)
-        {
-            if (_pendingRequests.TryRemove(correlationId, out var removed))
-            {
-                _pendingRequestPool.Return(removed);
-            }
-            throw new ObjectDisposedException(nameof(KafkaConnection));
-        }
+        ThrowIfDisposedAfterAddingPendingRequest(correlationId);
 
         try
         {
@@ -387,19 +379,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         pending.Initialize(responseHeaderVersion, cancellationToken);
         _pendingRequests[correlationId] = pending;
 
-        // Double-check _disposed AFTER adding to _pendingRequests.
-        // This closes the race where FailAllPendingRequests iterates the dictionary
-        // between our first _disposed check and the TryAdd above.
-        // If _disposed was set between the two checks, FailAllPendingRequests may have
-        // already iterated past our entry — fail the request immediately.
-        if (_disposed)
-        {
-            if (_pendingRequests.TryRemove(correlationId, out var removed))
-            {
-                _pendingRequestPool.Return(removed);
-            }
-            throw new ObjectDisposedException(nameof(KafkaConnection));
-        }
+        ThrowIfDisposedAfterAddingPendingRequest(correlationId);
 
         try
         {
@@ -839,6 +819,24 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         buffer = buffer.Slice(4 + size);
         return true;
+    }
+
+    /// <summary>
+    /// After adding a pending request, double-check that the connection hasn't been disposed.
+    /// Closes the race where FailAllPendingRequests iterates the dictionary between our first
+    /// _disposed check and the dictionary add. If _disposed was set between the two checks,
+    /// FailAllPendingRequests may have already iterated past our entry.
+    /// </summary>
+    private void ThrowIfDisposedAfterAddingPendingRequest(int correlationId)
+    {
+        if (_disposed)
+        {
+            if (_pendingRequests.TryRemove(correlationId, out var removed))
+            {
+                _pendingRequestPool.Return(removed);
+            }
+            throw new ObjectDisposedException(nameof(KafkaConnection));
+        }
     }
 
     private void FailAllPendingRequests(Exception ex)

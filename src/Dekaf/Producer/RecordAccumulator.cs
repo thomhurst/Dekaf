@@ -4287,10 +4287,10 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // where ProduceAsync callers wait forever on completion sources that were silently orphaned.
         if (Volatile.Read(ref _cleanedUp) == 0 && _completionSourcesArray is not null)
         {
+            var orphanedException = new InvalidOperationException("Batch recycled without completing delivery — this indicates a bug in the producer pipeline");
             for (var i = 0; i < _completionSourcesCount; i++)
             {
-                _completionSourcesArray[i]?.TrySetException(
-                    new InvalidOperationException("Batch recycled without completing delivery — this indicates a bug in the producer pipeline"));
+                _completionSourcesArray[i]?.TrySetException(orphanedException);
             }
         }
 
