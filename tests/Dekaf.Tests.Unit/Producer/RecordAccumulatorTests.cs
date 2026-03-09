@@ -1727,45 +1727,27 @@ public class RecordAccumulatorTests
         // is called, _cleanedUp must stay armed (=1). A stale reference calling
         // CompleteSend on the recycled batch must be a no-op. Previously, Reset()
         // cleared _cleanedUp to 0, allowing stale CompleteSend to corrupt the pool.
-
-        var pool = new ValueTaskSourcePool<RecordMetadata>();
-        var tp = new TopicPartition("test-topic", 0);
-
-        try
-        {
-            var batch = CreateTestReadyBatch(pool, tp, messageCount: 1);
-
-            // Simulate normal lifecycle: CompleteSend → Cleanup sets _cleanedUp=1
-            batch.CompleteSend(0, DateTimeOffset.UtcNow);
-
-            var cleanedUpField = typeof(ReadyBatch).GetField("_cleanedUp",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-            // _cleanedUp should be 1 after CompleteSend
-            await Assert.That((int)cleanedUpField!.GetValue(batch)!).IsEqualTo(1);
-
-            // Simulate pool return: Reset() should NOT clear _cleanedUp
-            batch.Reset();
-            await Assert.That((int)cleanedUpField.GetValue(batch)!).IsEqualTo(1);
-
-            // Stale reference calls CompleteSend — should be a no-op
-            // (would corrupt state if _cleanedUp was reset to 0)
-            batch.CompleteSend(999, DateTimeOffset.UtcNow);
-
-            // _cleanedUp should still be 1
-            await Assert.That((int)cleanedUpField.GetValue(batch)!).IsEqualTo(1);
-        }
-        finally
-        {
-            await pool.DisposeAsync();
-        }
+        await AssertStaleCallAfterResetIsNoOp(
+            completeFirstLifecycle: batch => batch.CompleteSend(0, DateTimeOffset.UtcNow),
+            staleCall: batch => batch.CompleteSend(999, DateTimeOffset.UtcNow));
     }
 
     [Test]
     public async Task ReadyBatch_AfterReset_FailIsNoOp()
     {
-        // Same as above but for Fail() path.
+        // Same as CompleteSend but for Fail() path.
+        await AssertStaleCallAfterResetIsNoOp(
+            completeFirstLifecycle: batch => batch.Fail(new InvalidOperationException("expected")),
+            staleCall: batch => batch.Fail(new InvalidOperationException("stale")));
+    }
 
+    private static readonly System.Reflection.FieldInfo CleanedUpField =
+        typeof(ReadyBatch).GetField("_cleanedUp",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+
+    private static async Task AssertStaleCallAfterResetIsNoOp(
+        Action<ReadyBatch> completeFirstLifecycle, Action<ReadyBatch> staleCall)
+    {
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var tp = new TopicPartition("test-topic", 0);
 
@@ -1773,20 +1755,17 @@ public class RecordAccumulatorTests
         {
             var batch = CreateTestReadyBatch(pool, tp, messageCount: 1);
 
-            // Normal lifecycle: Fail → Cleanup sets _cleanedUp=1
-            batch.Fail(new InvalidOperationException("expected"));
+            // Normal lifecycle → Cleanup sets _cleanedUp=1
+            completeFirstLifecycle(batch);
+            await Assert.That((int)CleanedUpField.GetValue(batch)!).IsEqualTo(1);
 
-            var cleanedUpField = typeof(ReadyBatch).GetField("_cleanedUp",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            await Assert.That((int)cleanedUpField!.GetValue(batch)!).IsEqualTo(1);
-
-            // Pool return
+            // Simulate pool return: Reset() should NOT clear _cleanedUp
             batch.Reset();
-            await Assert.That((int)cleanedUpField.GetValue(batch)!).IsEqualTo(1);
+            await Assert.That((int)CleanedUpField.GetValue(batch)!).IsEqualTo(1);
 
-            // Stale Fail — should be a no-op
-            batch.Fail(new InvalidOperationException("stale"));
-            await Assert.That((int)cleanedUpField.GetValue(batch)!).IsEqualTo(1);
+            // Stale reference — should be a no-op
+            staleCall(batch);
+            await Assert.That((int)CleanedUpField.GetValue(batch)!).IsEqualTo(1);
         }
         finally
         {
@@ -1864,6 +1843,7 @@ public class RecordAccumulatorTests
 
         try
         {
+            using var barrier = new Barrier(2);
             for (var iteration = 0; iteration < 50; iteration++)
             {
                 var accumulator = new RecordAccumulator(options);
@@ -1873,7 +1853,6 @@ public class RecordAccumulatorTests
                     InvokeOnBatchEntersPipeline(accumulator, batch);
 
                     // Simulate the race: two threads both call Fail + OnBatchExitsPipeline
-                    var barrier = new Barrier(2);
                     var task1 = Task.Run(() =>
                     {
                         barrier.SignalAndWait();

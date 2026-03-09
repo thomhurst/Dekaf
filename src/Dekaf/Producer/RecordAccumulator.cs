@@ -4408,24 +4408,22 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// </summary>
     public void Reset()
     {
-        // SAFETY NET: Before returning arrays to pool, ensure all completion sources are resolved.
-        // If CompleteSend/Fail was properly called, TrySetException returns false (already completed).
-        // If something went wrong and sources are still pending, this prevents permanent hangs
-        // where ProduceAsync callers wait forever on completion sources that were silently orphaned.
-        if (Interlocked.CompareExchange(ref _cleanedUp, 0, 0) == 0 && _completionSourcesArray is not null)
-        {
-            var orphanedException = new InvalidOperationException("Batch recycled without completing delivery — this indicates a bug in the producer pipeline");
-            for (var i = 0; i < _completionSourcesCount; i++)
-            {
-                _completionSourcesArray[i]?.TrySetException(orphanedException);
-            }
-        }
-
-        // Defensive cleanup: ensure pooled arrays are returned even if Cleanup() wasn't called.
-        // This handles edge cases like exceptions between CompleteSend and ReturnReadyBatch.
-        // Cleanup() is idempotent (uses Interlocked.Exchange), so double-call is safe.
+        // SAFETY NET: If CompleteSend/Fail wasn't called (_cleanedUp still 0), resolve
+        // orphaned completion sources and return pooled arrays before the batch goes back
+        // to the pool. Without this, ProduceAsync callers hang forever on unresolved sources.
+        // Single read: _cleanedUp cannot change during Reset (pool return is single-threaded per batch).
         if (Interlocked.CompareExchange(ref _cleanedUp, 0, 0) == 0)
         {
+            if (_completionSourcesArray is not null)
+            {
+                var orphanedException = new InvalidOperationException("Batch recycled without completing delivery — this indicates a bug in the producer pipeline");
+                for (var i = 0; i < _completionSourcesCount; i++)
+                {
+                    _completionSourcesArray[i]?.TrySetException(orphanedException);
+                }
+            }
+
+            // Cleanup() is idempotent (uses Interlocked.Exchange), so double-call is safe.
             Cleanup();
         }
 
