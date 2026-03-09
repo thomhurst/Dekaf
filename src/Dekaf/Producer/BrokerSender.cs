@@ -1499,9 +1499,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _accumulator.ReleaseMemory(batch.DataSize);
             batch.MemoryReleased = true;
         }
-        try { _accumulator.ReturnReadyBatch(batch); }
-        catch { /* Must not prevent OnBatchExitsPipeline */ }
+        // Remove from tracking BEFORE returning to pool. If ReturnReadyBatch resets
+        // the batch and another thread immediately rents it, OnBatchExitsPipeline must
+        // have already removed the OLD entry to avoid removing the NEW one.
         _accumulator.OnBatchExitsPipeline(batch);
+        try { _accumulator.ReturnReadyBatch(batch); }
+        catch { /* Must not propagate — batch lifecycle ends here */ }
     }
 
     public async ValueTask DisposeAsync()

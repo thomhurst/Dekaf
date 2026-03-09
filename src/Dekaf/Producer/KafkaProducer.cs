@@ -2578,9 +2578,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
         }
         catch { /* Must not prevent ReturnReadyBatch */ }
-        try { _accumulator.ReturnReadyBatch(batch); }
-        catch { /* Must not prevent OnBatchExitsPipeline */ }
+        // Remove from tracking BEFORE returning to pool. If ReturnReadyBatch resets
+        // the batch and another thread immediately rents it, OnBatchExitsPipeline must
+        // have already removed the OLD entry to avoid removing the NEW one.
         try { _accumulator.OnBatchExitsPipeline(batch); }
+        catch { /* Must not prevent ReturnReadyBatch */ }
+        try { _accumulator.ReturnReadyBatch(batch); }
         catch { /* Must not propagate — batch lifecycle ends here */ }
     }
 

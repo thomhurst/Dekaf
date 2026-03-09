@@ -586,7 +586,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Reference-tracking for in-flight batches. Enables forceful cleanup of orphaned batches
     // during disposal — catches batches whose references were lost from BrokerSender data structures.
     // Per-batch cost (not per-message): one TryAdd/TryRemove per batch, amortized over ~1000 messages.
-    private readonly ConcurrentDictionary<ReadyBatch, byte> _inFlightBatches = new();
+    private readonly ConcurrentDictionary<ReadyBatch, byte> _inFlightBatches = new(concurrencyLevel: Environment.ProcessorCount, capacity: 16);
 
     // Optimization: Track the oldest batch creation time to skip unnecessary enumeration.
     // With LingerMs=5ms and 1ms timer, we'd enumerate 5x per batch without this optimization.
@@ -2304,8 +2304,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private void OnBatchEntersPipeline(ReadyBatch batch)
     {
-        _inFlightBatches.TryAdd(batch, 0);
+        // Counter first, dictionary second. If the orphan sweep runs between these two
+        // operations, the counter is already incremented so the sweep's Exchange(0) resets it.
+        // Reversed order could leave a permanently positive counter (dictionary swept but
+        // counter not yet incremented → orphan sweep misses it → counter incremented after).
         Interlocked.Increment(ref _inFlightBatchCount);
+        _inFlightBatches.TryAdd(batch, 0);
     }
 
     /// <summary>
