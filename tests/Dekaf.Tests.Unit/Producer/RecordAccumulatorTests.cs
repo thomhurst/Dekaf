@@ -1849,53 +1849,58 @@ public class RecordAccumulatorTests
     }
 
     [Test]
-    [Repeat(50)]
     public async Task ConcurrentFail_SameBatch_DoesNotCorruptInFlightCount()
     {
         // Regression test: DisposeAsync and SendLoopAsync's finally block can race,
         // both calling FailAndCleanupBatch on the same batch. The in-flight count
         // must not go negative, which would hang FlushAsync forever.
+        // Runs 50 iterations inside one test to avoid per-test overhead on CI (1-2 cores).
 
         var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
         var tp = new TopicPartition("test-topic", 0);
+        var countField = typeof(RecordAccumulator).GetField("_inFlightBatchCount",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
 
         try
         {
-            var batch = CreateTestReadyBatch(pool, tp, messageCount: 3);
-            InvokeOnBatchEntersPipeline(accumulator, batch);
-
-            var countField = typeof(RecordAccumulator).GetField("_inFlightBatchCount",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-            // Verify in-flight count is 1
-            await Assert.That((long)countField!.GetValue(accumulator)!).IsEqualTo(1);
-
-            // Simulate the race: two threads both call Fail + OnBatchExitsPipeline
-            var barrier = new Barrier(2);
-            var task1 = Task.Run(() =>
+            for (var iteration = 0; iteration < 50; iteration++)
             {
-                barrier.SignalAndWait();
-                batch.Fail(new ObjectDisposedException("thread1"));
-                accumulator.OnBatchExitsPipeline(batch);
-            });
-            var task2 = Task.Run(() =>
-            {
-                barrier.SignalAndWait();
-                batch.Fail(new ObjectDisposedException("thread2"));
-                accumulator.OnBatchExitsPipeline(batch);
-            });
+                var accumulator = new RecordAccumulator(options);
+                try
+                {
+                    var batch = CreateTestReadyBatch(pool, tp, messageCount: 3);
+                    InvokeOnBatchEntersPipeline(accumulator, batch);
 
-            await Task.WhenAll(task1, task2);
+                    // Simulate the race: two threads both call Fail + OnBatchExitsPipeline
+                    var barrier = new Barrier(2);
+                    var task1 = Task.Run(() =>
+                    {
+                        barrier.SignalAndWait();
+                        batch.Fail(new ObjectDisposedException("thread1"));
+                        accumulator.OnBatchExitsPipeline(batch);
+                    });
+                    var task2 = Task.Run(() =>
+                    {
+                        barrier.SignalAndWait();
+                        batch.Fail(new ObjectDisposedException("thread2"));
+                        accumulator.OnBatchExitsPipeline(batch);
+                    });
 
-            // Count must be exactly 0, never -1
-            var finalCount = (long)countField.GetValue(accumulator)!;
-            await Assert.That(finalCount).IsEqualTo(0);
+                    await Task.WhenAll(task1, task2);
+
+                    // Count must be exactly 0, never -1
+                    var finalCount = (long)countField.GetValue(accumulator)!;
+                    await Assert.That(finalCount).IsEqualTo(0);
+                }
+                finally
+                {
+                    await accumulator.DisposeAsync();
+                }
+            }
         }
         finally
         {
-            await accumulator.DisposeAsync();
             await pool.DisposeAsync();
         }
     }
