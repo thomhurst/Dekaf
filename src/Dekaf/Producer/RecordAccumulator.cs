@@ -987,7 +987,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         while (!TryReserveMemory(recordSize))
         {
-            // Spin briefly before waiting (hot path optimization)
+            // Spin briefly before blocking (hot path optimization)
             if (spinWait.Count < 10)
             {
                 spinWait.SpinOnce();
@@ -999,7 +999,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 continue;
             }
 
-            // Check for disposal before sleeping
+            // Check for disposal before blocking
             if (_disposed)
             {
                 throw new OperationCanceledException(_disposalCts.Token);
@@ -1021,9 +1021,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
             }
 
-            // Reset event before waiting - ReleaseMemory will Set() it when space becomes available.
-            // This ensures we don't miss signals: if Set() happens between our TryReserveMemory fail
-            // and Wait(), the Wait() returns immediately. If Set() happens during Wait(), we wake up.
+            // Reset event before waiting — ReleaseMemory will Set() it when space becomes available.
             _bufferSpaceAvailable.Reset();
 
             // Double-check disposal after reset but before wait
@@ -1032,8 +1030,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 throw new OperationCanceledException(_disposalCts.Token);
             }
 
-            // Wait for buffer space or disposal/cancellation.
-            // MRES.Wait with CancellationToken handles both wake-on-signal and disposal.
+            // Wait for signal from ReleaseMemory, disposal cancellation, or timeout.
+            // MRES.Wait uses efficient spin-then-kernel-wait internally — no polling needed.
+            // _disposalCts.Token handles disposal interruption (replaces old _disposalEvent approach).
             try
             {
                 _bufferSpaceAvailable.Wait((int)Math.Min(remainingMs, int.MaxValue), _disposalCts.Token);
