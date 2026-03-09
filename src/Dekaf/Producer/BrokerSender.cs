@@ -363,8 +363,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var carryOverA = new List<ReadyBatch>();
         var carryOverB = new List<ReadyBatch>();
         var pendingCarryOver = carryOverA;
-        var reusableWaitTasks = new List<Task>(4);
-        var reusableResponseTasks = new List<Task>(_maxInFlight);
+        var reusableWaitTasks = new List<Task>(_maxInFlight + 4);
 
         // Hoisted to method scope so the finally block can fail any batches that were
         // coalesced but not yet passed to SendCoalescedAsync when the loop exits.
@@ -408,25 +407,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // Responses pending — wait for channel OR any response completion.
                         // No cross-thread signaling needed: we directly await response tasks.
 
-                        // Fast path: if any response already completed, skip WhenAny allocation.
-                        var anyCompleted = false;
-                        for (var i = 0; i < _pendingResponses.Count; i++)
-                        {
-                            if (_pendingResponses[i].ResponseTask.IsCompleted)
-                            {
-                                anyCompleted = true;
-                                break;
-                            }
-                        }
-
-                        if (!anyCompleted)
+                        if (!AnyPendingResponseCompleted())
                         {
                             // Fast path: if channel already has data, skip WhenAny allocation.
                             // WaitToReadAsync completes synchronously when data is buffered.
                             var channelWaitVt = channelReader.WaitToReadAsync(cancellationToken);
                             if (!channelWaitVt.IsCompleted)
                             {
-                                var anyResponseTask = WaitForAnyPendingResponseAsync(reusableResponseTasks);
+                                var anyResponseTask = WaitForAnyPendingResponseAsync();
                                 await Task.WhenAny(channelWaitVt.AsTask(), anyResponseTask).ConfigureAwait(false);
                             }
                         }
@@ -540,7 +528,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             if (_pendingResponses.Count >= _maxInFlight)
                             {
                                 // Still at capacity — await any response completion
-                                await WaitForAnyPendingResponseAsync(reusableResponseTasks)
+                                await WaitForAnyPendingResponseAsync()
                                     .WaitAsync(cancellationToken).ConfigureAwait(false);
                                 ProcessCompletedResponses(pendingCarryOver, cancellationToken);
                             }
@@ -582,18 +570,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     if (_pendingResponses.Count > 0)
                     {
-                        // Fast path: if any response already completed, skip WhenAny
-                        var anyCompleted = false;
-                        for (var i = 0; i < _pendingResponses.Count; i++)
-                        {
-                            if (_pendingResponses[i].ResponseTask.IsCompleted)
-                            {
-                                anyCompleted = true;
-                                break;
-                            }
-                        }
-
-                        if (anyCompleted)
+                        if (AnyPendingResponseCompleted())
                         {
                             pendingCarryOver = newCarryOver;
                             continue;
@@ -605,16 +582,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             reusableWaitTasks.Add(_pendingResponses[i].ResponseTask);
                     }
 
-                    // When carry-over exists, also wait for unmute signal so the loop
-                    // wakes when a muted partition becomes sendable.
+                    // When carry-over exists, wait for unmute signal and calculate
+                    // backoff/deadline timers so the loop wakes appropriately.
                     if (newCarryOver.Count > 0)
                     {
                         reusableWaitTasks.Add(unmuteSignal.Task);
-                    }
 
-                    // Calculate earliest backoff and delivery deadline from carry-over
-                    if (newCarryOver.Count > 0)
-                    {
                         var earliestBackoff = long.MaxValue;
                         var earliestDeadlineTicks = long.MaxValue;
                         var now = Stopwatch.GetTimestamp();
@@ -1473,14 +1446,29 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
+    /// Returns true if any pending response task has already completed.
+    /// Used as a fast-path check to avoid <see cref="Task.WhenAny"/> allocation.
+    /// Called from the single-threaded send loop only.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool AnyPendingResponseCompleted()
+    {
+        for (var i = 0; i < _pendingResponses.Count; i++)
+            if (_pendingResponses[i].ResponseTask.IsCompleted)
+                return true;
+        return false;
+    }
+
+    /// <summary>
     /// Returns a task that completes when any pending response completes.
     /// Fast paths for 1-8 responses avoid the <see cref="Task.WhenAny(IEnumerable{Task})"/>
     /// materialization path (IEnumerable → List → array clone). The 1-response case (common
     /// with maxInFlight=1) is zero-allocation — returns the task directly. Cases 2-8 use
-    /// direct overloads. Only falls through to the list path for 9+ responses.
+    /// direct overloads. Only falls through to a freshly-allocated list for 9+ responses
+    /// (cold path — allocation is acceptable).
     /// Called from the single-threaded send loop only.
     /// </summary>
-    private Task WaitForAnyPendingResponseAsync(List<Task> reusableTaskList)
+    private Task WaitForAnyPendingResponseAsync()
     {
         switch (_pendingResponses.Count)
         {
@@ -1536,10 +1524,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     _pendingResponses[6].ResponseTask,
                     _pendingResponses[7].ResponseTask);
             default:
-                reusableTaskList.Clear();
+                // Cold path (9+ in-flight): allocation acceptable
+                var tasks = new List<Task>(_pendingResponses.Count);
                 for (var i = 0; i < _pendingResponses.Count; i++)
-                    reusableTaskList.Add(_pendingResponses[i].ResponseTask);
-                return Task.WhenAny(reusableTaskList);
+                    tasks.Add(_pendingResponses[i].ResponseTask);
+                return Task.WhenAny(tasks);
         }
     }
 

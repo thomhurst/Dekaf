@@ -111,6 +111,31 @@ public sealed class BrokerSenderSendLoopTests
             ]
         };
 
+    /// <summary>
+    /// Creates a BrokerSender with standard test defaults, reducing constructor boilerplate.
+    /// </summary>
+    private static BrokerSender CreateSender(
+        IConnectionPool pool,
+        ProducerOptions options,
+        RecordAccumulator accumulator,
+        Action<TopicPartition, long, DateTimeOffset, int, Exception?> onAcknowledgement) =>
+        new(
+            brokerId: 1, pool,
+            new MetadataManager(pool, options.BootstrapServers),
+            accumulator, options,
+            new CompressionCodecRegistry(),
+            inflightTracker: new PartitionInflightTracker(),
+            new ProducerStatisticsCollector(),
+            getProduceApiVersion: () => 9,
+            setProduceApiVersion: _ => { },
+            isTransactional: () => false,
+            ensurePartitionInTransaction: null,
+            bumpEpoch: null,
+            getCurrentEpoch: null,
+            rerouteBatch: null,
+            onAcknowledgement: onAcknowledgement,
+            logger: null);
+
     [Test]
     public async Task SendLoop_ResponseCompletion_WakesSendLoopAndProcessesBatch()
     {
@@ -129,26 +154,11 @@ public sealed class BrokerSenderSendLoopTests
 
         var acknowledged = new TaskCompletionSource<(long offset, int count)>();
 
-        var sender = new BrokerSender(
-            brokerId: 1, pool,
-            new MetadataManager(pool, options.BootstrapServers),
-            accumulator, options,
-            new CompressionCodecRegistry(),
-            inflightTracker: new PartitionInflightTracker(),
-            new ProducerStatisticsCollector(),
-            getProduceApiVersion: () => 9,
-            setProduceApiVersion: _ => { },
-            isTransactional: () => false,
-            ensurePartitionInTransaction: null,
-            bumpEpoch: null,
-            getCurrentEpoch: null,
-            rerouteBatch: null,
-            onAcknowledgement: (tp, offset, _, count, ex) =>
-            {
-                if (ex is null)
-                    acknowledged.TrySetResult((offset, count));
-            },
-            logger: null);
+        var sender = CreateSender(pool, options, accumulator, (tp, offset, _, count, ex) =>
+        {
+            if (ex is null)
+                acknowledged.TrySetResult((offset, count));
+        });
 
         try
         {
@@ -197,33 +207,18 @@ public sealed class BrokerSenderSendLoopTests
         var ackOffsets = new List<long>();
         var allAcknowledged = new TaskCompletionSource();
 
-        var sender = new BrokerSender(
-            brokerId: 1, pool,
-            new MetadataManager(pool, options.BootstrapServers),
-            accumulator, options,
-            new CompressionCodecRegistry(),
-            inflightTracker: new PartitionInflightTracker(),
-            new ProducerStatisticsCollector(),
-            getProduceApiVersion: () => 9,
-            setProduceApiVersion: _ => { },
-            isTransactional: () => false,
-            ensurePartitionInTransaction: null,
-            bumpEpoch: null,
-            getCurrentEpoch: null,
-            rerouteBatch: null,
-            onAcknowledgement: (_, offset, _, _, ex) =>
+        var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, ex) =>
+        {
+            if (ex is null)
             {
-                if (ex is null)
+                lock (ackOffsets)
                 {
-                    lock (ackOffsets)
-                    {
-                        ackOffsets.Add(offset);
-                        if (ackOffsets.Count >= 2)
-                            allAcknowledged.TrySetResult();
-                    }
+                    ackOffsets.Add(offset);
+                    if (ackOffsets.Count >= 2)
+                        allAcknowledged.TrySetResult();
                 }
-            },
-            logger: null);
+            }
+        });
 
         try
         {
@@ -312,26 +307,11 @@ public sealed class BrokerSenderSendLoopTests
                 return responseQueue.Dequeue().Task;
             });
 
-        var sender = new BrokerSender(
-            brokerId: 1, pool,
-            new MetadataManager(pool, options.BootstrapServers),
-            accumulator, options,
-            new CompressionCodecRegistry(),
-            inflightTracker: new PartitionInflightTracker(),
-            new ProducerStatisticsCollector(),
-            getProduceApiVersion: () => 9,
-            setProduceApiVersion: _ => { },
-            isTransactional: () => false,
-            ensurePartitionInTransaction: null,
-            bumpEpoch: null,
-            getCurrentEpoch: null,
-            rerouteBatch: null,
-            onAcknowledgement: (_, _, _, _, ex) =>
-            {
-                if (ex is null && Interlocked.Increment(ref ackCount) >= 2)
-                    allAcknowledged.TrySetResult();
-            },
-            logger: null);
+        var sender = CreateSender(pool, options, accumulator, (_, _, _, _, ex) =>
+        {
+            if (ex is null && Interlocked.Increment(ref ackCount) >= 2)
+                allAcknowledged.TrySetResult();
+        });
 
         try
         {
@@ -391,26 +371,11 @@ public sealed class BrokerSenderSendLoopTests
 
         var acknowledged = new TaskCompletionSource<long>();
 
-        var sender = new BrokerSender(
-            brokerId: 1, pool,
-            new MetadataManager(pool, options.BootstrapServers),
-            accumulator, options,
-            new CompressionCodecRegistry(),
-            inflightTracker: new PartitionInflightTracker(),
-            new ProducerStatisticsCollector(),
-            getProduceApiVersion: () => 9,
-            setProduceApiVersion: _ => { },
-            isTransactional: () => false,
-            ensurePartitionInTransaction: null,
-            bumpEpoch: null,
-            getCurrentEpoch: null,
-            rerouteBatch: null,
-            onAcknowledgement: (_, offset, _, _, ex) =>
-            {
-                if (ex is null)
-                    acknowledged.TrySetResult(offset);
-            },
-            logger: null);
+        var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, ex) =>
+        {
+            if (ex is null)
+                acknowledged.TrySetResult(offset);
+        });
 
         try
         {
@@ -465,33 +430,18 @@ public sealed class BrokerSenderSendLoopTests
         var ackOffsets = new List<long>();
         var allAcknowledged = new TaskCompletionSource();
 
-        var sender = new BrokerSender(
-            brokerId: 1, pool,
-            new MetadataManager(pool, options.BootstrapServers),
-            accumulator, options,
-            new CompressionCodecRegistry(),
-            inflightTracker: new PartitionInflightTracker(),
-            new ProducerStatisticsCollector(),
-            getProduceApiVersion: () => 9,
-            setProduceApiVersion: _ => { },
-            isTransactional: () => false,
-            ensurePartitionInTransaction: null,
-            bumpEpoch: null,
-            getCurrentEpoch: null,
-            rerouteBatch: null,
-            onAcknowledgement: (_, offset, _, _, ex) =>
+        var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, ex) =>
+        {
+            if (ex is null)
             {
-                if (ex is null)
+                lock (ackOffsets)
                 {
-                    lock (ackOffsets)
-                    {
-                        ackOffsets.Add(offset);
-                        if (ackOffsets.Count >= batchCount)
-                            allAcknowledged.TrySetResult();
-                    }
+                    ackOffsets.Add(offset);
+                    if (ackOffsets.Count >= batchCount)
+                        allAcknowledged.TrySetResult();
                 }
-            },
-            logger: null);
+            }
+        });
 
         try
         {
@@ -549,25 +499,10 @@ public sealed class BrokerSenderSendLoopTests
 
         var acknowledged = new TaskCompletionSource<long>();
 
-        var sender = new BrokerSender(
-            brokerId: 1, pool,
-            new MetadataManager(pool, options.BootstrapServers),
-            accumulator, options,
-            new CompressionCodecRegistry(),
-            inflightTracker: new PartitionInflightTracker(),
-            new ProducerStatisticsCollector(),
-            getProduceApiVersion: () => 9,
-            setProduceApiVersion: _ => { },
-            isTransactional: () => false,
-            ensurePartitionInTransaction: null,
-            bumpEpoch: null,
-            getCurrentEpoch: null,
-            rerouteBatch: null,
-            onAcknowledgement: (_, offset, _, _, ex) =>
-            {
-                acknowledged.TrySetResult(offset);
-            },
-            logger: null);
+        var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, ex) =>
+        {
+            acknowledged.TrySetResult(offset);
+        });
 
         try
         {
