@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Threading.Tasks.Sources;
 using Dekaf.Networking;
 
@@ -622,6 +623,123 @@ public class PooledPendingRequestTests
         await Assert.That(result.Data.Span[0]).IsEqualTo((byte)20);
 
         pool.Return(request2);
+    }
+
+    [Test]
+    [Category("Unit")]
+    public async Task FailAllPattern_RequestReturnedToPool_WhenAwaiterFinallyCleans()
+    {
+        // Regression test for pool leak in FailAllPendingRequests:
+        // When the connection fails, FailAllPendingRequests sets exceptions on all pending
+        // requests. The awaiter's finally block must find the request in the dictionary
+        // to return it to the pool. If FailAllPendingRequests removes from the dictionary
+        // first, the awaiter can't return it — causing a pool leak.
+        var pool = new PendingRequestPool();
+        var pendingRequests = new ConcurrentDictionary<int, PooledPendingRequest>();
+
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+        pendingRequests[42] = request;
+
+        // Start awaiting (simulates AwaitAndParseResponseAsync)
+        var awaiterStarted = new TaskCompletionSource<bool>();
+        var awaiterTask = Task.Run(async () =>
+        {
+            awaiterStarted.SetResult(true);
+            try
+            {
+                await request.AsValueTask().ConfigureAwait(false);
+            }
+            catch (InvalidOperationException)
+            {
+                // Expected — connection error
+            }
+            finally
+            {
+                // This is the pattern from AwaitAndParseResponseAsync's finally block
+                if (pendingRequests.TryRemove(42, out var removed))
+                {
+                    pool.Return(removed);
+                }
+            }
+        });
+
+        await awaiterStarted.Task;
+        await Task.Delay(50); // Let continuation register
+
+        // Simulate FailAllPendingRequests — DON'T remove from dictionary
+        // (this is the fix: let the awaiter handle removal and pool return)
+        foreach (var kvp in pendingRequests)
+        {
+            kvp.Value.TrySetException(new InvalidOperationException("Connection failed"));
+        }
+
+        await awaiterTask;
+
+        // The request should have been returned to pool by the awaiter's finally
+        var reused = pool.Rent();
+        await Assert.That(reused).IsSameReferenceAs(request);
+
+        // Clean up
+        reused.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+        var testData = new byte[] { 0, 0, 0, 1, 10 };
+        var buffer = new PooledResponseBuffer(testData, testData.Length, isPooled: false);
+        reused.TryComplete(buffer);
+        await reused.AsValueTask().ConfigureAwait(false);
+        pool.Return(reused);
+    }
+
+    [Test]
+    [Category("Unit")]
+    public async Task FailAllPattern_OldBehavior_WouldLeakRequest()
+    {
+        // Demonstrates the leak: if FailAllPendingRequests removes from dictionary
+        // before setting exception, the awaiter's finally can't find it to return to pool.
+        var pool = new PendingRequestPool();
+        var pendingRequests = new ConcurrentDictionary<int, PooledPendingRequest>();
+
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+        pendingRequests[42] = request;
+
+        // Start awaiting
+        var awaiterStarted = new TaskCompletionSource<bool>();
+        var awaiterTask = Task.Run(async () =>
+        {
+            awaiterStarted.SetResult(true);
+            try
+            {
+                await request.AsValueTask().ConfigureAwait(false);
+            }
+            catch (InvalidOperationException)
+            {
+                // Expected
+            }
+            finally
+            {
+                if (pendingRequests.TryRemove(42, out var removed))
+                {
+                    pool.Return(removed);
+                }
+                // If TryRemove returns false, the request leaks (never returned to pool)
+            }
+        });
+
+        await awaiterStarted.Task;
+        await Task.Delay(50);
+
+        // OLD (buggy) behavior: remove THEN set exception
+        pendingRequests.TryRemove(42, out _);
+        request.TrySetException(new InvalidOperationException("Connection failed"));
+
+        await awaiterTask;
+
+        // With the old behavior, the request was NOT returned to pool
+        // (the awaiter's TryRemove returned false), so Rent gives a new instance
+        var newRequest = pool.Rent();
+        await Assert.That(newRequest).IsNotSameReferenceAs(request);
+
+        pool.Return(newRequest);
     }
 
     [Test]
