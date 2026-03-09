@@ -23,10 +23,8 @@ public class BatchArenaConcurrencyTests
 
         var allocations = new ConcurrentBag<(int Offset, int Length)>();
 
-        var barrier = new Barrier(threadCount);
         var tasks = Enumerable.Range(0, threadCount).Select(i => Task.Run(() =>
         {
-            barrier.SignalAndWait();
             for (var j = 0; j < allocsPerThread; j++)
             {
                 if (arena.TryAllocate(allocSize, out _, out var offset))
@@ -64,10 +62,8 @@ public class BatchArenaConcurrencyTests
         var successCount = 0;
         var failCount = 0;
 
-        var barrier = new Barrier(threadCount);
         var tasks = Enumerable.Range(0, threadCount).Select(i => Task.Run(() =>
         {
-            barrier.SignalAndWait();
             for (var j = 0; j < 4; j++)
             {
                 if (arena.TryAllocate(allocSize, out _, out _))
@@ -96,12 +92,10 @@ public class BatchArenaConcurrencyTests
         const int allocSize = 32;
         var arena = new BatchArena(threadCount * allocSize + 256);
 
-        var barrier = new Barrier(threadCount);
         var offsets = new ConcurrentDictionary<int, byte>();
 
         var tasks = Enumerable.Range(0, threadCount).Select(threadIndex => Task.Run(() =>
         {
-            barrier.SignalAndWait();
             if (arena.TryAllocate(allocSize, out var span, out var offset))
             {
                 // Fill with a thread-specific byte pattern
@@ -134,10 +128,8 @@ public class BatchArenaConcurrencyTests
         const int threadCount = 8;
         const int cyclesPerThread = 50;
 
-        var barrier = new Barrier(threadCount);
         var tasks = Enumerable.Range(0, threadCount).Select(i => Task.Run(() =>
         {
-            barrier.SignalAndWait();
             for (var j = 0; j < cyclesPerThread; j++)
             {
                 var arena = BatchArena.RentOrCreate(1024);
