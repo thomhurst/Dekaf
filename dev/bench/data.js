@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1773016918644,
+  "lastUpdate": 1773017044118,
   "repoUrl": "https://github.com/thomhurst/Dekaf",
   "entries": {
     "Dekaf Benchmarks": [
@@ -81634,6 +81634,378 @@ window.BENCHMARK_DATA = {
             "value": 3161372122.1,
             "unit": "ns",
             "range": "± 579357.2517102897"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "30480171+thomhurst@users.noreply.github.com",
+            "name": "Tom Longhurst",
+            "username": "thomhurst"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "37bdaae2f1b3698f1b71b6fd439bd0be7e7cb536",
+          "message": "Merge pull request #401 from thomhurst/renovate/tunit\n\nchore(deps): update dependency tunit to 1.19.11",
+          "timestamp": "2026-03-09T00:37:09Z",
+          "tree_id": "16745f0eafc61ca107bfb364776740286b35460c",
+          "url": "https://github.com/thomhurst/Dekaf/commit/37bdaae2f1b3698f1b71b6fd439bd0be7e7cb536"
+        },
+        "date": 1773017041920,
+        "tool": "benchmarkdotnet",
+        "benches": [
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionBenchmarks.Snappy_Compress_1KB",
+            "value": 12249.3,
+            "unit": "ns",
+            "range": "± 1717.4576850682522"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionBenchmarks.Snappy_Compress_1MB",
+            "value": 958463.3,
+            "unit": "ns",
+            "range": "± 10036.925467713929"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionBenchmarks.Snappy_Decompress_1KB",
+            "value": 8398.833333333334,
+            "unit": "ns",
+            "range": "± 1343.9797245494442"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionBenchmarks.Snappy_Decompress_1MB",
+            "value": 1608968.1,
+            "unit": "ns",
+            "range": "± 19356.575962418792"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Gzip_Compress_1KB",
+            "value": 17977.54117647059,
+            "unit": "ns",
+            "range": "± 1078.4413968772708"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Snappy_Compress_1KB",
+            "value": 11172.785714285714,
+            "unit": "ns",
+            "range": "± 189.24228612322048"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Lz4_Compress_1KB",
+            "value": 19757.277777777777,
+            "unit": "ns",
+            "range": "± 514.0981897633454"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Zstd_Compress_1KB",
+            "value": 118524.43684210526,
+            "unit": "ns",
+            "range": "± 10056.56016103739"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Brotli_Compress_1KB",
+            "value": 23830.630434782608,
+            "unit": "ns",
+            "range": "± 2644.098449221102"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Gzip_Compress_1MB",
+            "value": 264098.4864864865,
+            "unit": "ns",
+            "range": "± 10357.669238851891"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Snappy_Compress_1MB",
+            "value": 508472.04545454547,
+            "unit": "ns",
+            "range": "± 12032.820702946758"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Lz4_Compress_1MB",
+            "value": 406616.7636363636,
+            "unit": "ns",
+            "range": "± 17280.156328557736"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Zstd_Compress_1MB",
+            "value": 1697591.1333333333,
+            "unit": "ns",
+            "range": "± 22878.51457112005"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Brotli_Compress_1MB",
+            "value": 108287.41111111111,
+            "unit": "ns",
+            "range": "± 7813.090407920997"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Gzip_Compress_64KB",
+            "value": 31154.34693877551,
+            "unit": "ns",
+            "range": "± 4191.579364525291"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Snappy_Compress_64KB",
+            "value": 42540.857142857145,
+            "unit": "ns",
+            "range": "± 2081.7198107815593"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Lz4_Compress_64KB",
+            "value": 41199.78571428572,
+            "unit": "ns",
+            "range": "± 377.27019058401197"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Zstd_Compress_64KB",
+            "value": 130876.41836734694,
+            "unit": "ns",
+            "range": "± 10329.293520739802"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Brotli_Compress_64KB",
+            "value": 28985.666666666668,
+            "unit": "ns",
+            "range": "± 501.6476382294413"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Gzip_Decompress_1KB",
+            "value": 13929.272727272728,
+            "unit": "ns",
+            "range": "± 334.2398346179799"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Snappy_Decompress_1KB",
+            "value": 8835.357142857143,
+            "unit": "ns",
+            "range": "± 883.7140724553786"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Lz4_Decompress_1KB",
+            "value": 15608.917525773197,
+            "unit": "ns",
+            "range": "± 1325.7767744334444"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Zstd_Decompress_1KB",
+            "value": 22980.214285714286,
+            "unit": "ns",
+            "range": "± 387.42764655956256"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Brotli_Decompress_1KB",
+            "value": 22012.25806451613,
+            "unit": "ns",
+            "range": "± 2605.427032107278"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Gzip_Decompress_1MB",
+            "value": 227823.60869565216,
+            "unit": "ns",
+            "range": "± 5761.78493287004"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Snappy_Decompress_1MB",
+            "value": 1612911.6333333333,
+            "unit": "ns",
+            "range": "± 24336.794048361855"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Lz4_Decompress_1MB",
+            "value": 530721.195652174,
+            "unit": "ns",
+            "range": "± 13116.576602406529"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Zstd_Decompress_1MB",
+            "value": 287612.4871794872,
+            "unit": "ns",
+            "range": "± 10011.609079547276"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Brotli_Decompress_1MB",
+            "value": 693989.64,
+            "unit": "ns",
+            "range": "± 18118.03547775899"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Gzip_Decompress_64KB",
+            "value": 26987.478260869564,
+            "unit": "ns",
+            "range": "± 499.95980470844927"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Snappy_Decompress_64KB",
+            "value": 132678.34567901236,
+            "unit": "ns",
+            "range": "± 6987.870235559068"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Lz4_Decompress_64KB",
+            "value": 46408,
+            "unit": "ns",
+            "range": "± 356.0843873425103"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Zstd_Decompress_64KB",
+            "value": 56580.307692307695,
+            "unit": "ns",
+            "range": "± 315.4230980274443"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.CompressionCodecComparisonBenchmarks.Brotli_Decompress_64KB",
+            "value": 73935.68421052632,
+            "unit": "ns",
+            "range": "± 1612.3066999602906"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.SerializerBenchmarks.SerializeString_Small",
+            "value": 1421,
+            "unit": "ns",
+            "range": "± 21.626703070840126"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.SerializerBenchmarks.SerializeString_Medium",
+            "value": 1541.611111111111,
+            "unit": "ns",
+            "range": "± 84.6277797836568"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.SerializerBenchmarks.SerializeString_Large",
+            "value": 1713.888888888889,
+            "unit": "ns",
+            "range": "± 99.2565419058669"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.SerializerBenchmarks.DeserializeString",
+            "value": 3966.8,
+            "unit": "ns",
+            "range": "± 1650.4810780160094"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.SerializerBenchmarks.SerializeInt32",
+            "value": 779.75,
+            "unit": "ns",
+            "range": "± 43.8951673226759"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.SerializerBenchmarks.SerializeBatch",
+            "value": 46317.8,
+            "unit": "ns",
+            "range": "± 4553.4665866299665"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.SerializerBenchmarks.Serialize_ArrayBufferWriter",
+            "value": 4062.25,
+            "unit": "ns",
+            "range": "± 64.03291564277146"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.SerializerBenchmarks.Serialize_PooledBufferWriter",
+            "value": 3363.6666666666665,
+            "unit": "ns",
+            "range": "± 43.176961449365564"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.ProtocolBenchmarks.WriteInt32_Thousand",
+            "value": 31419.166666666668,
+            "unit": "ns",
+            "range": "± 6704.291330931256"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.ProtocolBenchmarks.WriteString_Hundred",
+            "value": 13205.722222222223,
+            "unit": "ns",
+            "range": "± 427.45080938564666"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.ProtocolBenchmarks.WriteCompactString_Hundred",
+            "value": 10833.375,
+            "unit": "ns",
+            "range": "± 158.15086603800634"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.ProtocolBenchmarks.WriteVarInt_Thousand",
+            "value": 33560.875,
+            "unit": "ns",
+            "range": "± 7327.990241679015"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.ProtocolBenchmarks.ReadInt32_Thousand",
+            "value": 14416.875,
+            "unit": "ns",
+            "range": "± 6002.803771988553"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.ProtocolBenchmarks.ReadVarInt_Thousand",
+            "value": 26545.444444444445,
+            "unit": "ns",
+            "range": "± 5589.200034689918"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.ProtocolBenchmarks.WriteRecordBatch",
+            "value": 20245.4,
+            "unit": "ns",
+            "range": "± 1050.286569359895"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Unit.ProtocolBenchmarks.ReadRecordBatch",
+            "value": 4437.875,
+            "unit": "ns",
+            "range": "± 97.02788627134836"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Client.ConsumerBenchmarks.Confluent_ConsumeAll(MessageCount: 100, MessageSize: 100)",
+            "value": 3167884235.4,
+            "unit": "ns",
+            "range": "± 863848.3396449287"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Client.ConsumerBenchmarks.Confluent_ConsumeAll(MessageCount: 100, MessageSize: 1000)",
+            "value": 3166078384.8,
+            "unit": "ns",
+            "range": "± 544699.391072911"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Client.ConsumerBenchmarks.Confluent_ConsumeAll(MessageCount: 1000, MessageSize: 100)",
+            "value": 3166317300.3,
+            "unit": "ns",
+            "range": "± 654613.9996866093"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Client.ConsumerBenchmarks.Confluent_ConsumeAll(MessageCount: 1000, MessageSize: 1000)",
+            "value": 3166058526.1,
+            "unit": "ns",
+            "range": "± 382789.3135816359"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Client.ConsumerBenchmarks.Confluent_PollSingle(MessageCount: 100, MessageSize: 100)",
+            "value": 3160638591.2,
+            "unit": "ns",
+            "range": "± 985521.6546673137"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Client.ConsumerBenchmarks.Confluent_PollSingle(MessageCount: 100, MessageSize: 1000)",
+            "value": 3160263823.8,
+            "unit": "ns",
+            "range": "± 169100.06801506615"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Client.ConsumerBenchmarks.Confluent_PollSingle(MessageCount: 1000, MessageSize: 100)",
+            "value": 3160552943.4,
+            "unit": "ns",
+            "range": "± 1011295.6060061271"
+          },
+          {
+            "name": "Dekaf.Benchmarks.Benchmarks.Client.ConsumerBenchmarks.Confluent_PollSingle(MessageCount: 1000, MessageSize: 1000)",
+            "value": 3160271344,
+            "unit": "ns",
+            "range": "± 1306770.742808202"
           }
         ]
       }
