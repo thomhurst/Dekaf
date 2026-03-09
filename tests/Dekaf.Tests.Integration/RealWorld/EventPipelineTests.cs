@@ -10,9 +10,8 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for event-driven pipeline patterns that are common in microservice architectures.
 /// These simulate real workflows: consume from input, transform, produce to output.
 /// </summary>
-[Category("Messaging")]
-[ParallelLimiter<RealWorldMessagingLimit>]
-[Timeout(300_000)] // 5 minutes — generous margin for slow CI runners with serialized execution
+[Category("MessagingPatterns")]
+[ParallelLimiter<MessagingTestLimit>]
 public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
