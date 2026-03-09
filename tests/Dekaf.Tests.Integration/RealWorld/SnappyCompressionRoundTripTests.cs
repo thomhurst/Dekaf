@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration.RealWorld;
 /// Tests for producing with Snappy compression and consuming, verifying data integrity.
 /// Codec registration is handled by <see cref="GlobalTestSetup"/>.
 /// </summary>
+[Category("Compression")]
 public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]

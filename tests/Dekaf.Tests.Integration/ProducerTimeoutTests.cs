@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Integration;
 /// focusing on linger timing, MaxBlock semantics, cancellation before append,
 /// and flush completion semantics.
 /// </summary>
+[Category("Producer")]
 public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
     [Test]
