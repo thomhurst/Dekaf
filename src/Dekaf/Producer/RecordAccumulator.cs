@@ -4412,7 +4412,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // orphaned completion sources and return pooled arrays before the batch goes back
         // to the pool. Without this, ProduceAsync callers hang forever on unresolved sources.
         // Single read: _cleanedUp cannot change during Reset (pool return is single-threaded per batch).
-        if (Interlocked.CompareExchange(ref _cleanedUp, 0, 0) == 0)
+        if (Volatile.Read(ref _cleanedUp) == 0)
         {
             if (_completionSourcesArray is not null)
             {

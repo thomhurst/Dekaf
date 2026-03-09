@@ -681,6 +681,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await Assert.That(result).IsNotNull();
         var r = result!.Value;
         await Assert.That(r.Headers).IsNotNull();
+        // >= 2 because TUnit's ActivityListener may inject a traceparent header
         await Assert.That(r.Headers!.Count).IsGreaterThanOrEqualTo(2);
     }
 }

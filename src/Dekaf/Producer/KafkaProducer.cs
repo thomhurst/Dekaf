@@ -2570,6 +2570,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// Fails a batch and cleans up all associated resources (inflight entry, memory, pool).
     /// Every operation is wrapped in try/catch to guarantee cleanup completes even if
     /// earlier steps throw — preventing orphaned completion sources that cause producer hangs.
+    /// Unlike BrokerSender.FailAndCleanupBatch, this handles pre-send failures (e.g., metadata
+    /// lookup timeout) where the batch never reached a BrokerSender — so no statistics recording
+    /// or acknowledgement callback is needed (those are BrokerSender responsibilities).
     /// </summary>
     private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)
     {

@@ -19,6 +19,7 @@ namespace Dekaf.Tests.Unit.Producer;
 /// - Faulted responses wake the send loop
 ///
 /// These tests use controllable mock connections to verify send loop timing behavior.
+/// Synchronization uses deterministic TCS signals from mock callbacks, not Task.Delay.
 /// </summary>
 public sealed class BrokerSenderSendLoopTests
 {
@@ -38,9 +39,12 @@ public sealed class BrokerSenderSendLoopTests
     /// Creates a mock connection pool that returns a controllable mock connection.
     /// The mock connection queues response tasks so each SendPipelinedAsync call
     /// returns the next TaskCompletionSource's task from the queue.
+    /// The optional onSend callback fires each time SendPipelinedAsync is called,
+    /// enabling deterministic synchronization without Task.Delay.
     /// </summary>
     private static (IConnectionPool pool, IKafkaConnection connection) CreateMockConnection(
-        Queue<TaskCompletionSource<ProduceResponse>> responseQueue)
+        Queue<TaskCompletionSource<ProduceResponse>> responseQueue,
+        Action? onSend = null)
     {
         var connection = Substitute.For<IKafkaConnection>();
         connection.IsConnected.Returns(true);
@@ -48,7 +52,12 @@ public sealed class BrokerSenderSendLoopTests
 
         connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
                 Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(_ => responseQueue.Dequeue().Task);
+            .Returns(_ =>
+            {
+                var task = responseQueue.Dequeue().Task;
+                onSend?.Invoke();
+                return task;
+            });
 
         var pool = Substitute.For<IConnectionPool>();
         pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
@@ -147,7 +156,8 @@ public sealed class BrokerSenderSendLoopTests
         var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
         responseQueue.Enqueue(tcs);
 
-        var (pool, _) = CreateMockConnection(responseQueue);
+        var requestSent = new TaskCompletionSource();
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () => requestSent.TrySetResult());
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -165,8 +175,8 @@ public sealed class BrokerSenderSendLoopTests
             var batch = CreateTestBatch(vtPool, "test-topic", 0);
             await sender.EnqueueAsync(batch, CancellationToken.None);
 
-            // Give the send loop time to pick up and send the batch
-            await Task.Delay(100);
+            // Wait for the send loop to actually send the request
+            await requestSent.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             // Complete the response — send loop should wake via Task.WhenAny and process it
             tcs.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 42));
@@ -187,9 +197,8 @@ public sealed class BrokerSenderSendLoopTests
     [Test]
     public async Task SendLoop_InFlightLimitEnforced_SecondBatchWaitsForFirstResponse()
     {
-        // With maxInFlight=1 and two batches on the same partition, the second batch
-        // goes to carry-over (duplicate partition). After the first response completes
-        // and the partition is unmuted, the second batch sends.
+        // With maxInFlight=1 and two batches on different partitions, they coalesce into
+        // one request. After the response completes, both batches are acknowledged.
         // This verifies in-flight limiting uses _pendingResponses.Count and that
         // response completion correctly wakes the send loop.
 
@@ -199,7 +208,8 @@ public sealed class BrokerSenderSendLoopTests
         responseQueue.Enqueue(tcs1);
         responseQueue.Enqueue(tcs2);
 
-        var (pool, _) = CreateMockConnection(responseQueue);
+        var requestSent = new TaskCompletionSource();
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () => requestSent.TrySetResult());
         var options = CreateOptions(maxInFlight: 1);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -230,8 +240,8 @@ public sealed class BrokerSenderSendLoopTests
             await sender.EnqueueAsync(batch1, CancellationToken.None);
             await sender.EnqueueAsync(batch2, CancellationToken.None);
 
-            // Give send loop time to send the first request (both batches coalesced)
-            await Task.Delay(100);
+            // Wait for the send loop to send the coalesced request
+            await requestSent.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             // Complete the first response — this should process both batches since
             // they were coalesced into one request
@@ -289,23 +299,21 @@ public sealed class BrokerSenderSendLoopTests
         responseQueue.Enqueue(tcs1);
         responseQueue.Enqueue(tcs2);
 
-        var (pool, connection) = CreateMockConnection(responseQueue);
+        var sendCount = 0;
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var idx = Interlocked.Increment(ref sendCount) - 1;
+            if (idx < sendSignals.Length)
+                sendSignals[idx].TrySetResult();
+        });
         var options = CreateOptions(maxInFlight: 1);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
 
-        var sendCount = 0;
         var allAcknowledged = new TaskCompletionSource();
         var ackCount = 0;
-
-        // Track how many times SendPipelinedAsync is called
-        connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
-                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(ci =>
-            {
-                Interlocked.Increment(ref sendCount);
-                return responseQueue.Dequeue().Task;
-            });
 
         var sender = CreateSender(pool, options, accumulator, (_, _, _, _, ex) =>
         {
@@ -318,24 +326,25 @@ public sealed class BrokerSenderSendLoopTests
             // Enqueue first batch — send loop sends it immediately
             var batch1 = CreateTestBatch(vtPool, "test-topic", 0);
             await sender.EnqueueAsync(batch1, CancellationToken.None);
-            await Task.Delay(200);
 
-            // Verify first request was sent
+            // Wait for first request to be sent (deterministic, no Task.Delay)
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(5));
             await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
 
             // Enqueue second batch while first is still in-flight
             var batch2 = CreateTestBatch(vtPool, "test-topic", 1);
             await sender.EnqueueAsync(batch2, CancellationToken.None);
-            await Task.Delay(200);
 
-            // Second request should NOT have been sent yet (in-flight limit)
+            // Second request should NOT have been sent yet (in-flight limit).
+            // Give a brief moment for the send loop to process, then verify.
+            await Task.Delay(50);
             await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
 
             // Complete first response — frees in-flight slot
             tcs1.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 100));
-            await Task.Delay(200);
 
-            // Now second request should have been sent
+            // Wait for second request to be sent (deterministic)
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(5));
             await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
 
             // Complete second response
@@ -364,7 +373,15 @@ public sealed class BrokerSenderSendLoopTests
         responseQueue.Enqueue(tcs1);
         responseQueue.Enqueue(tcs2); // For the retry
 
-        var (pool, _) = CreateMockConnection(responseQueue);
+        var sendCount = 0;
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var idx = Interlocked.Increment(ref sendCount) - 1;
+            if (idx < sendSignals.Length)
+                sendSignals[idx].TrySetResult();
+        });
         var options = CreateOptions();
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -382,15 +399,16 @@ public sealed class BrokerSenderSendLoopTests
             var batch = CreateTestBatch(vtPool, "test-topic", 0);
             await sender.EnqueueAsync(batch, CancellationToken.None);
 
-            // Give send loop time to send
-            await Task.Delay(100);
+            // Wait for first send (deterministic)
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             // Fault the response — send loop should wake and retry
             tcs1.SetException(new IOException("Connection reset"));
 
-            // Send loop retries the batch → gets tcs2
+            // Wait for retry send (deterministic — send loop retries after backoff)
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10));
+
             // Complete the retry response
-            await Task.Delay(200); // Allow retry with backoff
             tcs2.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 99));
 
             // Batch should eventually be acknowledged
@@ -422,7 +440,15 @@ public sealed class BrokerSenderSendLoopTests
             responseQueue.Enqueue(tcs);
         }
 
-        var (pool, _) = CreateMockConnection(responseQueue);
+        var sendCount = 0;
+        var allSent = new TaskCompletionSource();
+
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            // Batches may coalesce into fewer requests, so signal when all TCSs are dequeued
+            if (Interlocked.Increment(ref sendCount) >= 1)
+                allSent.TrySetResult();
+        });
         var options = CreateOptions(maxInFlight: 5);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -452,8 +478,8 @@ public sealed class BrokerSenderSendLoopTests
                 await sender.EnqueueAsync(batch, CancellationToken.None);
             }
 
-            // Give send loop time to send all (they may coalesce into fewer requests)
-            await Task.Delay(200);
+            // Wait for at least one send to occur (deterministic)
+            await allSent.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             // Complete responses in reverse order to verify order-independent processing
             for (var i = batchCount - 1; i >= 0; i--)

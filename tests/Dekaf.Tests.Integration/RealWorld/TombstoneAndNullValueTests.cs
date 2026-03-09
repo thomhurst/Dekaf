@@ -189,6 +189,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Value).IsNull();
         await Assert.That(result.Value.Headers).IsNotNull();
+        // >= 2 because TUnit's ActivityListener may inject a traceparent header
         await Assert.That(result.Value.Headers!.Count).IsGreaterThanOrEqualTo(2);
 
         var reason = result.Value.Headers.First(h => h.Key == "reason");
