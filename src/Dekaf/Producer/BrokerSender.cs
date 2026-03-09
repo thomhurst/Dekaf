@@ -311,9 +311,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             batch.IsRetry = false;
             UnmutePartition(batch.TopicPartition);
         }
-        CompleteInflightEntry(batch);
-        batch.Fail(new ObjectDisposedException(nameof(BrokerSender)));
-        CleanupBatch(batch);
+        // Every operation wrapped to guarantee cleanup runs even if earlier steps throw.
+        try { CompleteInflightEntry(batch); }
+        catch { /* Must not prevent Fail or CleanupBatch */ }
+        try { batch.Fail(new ObjectDisposedException(nameof(BrokerSender))); }
+        catch { /* Must not prevent CleanupBatch */ }
+        try { CleanupBatch(batch); }
+        catch { /* Must not propagate */ }
     }
 
     /// <summary>
@@ -815,8 +819,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     if (pending.Batches[j] is not null)
                     {
-                        HandleRetriableBatch(pending.Batches[j], ErrorCode.NetworkException,
-                            pendingCarryOver, cancellationToken);
+                        try
+                        {
+                            HandleRetriableBatch(pending.Batches[j], ErrorCode.NetworkException,
+                                pendingCarryOver, cancellationToken);
+                        }
+                        catch
+                        {
+                            // Per-batch exception must not skip remaining batches.
+                            try { FailAndCleanupBatch(pending.Batches[j], ex); }
+                            catch { /* Already exception-safe, but belt-and-suspenders */ }
+                        }
                     }
                 }
 
@@ -841,91 +854,103 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            // Process each batch
+            // Process each batch — wrapped in try/catch so one batch's exception
+            // doesn't skip remaining batches (which would leak their completion sources).
             for (var j = 0; j < pending.Count; j++)
             {
                 var batch = pending.Batches[j];
-                var expectedTopic = batch.TopicPartition.Topic;
-                var expectedPartition = batch.TopicPartition.Partition;
-
-                ProduceResponsePartitionData? partitionResponse = null;
-                responseLookup?.TryGetValue((expectedTopic, expectedPartition), out partitionResponse);
-
-                if (partitionResponse is null)
+                try
                 {
-                    // No response — treat as retriable
-                    LogNoResponseForPartition(expectedTopic, expectedPartition);
-                    HandleRetriableBatch(batch, ErrorCode.NetworkException,
-                        pendingCarryOver, cancellationToken);
-                    pending.Batches[j] = null!;
-                    continue;
-                }
+                    var expectedTopic = batch.TopicPartition.Topic;
+                    var expectedPartition = batch.TopicPartition.Partition;
 
-                if (partitionResponse.ErrorCode == ErrorCode.DuplicateSequenceNumber)
-                {
-                    LogDuplicateSequenceNumber(expectedTopic, expectedPartition, partitionResponse.BaseOffset);
-                    // Treat as success — fall through
-                }
-                else if (partitionResponse.ErrorCode != ErrorCode.None)
-                {
-                    if (partitionResponse.ErrorCode.IsRetriable()
-                        || partitionResponse.ErrorCode == ErrorCode.OutOfOrderSequenceNumber
-                        || partitionResponse.ErrorCode == ErrorCode.InvalidProducerEpoch
-                        || partitionResponse.ErrorCode == ErrorCode.UnknownProducerId)
+                    ProduceResponsePartitionData? partitionResponse = null;
+                    responseLookup?.TryGetValue((expectedTopic, expectedPartition), out partitionResponse);
+
+                    if (partitionResponse is null)
                     {
-                        LogRetriableError(partitionResponse.ErrorCode, expectedTopic, expectedPartition,
-                            batch.RecordBatch.BaseSequence, batch.RecordBatch.Records.Count,
-                            batch.RecordBatch.ProducerEpoch, batch.RecordBatch.ProducerId);
-
-                        HandleRetriableBatch(batch, partitionResponse.ErrorCode,
+                        // No response — treat as retriable
+                        LogNoResponseForPartition(expectedTopic, expectedPartition);
+                        HandleRetriableBatch(batch, ErrorCode.NetworkException,
                             pendingCarryOver, cancellationToken);
                         pending.Batches[j] = null!;
                         continue;
                     }
 
-                    // Non-retriable error — unmute so subsequent batches can proceed
-                    UnmutePartition(batch.TopicPartition);
-                    CompleteInflightEntry(batch);
-                    _statisticsCollector.RecordBatchFailed(expectedTopic, expectedPartition,
-                        batch.CompletionSourcesCount);
-                    try
+                    if (partitionResponse.ErrorCode == ErrorCode.DuplicateSequenceNumber)
                     {
-                        batch.Fail(new KafkaException(partitionResponse.ErrorCode,
-                            $"Produce failed: {partitionResponse.ErrorCode}"));
+                        LogDuplicateSequenceNumber(expectedTopic, expectedPartition, partitionResponse.BaseOffset);
+                        // Treat as success — fall through
                     }
-                    catch { /* Observe */ }
+                    else if (partitionResponse.ErrorCode != ErrorCode.None)
+                    {
+                        if (partitionResponse.ErrorCode.IsRetriable()
+                            || partitionResponse.ErrorCode == ErrorCode.OutOfOrderSequenceNumber
+                            || partitionResponse.ErrorCode == ErrorCode.InvalidProducerEpoch
+                            || partitionResponse.ErrorCode == ErrorCode.UnknownProducerId)
+                        {
+                            LogRetriableError(partitionResponse.ErrorCode, expectedTopic, expectedPartition,
+                                batch.RecordBatch.BaseSequence, batch.RecordBatch.Records.Count,
+                                batch.RecordBatch.ProducerEpoch, batch.RecordBatch.ProducerId);
+
+                            HandleRetriableBatch(batch, partitionResponse.ErrorCode,
+                                pendingCarryOver, cancellationToken);
+                            pending.Batches[j] = null!;
+                            continue;
+                        }
+
+                        // Non-retriable error — unmute so subsequent batches can proceed
+                        UnmutePartition(batch.TopicPartition);
+                        CompleteInflightEntry(batch);
+                        _statisticsCollector.RecordBatchFailed(expectedTopic, expectedPartition,
+                            batch.CompletionSourcesCount);
+                        try
+                        {
+                            batch.Fail(new KafkaException(partitionResponse.ErrorCode,
+                                $"Produce failed: {partitionResponse.ErrorCode}"));
+                        }
+                        catch { /* Observe */ }
+                        try
+                        {
+                            _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
+                                batch.CompletionSourcesCount,
+                                new KafkaException(partitionResponse.ErrorCode,
+                                    $"Produce failed: {partitionResponse.ErrorCode}"));
+                        }
+                        catch { /* Observe - must not prevent cleanup */ }
+                        CleanupBatch(batch);
+                        pending.Batches[j] = null!;
+                        continue;
+                    }
+
+                    // Success — unmute so the next batch for this partition can be sent
+                    UnmutePartition(batch.TopicPartition);
+                    LogBatchCompleted(_brokerId, expectedTopic, expectedPartition, partitionResponse.BaseOffset);
+                    _statisticsCollector.RecordBatchDelivered(expectedTopic, expectedPartition,
+                        batch.CompletionSourcesCount);
+                    var timestamp = partitionResponse.LogAppendTimeMs > 0
+                        ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
+                        : DateTimeOffset.UtcNow;
+                    CompleteInflightEntry(batch);
+                    batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
                     try
                     {
-                        _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
-                            batch.CompletionSourcesCount,
-                            new KafkaException(partitionResponse.ErrorCode,
-                                $"Produce failed: {partitionResponse.ErrorCode}"));
+                        _onAcknowledgement?.Invoke(batch.TopicPartition,
+                            partitionResponse.BaseOffset, timestamp,
+                            batch.CompletionSourcesCount, null);
                     }
                     catch { /* Observe - must not prevent cleanup */ }
                     CleanupBatch(batch);
                     pending.Batches[j] = null!;
-                    continue;
                 }
-
-                // Success — unmute so the next batch for this partition can be sent
-                UnmutePartition(batch.TopicPartition);
-                LogBatchCompleted(_brokerId, expectedTopic, expectedPartition, partitionResponse.BaseOffset);
-                _statisticsCollector.RecordBatchDelivered(expectedTopic, expectedPartition,
-                    batch.CompletionSourcesCount);
-                var timestamp = partitionResponse.LogAppendTimeMs > 0
-                    ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
-                    : DateTimeOffset.UtcNow;
-                CompleteInflightEntry(batch);
-                batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
-                try
+                catch
                 {
-                    _onAcknowledgement?.Invoke(batch.TopicPartition,
-                        partitionResponse.BaseOffset, timestamp,
-                        batch.CompletionSourcesCount, null);
+                    // Per-batch exception must not skip remaining batches.
+                    try { FailAndCleanupBatch(batch, new InvalidOperationException(
+                        "Unexpected exception during response processing")); }
+                    catch { /* Already exception-safe, but belt-and-suspenders */ }
+                    pending.Batches[j] = null!;
                 }
-                catch { /* Observe - must not prevent cleanup */ }
-                CleanupBatch(batch);
-                pending.Batches[j] = null!;
             }
 
             ArrayPool<ReadyBatch>.Shared.Return(pending.Batches, clearArray: true);
@@ -979,7 +1004,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 (int)batch.RecordBatch.ProducerEpoch, -1);
 
             // Complete inflight entry — will be re-registered after epoch bump
-            CompleteInflightEntry(batch);
+            try { CompleteInflightEntry(batch); }
+            catch { /* Must not prevent retry reenqueue */ }
         }
         else if (isEpochBumpError && _bumpEpoch is null
             && batch.InflightEntry is not null
@@ -989,7 +1015,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             LogOosnTransactionalReenqueue(batch.TopicPartition.Topic, batch.TopicPartition.Partition,
                 batch.RecordBatch.BaseSequence);
 
-            CompleteInflightEntry(batch);
+            try { CompleteInflightEntry(batch); }
+            catch { /* Must not prevent retry reenqueue */ }
             batch.InflightEntry = null;
         }
         else
@@ -1211,35 +1238,44 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             for (var i = 0; i < count; i++)
             {
                 var batch = batches[i];
-
-                // Buffer memory stays reserved during retry — the batch still holds
-                // physical memory (arena buffer). Release happens in CleanupBatch when
-                // the batch finally completes (success or permanent failure).
-
-                // Check delivery deadline before retrying
-                var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
-                    (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
-
-                if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
+                try
                 {
-                    UnmutePartition(batch.TopicPartition);
-                    var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
-                    var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
-                    FailAndCleanupBatch(batch, new KafkaTimeoutException(
-                        TimeoutKind.Delivery,
-                        elapsed,
-                        configured,
-                        $"Delivery timeout exceeded for {batch.TopicPartition}"));
+                    // Buffer memory stays reserved during retry — the batch still holds
+                    // physical memory (arena buffer). Release happens in CleanupBatch when
+                    // the batch finally completes (success or permanent failure).
+
+                    // Check delivery deadline before retrying
+                    var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
+                        (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+
+                    if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
+                    {
+                        UnmutePartition(batch.TopicPartition);
+                        var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                        var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
+                        FailAndCleanupBatch(batch, new KafkaTimeoutException(
+                            TimeoutKind.Delivery,
+                            elapsed,
+                            configured,
+                            $"Delivery timeout exceeded for {batch.TopicPartition}"));
+                    }
+                    else
+                    {
+                        // Mute partition (ordering guarantee) and queue for retry.
+                        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
+                        batch.IsRetry = true;
+                        batch.RetryNotBefore = Stopwatch.GetTimestamp() +
+                            (long)(_options.RetryBackoffMs * (Stopwatch.Frequency / 1000.0));
+                        _sendFailedRetries.Add(batch);
+                        _statisticsCollector.RecordRetry();
+                    }
                 }
-                else
+                catch
                 {
-                    // Mute partition (ordering guarantee) and queue for retry.
-                    _mutedPartitions.TryAdd(batch.TopicPartition, 0);
-                    batch.IsRetry = true;
-                    batch.RetryNotBefore = Stopwatch.GetTimestamp() +
-                        (long)(_options.RetryBackoffMs * (Stopwatch.Frequency / 1000.0));
-                    _sendFailedRetries.Add(batch);
-                    _statisticsCollector.RecordRetry();
+                    // Per-batch exception must not skip remaining batches.
+                    // Fall back to permanent failure for this batch.
+                    try { FailAndCleanupBatch(batch, ex); }
+                    catch { /* Already exception-safe, but belt-and-suspenders */ }
                 }
             }
 
@@ -1435,17 +1471,25 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)
     {
-        CompleteInflightEntry(batch);
-        _statisticsCollector.RecordBatchFailed(
+        // Every operation is wrapped in try/catch to guarantee we reach CleanupBatch.
+        // If CompleteInflightEntry throws, batch.Fail must still run to resolve completion sources.
+        // If batch.Fail throws, CleanupBatch must still run to release memory and return the batch.
+        // A single unwrapped throw here causes the caller's loop to skip remaining batches,
+        // leaking their completion sources and causing producer hangs (deadlocks).
+        try { CompleteInflightEntry(batch); }
+        catch { /* Must not prevent Fail or CleanupBatch */ }
+        try { _statisticsCollector.RecordBatchFailed(
             batch.TopicPartition.Topic,
             batch.TopicPartition.Partition,
-            batch.CompletionSourcesCount);
+            batch.CompletionSourcesCount); }
+        catch { /* Must not prevent Fail or CleanupBatch */ }
         try { batch.Fail(ex); }
         catch { /* Observe */ }
         try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
             batch.CompletionSourcesCount, ex); }
         catch { /* Observe - must not prevent CleanupBatch */ }
-        CleanupBatch(batch);
+        try { CleanupBatch(batch); }
+        catch { /* Must not propagate - batch lifecycle ends here */ }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
