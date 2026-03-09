@@ -2685,7 +2685,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             foreach (var (orphanedBatch, _) in _inFlightBatches)
             {
                 try { orphanedBatch.Fail(disposedException); }
-                catch { /* Must not prevent sweep */ }
+                catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
                 try
                 {
                     if (!orphanedBatch.MemoryReleased)
@@ -2694,9 +2694,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         orphanedBatch.MemoryReleased = true;
                     }
                 }
-                catch { /* Must not prevent sweep */ }
+                catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
                 try { ReturnReadyBatch(orphanedBatch); }
-                catch { /* Must not prevent sweep */ }
+                catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
             }
             _inFlightBatches.Clear();
 
@@ -2747,6 +2747,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failing {RemainingBatchCount} batches during disposal")]
     private partial void LogDisposalFailingRemainingBatches(int remainingBatchCount);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Non-fatal exception during batch cleanup step (suppressed)")]
+    private partial void LogBatchCleanupStepFailed(Exception exception);
 
     #endregion
 }

@@ -296,7 +296,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var (sender, b) = ((BrokerSender, ReadyBatch))state!;
                 try { sender.FailEnqueuedBatch(b); }
-                catch { /* Observe - disposal may have already cleaned up */ }
+                catch (Exception ex) { sender.LogBatchCleanupStepFailed(ex, sender._brokerId); }
             },
             (this, batch),
             CancellationToken.None,
@@ -818,11 +818,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             HandleRetriableBatch(pending.Batches[j], ErrorCode.NetworkException,
                                 pendingCarryOver, cancellationToken);
                         }
-                        catch
+                        catch (Exception batchEx)
                         {
                             // Per-batch exception must not skip remaining batches.
                             try { FailAndCleanupBatch(pending.Batches[j], ex); }
-                            catch { /* Already exception-safe, but belt-and-suspenders */ }
+                            catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                            LogBatchCleanupStepFailed(batchEx, _brokerId);
                         }
                     }
                 }
@@ -896,7 +897,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // Non-retriable error — unmute so subsequent batches can proceed
                         UnmutePartition(batch.TopicPartition);
                         try { CompleteInflightEntry(batch); }
-                        catch { /* Must not prevent Fail or CleanupBatch */ }
+                        catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                         _statisticsCollector.RecordBatchFailed(expectedTopic, expectedPartition,
                             batch.CompletionSourcesCount);
                         try
@@ -904,7 +905,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             batch.Fail(new KafkaException(partitionResponse.ErrorCode,
                                 $"Produce failed: {partitionResponse.ErrorCode}"));
                         }
-                        catch { /* Observe */ }
+                        catch (Exception failEx) { LogBatchCleanupStepFailed(failEx, _brokerId); }
                         try
                         {
                             _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
@@ -912,7 +913,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 new KafkaException(partitionResponse.ErrorCode,
                                     $"Produce failed: {partitionResponse.ErrorCode}"));
                         }
-                        catch { /* Observe - must not prevent cleanup */ }
+                        catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
                         CleanupBatch(batch);
                         pending.Batches[j] = null!;
                         continue;
@@ -927,7 +928,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
                         : DateTimeOffset.UtcNow;
                     try { CompleteInflightEntry(batch); }
-                    catch { /* Must not prevent CompleteSend or CleanupBatch */ }
+                    catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                     batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
                     try
                     {
@@ -935,7 +936,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             partitionResponse.BaseOffset, timestamp,
                             batch.CompletionSourcesCount, null);
                     }
-                    catch { /* Observe - must not prevent cleanup */ }
+                    catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
                     CleanupBatch(batch);
                     pending.Batches[j] = null!;
                 }
@@ -944,7 +945,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // Per-batch exception must not skip remaining batches.
                     try { FailAndCleanupBatch(batch, new InvalidOperationException(
                         "Unexpected exception during response processing", batchEx)); }
-                    catch { /* Already exception-safe, but belt-and-suspenders */ }
+                    catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                     pending.Batches[j] = null!;
                 }
             }
@@ -1001,7 +1002,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Complete inflight entry — will be re-registered after epoch bump
             try { CompleteInflightEntry(batch); }
-            catch { /* Must not prevent retry reenqueue */ }
+            catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
         }
         else if (isEpochBumpError && _bumpEpoch is null
             && batch.InflightEntry is not null
@@ -1012,7 +1013,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 batch.RecordBatch.BaseSequence);
 
             try { CompleteInflightEntry(batch); }
-            catch { /* Must not prevent retry reenqueue */ }
+            catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
             batch.InflightEntry = null;
         }
         else
@@ -1150,7 +1151,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     CompleteInflightEntry(batch);
                     batch.CompleteSend(-1, fireAndForgetTimestamp);
                     try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, fireAndForgetTimestamp, batch.CompletionSourcesCount, null); }
-                    catch { /* Observe - must not prevent cleanup */ }
+                    catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
                 }
 
                 // Release everything synchronously (no pipelined response)
@@ -1266,12 +1267,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         _statisticsCollector.RecordRetry();
                     }
                 }
-                catch
+                catch (Exception batchEx)
                 {
                     // Per-batch exception must not skip remaining batches.
                     // Fall back to permanent failure for this batch.
+                    LogBatchCleanupStepFailed(batchEx, _brokerId);
                     try { FailAndCleanupBatch(batch, ex); }
-                    catch { /* Already exception-safe, but belt-and-suspenders */ }
+                    catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                 }
             }
 
@@ -1473,19 +1475,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // A single unwrapped throw here causes the caller's loop to skip remaining batches,
         // leaking their completion sources and causing producer hangs (deadlocks).
         try { CompleteInflightEntry(batch); }
-        catch { /* Must not prevent Fail or CleanupBatch */ }
+        catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
         try { _statisticsCollector.RecordBatchFailed(
             batch.TopicPartition.Topic,
             batch.TopicPartition.Partition,
             batch.CompletionSourcesCount); }
-        catch { /* Must not prevent Fail or CleanupBatch */ }
+        catch (Exception statsEx) { LogBatchCleanupStepFailed(statsEx, _brokerId); }
         try { batch.Fail(ex); }
-        catch { /* Observe */ }
+        catch (Exception failEx) { LogBatchCleanupStepFailed(failEx, _brokerId); }
         try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
             batch.CompletionSourcesCount, ex); }
-        catch { /* Observe - must not prevent CleanupBatch */ }
+        catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
         try { CleanupBatch(batch); }
-        catch { /* Must not propagate - batch lifecycle ends here */ }
+        catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1504,7 +1506,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // have already removed the OLD entry to avoid removing the NEW one.
         _accumulator.OnBatchExitsPipeline(batch);
         try { _accumulator.ReturnReadyBatch(batch); }
-        catch { /* Must not propagate — batch lifecycle ends here */ }
+        catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx, _brokerId); }
     }
 
     public async ValueTask DisposeAsync()
@@ -1531,9 +1533,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             await _sendLoopTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex)
         {
-            // Best effort — send loop didn't exit in time
+            LogBatchCleanupStepFailed(ex, _brokerId);
         }
 
         // Fail any remaining pending responses that the send loop didn't process
@@ -1547,7 +1549,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 await Task.WhenAll(responseTasks).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
-            catch { /* Best effort */ }
+            catch (Exception ex) { LogBatchCleanupStepFailed(ex, _brokerId); }
 
             foreach (var pr in _pendingResponses)
             {
@@ -1630,6 +1632,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] failing {RemainingCount} pending responses during disposal")]
     private partial void LogFailingPendingResponses(int brokerId, int remainingCount);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] non-fatal exception during batch cleanup step (suppressed)")]
+    private partial void LogBatchCleanupStepFailed(Exception exception, int brokerId);
 
     #endregion
 }

@@ -1410,7 +1410,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         catch (Exception ex)
         {
             // Deliver exception to callback - don't throw for fire-and-forget style
-            try { deliveryHandler(default, ex); } catch { /* Swallow callback exceptions */ }
+            try { deliveryHandler(default, ex); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
         }
         return true;
     }
@@ -2566,9 +2566,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)
     {
         try { CompleteInflightEntry(batch); }
-        catch { /* Must not prevent Fail or cleanup */ }
+        catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx); }
         try { batch.Fail(ex); }
-        catch { /* Observe */ }
+        catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
         try
         {
             if (!batch.MemoryReleased)
@@ -2577,14 +2577,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 batch.MemoryReleased = true;
             }
         }
-        catch { /* Must not prevent ReturnReadyBatch */ }
+        catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
         // Remove from tracking BEFORE returning to pool. If ReturnReadyBatch resets
         // the batch and another thread immediately rents it, OnBatchExitsPipeline must
         // have already removed the OLD entry to avoid removing the NEW one.
         try { _accumulator.OnBatchExitsPipeline(batch); }
-        catch { /* Must not prevent ReturnReadyBatch */ }
+        catch (Exception exitEx) { LogBatchCleanupStepFailed(exitEx); }
         try { _accumulator.ReturnReadyBatch(batch); }
-        catch { /* Must not propagate — batch lifecycle ends here */ }
+        catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
     }
 
     /// <summary>
@@ -3298,6 +3298,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Disposing {Count} broker senders")]
     private partial void LogDisposingBrokerSenders(int count);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Non-fatal exception during batch cleanup step (suppressed)")]
+    private partial void LogBatchCleanupStepFailed(Exception exception);
 
     #endregion
 }
