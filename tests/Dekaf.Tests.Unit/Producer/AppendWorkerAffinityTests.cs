@@ -63,9 +63,10 @@ public class AppendWorkerAffinityTests
         var tp = new TopicPartition("test-topic", 0);
 
         // Poll until workers have processed and created the batch
+        // Use generous timeout for CI runners where thread pool starvation can delay worker startup
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (!batches.ContainsKey(tp) && sw.ElapsedMilliseconds < 5000)
-            await Task.Delay(10);
+        while (!batches.ContainsKey(tp) && sw.ElapsedMilliseconds < 30_000)
+            await Task.Delay(50);
 
         await Assert.That(batches.ContainsKey(tp)).IsTrue();
 
@@ -110,9 +111,10 @@ public class AppendWorkerAffinityTests
         var batches = GetBatches(accumulator);
 
         // Poll until workers have processed all partitions
+        // Use generous timeout for CI runners where thread pool starvation can delay worker startup
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (batches.Count < partitionCount && sw.ElapsedMilliseconds < 5000)
-            await Task.Delay(10);
+        while (batches.Count < partitionCount && sw.ElapsedMilliseconds < 30_000)
+            await Task.Delay(50);
 
         for (var p = 0; p < partitionCount; p++)
         {
