@@ -592,9 +592,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     if (_pendingResponses.Count > 0)
                     {
-                        // If any response is already completed, go back to the top of the loop
-                        // immediately so ProcessCompletedResponses can handle it. Without this,
-                        // we'd wait on channelWait + inFlightSignal which may never fire.
+                        // Register signal FIRST, then double-check. This prevents a race where
+                        // a response completes between the anyCompleted scan and the signal
+                        // registration — the ContinueWith callback would signal the OLD
+                        // _responseReadySignal, and the new signal would never fire.
+                        // (Same pattern as the top-of-loop "Responses pending" wait.)
+                        var responseSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                        Volatile.Write(ref _responseReadySignal, responseSignal);
+
+                        // Double-check after signal registration: if any response completed
+                        // between entering this branch and writing the signal, go back to the
+                        // top of the loop so ProcessCompletedResponses can handle it.
                         var anyCompleted = false;
                         for (var i = 0; i < _pendingResponses.Count; i++)
                         {
@@ -611,8 +619,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             continue;
                         }
 
-                        var responseSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                        Volatile.Write(ref _responseReadySignal, responseSignal);
                         reusableWaitTasks.Add(responseSignal.Task);
                     }
 
