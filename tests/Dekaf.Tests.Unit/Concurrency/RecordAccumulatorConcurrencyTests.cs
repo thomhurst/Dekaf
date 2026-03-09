@@ -147,10 +147,8 @@ public class RecordAccumulatorConcurrencyTests
 
         try
         {
-            var barrier = new Barrier(taskCount);
             var tasks = Enumerable.Range(0, taskCount).Select(taskIndex => Task.Run(() =>
             {
-                barrier.SignalAndWait();
                 for (var i = 0; i < messagesPerTask; i++)
                 {
                     var completion = pool.Rent();
@@ -200,10 +198,8 @@ public class RecordAccumulatorConcurrencyTests
             var totalReserved = 0L;
             var totalReleased = 0L;
 
-            var barrier = new Barrier(taskCount);
             var tasks = Enumerable.Range(0, taskCount).Select(taskIndex => Task.Run(() =>
             {
-                barrier.SignalAndWait();
                 for (var i = 0; i < opsPerTask; i++)
                 {
                     if (accumulator.TryReserveMemory(recordSize))

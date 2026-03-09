@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Threading.Tasks.Sources;
 using Dekaf.Networking;
 
@@ -141,11 +142,8 @@ public class PooledPendingRequestTests
 
         request.Initialize(responseHeaderVersion: 0, cts.Token);
 
-        // Cancel before completion
+        // Cancel before completion — callback fires synchronously
         cts.Cancel();
-
-        // Small delay to allow cancellation registration to fire
-        await Task.Delay(10).ConfigureAwait(false);
 
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
         {
@@ -373,11 +371,8 @@ public class PooledPendingRequestTests
         var cts = new CancellationTokenSource();
         request.RegisterCancellation(cts.Token);
 
-        // Cancel via registered token
+        // Cancel via registered token — callback fires synchronously
         cts.Cancel();
-
-        // Small delay to allow cancellation registration to fire
-        await Task.Delay(10).ConfigureAwait(false);
 
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
         {
@@ -407,9 +402,9 @@ public class PooledPendingRequestTests
             await request.AsValueTask().ConfigureAwait(false);
         });
 
-        // Wait for the task to actually start awaiting
+        // Wait for the task to actually start, then yield to let it reach the await point
         await awaiterStarted.Task.ConfigureAwait(false);
-        await Task.Delay(50).ConfigureAwait(false); // Extra delay to ensure continuation is registered
+        await Task.Yield();
 
         // Cancel while awaiting - this should wake up the task
         cts.Cancel();
@@ -499,8 +494,8 @@ public class PooledPendingRequestTests
             continuationRan.SetResult(true);
         });
 
-        // Small delay to ensure task is awaiting
-        await Task.Delay(50).ConfigureAwait(false);
+        // Yield to let the task reach its await point
+        await Task.Yield();
 
         // Complete the request
         var testData = new byte[] { 0, 0, 0, 1, 10 };
@@ -622,6 +617,93 @@ public class PooledPendingRequestTests
         await Assert.That(result.Data.Span[0]).IsEqualTo((byte)20);
 
         pool.Return(request2);
+    }
+
+    [Test]
+    [Category("Unit")]
+    public async Task FailAllPattern_RequestReturnedToPool_WhenAwaiterFinallyCleans()
+    {
+        // Regression test: FailAllPendingRequests must NOT remove from dictionary,
+        // so the awaiter's finally block can find the request and return it to pool.
+        var (pool, request, pendingRequests, awaiterTask) = await SetupFailAllScenarioAsync();
+
+        // Simulate fixed FailAllPendingRequests — don't remove from dictionary
+        foreach (var kvp in pendingRequests)
+        {
+            kvp.Value.TrySetException(new InvalidOperationException("Connection failed"));
+        }
+
+        await awaiterTask;
+
+        // The request should have been returned to pool by the awaiter's finally
+        var reused = pool.Rent();
+        await Assert.That(reused).IsSameReferenceAs(request);
+        pool.Return(reused);
+    }
+
+    [Test]
+    [Category("Unit")]
+    public async Task FailAllPattern_OldBehavior_WouldLeakRequest()
+    {
+        // Demonstrates the leak: removing from dictionary before setting exception
+        // prevents the awaiter's finally from returning the request to pool.
+        var (pool, request, pendingRequests, awaiterTask) = await SetupFailAllScenarioAsync();
+
+        // OLD (buggy) behavior: remove THEN set exception
+        pendingRequests.TryRemove(42, out _);
+        request.TrySetException(new InvalidOperationException("Connection failed"));
+
+        await awaiterTask;
+
+        // Request was NOT returned to pool, so Rent gives a new instance
+        var newRequest = pool.Rent();
+        await Assert.That(newRequest).IsNotSameReferenceAs(request);
+        pool.Return(newRequest);
+    }
+
+    /// <summary>
+    /// Sets up a pending request with an active awaiter that mirrors
+    /// the AwaitAndParseResponseAsync finally-block cleanup pattern.
+    /// </summary>
+    private static async Task<(PendingRequestPool Pool, PooledPendingRequest Request,
+        ConcurrentDictionary<int, PooledPendingRequest> Dict, Task AwaiterTask)>
+        SetupFailAllScenarioAsync()
+    {
+        var pool = new PendingRequestPool();
+        var pendingRequests = new ConcurrentDictionary<int, PooledPendingRequest>();
+
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+        pendingRequests[42] = request;
+
+        var awaiterStarted = new TaskCompletionSource<bool>();
+        var awaiterTask = Task.Run(async () =>
+        {
+            awaiterStarted.SetResult(true);
+            try
+            {
+                await request.AsValueTask().ConfigureAwait(false);
+            }
+            catch (InvalidOperationException)
+            {
+                // Expected — connection error
+            }
+            finally
+            {
+                if (pendingRequests.TryRemove(42, out var removed))
+                {
+                    pool.Return(removed);
+                }
+            }
+        });
+
+        await awaiterStarted.Task;
+        // Yield to let the Task.Run lambda reach its await point.
+        // The test is correct regardless — if the exception is set before the
+        // continuation registers, the await completes synchronously with the error.
+        await Task.Yield();
+
+        return (pool, request, pendingRequests, awaiterTask);
     }
 
     [Test]

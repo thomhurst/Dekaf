@@ -286,18 +286,33 @@ public sealed partial class KafkaConnection : IKafkaConnection
         pending.Initialize(responseHeaderVersion, cancellationToken);
         _pendingRequests[correlationId] = pending;
 
-        // Write phase
-        LogSendingRequest(TRequest.ApiKey, correlationId, apiVersion, _host, _port);
-
-        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await WriteRequestAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken)
-                .ConfigureAwait(false);
+            // Write phase
+            LogSendingRequest(TRequest.ApiKey, correlationId, apiVersion, _host, _port);
+
+            await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await WriteRequestAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
+
+            LogRequestSentWaitingForResponse(correlationId);
+
+            // Response phase: await response with timeout and parse
+            return await AwaitAndParseResponseAsync<TRequest, TResponse>(
+                pending, correlationId, apiVersion, cancellationToken).ConfigureAwait(false);
         }
         catch
         {
-            // Write failed — clean up pending request before propagating
+            // Clean up pending request on any failure (write lock cancelled, write failed,
+            // or response error). AwaitAndParseResponseAsync has its own finally that also
+            // tries TryRemove — the second attempt harmlessly returns false.
             if (_pendingRequests.TryRemove(correlationId, out var removed))
             {
                 _pendingRequestPool.Return(removed);
@@ -305,16 +320,6 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
             throw;
         }
-        finally
-        {
-            _writeLock.Release();
-        }
-
-        LogRequestSentWaitingForResponse(correlationId);
-
-        // Response phase: await response with timeout and parse
-        return await AwaitAndParseResponseAsync<TRequest, TResponse>(
-            pending, correlationId, apiVersion, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
@@ -808,18 +813,16 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
     private void FailAllPendingRequests(Exception ex)
     {
+        // Do NOT remove from _pendingRequests here. The awaiter's finally block in
+        // AwaitAndParseResponseAsync (or the catch in SendAsync/SendPipelinedAsync)
+        // will TryRemove and return the request to the pool.
+        //
+        // If we remove here, the awaiter can't find the request in the dictionary,
+        // so it never returns it to the pool — causing a pool leak that forces
+        // constant allocation of new PooledPendingRequest objects.
         foreach (var kvp in _pendingRequests)
         {
-            if (_pendingRequests.TryRemove(kvp.Key, out var pending))
-            {
-                pending.TrySetException(ex);
-                // NOTE: Do NOT return to pool here. When using ConfigureAwait(false),
-                // the continuation might run asynchronously on the thread pool.
-                // If we call Return() (which calls Reset()), the version will be
-                // incremented before GetResult() is called, causing a version mismatch.
-                // The awaiter in SendAsync will eventually call GetResult(), then the
-                // outer finally block will return the request to the pool.
-            }
+            kvp.Value.TrySetException(ex);
         }
     }
 
@@ -1540,6 +1543,17 @@ public sealed partial class KafkaConnection : IKafkaConnection
         _loadedClientCertificate?.Dispose();
 
         FailAllPendingRequests(new ObjectDisposedException(nameof(KafkaConnection)));
+
+        // Sweep any remaining entries that had no awaiter (edge case: request registered
+        // but cancelled before AwaitAndParseResponseAsync was entered). These won't be
+        // cleaned up by a continuation since none was registered.
+        foreach (var kvp in _pendingRequests)
+        {
+            if (_pendingRequests.TryRemove(kvp.Key, out var orphaned))
+            {
+                _pendingRequestPool.Return(orphaned);
+            }
+        }
     }
 
     #region Logging

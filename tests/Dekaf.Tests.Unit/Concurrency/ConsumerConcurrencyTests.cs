@@ -29,10 +29,8 @@ public class ConsumerConcurrencyTests
             .Select(p => new TopicPartition("test-topic", p))
             .ToArray();
 
-        var barrier = new Barrier(threadCount);
         var tasks = Enumerable.Range(0, threadCount).Select(threadIndex => Task.Run(() =>
         {
-            barrier.SignalAndWait();
             var tp = partitions[threadIndex % partitions.Length];
             for (var i = 0; i < updatesPerThread; i++)
             {
@@ -68,12 +66,9 @@ public class ConsumerConcurrencyTests
 
         for (var i = 0; i < iterations; i++)
         {
-            var barrier = new Barrier(2);
-
             // One thread adds partitions
             var addTask = Task.Run(() =>
             {
-                barrier.SignalAndWait();
                 lock (lockObj)
                 {
                     foreach (var tp in partitions)
@@ -84,7 +79,6 @@ public class ConsumerConcurrencyTests
             // Another thread removes them
             var removeTask = Task.Run(() =>
             {
-                barrier.SignalAndWait();
                 lock (lockObj)
                 {
                     foreach (var tp in partitions)
@@ -133,15 +127,22 @@ public class ConsumerConcurrencyTests
             }
         }).ToArray();
 
-        // Wait for all writers to finish, then complete the channel
+        // Single reader runs concurrently with writers — must start before
+        // awaiting writers, otherwise the bounded channel fills up and writers
+        // block forever (deadlock).
+        var readerTask = Task.Run(async () =>
+        {
+            await foreach (var _ in channel.Reader.ReadAllAsync())
+            {
+                Interlocked.Increment(ref readCount);
+            }
+        });
+
+        // Wait for all writers to finish, then signal completion so reader exits
         await Task.WhenAll(writerTasks);
         channel.Writer.Complete();
 
-        // Single reader drains all remaining items using ReadAllAsync
-        await foreach (var _ in channel.Reader.ReadAllAsync())
-        {
-            Interlocked.Increment(ref readCount);
-        }
+        await readerTask;
 
         // Assert against the actual writtenCount for a stronger guarantee
         await Assert.That(readCount).IsEqualTo(Volatile.Read(ref writtenCount));
@@ -169,10 +170,8 @@ public class ConsumerConcurrencyTests
             [CoordinatorState.Stable] = [CoordinatorState.Unjoined]
         };
 
-        var barrier = new Barrier(threadCount);
         var tasks = Enumerable.Range(0, threadCount).Select(t => Task.Run(async () =>
         {
-            barrier.SignalAndWait();
             for (var i = 0; i < transitionsPerThread; i++)
             {
                 await stateGuard.WaitAsync();
@@ -221,10 +220,8 @@ public class ConsumerConcurrencyTests
             .Select(p => new TopicPartition("test-topic", p))
             .ToArray();
 
-        var barrier = new Barrier(threadCount);
         var tasks = Enumerable.Range(0, threadCount).Select(threadIndex => Task.Run(async () =>
         {
-            barrier.SignalAndWait();
             var tp = partitions[threadIndex];
             for (var i = 0; i < commitsPerThread; i++)
             {
@@ -268,10 +265,8 @@ public class ConsumerConcurrencyTests
             .Select(p => new TopicPartition("test-topic", p))
             .ToArray();
 
-        var barrier = new Barrier(threadCount);
         var tasks = Enumerable.Range(0, threadCount).Select(threadIndex => Task.Run(() =>
         {
-            barrier.SignalAndWait();
             for (var i = 0; i < seeksPerThread; i++)
             {
                 var tp = partitions[threadIndex % partitions.Length];

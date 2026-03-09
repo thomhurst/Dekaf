@@ -27,12 +27,12 @@ public class ProducerConcurrencyTests
             for (var iter = 0; iter < iterations; iter++)
             {
                 var sources = new PooledValueTaskSource<int>[batchSize];
-                var barrier = new Barrier(batchSize);
 
-                // All threads rent concurrently
+                // All threads rent concurrently — no Barrier needed since [Repeat(25)]
+                // runs 25 instances in parallel, providing sufficient contention without
+                // risking thread pool starvation from 25 × 16 = 400 blocking threads.
                 var rentTasks = Enumerable.Range(0, batchSize).Select(i => Task.Run(() =>
                 {
-                    barrier.SignalAndWait();
                     sources[i] = pool.Rent();
                 })).ToArray();
 
@@ -68,11 +68,9 @@ public class ProducerConcurrencyTests
         try
         {
             var sources = new PooledValueTaskSource<int>[threadCount];
-            var barrier = new Barrier(threadCount);
 
             var tasks = Enumerable.Range(0, threadCount).Select(i => Task.Run(() =>
             {
-                barrier.SignalAndWait();
                 sources[i] = pool.Rent();
             })).ToArray();
 
@@ -130,11 +128,9 @@ public class ProducerConcurrencyTests
         const int batchesPerPartition = 50;
         var tracker = new PartitionInflightTracker();
 
-        var barrier = new Barrier(partitionCount);
         var tasks = Enumerable.Range(0, partitionCount).Select(p => Task.Run(() =>
         {
             var tp = new TopicPartition("test-topic", p);
-            barrier.SignalAndWait();
 
             for (var i = 0; i < batchesPerPartition; i++)
             {
@@ -180,11 +176,8 @@ public class ProducerConcurrencyTests
 
         try
         {
-            using var startGate = new ManualResetEventSlim(false);
-
             var enqueueTasks = Enumerable.Range(0, taskCount).Select(taskIndex => Task.Run(() =>
             {
-                startGate.Wait();
                 for (var i = 0; i < messagesPerTask; i++)
                 {
                     try
@@ -210,8 +203,6 @@ public class ProducerConcurrencyTests
                 }
             })).ToArray();
 
-            // Release all tasks then dispose shortly after
-            startGate.Set();
             await Task.Delay(2);
             workerCts.Cancel();
             await accumulator.DisposeAsync();
@@ -244,15 +235,12 @@ public class ProducerConcurrencyTests
             var result0 = 0;
             var result1 = 0;
 
-            var barrier = new Barrier(2);
             var t1 = Task.Run(() =>
             {
-                barrier.SignalAndWait();
                 Volatile.Write(ref result0, source.TrySetResult(1) ? 1 : 0);
             });
             var t2 = Task.Run(() =>
             {
-                barrier.SignalAndWait();
                 Volatile.Write(ref result1, source.TrySetResult(2) ? 1 : 0);
             });
 

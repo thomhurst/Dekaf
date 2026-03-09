@@ -129,10 +129,8 @@ public class AdminConcurrencyTests
         const int updatesPerWriter = 50;
         var allClusterIds = new ConcurrentBag<string>();
 
-        var barrier = new Barrier(writerCount);
         var tasks = Enumerable.Range(0, writerCount).Select(w => Task.Run(() =>
         {
-            barrier.SignalAndWait();
             for (var i = 0; i < updatesPerWriter; i++)
             {
                 var clusterId = $"cluster-{w}-{i}";
@@ -162,18 +160,14 @@ public class AdminConcurrencyTests
 
         for (var i = 0; i < iterations; i++)
         {
-            var barrier = new Barrier(2);
-
             var updateTask = Task.Run(() =>
             {
-                barrier.SignalAndWait();
                 var response = CreateMetadataResponse($"cluster-{i}", topicCount: 5, partitionCount: 3);
                 metadata.Update(response);
             });
 
             var readTask = Task.Run(() =>
             {
-                barrier.SignalAndWait();
                 var topic = metadata.GetTopic("topic-0");
                 if (topic is not null)
                 {
@@ -210,10 +204,8 @@ public class AdminConcurrencyTests
         const int readsPerThread = 500;
         var errors = new ConcurrentBag<string>();
 
-        var barrier = new Barrier(readerCount);
         var tasks = Enumerable.Range(0, readerCount).Select(r => Task.Run(() =>
         {
-            barrier.SignalAndWait();
             for (var i = 0; i < readsPerThread; i++)
             {
                 var brokerId = i % 3;
@@ -251,10 +243,8 @@ public class AdminConcurrencyTests
             const int threadCount = 8;
             const int brokersPerThread = 50;
 
-            var barrier = new Barrier(threadCount);
             var tasks = Enumerable.Range(0, threadCount).Select(t => Task.Run(() =>
             {
-                barrier.SignalAndWait();
                 for (var i = 0; i < brokersPerThread; i++)
                 {
                     var brokerId = t * brokersPerThread + i;
