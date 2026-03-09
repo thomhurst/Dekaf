@@ -29,9 +29,9 @@ namespace Dekaf.Producer;
 /// response handlers signal a flag, and the single-threaded send loop bumps the epoch
 /// before the next send. This eliminates all races between concurrent handlers.
 ///
-/// In-flight request limiting uses a non-blocking counter (aligned with Java Kafka's
-/// InFlightRequests.canSendMore()): the send loop checks capacity before sending
-/// and waits for a TaskCompletionSource signal when at max. No SemaphoreSlim.
+/// In-flight request limiting uses <see cref="_pendingResponses"/> count (exclusively owned
+/// by the send loop) as the in-flight measure. When at max capacity, the send loop awaits
+/// response tasks directly via <c>Task.WhenAny</c> — no cross-thread signaling needed.
 ///
 /// All writes go through the send loop — there are no out-of-loop write paths.
 /// </summary>
@@ -45,30 +45,22 @@ namespace Dekaf.Producer;
 /// because they are only ever touched by the send loop thread.
 /// </para>
 /// <para>
-/// External threads (producer callers, thread pool continuations) interact with BrokerSender
-/// only through the bounded <see cref="_batchChannel"/> (lock-free channel) and through
-/// <c>Volatile</c>/<c>Interlocked</c> operations on shared signal fields. Specifically:
+/// Response completion is detected by awaiting pending response tasks directly via
+/// <c>Task.WhenAny</c>, keeping the send loop fully single-threaded with no cross-thread
+/// mutations. In-flight capacity is measured by <c>_pendingResponses.Count</c>.
+/// </para>
+/// <para>
+/// External threads (producer callers) interact with BrokerSender only through the bounded
+/// <see cref="_batchChannel"/> (lock-free channel) and through <c>Volatile</c>/<c>Interlocked</c>
+/// operations on shared signal fields. Specifically:
 /// </para>
 /// <list type="bullet">
 ///   <item><description>
-///     <see cref="_inFlightCount"/>: Incremented by the send loop (single writer), decremented
-///     by <c>ContinueWith</c> callbacks on response tasks via <c>Interlocked.Decrement</c>.
-///   </description></item>
-///   <item><description>
-///     <see cref="_inFlightSlotAvailable"/> and <see cref="_unmuteSignal"/>: Written by the
-///     send loop via <c>Volatile.Write</c>, consumed by continuations via
+///     <see cref="_unmuteSignal"/>: Written by the send loop via <c>Volatile.Write</c>,
+///     consumed by <see cref="UnmutePartition"/> via
 ///     <c>Interlocked.Exchange(ref field, null)?.TrySetResult()</c>. The exchange-then-signal
 ///     pattern atomically takes ownership and fires the signal, ensuring at-most-once
-///     signaling without locks. <see cref="_unmuteSignal"/> is triggered from
-///     <see cref="UnmutePartition"/> which may be called from the send loop or from
-///     response continuations.
-///   </description></item>
-///   <item><description>
-///     <see cref="_responseReadySignal"/>: Written by the send loop via <c>Volatile.Write</c>,
-///     signaled by continuations via <c>Volatile.Read(ref field)?.TrySetResult()</c> (no
-///     exchange). Unlike <c>_inFlightSlotAvailable</c>, the signal is not nulled out on
-///     completion because the send loop replaces it with a fresh <c>TaskCompletionSource</c>
-///     at the top of each iteration — the old instance becomes unreachable regardless.
+///     signaling without locks.
 ///   </description></item>
 /// </list>
 /// <para><b>Epoch bump synchronization:</b></para>
@@ -124,21 +116,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         long RequestStartTime);
 
     private readonly List<PendingResponse> _pendingResponses = new();
-    private TaskCompletionSource? _responseReadySignal;
 
     // Batches that failed during SendCoalescedAsync (connection error, etc.) and need retry.
     // Set by the catch block, consumed by the send loop at the top of each iteration.
     // Single-threaded: only accessed by the send loop.
     private readonly List<ReadyBatch> _sendFailedRetries = new();
 
-    // Non-blocking in-flight request limiter (replaces SemaphoreSlim).
-    // Aligned with Java Kafka's InFlightRequests.canSendMore(): the send loop checks
-    // capacity before sending, and waits for a signal when at max. No blocking primitives.
-    // _inFlightCount is only incremented by the single-threaded send loop;
-    // decremented by the ContinueWith callback on the response task via Interlocked.
+    // Non-blocking in-flight request limiter. The send loop uses _pendingResponses.Count
+    // (which it exclusively owns) as the in-flight measure. No cross-thread signaling needed.
     private readonly int _maxInFlight;
-    private int _inFlightCount;
-    private TaskCompletionSource? _inFlightSlotAvailable;
 
     // Per-producer shared API version (read via volatile, written via Interlocked)
     private readonly Func<int> _getProduceApiVersion;
@@ -378,6 +364,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var carryOverB = new List<ReadyBatch>();
         var pendingCarryOver = carryOverA;
         var reusableWaitTasks = new List<Task>(4);
+        var reusableResponseTasks = new List<Task>(_maxInFlight);
 
         // Hoisted to method scope so the finally block can fail any batches that were
         // coalesced but not yet passed to SendCoalescedAsync when the loop exits.
@@ -418,11 +405,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                     else
                     {
-                        // Responses pending — wait for channel OR response completion
-                        var responseSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                        Volatile.Write(ref _responseReadySignal, responseSignal);
+                        // Responses pending — wait for channel OR any response completion.
+                        // No cross-thread signaling needed: we directly await response tasks.
 
-                        // Double-check after signal registration to avoid missed wake-up
+                        // Fast path: if any response already completed, skip WhenAny allocation.
                         var anyCompleted = false;
                         for (var i = 0; i < _pendingResponses.Count; i++)
                         {
@@ -440,17 +426,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             var channelWaitVt = channelReader.WaitToReadAsync(cancellationToken);
                             if (!channelWaitVt.IsCompleted)
                             {
-                                await Task.WhenAny(channelWaitVt.AsTask(), responseSignal.Task).ConfigureAwait(false);
+                                var anyResponseTask = WaitForAnyPendingResponseAsync(reusableResponseTasks);
+                                await Task.WhenAny(channelWaitVt.AsTask(), anyResponseTask).ConfigureAwait(false);
                             }
                         }
                     }
                 }
 
-                // Register signals BEFORE coalescing checks. This prevents a race where
+                // Register unmute signal BEFORE coalescing checks. This prevents a race where
                 // a signal fires between our state checks and the wait, which would miss
                 // the notification. In the fast path, signals are harmlessly orphaned.
-                var inFlightSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                Volatile.Write(ref _inFlightSlotAvailable, inFlightSignal);
                 var unmuteSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 Volatile.Write(ref _unmuteSignal, unmuteSignal);
 
@@ -541,21 +526,27 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (coalescedCount > 0)
                 {
                     // Wait in place for in-flight capacity if needed.
-                    // Double-check pattern: register signal, re-check condition, then wait.
-                    var currentInFlight = Volatile.Read(ref _inFlightCount);
-                    if (currentInFlight >= _maxInFlight)
-                        LogWaitingForInFlightCapacity(_brokerId, currentInFlight, _maxInFlight);
-
-                    while (Volatile.Read(ref _inFlightCount) >= _maxInFlight)
+                    // _pendingResponses is exclusively owned by this single-threaded send loop,
+                    // so .Count is always accurate — no cross-thread signaling needed.
+                    if (_pendingResponses.Count >= _maxInFlight)
                     {
-                        var waitSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                        Volatile.Write(ref _inFlightSlotAvailable, waitSignal);
+                        LogWaitingForInFlightCapacity(_brokerId, _pendingResponses.Count, _maxInFlight);
 
-                        if (Volatile.Read(ref _inFlightCount) >= _maxInFlight)
-                            await waitSignal.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                        while (_pendingResponses.Count >= _maxInFlight)
+                        {
+                            // Free slots by processing any completed responses first
+                            ProcessCompletedResponses(pendingCarryOver, cancellationToken);
+
+                            if (_pendingResponses.Count >= _maxInFlight)
+                            {
+                                // Still at capacity — await any response completion
+                                await WaitForAnyPendingResponseAsync(reusableResponseTasks)
+                                    .WaitAsync(cancellationToken).ConfigureAwait(false);
+                                ProcessCompletedResponses(pendingCarryOver, cancellationToken);
+                            }
+                        }
                     }
 
-                    Interlocked.Increment(ref _inFlightCount);
                     LogSendingCoalesced(_brokerId, coalescedCount);
                     // SendCoalescedAsync takes ownership of coalescedBatches (adds to _pendingResponses).
                     // Null out so the finally block doesn't double-fail them.
@@ -575,7 +566,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // All batches are for muted partitions or in backoff. Wait for either:
                     // 1. A response completes (may produce carry-over retry batches), or
                     // 2. New channel data arrives, or
-                    // 3. An in-flight slot opens, or
+                    // 3. A partition is unmuted, or
                     // 4. Retry backoff elapses (earliest RetryNotBefore from carry-over).
                     reusableWaitTasks.Clear();
 
@@ -588,21 +579,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
 
                     reusableWaitTasks.Add(channelWaitVt2.AsTask());
-                    reusableWaitTasks.Add(inFlightSignal.Task);
 
                     if (_pendingResponses.Count > 0)
                     {
-                        // Register signal FIRST, then double-check. This prevents a race where
-                        // a response completes between the anyCompleted scan and the signal
-                        // registration — the ContinueWith callback would signal the OLD
-                        // _responseReadySignal, and the new signal would never fire.
-                        // (Same pattern as the top-of-loop "Responses pending" wait.)
-                        var responseSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                        Volatile.Write(ref _responseReadySignal, responseSignal);
-
-                        // Double-check after signal registration: if any response completed
-                        // between entering this branch and writing the signal, go back to the
-                        // top of the loop so ProcessCompletedResponses can handle it.
+                        // Fast path: if any response already completed, skip WhenAny
                         var anyCompleted = false;
                         for (var i = 0; i < _pendingResponses.Count; i++)
                         {
@@ -619,7 +599,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             continue;
                         }
 
-                        reusableWaitTasks.Add(responseSignal.Task);
+                        // Add response tasks directly to the outer WhenAny to avoid
+                        // nested WhenAny allocation. The outer WhenAny handles everything.
+                        for (var i = 0; i < _pendingResponses.Count; i++)
+                            reusableWaitTasks.Add(_pendingResponses[i].ResponseTask);
+                    }
+
+                    // When carry-over exists, also wait for unmute signal so the loop
+                    // wakes when a muted partition becomes sendable.
+                    if (newCarryOver.Count > 0)
+                    {
+                        reusableWaitTasks.Add(unmuteSignal.Task);
                     }
 
                     // Calculate earliest backoff and delivery deadline from carry-over
@@ -850,7 +840,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 continue;
             }
 
-            // In-flight slot already released by ContinueWith in SendCoalescedAsync.
+            // In-flight slot freed by removing from _pendingResponses (compacted below).
 
             if (pending.ResponseTask.IsFaulted || pending.ResponseTask.IsCanceled)
             {
@@ -1234,8 +1224,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
                 }
 
-                // Release everything synchronously (no pipelined response)
-                ReleaseInFlightSlot();
+                // Release everything synchronously (no pipelined response — fire-and-forget
+                // doesn't add to _pendingResponses, so no in-flight slot to release)
                 for (var i = 0; i < count; i++)
                 {
                     CleanupBatch(batches[i]);
@@ -1292,24 +1282,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             LogPipelinedSend(_brokerId, count, _pendingResponses.Count);
-
-            // Release the in-flight slot and signal the send loop when the response completes.
-            // The slot MUST be released here (not in ProcessCompletedResponses) because the send loop
-            // may be waiting for a slot inside the loop body (while _inFlightCount >= _maxInFlight),
-            // and ProcessCompletedResponses only runs at the top of the loop — causing a deadlock.
-            var self = this;
-            _ = responseTask.ContinueWith(static (_, state) =>
-            {
-                var sender = (BrokerSender)state!;
-                sender.ReleaseInFlightSlot();
-                Volatile.Read(ref sender._responseReadySignal)?.TrySetResult();
-            }, self, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // Shutdown — fail batches permanently (no point retrying)
-            ReleaseInFlightSlot();
             for (var i = 0; i < count; i++)
                 FailAndCleanupBatch(batches[i], new ObjectDisposedException(nameof(BrokerSender)));
 
@@ -1319,7 +1295,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             // Send failed (connection error, etc.) — retry batches instead of permanently failing.
             // Aligned with Java Kafka's Sender: transient failures cause reenqueue for retry.
-            ReleaseInFlightSlot();
             _pinnedConnection = null; // Invalidate broken connection
             LogResponseFailed(ex, _brokerId);
 
@@ -1498,6 +1473,77 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
+    /// Returns a task that completes when any pending response completes.
+    /// Fast paths for 1-8 responses avoid the <see cref="Task.WhenAny(IEnumerable{Task})"/>
+    /// materialization path (IEnumerable → List → array clone). The 1-response case (common
+    /// with maxInFlight=1) is zero-allocation — returns the task directly. Cases 2-8 use
+    /// direct overloads. Only falls through to the list path for 9+ responses.
+    /// Called from the single-threaded send loop only.
+    /// </summary>
+    private Task WaitForAnyPendingResponseAsync(List<Task> reusableTaskList)
+    {
+        switch (_pendingResponses.Count)
+        {
+            case 1:
+                return _pendingResponses[0].ResponseTask;
+            case 2:
+                return Task.WhenAny(
+                    _pendingResponses[0].ResponseTask,
+                    _pendingResponses[1].ResponseTask);
+            case 3:
+                return Task.WhenAny(
+                    _pendingResponses[0].ResponseTask,
+                    _pendingResponses[1].ResponseTask,
+                    _pendingResponses[2].ResponseTask);
+            case 4:
+                return Task.WhenAny(
+                    _pendingResponses[0].ResponseTask,
+                    _pendingResponses[1].ResponseTask,
+                    _pendingResponses[2].ResponseTask,
+                    _pendingResponses[3].ResponseTask);
+            case 5:
+                return Task.WhenAny(
+                    _pendingResponses[0].ResponseTask,
+                    _pendingResponses[1].ResponseTask,
+                    _pendingResponses[2].ResponseTask,
+                    _pendingResponses[3].ResponseTask,
+                    _pendingResponses[4].ResponseTask);
+            case 6:
+                return Task.WhenAny(
+                    _pendingResponses[0].ResponseTask,
+                    _pendingResponses[1].ResponseTask,
+                    _pendingResponses[2].ResponseTask,
+                    _pendingResponses[3].ResponseTask,
+                    _pendingResponses[4].ResponseTask,
+                    _pendingResponses[5].ResponseTask);
+            case 7:
+                return Task.WhenAny(
+                    _pendingResponses[0].ResponseTask,
+                    _pendingResponses[1].ResponseTask,
+                    _pendingResponses[2].ResponseTask,
+                    _pendingResponses[3].ResponseTask,
+                    _pendingResponses[4].ResponseTask,
+                    _pendingResponses[5].ResponseTask,
+                    _pendingResponses[6].ResponseTask);
+            case 8:
+                return Task.WhenAny(
+                    _pendingResponses[0].ResponseTask,
+                    _pendingResponses[1].ResponseTask,
+                    _pendingResponses[2].ResponseTask,
+                    _pendingResponses[3].ResponseTask,
+                    _pendingResponses[4].ResponseTask,
+                    _pendingResponses[5].ResponseTask,
+                    _pendingResponses[6].ResponseTask,
+                    _pendingResponses[7].ResponseTask);
+            default:
+                reusableTaskList.Clear();
+                for (var i = 0; i < _pendingResponses.Count; i++)
+                    reusableTaskList.Add(_pendingResponses[i].ResponseTask);
+                return Task.WhenAny(reusableTaskList);
+        }
+    }
+
+    /// <summary>
     /// Removes a partition from the muted set and signals the send loop.
     /// Called when a retry completes (reroute, permanent failure, or catch block).
     /// Idempotent: safe to call even if the partition was not muted.
@@ -1507,13 +1553,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         _mutedPartitions.TryRemove(tp, out _);
         Interlocked.Exchange(ref _unmuteSignal, null)?.TrySetResult();
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void ReleaseInFlightSlot()
-    {
-        Interlocked.Decrement(ref _inFlightCount);
-        Interlocked.Exchange(ref _inFlightSlotAvailable, null)?.TrySetResult();
     }
 
     /// <summary>
