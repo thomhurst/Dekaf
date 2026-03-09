@@ -347,6 +347,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var pendingCarryOver = carryOverA;
         var reusableWaitTasks = new List<Task>(4);
 
+        // Hoisted to method scope so the finally block can fail any batches that were
+        // coalesced but not yet passed to SendCoalescedAsync when the loop exits.
+        ReadyBatch[]? coalescedBatches = null;
+        var coalescedCount = 0;
+
         try
         {
             while (true)
@@ -453,8 +458,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 coalescedPartitions.Clear();
                 var newCarryOver = pendingCarryOver == carryOverA ? carryOverB : carryOverA;
                 newCarryOver.Clear();
-                var coalescedCount = 0;
-                var coalescedBatches = ArrayPool<ReadyBatch>.Shared.Rent(maxCoalesce);
+                coalescedCount = 0;
+                coalescedBatches = ArrayPool<ReadyBatch>.Shared.Rent(maxCoalesce);
 
                 // Scan carry-over: retry batches unmute and coalesce; muted/duplicate carry over.
                 // No sorting needed — ProcessCompletedResponses adds retry batches in send order.
@@ -520,12 +525,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     Interlocked.Increment(ref _inFlightCount);
                     LogSendingCoalesced(_brokerId, coalescedCount);
+                    // SendCoalescedAsync takes ownership of coalescedBatches (adds to _pendingResponses).
+                    // Null out so the finally block doesn't double-fail them.
+                    var batchesToSend = coalescedBatches;
+                    var countToSend = coalescedCount;
+                    coalescedBatches = null;
+                    coalescedCount = 0;
                     await SendCoalescedAsync(
-                        coalescedBatches, coalescedCount, cancellationToken).ConfigureAwait(false);
+                        batchesToSend, countToSend, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {
                     ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
+                    coalescedBatches = null;
 
                     // All batches are for muted partitions or in backoff. Wait for either:
                     // 1. A response completes (may produce carry-over retry batches), or
@@ -675,6 +687,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // batches may be in either list depending on timing.
             FailCarryOverBatches(carryOverA);
             FailCarryOverBatches(carryOverB);
+
+            // Fail any batches that were coalesced but not yet sent.
+            // This happens when the loop exits between CoalesceBatch and SendCoalescedAsync
+            // (e.g., cancellation during the in-flight capacity wait, or an exception).
+            if (coalescedBatches is not null)
+            {
+                for (var i = 0; i < coalescedCount; i++)
+                {
+                    CompleteInflightEntry(coalescedBatches[i]);
+                    try { coalescedBatches[i].Fail(new ObjectDisposedException(nameof(BrokerSender))); }
+                    catch { /* Observe */ }
+                    CleanupBatch(coalescedBatches[i]);
+                }
+                ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
+            }
 
             // Drain any remaining batches from channel and fail them
             while (channelReader.TryRead(out var remaining))
