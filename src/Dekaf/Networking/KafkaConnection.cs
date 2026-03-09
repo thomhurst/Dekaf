@@ -740,6 +740,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
                     if (result.IsCompleted)
                     {
                         LogReceiveLoopCompleted(_host, _port);
+                        _disposed = true; // Prevent new requests from being queued on a dead connection
                         FailAllPendingRequests(new KafkaException(
                             "Connection closed by remote peer (EOF)"));
                         break;
