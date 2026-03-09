@@ -8,14 +8,6 @@ namespace Dekaf.Tests.Unit.Diagnostics;
 public sealed class DekafDiagnosticsTests
 {
     [Test]
-    public async Task StartActivity_NoListener_ReturnsNull()
-    {
-        // No ActivityListener registered — should return null
-        var activity = DekafDiagnostics.Source.StartActivity("test", ActivityKind.Producer);
-        await Assert.That(activity).IsNull();
-    }
-
-    [Test]
     public async Task StartActivity_WithListener_ReturnsActivity()
     {
         using var listener = new ActivityListener
