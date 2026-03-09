@@ -3299,7 +3299,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     [LoggerMessage(Level = LogLevel.Debug, Message = "Disposing {Count} broker senders")]
     private partial void LogDisposingBrokerSenders(int count);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Non-fatal exception during batch cleanup step (suppressed)")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Non-fatal exception during batch cleanup step (suppressed)")]
     private partial void LogBatchCleanupStepFailed(Exception exception);
 
     #endregion

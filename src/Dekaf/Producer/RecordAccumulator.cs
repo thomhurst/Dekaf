@@ -2322,7 +2322,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _inFlightBatches.TryRemove(batch, out _);
         // Use <= 0 instead of == 0 to handle the rare race where the orphan sweep in
         // DisposeAsync resets the counter while a concurrent exit is in progress.
-        if (Interlocked.Decrement(ref _inFlightBatchCount) <= 0)
+        var count = Interlocked.Decrement(ref _inFlightBatchCount);
+        Debug.Assert(count >= 0, $"In-flight batch count went negative ({count}) — mismatched Enter/Exit calls");
+        if (count <= 0)
         {
             // All batches processed - complete any waiting flush and clear the TCS
             Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
@@ -2748,7 +2750,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failing {RemainingBatchCount} batches during disposal")]
     private partial void LogDisposalFailingRemainingBatches(int remainingBatchCount);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Non-fatal exception during batch cleanup step (suppressed)")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Non-fatal exception during batch cleanup step (suppressed)")]
     private partial void LogBatchCleanupStepFailed(Exception exception);
 
     #endregion

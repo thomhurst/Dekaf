@@ -1633,7 +1633,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] failing {RemainingCount} pending responses during disposal")]
     private partial void LogFailingPendingResponses(int brokerId, int remainingCount);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] non-fatal exception during batch cleanup step (suppressed)")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] non-fatal exception during batch cleanup step (suppressed)")]
     private partial void LogBatchCleanupStepFailed(Exception exception, int brokerId);
 
     #endregion
