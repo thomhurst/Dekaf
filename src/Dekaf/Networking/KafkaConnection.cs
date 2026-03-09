@@ -427,45 +427,25 @@ public sealed partial class KafkaConnection : IKafkaConnection
         {
             LogWaitingForResponse(correlationId);
 
+            using var timeoutCts = _timeoutCtsPool.Rent();
+            timeoutCts.CancelAfter(_options.RequestTimeout);
+            using var reg = cancellationToken.CanBeCanceled
+                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
+                : default;
+            pending.RegisterCancellation(timeoutCts.Token);
+
             PooledResponseBuffer pooledBuffer;
-            if (!cancellationToken.CanBeCanceled)
+            try
             {
-                using var timeoutCts = _timeoutCtsPool.Rent();
-                timeoutCts.CancelAfter(_options.RequestTimeout);
-                pending.RegisterCancellation(timeoutCts.Token);
-
-                try
-                {
-                    pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
-                {
-                    throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
-                }
-                finally
-                {
-                    pending.DisposeRegistration();
-                }
+                pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
             }
-            else
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
-                using var timeoutCts = _timeoutCtsPool.Rent();
-                timeoutCts.CancelAfter(_options.RequestTimeout);
-                using var reg = cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts);
-                pending.RegisterCancellation(timeoutCts.Token);
-
-                try
-                {
-                    pooledBuffer = await pending.AsValueTask().ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                {
-                    throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
-                }
-                finally
-                {
-                    pending.DisposeRegistration();
-                }
+                throw new TimeoutException($"Request {TRequest.ApiKey} (correlation {correlationId}) timed out after {_options.RequestTimeout.TotalSeconds}s waiting for response from {_host}:{_port}");
+            }
+            finally
+            {
+                pending.DisposeRegistration();
             }
 
             LogResponseReceived(correlationId);
