@@ -286,6 +286,16 @@ public sealed partial class KafkaConnection : IKafkaConnection
         pending.Initialize(responseHeaderVersion, cancellationToken);
         _pendingRequests[correlationId] = pending;
 
+        // Double-check _disposed AFTER adding to _pendingRequests (same pattern as SendPipelinedAsync).
+        if (_disposed)
+        {
+            if (_pendingRequests.TryRemove(correlationId, out var removed))
+            {
+                _pendingRequestPool.Return(removed);
+            }
+            throw new ObjectDisposedException(nameof(KafkaConnection));
+        }
+
         try
         {
             // Write phase
@@ -376,6 +386,20 @@ public sealed partial class KafkaConnection : IKafkaConnection
         var pending = _pendingRequestPool.Rent();
         pending.Initialize(responseHeaderVersion, cancellationToken);
         _pendingRequests[correlationId] = pending;
+
+        // Double-check _disposed AFTER adding to _pendingRequests.
+        // This closes the race where FailAllPendingRequests iterates the dictionary
+        // between our first _disposed check and the TryAdd above.
+        // If _disposed was set between the two checks, FailAllPendingRequests may have
+        // already iterated past our entry — fail the request immediately.
+        if (_disposed)
+        {
+            if (_pendingRequests.TryRemove(correlationId, out var removed))
+            {
+                _pendingRequestPool.Return(removed);
+            }
+            throw new ObjectDisposedException(nameof(KafkaConnection));
+        }
 
         try
         {
@@ -826,9 +850,18 @@ public sealed partial class KafkaConnection : IKafkaConnection
         // If we remove here, the awaiter can't find the request in the dictionary,
         // so it never returns it to the pool — causing a pool leak that forces
         // constant allocation of new PooledPendingRequest objects.
-        foreach (var kvp in _pendingRequests)
+        //
+        // Iterate twice to handle the ConcurrentDictionary race: a request added
+        // by SendPipelinedAsync between the _disposed check and TryAdd may be missed
+        // by the first foreach (ConcurrentDictionary enumerators are not strict snapshots).
+        // The second pass catches late arrivals, since _disposed is already true by this
+        // point and prevents any NEW requests from being registered.
+        for (var pass = 0; pass < 2; pass++)
         {
-            kvp.Value.TrySetException(ex);
+            foreach (var kvp in _pendingRequests)
+            {
+                kvp.Value.TrySetException(ex);
+            }
         }
     }
 

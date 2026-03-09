@@ -4281,6 +4281,19 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// </summary>
     public void Reset()
     {
+        // SAFETY NET: Before returning arrays to pool, ensure all completion sources are resolved.
+        // If CompleteSend/Fail was properly called, TrySetException returns false (already completed).
+        // If something went wrong and sources are still pending, this prevents permanent hangs
+        // where ProduceAsync callers wait forever on completion sources that were silently orphaned.
+        if (Volatile.Read(ref _cleanedUp) == 0 && _completionSourcesArray is not null)
+        {
+            for (var i = 0; i < _completionSourcesCount; i++)
+            {
+                _completionSourcesArray[i]?.TrySetException(
+                    new InvalidOperationException("Batch recycled without completing delivery — this indicates a bug in the producer pipeline"));
+            }
+        }
+
         // Defensive cleanup: ensure pooled arrays are returned even if Cleanup() wasn't called.
         // This handles edge cases like exceptions between CompleteSend and ReturnReadyBatch.
         // Cleanup() is idempotent (uses Interlocked.Exchange), so double-call is safe.
