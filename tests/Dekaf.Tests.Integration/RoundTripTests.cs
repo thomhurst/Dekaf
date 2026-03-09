@@ -96,7 +96,7 @@ public class RoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kaf
         await Assert.That(consumed).IsNotNull();
         var c = consumed!.Value;
         await Assert.That(c.Headers).IsNotNull();
-        await Assert.That(c.Headers!.Count).IsEqualTo(3);
+        await Assert.That(c.Headers!.Count).IsGreaterThanOrEqualTo(3);
 
         var correlationId = c.Headers.FirstOrDefault(h => h.Key == "correlationId");
         await Assert.That(correlationId.Key).IsNotNull();

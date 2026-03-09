@@ -43,7 +43,7 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTe
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Headers).IsNotNull();
-        await Assert.That(result.Value.Headers!.Count).IsEqualTo(2);
+        await Assert.That(result.Value.Headers!.Count).IsGreaterThanOrEqualTo(2);
 
         var contentType = result.Value.Headers.First(h => h.Key == "content-type");
         await Assert.That(Encoding.UTF8.GetString(contentType.Value.Span)).IsEqualTo("application/json");

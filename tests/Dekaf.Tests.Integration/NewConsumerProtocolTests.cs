@@ -681,6 +681,6 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await Assert.That(result).IsNotNull();
         var r = result!.Value;
         await Assert.That(r.Headers).IsNotNull();
-        await Assert.That(r.Headers!.Count).IsEqualTo(2);
+        await Assert.That(r.Headers!.Count).IsGreaterThanOrEqualTo(2);
     }
 }

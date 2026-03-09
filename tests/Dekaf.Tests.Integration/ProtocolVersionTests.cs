@@ -316,7 +316,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         await Assert.That(result).IsNotNull();
         var r = result!.Value;
         await Assert.That(r.Headers).IsNotNull();
-        await Assert.That(r.Headers!.Count).IsEqualTo(1);
+        await Assert.That(r.Headers!.Count).IsGreaterThanOrEqualTo(1);
     }
 
     [Test]

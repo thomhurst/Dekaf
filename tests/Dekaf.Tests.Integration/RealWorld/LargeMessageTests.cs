@@ -56,7 +56,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         // Assert
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Headers).IsNotNull();
-        await Assert.That(result.Value.Headers!.Count).IsEqualTo(50);
+        await Assert.That(result.Value.Headers!.Count).IsGreaterThanOrEqualTo(50);
 
         // Verify each header
         for (var i = 0; i < 50; i++)

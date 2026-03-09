@@ -268,7 +268,7 @@ public sealed class SnappyCompressionRoundTripTests(KafkaTestContainer kafka) : 
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Headers).IsNotNull();
-        await Assert.That(result.Value.Headers!.Count).IsEqualTo(3);
+        await Assert.That(result.Value.Headers!.Count).IsGreaterThanOrEqualTo(3);
 
         var contentType = result.Value.Headers.First(h => h.Key == "content-type");
         await Assert.That(contentType.GetValueAsString()).IsEqualTo("application/json");

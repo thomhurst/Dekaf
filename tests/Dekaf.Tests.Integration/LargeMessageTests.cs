@@ -166,7 +166,7 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Headers).IsNotNull();
-        await Assert.That(result.Value.Headers!.Count).IsEqualTo(3);
+        await Assert.That(result.Value.Headers!.Count).IsGreaterThanOrEqualTo(3);
 
         // Verify the 64KB header
         var largeHeader = result.Value.Headers.First(h => h.Key == "large-header");
@@ -229,15 +229,14 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Headers).IsNotNull();
-        await Assert.That(result.Value.Headers!.Count).IsEqualTo(headerCount);
+        await Assert.That(result.Value.Headers!.Count).IsGreaterThanOrEqualTo(headerCount);
         await Assert.That(result.Value.Value).IsEqualTo("value-with-many-headers");
 
-        // Verify each header value matches
+        // Verify each header value matches (look up by key to tolerate injected tracing headers)
         for (var i = 0; i < headerCount; i++)
         {
-            var header = result.Value.Headers[i];
             var expectedKey = $"header-{i:D3}";
-            await Assert.That(header.Key).IsEqualTo(expectedKey);
+            var header = result.Value.Headers.First(h => h.Key == expectedKey);
 
             var actualValue = Encoding.UTF8.GetString(header.Value.Span);
             await Assert.That(actualValue).IsEqualTo(expectedValues[expectedKey]);
@@ -436,12 +435,11 @@ public class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Value).IsEqualTo(largeValue);
         await Assert.That(result.Value.Headers).IsNotNull();
-        await Assert.That(result.Value.Headers!.Count).IsEqualTo(4);
+        await Assert.That(result.Value.Headers!.Count).IsGreaterThanOrEqualTo(4);
 
         for (var i = 0; i < 4; i++)
         {
-            var header = result.Value.Headers[i];
-            await Assert.That(header.Key).IsEqualTo($"bulk-header-{i}");
+            var header = result.Value.Headers.First(h => h.Key == $"bulk-header-{i}");
             await Assert.That(header.Value.Length).IsEqualTo(50_000);
         }
     }

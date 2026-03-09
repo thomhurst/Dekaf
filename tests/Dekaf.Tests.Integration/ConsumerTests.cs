@@ -390,7 +390,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await Assert.That(result).IsNotNull();
         var r = result!.Value;
         await Assert.That(r.Headers).IsNotNull();
-        await Assert.That(r.Headers!.Count).IsEqualTo(2);
+        await Assert.That(r.Headers!.Count).IsGreaterThanOrEqualTo(2);
 
         var header1 = r.Headers.FirstOrDefault(h => h.Key == "header1");
         await Assert.That(header1.Key).IsNotNull();
