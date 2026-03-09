@@ -23,16 +23,30 @@ public class BuildModule : Module<CommandResult>
             throw new InvalidOperationException("Dekaf.sln not found");
         }
 
-        return await context.DotNet().Build(new DotNetBuildOptions
+        var properties = new KeyValue[]
+        {
+            new("Version", version),
+            new("TreatWarningsAsErrors", "true")
+        };
+
+        // Build Release for packaging
+        var releaseResult = await context.DotNet().Build(new DotNetBuildOptions
         {
             ProjectSolution = solutionFile.Path,
             Configuration = "Release",
             NoRestore = true,
-            Properties =
-            [
-                new KeyValue("Version", version),
-                new KeyValue("TreatWarningsAsErrors", "true")
-            ]
+            Properties = properties
         }, null, cancellationToken);
+
+        // Build Debug for tests (enables #if DEBUG diagnostic tracking)
+        await context.DotNet().Build(new DotNetBuildOptions
+        {
+            ProjectSolution = solutionFile.Path,
+            Configuration = "Debug",
+            NoRestore = true,
+            Properties = properties
+        }, null, cancellationToken);
+
+        return releaseResult;
     }
 }

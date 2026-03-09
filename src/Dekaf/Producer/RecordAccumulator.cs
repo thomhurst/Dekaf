@@ -2310,6 +2310,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // counter not yet incremented → orphan sweep misses it → counter incremented after).
         Interlocked.Increment(ref _inFlightBatchCount);
         _inFlightBatches.TryAdd(batch, 0);
+#if DEBUG
+        batch.DebugLastTransition = (int)BatchTransition.EntersPipeline;
+        Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} EntersPipeline inFlight={Volatile.Read(ref _inFlightBatchCount)}");
+#endif
     }
 
     /// <summary>
@@ -2319,6 +2323,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     internal void OnBatchExitsPipeline(ReadyBatch batch)
     {
+#if DEBUG
+        batch.DebugLastTransition = (int)BatchTransition.ExitsPipeline;
+        Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} ExitsPipeline (was transition={(BatchTransition)batch.DebugLastTransition} broker={batch.DebugLastBrokerId})");
+#endif
         _inFlightBatches.TryRemove(batch, out _);
         // Use <= 0 instead of == 0 to handle the rare race where the orphan sweep in
         // DisposeAsync resets the counter while a concurrent exit is in progress.
@@ -4190,6 +4198,34 @@ internal sealed class ReadyBatchPool
 /// Returns pooled arrays to ArrayPool when complete.
 /// PooledValueTaskSource instances auto-return to their pool when GetResult() is called.
 /// </summary>
+#if DEBUG
+/// <summary>
+/// Tracks the last known location of a ReadyBatch in the BrokerSender pipeline.
+/// Survives process kills — inspectable via hangdump's dumpobj command.
+/// </summary>
+internal enum BatchTransition : int
+{
+    None = 0,
+    EntersPipeline = 1,
+    CompleteDelivery = 2,
+    EnqueuedToBrokerSender = 3,
+    Coalesced = 4,
+    InflightRegistered = 5,
+    MemoryReleased = 6,
+    AddedToPendingResponses = 7,
+    ProcessingResponse = 8,
+    CompleteSendCalled = 9,
+    FailCalled = 10,
+    CleanupBatchCalled = 11,
+    ExitsPipeline = 12,
+    ReturnedToPool = 13,
+    AddedToSendFailedRetries = 14,
+    AddedToCarryOver = 15,
+    Rerouted = 16,
+    FailEnqueuedBatch = 17,
+}
+#endif
+
 internal sealed class ReadyBatch : IValueTaskSource<bool>
 {
     private TopicPartition _topicPartition;
@@ -4241,6 +4277,20 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     // In-flight tracker entry for coordinated retry with multiple in-flight batches per partition.
     // Set by KafkaProducer when registering with PartitionInflightTracker, cleared in Reset().
     internal InflightEntry? InflightEntry { get; set; }
+
+#if DEBUG
+    /// <summary>
+    /// Last transition this batch went through in the pipeline. Inspectable in hangdumps
+    /// via dumpobj to trace where a batch was "lost" when it fails to exit the pipeline.
+    /// </summary>
+    internal volatile int DebugLastTransition;
+
+    /// <summary>
+    /// Broker ID of the BrokerSender that last handled this batch. Helps correlate
+    /// batch state with specific BrokerSender instances in hangdump analysis.
+    /// </summary>
+    internal volatile int DebugLastBrokerId;
+#endif
 
     /// <summary>
     /// Replaces the record batch with a rewritten one (updated PID/epoch/sequence).
@@ -4368,6 +4418,10 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         MemoryReleased = false;
         IsRetry = false;
         RetryNotBefore = 0;
+#if DEBUG
+        DebugLastTransition = (int)BatchTransition.ReturnedToPool;
+        DebugLastBrokerId = -1;
+#endif
 
         // Reset state flags
         Volatile.Write(ref _cleanedUp, 0);

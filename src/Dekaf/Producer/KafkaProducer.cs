@@ -2473,6 +2473,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 {
                     // Complete delivery task (fire-and-forget semantic: batch is "ready")
                     batch.CompleteDelivery();
+#if DEBUG
+                    batch.DebugLastTransition = (int)BatchTransition.CompleteDelivery;
+#endif
 
                     // NOTE: Inflight tracker registration is deferred to BrokerSender.SendCoalescedAsync
                     // (send time) rather than here (drain time). Registering at drain time caused a
@@ -2524,6 +2527,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
                         var brokerSender = GetOrCreateBrokerSender(leader.NodeId);
                         LogBatchRouted(batch.TopicPartition.Topic, batch.TopicPartition.Partition, leader.NodeId);
+#if DEBUG
+                        batch.DebugLastTransition = (int)BatchTransition.EnqueuedToBrokerSender;
+                        batch.DebugLastBrokerId = leader.NodeId;
+                        Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} EnqueuedToBrokerSender broker={leader.NodeId}");
+#endif
                         await brokerSender.EnqueueAsync(batch, cancellationToken).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

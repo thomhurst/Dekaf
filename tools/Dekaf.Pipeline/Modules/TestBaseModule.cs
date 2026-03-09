@@ -47,7 +47,7 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
                 new DotNetRunOptions
                 {
                     NoBuild = true,
-                    Configuration = "Release",
+                    Configuration = "Debug",
                     Framework = framework,
                     Arguments = [
                         "--",

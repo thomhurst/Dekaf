@@ -69,7 +69,7 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
                 new DotNetRunOptions
                 {
                     NoBuild = true,
-                    Configuration = "Release",
+                    Configuration = "Debug",
                     Framework = "net10.0",
                     Arguments = arguments
                 },
