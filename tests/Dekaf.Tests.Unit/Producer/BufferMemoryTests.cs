@@ -564,7 +564,7 @@ public class BufferMemoryTests
                     doneTaskWasCompleted = batch.DoneTask.IsCompleted;
 
                     // Exit pipeline and return to pool
-                    accumulator.OnBatchExitsPipeline();
+                    accumulator.OnBatchExitsPipeline(batch);
                     accumulator.ReturnReadyBatch(batch);
                     break; // Only expect one batch
                 }
@@ -625,7 +625,7 @@ public class BufferMemoryTests
                     Interlocked.Increment(ref receivedCount);
 
                     batch.CompleteDelivery();
-                    accumulator.OnBatchExitsPipeline();
+                    accumulator.OnBatchExitsPipeline(batch);
                     batch.CompleteSend(0, DateTimeOffset.UtcNow);
                     accumulator.ReturnReadyBatch(batch);
 
@@ -695,7 +695,7 @@ public class BufferMemoryTests
                 await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
                 {
                     batch.CompleteDelivery();
-                    accumulator.OnBatchExitsPipeline();
+                    accumulator.OnBatchExitsPipeline(batch);
                     accumulator.ReturnReadyBatch(batch);
                 }
             }, cts.Token);
@@ -758,7 +758,7 @@ public class BufferMemoryTests
                 {
                     receivedBatches++;
                     batch.CompleteDelivery();
-                    accumulator.OnBatchExitsPipeline();
+                    accumulator.OnBatchExitsPipeline(batch);
                     batch.CompleteSend(0, DateTimeOffset.UtcNow);
                     accumulator.ReturnReadyBatch(batch);
                     if (receivedBatches >= batchCount)

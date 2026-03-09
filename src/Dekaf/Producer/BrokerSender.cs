@@ -1499,8 +1499,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _accumulator.ReleaseMemory(batch.DataSize);
             batch.MemoryReleased = true;
         }
-        _accumulator.ReturnReadyBatch(batch);
-        _accumulator.OnBatchExitsPipeline();
+        try { _accumulator.ReturnReadyBatch(batch); }
+        catch { /* Must not prevent OnBatchExitsPipeline */ }
+        _accumulator.OnBatchExitsPipeline(batch);
     }
 
     public async ValueTask DisposeAsync()

@@ -261,7 +261,7 @@ public class RecordAccumulatorConcurrencyTests
                         if (accumulator.ReadyBatches.TryRead(out var readyBatch))
                         {
                             accumulator.ReleaseMemory(readyBatch.DataSize);
-                            accumulator.OnBatchExitsPipeline();
+                            accumulator.OnBatchExitsPipeline(readyBatch);
                         }
                         else
                         {
@@ -365,7 +365,7 @@ public class RecordAccumulatorConcurrencyTests
                         {
                             Interlocked.Increment(ref readyBatchCount);
                             accumulator.ReleaseMemory(batch.DataSize);
-                            accumulator.OnBatchExitsPipeline();
+                            accumulator.OnBatchExitsPipeline(batch);
                         }
                         else
                         {
@@ -513,7 +513,7 @@ public class RecordAccumulatorConcurrencyTests
                         if (accumulator.ReadyBatches.TryRead(out var batch))
                         {
                             accumulator.ReleaseMemory(batch.DataSize);
-                            accumulator.OnBatchExitsPipeline();
+                            accumulator.OnBatchExitsPipeline(batch);
                         }
                         else
                         {

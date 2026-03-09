@@ -2580,7 +2580,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         catch { /* Must not prevent ReturnReadyBatch */ }
         try { _accumulator.ReturnReadyBatch(batch); }
         catch { /* Must not prevent OnBatchExitsPipeline */ }
-        try { _accumulator.OnBatchExitsPipeline(); }
+        try { _accumulator.OnBatchExitsPipeline(batch); }
         catch { /* Must not propagate — batch lifecycle ends here */ }
     }
 

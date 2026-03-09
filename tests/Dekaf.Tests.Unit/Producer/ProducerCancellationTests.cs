@@ -74,7 +74,7 @@ public class ProducerCancellationTests
                 {
                     // Complete delivery and decrement counter (simulates sender loop)
                     batch.CompleteDelivery();
-                    accumulator.OnBatchExitsPipeline();
+                    accumulator.OnBatchExitsPipeline(batch);
                     accumulator.ReturnReadyBatch(batch);
                 }
             }, cts.Token);

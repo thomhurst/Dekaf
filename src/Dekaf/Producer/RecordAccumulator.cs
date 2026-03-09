@@ -575,13 +575,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly PartitionBatchPool _batchPool;
     private readonly ReadyBatchPool _readyBatchPool; // Pool for ReadyBatch objects to eliminate per-batch allocations
 
-    // Track in-flight batches for FlushAsync using O(1) counter instead of dictionary
-    // This eliminates dictionary resizing issues under high throughput
+    // O(1) counter for fast flush-check (is anything in-flight?).
+    // The separate _inFlightBatches dictionary provides reference-tracking for orphan sweep.
     private long _inFlightBatchCount;
     // TCS for async waiting - created on-demand, completed when counter reaches 0
     // Using TCS instead of ManualResetEventSlim avoids polling and ThreadPool starvation
     // Not volatile - use Volatile.Read/Interlocked for thread-safe access
     private TaskCompletionSource<bool>? _flushTcs;
+
+    // Reference-tracking for in-flight batches. Enables forceful cleanup of orphaned batches
+    // during disposal — catches batches whose references were lost from BrokerSender data structures.
+    // Per-batch cost (not per-message): one TryAdd/TryRemove per batch, amortized over ~1000 messages.
+    private readonly ConcurrentDictionary<ReadyBatch, byte> _inFlightBatches = new();
 
     // Optimization: Track the oldest batch creation time to skip unnecessary enumeration.
     // With LingerMs=5ms and 1ms timer, we'd enumerate 5x per batch without this optimization.
@@ -1314,14 +1319,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
                         ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
                         // Track delivery task for FlushAsync
-                        OnBatchEntersPipeline();
+                        OnBatchEntersPipeline(readyBatch);
 
                         // Write to unbounded channel — TryWrite always succeeds unless writer is completed (disposal)
                         if (!_readyBatches.Writer.TryWrite(readyBatch))
                         {
                             ProducerDebugCounters.RecordBatchFailedToQueue();
                             readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            OnBatchExitsPipeline();
+                            OnBatchExitsPipeline(readyBatch);
                             ReleaseMemory(readyBatch.DataSize);
                             _batchPool.Return(batch);
                             throw new ObjectDisposedException(nameof(RecordAccumulator));
@@ -1443,7 +1448,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
                     ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
                     // Track delivery task for FlushAsync
-                    OnBatchEntersPipeline();
+                    OnBatchEntersPipeline(readyBatch);
 
                     // Non-blocking write to unbounded channel - should always succeed
                     // If it fails (channel completed), the producer is being disposed
@@ -1452,7 +1457,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         ProducerDebugCounters.RecordBatchFailedToQueue();
                         // Channel is closed, fail the batch and return false
                         readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                        OnBatchExitsPipeline(); // Decrement counter on failure
+                        OnBatchExitsPipeline(readyBatch); // Decrement counter on failure
                         // Release the batch's buffer memory since it won't go through producer
                         ReleaseMemory(readyBatch.DataSize);
                         return false;
@@ -1592,12 +1597,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (readyBatch is not null)
                 {
                     // Track delivery task for FlushAsync to wait on
-                    OnBatchEntersPipeline();
+                    OnBatchEntersPipeline(readyBatch);
 
                     if (!_readyBatches.Writer.TryWrite(readyBatch))
                     {
                         readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                        OnBatchExitsPipeline(); // Decrement counter on failure
+                        OnBatchExitsPipeline(readyBatch); // Decrement counter on failure
                         // Release the batch's buffer memory since it won't go through producer
                         ReleaseMemory(readyBatch.DataSize);
                         t_cachedBatch = null;
@@ -1766,12 +1771,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     if (readyBatch is not null)
                     {
                         // Track delivery task for FlushAsync
-                        OnBatchEntersPipeline();
+                        OnBatchEntersPipeline(readyBatch);
 
                         if (!_readyBatches.Writer.TryWrite(readyBatch))
                         {
                             readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            OnBatchExitsPipeline();
+                            OnBatchExitsPipeline(readyBatch);
                             ReleaseMemory(readyBatch.DataSize);
                             t_cachedBatch = null;
                             mpCache[cacheIndex].Batch = null;
@@ -1876,12 +1881,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     var readyBatch = batch.Complete();
                     if (readyBatch is not null)
                     {
-                        OnBatchEntersPipeline();
+                        OnBatchEntersPipeline(readyBatch);
 
                         if (!_readyBatches.Writer.TryWrite(readyBatch))
                         {
                             readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            OnBatchExitsPipeline();
+                            OnBatchExitsPipeline(readyBatch);
                             ReleaseMemory(readyBatch.DataSize);
                             _batchPool.Return(batch);
                             return false;
@@ -1993,14 +1998,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             if (readyBatch is not null)
                             {
                                 // Track delivery task for FlushAsync
-                                OnBatchEntersPipeline();
+                                OnBatchEntersPipeline(readyBatch);
 
                                 try
                                 {
                                     if (!_readyBatches.Writer.TryWrite(readyBatch))
                                     {
                                         readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                                        OnBatchExitsPipeline();
+                                        OnBatchExitsPipeline(readyBatch);
                                         ReleaseMemory(readyBatch.DataSize);
                                         t_cachedBatch = null;
                                         _batchPool.Return(batch);
@@ -2013,7 +2018,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 catch
                                 {
                                     readyBatch.Fail(new InvalidOperationException("Batch append failed"));
-                                    OnBatchExitsPipeline();
+                                    OnBatchExitsPipeline(readyBatch);
                                     ReleaseMemory(readyBatch.DataSize);
                                     throw;
                                 }
@@ -2110,7 +2115,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
         ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
         // Track delivery task for FlushAsync
-        OnBatchEntersPipeline();
+        OnBatchEntersPipeline(readyBatch);
 
         // Try synchronous write first to avoid async state machine allocation
         if (!_readyBatches.Writer.TryWrite(readyBatch))
@@ -2129,7 +2134,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 try
                 {
                     readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                    OnBatchExitsPipeline(); // Decrement counter on failure
+                    OnBatchExitsPipeline(readyBatch); // Decrement counter on failure
                 }
                 finally
                 {
@@ -2167,7 +2172,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (readyBatch.CompletionSourcesCount > 0)
             Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
         ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
-        OnBatchEntersPipeline();
+        OnBatchEntersPipeline(readyBatch);
 
         if (!_readyBatches.Writer.TryWrite(readyBatch))
         {
@@ -2175,7 +2180,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             try
             {
                 readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                OnBatchExitsPipeline();
+                OnBatchExitsPipeline(readyBatch);
             }
             finally
             {
@@ -2294,24 +2299,26 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         => SealBatchesAsync(sealAll: false, cancellationToken);
 
     /// <summary>
-    /// Increments the in-flight batch counter when a batch enters the pipeline.
+    /// Tracks a batch entering the pipeline: increments counter and adds to reference-tracking dictionary.
     /// Called when a batch is completed and queued to _readyBatches.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void OnBatchEntersPipeline()
+    private void OnBatchEntersPipeline(ReadyBatch batch)
     {
+        _inFlightBatches.TryAdd(batch, 0);
         Interlocked.Increment(ref _inFlightBatchCount);
     }
 
     /// <summary>
-    /// Decrements the in-flight batch counter when a batch exits the pipeline.
+    /// Removes a batch from the pipeline: decrements counter and removes from reference-tracking dictionary.
     /// Called after a batch is sent (CompleteSend) or failed (Fail).
     /// Must be called by KafkaProducer's SenderLoopAsync after processing each batch.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void OnBatchExitsPipeline()
+    internal void OnBatchExitsPipeline(ReadyBatch batch)
     {
-        if (Interlocked.Decrement(ref _inFlightBatchCount) == 0)
+        _inFlightBatches.TryRemove(batch, out _);
+        // Use <= 0 instead of == 0 to handle the rare race where the orphan sweep in
+        // DisposeAsync resets the counter while a concurrent exit is in progress.
+        if (Interlocked.Decrement(ref _inFlightBatchCount) <= 0)
         {
             // All batches processed - complete any waiting flush and clear the TCS
             Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
@@ -2627,7 +2634,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ReleaseMemory(readyBatch.DataSize);
                 readyBatch.MemoryReleased = true;
             }
-            OnBatchExitsPipeline(); // Decrement counter for batches drained during disposal
+            OnBatchExitsPipeline(readyBatch); // Decrement counter for batches drained during disposal
         }
 
         // Wait for all in-flight batches to complete with a timeout using counter-based tracking
@@ -2661,8 +2668,37 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     ReleaseMemory(batch.DataSize);
                     batch.MemoryReleased = true;
                 }
-                OnBatchExitsPipeline(); // Decrement counter
+                OnBatchExitsPipeline(batch); // Decrement counter
             }
+        }
+
+        // Sweep for orphaned batches whose references were lost from BrokerSender data structures.
+        // This is the last line of defense: if a batch was tracked via OnBatchEntersPipeline but
+        // never cleaned up via OnBatchExitsPipeline (due to a dropped reference), fail it here.
+        if (!_inFlightBatches.IsEmpty)
+        {
+            LogOrphanedBatchesDuringDisposal(_inFlightBatches.Count);
+            foreach (var (orphanedBatch, _) in _inFlightBatches)
+            {
+                try { orphanedBatch.Fail(disposedException); }
+                catch { /* Must not prevent sweep */ }
+                try
+                {
+                    if (!orphanedBatch.MemoryReleased)
+                    {
+                        ReleaseMemory(orphanedBatch.DataSize);
+                        orphanedBatch.MemoryReleased = true;
+                    }
+                }
+                catch { /* Must not prevent sweep */ }
+                try { ReturnReadyBatch(orphanedBatch); }
+                catch { /* Must not prevent sweep */ }
+            }
+            _inFlightBatches.Clear();
+
+            // Reset counter and unblock any waiting flush
+            Interlocked.Exchange(ref _inFlightBatchCount, 0);
+            Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
         }
 
         // Clear the batch pool
@@ -2692,6 +2728,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Flush completed: all batches delivered")]
     private partial void LogFlushCompleted();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Disposal sweep found {Count} orphaned in-flight batches — failing them to prevent hangs")]
+    private partial void LogOrphanedBatchesDuringDisposal(int count);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Closing accumulator: {PendingBatchCount} pending batches")]
     private partial void LogCloseStarted(int pendingBatchCount);

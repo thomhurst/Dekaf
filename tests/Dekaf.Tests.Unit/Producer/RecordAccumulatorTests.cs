@@ -1513,4 +1513,128 @@ public class RecordAccumulatorTests
     }
 
     #endregion
+
+    #region ReadyBatch.Reset Safety Net
+
+    [Test]
+    public async Task ReadyBatch_Reset_WithoutCompleteSendOrFail_FailsOrphanedCompletionSources()
+    {
+        // This test verifies the safety net in ReadyBatch.Reset():
+        // if a batch reaches Reset() without CompleteSend/Fail having been called,
+        // the orphaned completion sources are failed with InvalidOperationException
+        // instead of leaving ProduceAsync callers waiting forever.
+
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var topicPartition = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            // Append a record to create a batch with a completion source
+            var completion = pool.Rent();
+            var completionTask = completion.Task;
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            var result = await accumulator.AppendAsync(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey,
+                pooledValue,
+                null,
+                null,
+                completion,
+                CancellationToken.None);
+
+            await Assert.That(result.Success).IsTrue();
+
+            // Get the ReadyBatch via reflection
+            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var batches = batchesField!.GetValue(accumulator)!;
+            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var parameters = new object[] { topicPartition, null! };
+            tryGetValueMethod!.Invoke(batches, parameters);
+            var partitionBatch = parameters[1];
+
+            var completeMethod = partitionBatch!.GetType().GetMethod("Complete");
+            var readyBatch = (ReadyBatch)completeMethod!.Invoke(partitionBatch, null)!;
+
+            // Intentionally skip CompleteSend/Fail — simulating the orphan scenario.
+            // Call Reset() directly, which should trigger the safety net.
+            readyBatch.Reset();
+
+            // The completion source should now be failed with InvalidOperationException
+            await Assert.That(async () => await completionTask)
+                .Throws<InvalidOperationException>();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task ReadyBatch_Reset_AfterCompleteSend_SafetyNetIsNoOp()
+    {
+        // Verifies that the safety net in Reset() is a no-op when CompleteSend
+        // has already completed the sources — TrySetException returns false.
+
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var topicPartition = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            var completion = pool.Rent();
+            var completionTask = completion.Task;
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            await accumulator.AppendAsync(
+                topicPartition.Topic,
+                topicPartition.Partition,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey,
+                pooledValue,
+                null,
+                null,
+                completion,
+                CancellationToken.None);
+
+            // Get ReadyBatch
+            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var batches = batchesField!.GetValue(accumulator)!;
+            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var parameters = new object[] { topicPartition, null! };
+            tryGetValueMethod!.Invoke(batches, parameters);
+            var partitionBatch = parameters[1];
+
+            var completeMethod = partitionBatch!.GetType().GetMethod("Complete");
+            var readyBatch = (ReadyBatch)completeMethod!.Invoke(partitionBatch, null)!;
+
+            // Normal path: CompleteDelivery + CompleteSend
+            readyBatch.CompleteDelivery();
+            readyBatch.CompleteSend(0, DateTimeOffset.UtcNow);
+
+            // Reset should be safe — completion sources already resolved
+            readyBatch.Reset();
+
+            // The completion source should have succeeded (not thrown)
+            var metadata = await completionTask;
+            await Assert.That(metadata.Offset).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    #endregion
 }
