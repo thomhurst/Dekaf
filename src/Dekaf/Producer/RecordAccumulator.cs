@@ -921,6 +921,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ? currentTicks + _options.MaxBlockMs
             : long.MaxValue;
 
+        // Link caller's cancellation token with disposal token for unified cancellation
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposalCts.Token);
+
         while (!TryReserveMemory(recordSize))
         {
             // Check disposal first
@@ -945,26 +948,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
             }
 
-            // Reset event before waiting - ReleaseMemory will Set() it when space becomes available.
-            // RACE CONDITION MITIGATION: There's an inherent race between Reset() and the signal from
-            // ReleaseMemory(). If Set() happens after Reset() but before our wait, we need to detect it.
-            _bufferSpaceAvailable.Reset();
-
-            // Check disposal after reset
-            if (_disposed)
+            // Wait for signal from ReleaseMemory, with timeout and cancellation.
+            // SemaphoreSlim.WaitAsync provides true async signal-based wake-up — no polling needed.
+            // The semaphore acts as an async auto-reset event: ReleaseMemory releases, we acquire.
+            try
+            {
+                await _asyncBufferSpaceSignal.WaitAsync(
+                    (int)Math.Min(remainingMs, int.MaxValue),
+                    linkedCts.Token
+                ).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_disposed)
+            {
                 throw new ObjectDisposedException(nameof(RecordAccumulator));
-
-            // Check if event was signaled between Reset() and here (race condition mitigation).
-            // If already set, skip the delay and immediately retry TryReserveMemory().
-            if (_bufferSpaceAvailable.IsSet)
-                continue;
-
-            // ManualResetEventSlim doesn't have native async wait, so use short polling.
-            // Use up to 5ms poll interval to minimize latency when memory becomes available.
-            // The trade-off is slightly more CPU usage, but memory pressure scenarios are
-            // transient and this path is only hit under backpressure.
-            var waitMs = (int)Math.Min(5, remainingMs);
-            await Task.Delay(waitMs, cancellationToken).ConfigureAwait(false);
+            }
+            // OperationCanceledException from caller's token propagates naturally
+            // WaitAsync returning false (timeout) just means we loop and check deadline above
         }
     }
 
