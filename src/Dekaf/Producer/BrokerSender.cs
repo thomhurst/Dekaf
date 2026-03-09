@@ -265,7 +265,28 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         try
         {
-            await _batchChannel.Writer.WriteAsync(batch, cancellationToken).ConfigureAwait(false);
+            // Fast check: if the send loop already died, fail immediately.
+            // The send loop's finally block calls TryComplete on the channel, but there's
+            // a race window where WriteAsync blocks before TryComplete wakes it up.
+            if (_sendLoopTask.IsCompleted)
+            {
+                FailEnqueuedBatch(batch);
+                return;
+            }
+
+            // Race WriteAsync against send loop death. If the send loop dies while we're
+            // blocked on a full channel, WhenAny detects it immediately rather than relying
+            // on TryComplete to wake up the blocked writer (which has edge-case races).
+            var writeTask = _batchChannel.Writer.WriteAsync(batch, cancellationToken).AsTask();
+            var completed = await Task.WhenAny(writeTask, _sendLoopTask).ConfigureAwait(false);
+            if (completed == writeTask)
+            {
+                await writeTask.ConfigureAwait(false);
+                return;
+            }
+
+            // Send loop died while we were waiting — fail the batch.
+            FailEnqueuedBatch(batch);
         }
         catch (ChannelClosedException)
         {

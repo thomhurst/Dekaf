@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dekaf.Compression;
 using Dekaf.Compression.Lz4;
 using Dekaf.Compression.Snappy;
@@ -20,5 +21,12 @@ internal sealed class GlobalTestSetup
         CompressionCodecRegistry.Default.AddLz4();
         CompressionCodecRegistry.Default.AddSnappy();
         CompressionCodecRegistry.Default.AddZstd();
+
+#if DEBUG
+        // Enable Debug.WriteLine output on Linux (where no default trace listener writes to console).
+        // This makes [BatchTrack] diagnostic output from BrokerSender visible in CI logs.
+        if (!Trace.Listeners.OfType<ConsoleTraceListener>().Any())
+            Trace.Listeners.Add(new ConsoleTraceListener());
+#endif
     }
 }

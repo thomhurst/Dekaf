@@ -3200,6 +3200,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         } while (_brokerSenders.Count > previousCount);
         _brokerSenders.Clear();
 
+        // Orphan sweep: fail any batches still tracked as in-flight after all BrokerSenders
+        // have been disposed. These are batches that entered the pipeline but were never
+        // cleaned up by any BrokerSender — their references were dropped due to edge-case
+        // races between send loop death and batch enqueue. This prevents FlushAsync from
+        // hanging indefinitely during disposal.
+        _accumulator.ForceFailAllInFlightBatches();
+
         _senderCts.Dispose();
         _lingerTimer.Dispose();
         _transactionLock.Dispose();

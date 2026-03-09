@@ -2340,6 +2340,44 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Fails all remaining in-flight batches tracked in <see cref="_inFlightBatches"/>.
+    /// Used as a defense-in-depth sweep after BrokerSender disposal to catch batches
+    /// whose references were lost from BrokerSender data structures.
+    /// Safe to call multiple times — idempotent due to dictionary removal and IsEmpty check.
+    /// </summary>
+    internal void ForceFailAllInFlightBatches()
+    {
+        if (_inFlightBatches.IsEmpty)
+            return;
+
+        LogOrphanedBatchesDuringDisposal(_inFlightBatches.Count);
+        var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
+
+        foreach (var (orphanedBatch, _) in _inFlightBatches)
+        {
+            try { orphanedBatch.Fail(disposedException); }
+            catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
+            try
+            {
+                if (!orphanedBatch.MemoryReleased)
+                {
+                    ReleaseMemory(orphanedBatch.DataSize);
+                    orphanedBatch.MemoryReleased = true;
+                }
+            }
+            catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
+            try { ReturnReadyBatch(orphanedBatch); }
+            catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
+        }
+
+        _inFlightBatches.Clear();
+
+        // Reset counter and unblock any waiting flush
+        Interlocked.Exchange(ref _inFlightBatchCount, 0);
+        Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
+    }
+
+    /// <summary>
     /// Updates the oldest batch tracking when a new batch is added to the dictionary.
     /// Uses lock-free CAS loop to atomically set to min(current, newBatchTicks).
     /// This is called when TryAdd succeeds for a new batch.
@@ -2689,31 +2727,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Sweep for orphaned batches whose references were lost from BrokerSender data structures.
         // This is the last line of defense: if a batch was tracked via OnBatchEntersPipeline but
         // never cleaned up via OnBatchExitsPipeline (due to a dropped reference), fail it here.
-        if (!_inFlightBatches.IsEmpty)
-        {
-            LogOrphanedBatchesDuringDisposal(_inFlightBatches.Count);
-            foreach (var (orphanedBatch, _) in _inFlightBatches)
-            {
-                try { orphanedBatch.Fail(disposedException); }
-                catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
-                try
-                {
-                    if (!orphanedBatch.MemoryReleased)
-                    {
-                        ReleaseMemory(orphanedBatch.DataSize);
-                        orphanedBatch.MemoryReleased = true;
-                    }
-                }
-                catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
-                try { ReturnReadyBatch(orphanedBatch); }
-                catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
-            }
-            _inFlightBatches.Clear();
-
-            // Reset counter and unblock any waiting flush
-            Interlocked.Exchange(ref _inFlightBatchCount, 0);
-            Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
-        }
+        ForceFailAllInFlightBatches();
 
         // Clear the batch pool
         _batchPool.Clear();
