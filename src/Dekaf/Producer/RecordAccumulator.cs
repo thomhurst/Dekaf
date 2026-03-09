@@ -715,7 +715,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = options.BufferMemory;
 
-
         // Use unbounded channel for ready batches - backpressure is now handled by buffer memory tracking
         // Single channel design: batches go directly to sender loop (no intermediate CompletionLoop)
         _readyBatches = Channel.CreateUnbounded<ReadyBatch>(new UnboundedChannelOptions
@@ -935,18 +934,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Check if we've exceeded max.block.ms
             var remainingMs = deadline - Environment.TickCount64;
             if (remainingMs <= 0)
-            {
-                var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
-                var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - currentTicks);
-                throw new KafkaTimeoutException(
-                    TimeoutKind.MaxBlock,
-                    elapsed,
-                    configured,
-                    $"Failed to allocate buffer within max.block.ms ({_options.MaxBlockMs}ms). " +
-                    $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes. " +
-                    $"Producer is generating messages faster than the network can send them. " +
-                    $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
-            }
+                ThrowBufferMemoryTimeout(recordSize, currentTicks);
 
             // Wait for signal from ReleaseMemory, with timeout and cancellation.
             // SemaphoreSlim.WaitAsync provides true async signal-based wake-up — no polling needed.
@@ -1007,18 +995,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Check timeout
             var remainingMs = deadline - Environment.TickCount64;
             if (remainingMs <= 0)
-            {
-                var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
-                var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - currentTicks);
-                throw new KafkaTimeoutException(
-                    TimeoutKind.MaxBlock,
-                    elapsed,
-                    configured,
-                    $"Failed to allocate buffer within max.block.ms ({_options.MaxBlockMs}ms). " +
-                    $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes. " +
-                    $"Producer is generating messages faster than the network can send them. " +
-                    $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
-            }
+                ThrowBufferMemoryTimeout(recordSize, currentTicks);
 
             // Reset event before waiting — ReleaseMemory will Set() it when space becomes available.
             _bufferSpaceAvailable.Reset();
@@ -1031,7 +1008,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             // Wait for signal from ReleaseMemory, disposal cancellation, or timeout.
             // MRES.Wait uses efficient spin-then-kernel-wait internally — no polling needed.
-            // _disposalCts.Token handles disposal interruption (replaces old _disposalEvent approach).
             try
             {
                 _bufferSpaceAvailable.Wait((int)Math.Min(remainingMs, int.MaxValue), _disposalCts.Token);
@@ -1041,6 +1017,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 throw new OperationCanceledException(_disposalCts.Token);
             }
         }
+    }
+
+    private void ThrowBufferMemoryTimeout(int recordSize, long startTicks)
+    {
+        var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
+        var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - startTicks);
+        throw new KafkaTimeoutException(
+            TimeoutKind.MaxBlock,
+            elapsed,
+            configured,
+            $"Failed to allocate buffer within max.block.ms ({_options.MaxBlockMs}ms). " +
+            $"Requested {recordSize} bytes, current usage: {Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes. " +
+            $"Producer is generating messages faster than the network can send them. " +
+            $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
     }
 
     /// <summary>
@@ -1082,7 +1072,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         try
         {
-            _asyncBufferSpaceSignal.Release();
+            if (_asyncBufferSpaceSignal.CurrentCount == 0)
+                _asyncBufferSpaceSignal.Release();
         }
         catch (ObjectDisposedException)
         {
@@ -1090,7 +1081,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         catch (SemaphoreFullException)
         {
-            // Already signaled (count at max 1) — fine, waiter will see it
+            // Race: count changed between check and Release — harmless
         }
     }
 
@@ -2566,8 +2557,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Ignore exceptions during cancellation
         }
 
-        // Wait for append workers to exit now that disposal event has been set.
-        // Workers blocked in ReserveMemoryAsync will be interrupted by the disposal event above.
+        // Wait for append workers to exit now that disposal token has been cancelled.
+        // Workers blocked in ReserveMemorySync/Async will be interrupted by the cancellation above.
         if (_appendWorkerTasks is not null)
         {
             try
