@@ -756,10 +756,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 }
             }
 
-            // While loop exited normally — cancellation was requested between iterations.
-            // We won't enter the OperationCanceledException catch block (no exception was thrown),
-            // so fail pending requests here to prevent callers from hanging indefinitely.
-            FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
+            // While loop exited normally (no exception thrown, so no catch block runs).
+            // Two cases: cancellation between iterations, or EOF break (already handled above).
+            if (cancellationToken.IsCancellationRequested)
+                FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
