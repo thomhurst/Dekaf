@@ -143,14 +143,17 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 
         Console.WriteLine($"[KafkaTestContainer] Creating topic '{topicName}' with {partitions} partition(s)...");
 
-        await CreateTopicAndWaitAsync(topicName, partitions, replicationFactor).ConfigureAwait(false);
+        await CreateTopicViaAdminClientAsync(topicName, partitions, replicationFactor).ConfigureAwait(false);
+
         Console.WriteLine($"[KafkaTestContainer] Topic '{topicName}' created");
     }
 
-    private async Task CreateTopicAndWaitAsync(string topicName, int partitions, int replicationFactor)
+    private async Task CreateTopicViaAdminClientAsync(string topicName, int partitions, int replicationFactor)
     {
         await using var adminClient = CreateAdminClient();
 
+        // CreateTopicsAsync now refreshes metadata after creation,
+        // so the topic is immediately visible in ListTopicsAsync.
         await adminClient.CreateTopicsAsync([
             new NewTopic
             {
@@ -159,27 +162,6 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
                 ReplicationFactor = (short)replicationFactor
             }
         ]).ConfigureAwait(false);
-
-        // Poll until topic appears in metadata using the SAME admin client connection.
-        // Active polling typically completes in <1s vs the old 3s fixed delay,
-        // saving ~2s per topic × 75+ topics = minutes of CI time.
-        for (var attempt = 0; attempt < 30; attempt++)
-        {
-            try
-            {
-                var topics = await adminClient.ListTopicsAsync().ConfigureAwait(false);
-                if (topics.Any(t => t.Name == topicName))
-                    return;
-            }
-            catch
-            {
-                // Metadata not yet available, retry
-            }
-
-            await Task.Delay(100).ConfigureAwait(false);
-        }
-
-        throw new InvalidOperationException($"Topic '{topicName}' not visible in metadata after 30 attempts");
     }
 
     /// <summary>

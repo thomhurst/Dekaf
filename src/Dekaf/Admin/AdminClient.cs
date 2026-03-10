@@ -96,6 +96,7 @@ public sealed class AdminClient : IAdminClient
             cancellationToken).ConfigureAwait(false);
 
         // Check for errors
+        var createdTopicNames = new List<string>(response.Topics.Count);
         foreach (var topic in response.Topics)
         {
             if (topic.ErrorCode != Protocol.ErrorCode.None)
@@ -103,7 +104,12 @@ public sealed class AdminClient : IAdminClient
                 throw new KafkaException(topic.ErrorCode,
                     $"Failed to create topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
             }
+
+            createdTopicNames.Add(topic.Name);
         }
+
+        // Refresh metadata so the newly created topics are visible in ListTopicsAsync
+        await _metadataManager.RefreshMetadataAsync(createdTopicNames, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask DeleteTopicsAsync(
@@ -157,6 +163,9 @@ public sealed class AdminClient : IAdminClient
                     $"Failed to delete topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
             }
         }
+
+        // Refresh metadata so deleted topics are no longer visible in ListTopicsAsync
+        await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<TopicListing>> ListTopicsAsync(
