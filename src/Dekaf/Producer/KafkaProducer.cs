@@ -2719,6 +2719,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         // Use PeriodicTimer instead of Task.Delay to avoid allocations on each tick.
         // PeriodicTimer.WaitForNextTickAsync is allocation-free after the timer is constructed.
+
+        // Orphan sweep interval: check for expired in-flight batches every ~5 seconds.
+        // This catches batches whose references were lost from BrokerSender data structures
+        // (root cause under investigation) — without this sweep, ProduceAsync hangs indefinitely.
+        var orphanSweepIntervalTicks = (long)(5.0 * Stopwatch.Frequency);
+        var lastOrphanSweepTicks = Stopwatch.GetTimestamp();
+
         try
         {
             while (await _lingerTimer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
@@ -2726,6 +2733,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 try
                 {
                     await _accumulator.ExpireLingerAsync(cancellationToken).ConfigureAwait(false);
+
+                    // Periodic orphan sweep: fail in-flight batches that exceeded delivery timeout.
+                    var now = Stopwatch.GetTimestamp();
+                    if (now - lastOrphanSweepTicks >= orphanSweepIntervalTicks)
+                    {
+                        lastOrphanSweepTicks = now;
+                        _accumulator.SweepExpiredInFlightBatches();
+                    }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {

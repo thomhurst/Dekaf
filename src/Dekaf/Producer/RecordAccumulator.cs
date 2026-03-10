@@ -2346,6 +2346,53 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Sweeps <see cref="_inFlightBatches"/> for batches whose delivery timeout has expired
+    /// and fails them. Called periodically from the linger loop as defense-in-depth against
+    /// batches whose references are lost from BrokerSender data structures (orphans).
+    /// Without this sweep, orphaned batches cause ProduceAsync to hang indefinitely because
+    /// their completion sources are never signaled.
+    /// </summary>
+    /// <returns>The number of expired batches that were failed.</returns>
+    internal int SweepExpiredInFlightBatches()
+    {
+        if (_inFlightBatches.IsEmpty)
+            return 0;
+
+        var now = Stopwatch.GetTimestamp();
+        var deliveryTimeoutTicks = (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+        var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
+        var expiredCount = 0;
+
+        foreach (var (batch, _) in _inFlightBatches)
+        {
+            var deadlineTicks = batch.StopwatchCreatedTicks + deliveryTimeoutTicks;
+            if (now < deadlineTicks)
+                continue; // Not yet expired
+
+            // Use OnBatchExitsPipeline as the atomic guard: only the first thread to
+            // remove the batch proceeds. This uses the same cleanup path as BrokerSender,
+            // ensuring consistent counter decrement and flush signaling per-batch.
+            if (!OnBatchExitsPipeline(batch))
+                continue; // Another thread already handled this batch
+
+            expiredCount++;
+            var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+
+            FailReleaseAndReturn(batch, new KafkaTimeoutException(
+                TimeoutKind.Delivery,
+                elapsed,
+                configured,
+                $"Delivery timeout exceeded for orphaned batch {batch.TopicPartition} " +
+                $"(elapsed: {elapsed.TotalSeconds:F1}s, limit: {configured.TotalSeconds:F0}s)"));
+        }
+
+        if (expiredCount > 0)
+            LogOrphanedBatchesSweep(expiredCount);
+
+        return expiredCount;
+    }
+
+    /// <summary>
     /// Fails all remaining in-flight batches tracked in <see cref="_inFlightBatches"/>.
     /// Used as a defense-in-depth sweep after BrokerSender disposal to catch batches
     /// whose references were lost from BrokerSender data structures.
@@ -2361,29 +2408,34 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         foreach (var (orphanedBatch, _) in _inFlightBatches)
         {
-            // TryRemove per entry instead of bulk Clear() to avoid racing with
-            // concurrent OnBatchExitsPipeline calls during disposal.
-            if (!_inFlightBatches.TryRemove(orphanedBatch, out _))
+            // OnBatchExitsPipeline uses TryRemove as atomic guard and decrements counter.
+            if (!OnBatchExitsPipeline(orphanedBatch))
                 continue; // Another thread already handled this batch
 
-            try { orphanedBatch.Fail(disposedException); }
-            catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
-            try
-            {
-                if (!orphanedBatch.MemoryReleased)
-                {
-                    ReleaseMemory(orphanedBatch.DataSize);
-                    orphanedBatch.MemoryReleased = true;
-                }
-            }
-            catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
-            try { ReturnReadyBatch(orphanedBatch); }
-            catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
+            FailReleaseAndReturn(orphanedBatch, disposedException);
         }
+    }
 
-        // Reset counter and unblock any waiting flush
-        Interlocked.Exchange(ref _inFlightBatchCount, 0);
-        Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
+    /// <summary>
+    /// Fails a batch, releases its memory, and returns it to the pool.
+    /// Shared cleanup sequence used by sweep and disposal paths.
+    /// Each step is individually guarded to ensure subsequent steps always run.
+    /// </summary>
+    private void FailReleaseAndReturn(ReadyBatch batch, Exception exception)
+    {
+        try { batch.Fail(exception); }
+        catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
+        try
+        {
+            if (!batch.MemoryReleased)
+            {
+                ReleaseMemory(batch.DataSize);
+                batch.MemoryReleased = true;
+            }
+        }
+        catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
+        try { ReturnReadyBatch(batch); }
+        catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
     }
 
     /// <summary>
@@ -2768,6 +2820,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Disposal sweep found {Count} orphaned in-flight batches — failing them to prevent hangs")]
     private partial void LogOrphanedBatchesDuringDisposal(int count);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Periodic sweep found {Count} orphaned in-flight batches past delivery timeout — failing them to prevent hangs")]
+    private partial void LogOrphanedBatchesSweep(int count);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Closing accumulator: {PendingBatchCount} pending batches")]
     private partial void LogCloseStarted(int pendingBatchCount);
@@ -4495,9 +4550,10 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// </summary>
     public void CompleteSend(long baseOffset, DateTimeOffset timestamp)
     {
-        // Guard against concurrent or stale calls (including stale references to recycled batches).
-        // Cleanup() below has its own Interlocked.Exchange guard for array returns.
-        if (Interlocked.CompareExchange(ref _cleanedUp, 0, 0) != 0)
+        // Atomic entry guard: only one thread can execute CompleteSend/Fail.
+        // Uses _cleanedUp as the serialization point — Cleanup() in the finally block
+        // is idempotent but callbacks and completion sources must only fire once.
+        if (Interlocked.Exchange(ref _cleanedUp, 1) != 0)
             return;
 
         try
@@ -4560,11 +4616,9 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
                 }
             }
 
-            // Signal batch is done (successfully) if not already completed
+            // Signal batch is done (successfully) if not already signaled by CompleteDelivery
             if (Interlocked.CompareExchange(ref _completed, 1, 0) == 0)
-            {
                 _doneCore.SetResult(true);
-            }
         }
         finally
         {
@@ -4581,8 +4635,11 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// </summary>
     public void Fail(Exception exception)
     {
-        // Guard against calling Fail after Cleanup has been performed
-        if (Interlocked.CompareExchange(ref _cleanedUp, 0, 0) != 0)
+        // Atomic entry guard: only one thread can execute Fail/CompleteSend.
+        // Uses _cleanedUp as the serialization point — prevents double-callback
+        // invocation when concurrent cleanup paths (e.g., BrokerSender timeout +
+        // orphan sweep) race to fail the same batch.
+        if (Interlocked.Exchange(ref _cleanedUp, 1) != 0)
             return;
 
         try
@@ -4635,9 +4692,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             // For fire-and-forget, no one awaits this, so exception would go unobserved
             // For FlushAsync, it just needs to know "done", not success/failure details
             if (Interlocked.CompareExchange(ref _completed, 1, 0) == 0)
-            {
                 _doneCore.SetResult(false);
-            }
         }
         finally
         {

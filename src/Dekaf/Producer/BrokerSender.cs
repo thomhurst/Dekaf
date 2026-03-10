@@ -825,11 +825,46 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (_pendingResponses.Count == 0) return;
 
         var writeIndex = 0;
+        var now = Stopwatch.GetTimestamp();
+        var deliveryTimeoutTicks = (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
         for (var i = 0; i < _pendingResponses.Count; i++)
         {
             var pending = _pendingResponses[i];
             if (!pending.ResponseTask.IsCompleted)
             {
+                // Check delivery timeout for batches in pending (not yet completed) entries.
+                // If a response task hangs (e.g., connection stuck without EOF detection),
+                // the delivery timeout catch here prevents indefinite ProduceAsync hangs.
+                // Early exit: skip inner scan if the request itself started recently enough
+                // that no batch could have expired yet.
+                if (now < pending.RequestStartTime + deliveryTimeoutTicks)
+                {
+                    _pendingResponses[writeIndex++] = pending;
+                    continue;
+                }
+
+                var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
+                for (var j = 0; j < pending.Count; j++)
+                {
+                    var batch = pending.Batches[j];
+                    if (batch is not null)
+                    {
+                        var deadline = batch.StopwatchCreatedTicks + deliveryTimeoutTicks;
+                        if (now >= deadline)
+                        {
+                            var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                            try
+                            {
+                                FailAndCleanupBatch(batch, new KafkaTimeoutException(
+                                    TimeoutKind.Delivery, elapsed, configured,
+                                    $"Delivery timeout exceeded while awaiting response for {batch.TopicPartition}"));
+                            }
+                            catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                            pending.Batches[j] = null!;
+                        }
+                    }
+                }
+
                 // Not yet complete — keep in list (compact)
                 _pendingResponses[writeIndex++] = pending;
                 continue;
