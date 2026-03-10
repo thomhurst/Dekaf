@@ -419,8 +419,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 //    where we'd loop indefinitely without ever awaiting the stuck
                                 //    response task, preventing graceful shutdown from completing.
                                 if (!channelWaitVt.Result)
-                                    await WaitForAnyPendingResponseAsync()
-                                        .WaitAsync(cancellationToken).ConfigureAwait(false);
+                                    await AwaitAnyPendingResponseIgnoringFaultsAsync(cancellationToken)
+                                        .ConfigureAwait(false);
                             }
                             else
                             {
@@ -532,15 +532,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                         while (_pendingResponses.Count >= _maxInFlight)
                         {
-                            // Free slots by processing any completed responses first
-                            ProcessCompletedResponses(pendingCarryOver, cancellationToken);
+                            // Free slots by processing any completed responses first.
+                            // Use newCarryOver (not pendingCarryOver) because pendingCarryOver was
+                            // already cleared after coalescing (line 492). Any retries added to
+                            // pendingCarryOver here would be silently lost: pendingCarryOver is
+                            // reassigned at the end of the iteration (line 651), and the old list
+                            // becomes newCarryOver in the NEXT iteration where it's cleared (line 475).
+                            ProcessCompletedResponses(newCarryOver, cancellationToken);
 
                             if (_pendingResponses.Count >= _maxInFlight)
                             {
                                 // Still at capacity — await any response completion
-                                await WaitForAnyPendingResponseAsync()
-                                    .WaitAsync(cancellationToken).ConfigureAwait(false);
-                                ProcessCompletedResponses(pendingCarryOver, cancellationToken);
+                                await AwaitAnyPendingResponseIgnoringFaultsAsync(cancellationToken)
+                                    .ConfigureAwait(false);
+                                ProcessCompletedResponses(newCarryOver, cancellationToken);
                             }
                         }
                     }
@@ -575,8 +580,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     if (channelWaitVt2.IsCompleted)
                     {
                         if (!channelWaitVt2.Result && _pendingResponses.Count > 0)
-                            await WaitForAnyPendingResponseAsync()
-                                .WaitAsync(cancellationToken).ConfigureAwait(false);
+                            await AwaitAnyPendingResponseIgnoringFaultsAsync(cancellationToken)
+                                .ConfigureAwait(false);
 
                         pendingCarryOver = newCarryOver;
                         continue;
@@ -1545,6 +1550,29 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 for (var i = 0; i < _pendingResponses.Count; i++)
                     tasks.Add(_pendingResponses[i].ResponseTask);
                 return Task.WhenAny(tasks);
+        }
+    }
+
+    /// <summary>
+    /// Awaits any pending response task completing, ignoring faults.
+    /// <see cref="WaitForAnyPendingResponseAsync"/> returns the raw response task for count=1,
+    /// so awaiting it directly would throw if the response faulted (e.g., IOException from
+    /// a connection drop). This wrapper catches such faults — the caller's subsequent
+    /// <see cref="ProcessCompletedResponses"/> will handle the faulted task properly.
+    /// For count >= 2, <see cref="Task.WhenAny"/> already wraps faults, so this is only
+    /// strictly needed for count=1, but we apply it uniformly for clarity.
+    /// </summary>
+    private async Task AwaitAnyPendingResponseIgnoringFaultsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await WaitForAnyPendingResponseAsync()
+                .WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Response task faulted (connection error, timeout, etc.).
+            // ProcessCompletedResponses will handle it — we just needed to wake up.
         }
     }
 

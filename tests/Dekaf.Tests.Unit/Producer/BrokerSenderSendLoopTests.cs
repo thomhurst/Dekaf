@@ -23,14 +23,15 @@ namespace Dekaf.Tests.Unit.Producer;
 /// </summary>
 public sealed class BrokerSenderSendLoopTests
 {
-    private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1) => new()
+    private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
+        int retryBackoffMs = 100, int retryBackoffMaxMs = 1000) => new()
     {
         BootstrapServers = ["localhost:9092"],
         MaxInFlightRequestsPerConnection = maxInFlight,
         Acks = acks,
         DeliveryTimeoutMs = 30_000,
-        RetryBackoffMs = 100,
-        RetryBackoffMaxMs = 1000,
+        RetryBackoffMs = retryBackoffMs,
+        RetryBackoffMaxMs = retryBackoffMaxMs,
         RequestTimeoutMs = 30_000,
         LingerMs = 0
     };
@@ -538,6 +539,107 @@ public sealed class BrokerSenderSendLoopTests
             // Fire-and-forget should complete quickly without waiting for a response
             var offset = await acknowledged.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await Assert.That(offset).IsEqualTo(-1); // Fire-and-forget offset is -1
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task SendLoop_FaultedResponseDuringInFlightWait_RetryBatchSurvivesCarryOverSwap()
+    {
+        // Regression test for the carry-over list swap bug:
+        // With maxInFlight=1, batch A is sent (fills the slot). Batch B arrives in the
+        // next iteration, gets coalesced, and enters the in-flight capacity wait (line 529).
+        // When batch A's response faults during the wait, ProcessCompletedResponses adds
+        // the retry batch to a carry-over list. The bug was using pendingCarryOver (already
+        // cleared at line 492) instead of newCarryOver — the retry batch was silently lost.
+        //
+        // This test verifies the retry batch survives: we should see 3 sends
+        // (batch A, batch B after slot freed, batch A retry) and both partitions acknowledged.
+
+        var tcs1 = new TaskCompletionSource<ProduceResponse>();
+        var tcs2 = new TaskCompletionSource<ProduceResponse>();
+        var tcs3 = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        responseQueue.Enqueue(tcs1); // Batch A — will fault
+        responseQueue.Enqueue(tcs2); // Batch B — sent after slot freed
+        responseQueue.Enqueue(tcs3); // Batch A retry
+
+        var sendCount = 0;
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource(), new TaskCompletionSource() };
+
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var idx = Interlocked.Increment(ref sendCount) - 1;
+            if (idx < sendSignals.Length)
+                sendSignals[idx].TrySetResult();
+        });
+        var options = CreateOptions(maxInFlight: 1, retryBackoffMs: 0, retryBackoffMaxMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+
+        var ackPartitions = new List<int>();
+        var allAcknowledged = new TaskCompletionSource();
+
+        var sender = CreateSender(pool, options, accumulator, (tp, offset, _, _, ex) =>
+        {
+            if (ex is null)
+            {
+                lock (ackPartitions)
+                {
+                    ackPartitions.Add(tp.Partition);
+                    if (ackPartitions.Count >= 2)
+                        allAcknowledged.TrySetResult();
+                }
+            }
+        });
+
+        try
+        {
+            // Enqueue batch A (partition 0) — send loop sends it immediately
+            var batchA = CreateTestBatch(vtPool, "test-topic", 0);
+            await sender.EnqueueAsync(batchA, CancellationToken.None);
+
+            // Wait for batch A to be sent (fills in-flight slot)
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            // Enqueue batch B (partition 1) — send loop reads it, coalesces it,
+            // but enters in-flight capacity wait (1 in-flight >= maxInFlight=1)
+            var batchB = CreateTestBatch(vtPool, "test-topic", 1);
+            await sender.EnqueueAsync(batchB, CancellationToken.None);
+
+            // Give the send loop time to enter the capacity wait
+            await Task.Delay(100);
+
+            // Fault batch A's response — triggers ProcessCompletedResponses inside
+            // the capacity wait. The retry batch must go to newCarryOver, not the
+            // already-cleared pendingCarryOver.
+            tcs1.SetException(new IOException("Connection reset"));
+
+            // Wait for batch B to be sent (slot freed by processing faulted response)
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            // Complete batch B's response
+            tcs2.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 200));
+
+            // Wait for batch A retry to be sent (survives carry-over swap)
+            await sendSignals[2].Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            // Complete the retry response
+            tcs3.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 100));
+
+            // Both partitions should be acknowledged
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            await Assert.That(ackPartitions).Contains(0);
+            await Assert.That(ackPartitions).Contains(1);
+
+            // Verify all 3 sends occurred (batch A, batch B, batch A retry)
+            await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(3);
         }
         finally
         {
