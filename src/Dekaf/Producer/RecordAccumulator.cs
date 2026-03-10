@@ -2359,7 +2359,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return 0;
 
         var now = Stopwatch.GetTimestamp();
-        var deliveryTimeoutTicks = (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+        var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
         var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
         var expiredCount = 0;
 
@@ -4407,8 +4407,9 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     // Never faults - uses SetResult(true) for success, SetResult(false) for failure
     private ManualResetValueTaskSourceCore<bool> _doneCore;
 
-    private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
-    private int _completed; // 0 = not completed, 1 = completed (prevents double-completion)
+    private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup in Cleanup())
+    private int _completed; // 0 = not completed, 1 = completed (prevents double-signal of _doneCore)
+    private int _sendCompleted; // 0 = not done, 1 = done (prevents concurrent CompleteSend/Fail)
 
     /// <summary>
     /// Creates an uninitialized ReadyBatch. Call Initialize() before use.
@@ -4441,6 +4442,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // and return early from CompleteSend/Fail, preventing pool corruption.
         Interlocked.Exchange(ref _cleanedUp, 0);
         Interlocked.Exchange(ref _completed, 0);
+        Interlocked.Exchange(ref _sendCompleted, 0);
 
         _topicPartition = topicPartition;
         _recordBatch = recordBatch;
@@ -4505,10 +4507,10 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         DebugLastBrokerId = -1;
 #endif
 
-        // NOTE: _cleanedUp and _completed are NOT reset here. They stay at 1 (armed)
-        // while the batch is in the pool, so that stale references from a previous lifecycle
-        // calling CompleteSend/Fail will hit the guard and return early. These flags are
-        // reset in Initialize() when the batch starts a new lifecycle.
+        // NOTE: _cleanedUp, _completed, and _sendCompleted are NOT reset here. They stay
+        // at 1 (armed) while the batch is in the pool, so that stale references from a
+        // previous lifecycle calling CompleteSend/Fail will hit the guard and return early.
+        // These flags are reset in Initialize() when the batch starts a new lifecycle.
 
         // Reset the ValueTaskSourceCore for reuse
         _doneCore.Reset();
@@ -4551,9 +4553,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     public void CompleteSend(long baseOffset, DateTimeOffset timestamp)
     {
         // Atomic entry guard: only one thread can execute CompleteSend/Fail.
-        // Uses _cleanedUp as the serialization point — Cleanup() in the finally block
-        // is idempotent but callbacks and completion sources must only fire once.
-        if (Interlocked.Exchange(ref _cleanedUp, 1) != 0)
+        // Separate from _cleanedUp so Cleanup() in the finally block still runs.
+        if (Interlocked.Exchange(ref _sendCompleted, 1) != 0)
             return;
 
         try
@@ -4636,10 +4637,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     public void Fail(Exception exception)
     {
         // Atomic entry guard: only one thread can execute Fail/CompleteSend.
-        // Uses _cleanedUp as the serialization point — prevents double-callback
-        // invocation when concurrent cleanup paths (e.g., BrokerSender timeout +
-        // orphan sweep) race to fail the same batch.
-        if (Interlocked.Exchange(ref _cleanedUp, 1) != 0)
+        // Separate from _cleanedUp so Cleanup() in the finally block still runs.
+        if (Interlocked.Exchange(ref _sendCompleted, 1) != 0)
             return;
 
         try
