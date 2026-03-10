@@ -2589,9 +2589,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
         }
         catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
-        // Remove from tracking BEFORE returning to pool. If ReturnReadyBatch resets
-        // the batch and another thread immediately rents it, OnBatchExitsPipeline must
-        // have already removed the OLD entry to avoid removing the NEW one.
+        // Remove from tracking BEFORE returning to pool. ReturnReadyBatch is idempotent
+        // (atomic _returnedToPool flag), so this is safe even if another path races.
         try { _accumulator.OnBatchExitsPipeline(batch); }
         catch (Exception exitEx) { LogBatchCleanupStepFailed(exitEx); }
         try { _accumulator.ReturnReadyBatch(batch); }

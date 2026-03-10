@@ -752,6 +752,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void ReturnReadyBatch(ReadyBatch batch)
     {
+        // Atomic guard: only the first caller returns the batch to the pool.
+        // Multiple paths may attempt to return the same batch (e.g., BrokerSender.CleanupBatch
+        // racing with ForceFailAllInFlightBatches during disposal). Double-return to the pool
+        // causes two renters to share the same object — silent data corruption.
+        if (Interlocked.Exchange(ref batch._returnedToPool, 1) != 0)
+            return;
+
         _readyBatchPool.Return(batch);
     }
 
@@ -2378,12 +2385,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             expiredCount++;
             var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
 
-            FailReleaseAndReturn(batch, new KafkaTimeoutException(
+            FailAndRelease(batch, new KafkaTimeoutException(
                 TimeoutKind.Delivery,
                 elapsed,
                 configured,
                 $"Delivery timeout exceeded for orphaned batch {batch.TopicPartition} " +
                 $"(elapsed: {elapsed.TotalSeconds:F1}s, limit: {configured.TotalSeconds:F0}s)"));
+            // Do NOT return to pool here. BrokerSender may still reference this batch
+            // in _pendingResponses. BrokerSender.CleanupBatch will return it when it
+            // processes the response. For truly orphaned batches (no BrokerSender reference),
+            // ForceFailAllInFlightBatches during disposal handles pool return.
         }
 
         if (expiredCount > 0)
@@ -2412,16 +2423,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (!OnBatchExitsPipeline(orphanedBatch))
                 continue; // Another thread already handled this batch
 
-            FailReleaseAndReturn(orphanedBatch, disposedException);
+            FailAndRelease(orphanedBatch, disposedException);
+            // During disposal, BrokerSenders are already stopped — safe to return to pool.
+            try { ReturnReadyBatch(orphanedBatch); }
+            catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
         }
     }
 
     /// <summary>
-    /// Fails a batch, releases its memory, and returns it to the pool.
-    /// Shared cleanup sequence used by sweep and disposal paths.
+    /// Fails a batch and releases its memory. Does NOT return the batch to the pool.
+    /// For sweep: BrokerSender still holds a reference in _pendingResponses — returning
+    /// to pool would cause use-after-free when the response arrives and BrokerSender
+    /// operates on a batch that has been reused for a different partition.
+    /// For disposal: caller adds explicit ReturnReadyBatch after this method.
     /// Each step is individually guarded to ensure subsequent steps always run.
     /// </summary>
-    private void FailReleaseAndReturn(ReadyBatch batch, Exception exception)
+    private void FailAndRelease(ReadyBatch batch, Exception exception)
     {
         try { batch.Fail(exception); }
         catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
@@ -2434,8 +2451,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
         catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
-        try { ReturnReadyBatch(batch); }
-        catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
     }
 
     /// <summary>
@@ -4410,6 +4425,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup in Cleanup())
     private int _completed; // 0 = not completed, 1 = completed (prevents double-signal of _doneCore)
     private int _sendCompleted; // 0 = not done, 1 = done (prevents concurrent CompleteSend/Fail)
+    internal int _returnedToPool; // 0 = not returned, 1 = returned (prevents double pool return)
 
     /// <summary>
     /// Creates an uninitialized ReadyBatch. Call Initialize() before use.
@@ -4443,6 +4459,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         Interlocked.Exchange(ref _cleanedUp, 0);
         Interlocked.Exchange(ref _completed, 0);
         Interlocked.Exchange(ref _sendCompleted, 0);
+        Interlocked.Exchange(ref _returnedToPool, 0);
 
         _topicPartition = topicPartition;
         _recordBatch = recordBatch;

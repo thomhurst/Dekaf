@@ -852,6 +852,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         var deadline = batch.StopwatchCreatedTicks + deliveryTimeoutTicks;
                         if (now >= deadline)
                         {
+                            // Unmute partition so new batches can proceed after timeout.
+                            // Without this, a muted retry batch that times out here
+                            // permanently blocks the partition — no new batches are sent.
+                            UnmutePartition(batch.TopicPartition);
                             var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
                             try
                             {
@@ -929,6 +933,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             for (var j = 0; j < pending.Count; j++)
             {
                 var batch = pending.Batches[j];
+                // Batch may have been nulled by the delivery timeout check above
+                // (a prior ProcessCompletedResponses call timed out this batch while
+                // the response was still pending, then the response completed).
+                if (batch is null)
+                    continue;
 #if DEBUG
                 batch.DebugLastTransition = (int)BatchTransition.ProcessingResponse;
                 Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} ProcessingResponse broker={_brokerId}");
@@ -1714,13 +1723,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _accumulator.ReleaseMemory(batch.DataSize);
             batch.MemoryReleased = true;
         }
-        // Remove from tracking BEFORE returning to pool. OnBatchExitsPipeline uses
-        // TryRemove as an atomic guard — if another thread already removed this batch
-        // (e.g., DisposeAsync racing with SendLoopAsync's finally block), skip
-        // ReturnReadyBatch to prevent double-return to the object pool.
-        if (!_accumulator.OnBatchExitsPipeline(batch))
-            return;
+        // Remove from tracking and decrement in-flight counter. OnBatchExitsPipeline uses
+        // TryRemove as an atomic guard — if another path already removed this batch
+        // (e.g., SweepExpiredInFlightBatches), it returns false but we still return
+        // the batch to the pool since the sweep defers pool return to BrokerSender.
+        _accumulator.OnBatchExitsPipeline(batch);
 
+        // ReturnReadyBatch is idempotent (atomic _returnedToPool flag), so this is safe
+        // even if ForceFailAllInFlightBatches races during disposal.
         try { _accumulator.ReturnReadyBatch(batch); }
         catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx, _brokerId); }
     }
