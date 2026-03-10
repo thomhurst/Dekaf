@@ -608,16 +608,13 @@ public sealed class BrokerSenderSendLoopTests
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             // Enqueue batch B (partition 1) — send loop reads it, coalesces it,
-            // but enters in-flight capacity wait (1 in-flight >= maxInFlight=1)
+            // but enters in-flight capacity wait (1 in-flight >= maxInFlight=1).
+            // Fault batch A's response immediately after enqueue — the send loop
+            // will either find it already faulted when entering the capacity wait
+            // (ProcessCompletedResponses handles it inline), or wake up from the
+            // fault if already waiting. Both paths exercise the carry-over fix.
             var batchB = CreateTestBatch(vtPool, "test-topic", 1);
             await sender.EnqueueAsync(batchB, CancellationToken.None);
-
-            // Give the send loop time to enter the capacity wait
-            await Task.Delay(100);
-
-            // Fault batch A's response — triggers ProcessCompletedResponses inside
-            // the capacity wait. The retry batch must go to newCarryOver, not the
-            // already-cleared pendingCarryOver.
             tcs1.SetException(new IOException("Connection reset"));
 
             // Wait for batch B to be sent (slot freed by processing faulted response)

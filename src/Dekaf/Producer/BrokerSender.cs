@@ -534,10 +534,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         {
                             // Free slots by processing any completed responses first.
                             // Use newCarryOver (not pendingCarryOver) because pendingCarryOver was
-                            // already cleared after coalescing (line 492). Any retries added to
-                            // pendingCarryOver here would be silently lost: pendingCarryOver is
-                            // reassigned at the end of the iteration (line 651), and the old list
-                            // becomes newCarryOver in the NEXT iteration where it's cleared (line 475).
+                            // already cleared in the "Clear after scanning" block above. Any retries
+                            // added to pendingCarryOver here would be silently lost: pendingCarryOver
+                            // is reassigned at the "Set carry-over for next iteration" swap below,
+                            // and the old list becomes newCarryOver in the NEXT iteration where it's
+                            // cleared at the top of the coalescing block.
                             ProcessCompletedResponses(newCarryOver, cancellationToken);
 
                             if (_pendingResponses.Count >= _maxInFlight)
