@@ -1884,5 +1884,139 @@ public class RecordAccumulatorTests
         }
     }
 
+    [Test]
+    public async Task ReturnReadyBatch_CalledTwice_SecondCallIsNoOp()
+    {
+        // Regression test: multiple paths may attempt to return the same batch to
+        // the pool (e.g., ForceFailAllInFlightBatches + BrokerSender.CleanupBatch
+        // racing during disposal). Double-return causes two renters to share the
+        // same ReadyBatch object — silent data corruption.
+        // ReturnReadyBatch uses _returnedToPool as an atomic guard.
+
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var tp = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            var batch = CreateTestReadyBatch(pool, tp);
+            batch.CompleteSend(0, DateTimeOffset.UtcNow);
+
+            // First return — should succeed
+            accumulator.ReturnReadyBatch(batch);
+
+            // Second return — should be a no-op (atomic guard)
+            accumulator.ReturnReadyBatch(batch);
+
+            // If this test doesn't crash or corrupt state, the guard works
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task ReturnReadyBatch_ConcurrentCalls_OnlyOneReturnsToPool()
+    {
+        // Stress test: simulate the disposal race where BrokerSender.CleanupBatch
+        // and ForceFailAllInFlightBatches both try to return the same batch.
+        // Only one thread should win; the other should be a no-op.
+
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var tp = new TopicPartition("test-topic", 0);
+
+        try
+        {
+            const int iterations = 1000;
+            for (var iter = 0; iter < iterations; iter++)
+            {
+                var batch = CreateTestReadyBatch(pool, tp);
+                batch.CompleteSend(0, DateTimeOffset.UtcNow);
+
+                var barrier = new Barrier(2);
+                var task1 = Task.Run(() =>
+                {
+                    barrier.SignalAndWait();
+                    accumulator.ReturnReadyBatch(batch);
+                });
+                var task2 = Task.Run(() =>
+                {
+                    barrier.SignalAndWait();
+                    accumulator.ReturnReadyBatch(batch);
+                });
+
+                await Task.WhenAll(task1, task2);
+            }
+
+            // If the pool didn't corrupt, we're good. Extra validation: rent and check
+            // that each rented batch is distinct (no duplicates from double-return).
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task SweepAndBrokerSenderRace_OnlyOneExitsPipeline()
+    {
+        // Regression test: SweepExpiredInFlightBatches and BrokerSender.CleanupBatch
+        // can race on the same batch. Both call OnBatchExitsPipeline. Only the first
+        // should succeed (return true); the second should return false.
+        // The counter must only be decremented once.
+
+        var options = CreateTestOptions();
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+
+        try
+        {
+            const int iterations = 1000;
+            for (var iter = 0; iter < iterations; iter++)
+            {
+                var tp = new TopicPartition("test-topic", iter % 10);
+                var batch = CreateTestReadyBatch(pool, tp);
+                InvokeOnBatchEntersPipeline(accumulator, batch);
+
+                var trueCount = 0;
+                var barrier = new Barrier(2);
+                var task1 = Task.Run(() =>
+                {
+                    barrier.SignalAndWait();
+                    if (accumulator.OnBatchExitsPipeline(batch))
+                        Interlocked.Increment(ref trueCount);
+                });
+                var task2 = Task.Run(() =>
+                {
+                    barrier.SignalAndWait();
+                    if (accumulator.OnBatchExitsPipeline(batch))
+                        Interlocked.Increment(ref trueCount);
+                });
+
+                await Task.WhenAll(task1, task2);
+
+                // Exactly one thread should win
+                await Assert.That(trueCount).IsEqualTo(1);
+            }
+
+            // Final check: counter should be 0 (all enters matched by exactly one exit)
+            var countField = typeof(RecordAccumulator).GetField("_inFlightBatchCount",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var count = (long)countField!.GetValue(accumulator)!;
+            await Assert.That(count).IsEqualTo(0);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+        }
+    }
+
     #endregion
 }

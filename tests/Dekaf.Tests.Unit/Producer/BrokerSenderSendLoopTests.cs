@@ -24,12 +24,13 @@ namespace Dekaf.Tests.Unit.Producer;
 public sealed class BrokerSenderSendLoopTests
 {
     private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
-        int retryBackoffMs = 100, int retryBackoffMaxMs = 1000) => new()
+        int retryBackoffMs = 100, int retryBackoffMaxMs = 1000,
+        int deliveryTimeoutMs = 30_000) => new()
     {
         BootstrapServers = ["localhost:9092"],
         MaxInFlightRequestsPerConnection = maxInFlight,
         Acks = acks,
-        DeliveryTimeoutMs = 30_000,
+        DeliveryTimeoutMs = deliveryTimeoutMs,
         RetryBackoffMs = retryBackoffMs,
         RetryBackoffMaxMs = retryBackoffMaxMs,
         RequestTimeoutMs = 30_000,
@@ -640,6 +641,81 @@ public sealed class BrokerSenderSendLoopTests
         }
         finally
         {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(15_000)]
+    public async Task SendLoop_HungResponseWithExpiredBatches_FreesCapacitySlot(CancellationToken cancellationToken)
+    {
+        // Regression test: when a response task never completes but all its batches expire
+        // via delivery timeout, the entry must be removed from _pendingResponses.
+        // Without removal, _pendingResponses.Count stays elevated and the send loop's
+        // capacity wait (while _pendingResponses.Count >= _maxInFlight) blocks forever.
+        //
+        // Scenario: maxInFlight=1, batch A is sent, response hangs. Delivery timeout fires
+        // and fails batch A. Second batch B arrives — it should be sendable after the
+        // zombie entry is discarded. Without the fix, the send loop hangs.
+
+        var tcs1 = new TaskCompletionSource<ProduceResponse>(); // Never completes — simulates hung connection
+        var tcs2 = new TaskCompletionSource<ProduceResponse>();
+        var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
+        responseQueue.Enqueue(tcs1);
+        responseQueue.Enqueue(tcs2);
+
+        var sendCount = 0;
+        var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
+
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        {
+            var idx = Interlocked.Increment(ref sendCount) - 1;
+            if (idx < sendSignals.Length)
+                sendSignals[idx].TrySetResult();
+        });
+
+        // Short delivery timeout (1s) so the test doesn't wait 120s for expiry.
+        var options = CreateOptions(maxInFlight: 1, deliveryTimeoutMs: 1_000);
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+
+        var acknowledged = new TaskCompletionSource<long>();
+
+        var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, ex) =>
+        {
+            if (ex is null)
+                acknowledged.TrySetResult(offset);
+        });
+
+        try
+        {
+            // Send first batch — response will hang
+            var batch1 = CreateTestBatch(vtPool, "test-topic", 0);
+            await sender.EnqueueAsync(batch1, CancellationToken.None);
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+
+            // Wait for delivery timeout to expire (1s + margin)
+            await Task.Delay(2_000, cancellationToken);
+
+            // Send second batch on different partition — should not hang
+            // (zombie entry from first request should be discarded)
+            var batch2 = CreateTestBatch(vtPool, "test-topic", 1);
+            await sender.EnqueueAsync(batch2, CancellationToken.None);
+
+            // Second batch should be sent (send loop freed the capacity slot)
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+            // Complete second response and verify acknowledgement
+            tcs2.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 42));
+            var offset = await acknowledged.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await Assert.That(offset).IsEqualTo(42);
+        }
+        finally
+        {
+            // Complete the hung response to allow clean disposal
+            tcs1.TrySetCanceled(CancellationToken.None);
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
             await vtPool.DisposeAsync();
