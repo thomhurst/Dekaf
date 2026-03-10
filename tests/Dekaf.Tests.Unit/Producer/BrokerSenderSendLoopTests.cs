@@ -483,13 +483,30 @@ public sealed class BrokerSenderSendLoopTests
             // Wait for at least one send to occur (deterministic)
             await allSent.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            // Complete responses in reverse order to verify order-independent processing
-            for (var i = batchCount - 1; i >= 0; i--)
+            // Complete responses. Batches may coalesce into fewer requests, so each
+            // response must include ALL partition data. Complete in reverse order to
+            // verify order-independent processing.
+            var combinedResponse = new ProduceResponse
             {
-                tcsList[i].SetResult(CreateSuccessResponse("test-topic", i, baseOffset: (i + 1) * 100));
-            }
+                Responses =
+                [
+                    new ProduceResponseTopicData
+                    {
+                        Name = "test-topic",
+                        PartitionResponses = Enumerable.Range(0, batchCount)
+                            .Select(i => new ProduceResponsePartitionData
+                            {
+                                Index = i,
+                                ErrorCode = ErrorCode.None,
+                                BaseOffset = (i + 1) * 100
+                            }).ToArray()
+                    }
+                ]
+            };
+            for (var i = batchCount - 1; i >= 0; i--)
+                tcsList[i].TrySetResult(combinedResponse);
 
-            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
             await Assert.That(ackOffsets).Contains(100L);
             await Assert.That(ackOffsets).Contains(200L);
