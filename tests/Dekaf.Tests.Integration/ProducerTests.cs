@@ -45,6 +45,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-acks-one")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .BuildAsync();
 
@@ -543,6 +544,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-high-throughput")
+            .WithIdempotence(false) // Disable idempotence for Acks.Leader throughput
             .WithAcks(Acks.Leader) // Faster acks for throughput test
             .WithLinger(TimeSpan.FromMilliseconds(5)) // Small linger for batching
             .WithBatchSize(65536) // Larger batches

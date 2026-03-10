@@ -427,6 +427,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <remarks>
     /// <para>Settings applied:</para>
     /// <list type="bullet">
+    /// <item><description>Idempotence: Disabled (required for Acks.Leader)</description></item>
     /// <item><description>Acks: Leader only (faster acknowledgment)</description></item>
     /// <item><description>LingerMs: 5ms (allows batching)</description></item>
     /// <item><description>BatchSize: 2MB (larger batches for maximum throughput)</description></item>
@@ -437,6 +438,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <returns>The builder instance for method chaining.</returns>
     public ProducerBuilder<TKey, TValue> ForHighThroughput()
     {
+        _enableIdempotence = false; // Acks.Leader requires idempotence disabled
         _acks = Acks.Leader;
         _lingerMs = 5;
         _batchSize = 2097152;
@@ -450,6 +452,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <remarks>
     /// <para>Settings applied:</para>
     /// <list type="bullet">
+    /// <item><description>Idempotence: Disabled (required for Acks.Leader)</description></item>
     /// <item><description>Acks: Leader only (faster acknowledgment)</description></item>
     /// <item><description>LingerMs: 0ms (no batching delay)</description></item>
     /// <item><description>BatchSize: 256KB (smaller batches for lower latency)</description></item>
@@ -459,6 +462,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <returns>The builder instance for method chaining.</returns>
     public ProducerBuilder<TKey, TValue> ForLowLatency()
     {
+        _enableIdempotence = false; // Acks.Leader requires idempotence disabled
         _acks = Acks.Leader;
         _lingerMs = 0;
         _batchSize = 262144;
@@ -593,7 +597,14 @@ public sealed class ProducerBuilder<TKey, TValue>
             throw new InvalidOperationException("Idempotence cannot be disabled when TransactionalId is set. Transactions require idempotence for correctness.");
 
         if (_enableIdempotence && _acks == Acks.None)
-            throw new InvalidOperationException("Idempotence requires Acks.Leader or Acks.All. Acks.None is incompatible because the broker cannot acknowledge sequence numbers without sending a response.");
+            throw new InvalidOperationException("Acks.None is incompatible with idempotence because the broker cannot acknowledge sequence numbers without sending a response.");
+
+        // Java Kafka client enforces acks=all when enable.idempotence=true.
+        // With acks=leader, the leader acknowledges before ISR replication completes,
+        // which can cause OutOfOrderSequenceNumber on leader failover and makes the
+        // idempotent guarantee weaker. Override silently to match Java client behavior.
+        if (_enableIdempotence && _acks != Acks.All)
+            _acks = Acks.All;
 
         var keySerializer = _keySerializer ?? GetDefaultSerializer<TKey>();
         var valueSerializer = _valueSerializer ?? GetDefaultSerializer<TValue>();

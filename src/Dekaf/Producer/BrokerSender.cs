@@ -1159,9 +1159,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var batch = batches[i];
                     var tp = batch.TopicPartition;
                     var recordCount = batch.RecordBatch.Records.Count;
+                    // Check both epoch AND ProducerId. Epoch-only check misses the case
+                    // where InitProducerIdRequest returns a completely new ProducerId
+                    // (e.g., broker version < v3, or broker-side PID reallocation).
                     var isStaleEpoch = currentEpoch >= 0
                         && batch.RecordBatch.ProducerEpoch >= 0
-                        && batch.RecordBatch.ProducerEpoch != currentEpoch;
+                        && (batch.RecordBatch.ProducerEpoch != currentEpoch
+                            || batch.RecordBatch.ProducerId != currentPid);
 
                     if (isStaleEpoch)
                     {
