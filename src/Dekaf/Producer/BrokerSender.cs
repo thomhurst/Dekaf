@@ -869,8 +869,30 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
-                // Not yet complete — keep in list (compact)
-                _pendingResponses[writeIndex++] = pending;
+                // If all batches were timed out, discard the entry entirely.
+                // Without this, the entry with a never-completing ResponseTask stays in
+                // _pendingResponses, keeping Count elevated and blocking the capacity wait
+                // (while _pendingResponses.Count >= _maxInFlight) indefinitely.
+                var anyBatchRemaining = false;
+                for (var j = 0; j < pending.Count; j++)
+                {
+                    if (pending.Batches[j] is not null)
+                    {
+                        anyBatchRemaining = true;
+                        break;
+                    }
+                }
+
+                if (anyBatchRemaining)
+                {
+                    // Some batches still alive — keep in list
+                    _pendingResponses[writeIndex++] = pending;
+                }
+                else
+                {
+                    // All batches timed out — discard entry and return array
+                    ArrayPool<ReadyBatch>.Shared.Return(pending.Batches, clearArray: true);
+                }
                 continue;
             }
 

@@ -2358,6 +2358,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// batches whose references are lost from BrokerSender data structures (orphans).
     /// Without this sweep, orphaned batches cause ProduceAsync to hang indefinitely because
     /// their completion sources are never signaled.
+    /// Uses 3x delivery timeout to avoid interfering with normal delivery timeout handling
+    /// in BrokerSender.ProcessCompletedResponses (which runs at 1x). The sweep is only
+    /// for truly orphaned batches that fell out of all BrokerSender data structures.
     /// </summary>
     /// <returns>The number of expired batches that were failed.</returns>
     internal int SweepExpiredInFlightBatches()
@@ -2366,8 +2369,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return 0;
 
         var now = Stopwatch.GetTimestamp();
-        var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
-        var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
+        // Use 3x delivery timeout for the sweep. BrokerSender.ProcessCompletedResponses
+        // handles normal delivery timeout (1x) for batches still tracked in _pendingResponses.
+        // The sweep only catches truly orphaned batches — those not in any data structure.
+        var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks * 3;
+        var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs * 3);
         var expiredCount = 0;
 
         foreach (var (batch, _) in _inFlightBatches)
