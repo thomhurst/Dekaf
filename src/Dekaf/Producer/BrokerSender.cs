@@ -1108,9 +1108,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             LogRetriableErrorWithBackoff(errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
                 _options.RetryBackoffMs);
 
-            // Fire-and-forget metadata refresh for leader changes
-            _ = _metadataManager.RefreshMetadataAsync(
-                [batch.TopicPartition.Topic], cancellationToken);
+            // Fire-and-forget metadata refresh for leader changes.
+            // Observe exceptions to prevent UnobservedTaskException on GC.
+            _ = ObserveMetadataRefreshAsync(batch.TopicPartition.Topic, cancellationToken);
 
             // Set backoff via RetryNotBefore instead of Task.Delay
             batch.RetryNotBefore = Stopwatch.GetTimestamp() +
@@ -1786,6 +1786,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         _cts.Dispose();
+    }
+
+    private async Task ObserveMetadataRefreshAsync(string topic, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _metadataManager.RefreshMetadataAsync([topic], cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Best-effort refresh — failures are already logged by MetadataManager
+        }
     }
 
     #region Logging
