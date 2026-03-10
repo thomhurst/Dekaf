@@ -108,8 +108,59 @@ public sealed class AdminClient : IAdminClient
             createdTopicNames.Add(topic.Name);
         }
 
-        // Refresh metadata so the newly created topics are visible in ListTopicsAsync
-        await _metadataManager.RefreshMetadataAsync(createdTopicNames, cancellationToken).ConfigureAwait(false);
+        // Wait until metadata shows all created topics with partition leaders assigned.
+        // The broker acknowledges topic creation before leader election completes,
+        // so a single metadata refresh may return topics with LeaderNotAvailable.
+        // Poll until every partition has a leader, matching the retry pattern in
+        // MetadataManager.GetTopicMetadataSlowAsync.
+        if (!opts.ValidateOnly)
+        {
+            await WaitForTopicLeadersAsync(createdTopicNames, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async ValueTask WaitForTopicLeadersAsync(
+        List<string> topicNames,
+        CancellationToken cancellationToken)
+    {
+        const int maxRetries = 5;
+        const int retryDelayMs = 500;
+
+        for (var attempt = 0; attempt < maxRetries; attempt++)
+        {
+            await _metadataManager.RefreshMetadataAsync(topicNames, cancellationToken).ConfigureAwait(false);
+
+            var allReady = true;
+            foreach (var topicName in topicNames)
+            {
+                var topic = _metadataManager.Metadata.GetTopic(topicName);
+                if (topic is null || topic.PartitionCount == 0 ||
+                    topic.ErrorCode is Protocol.ErrorCode.LeaderNotAvailable or Protocol.ErrorCode.UnknownTopicOrPartition)
+                {
+                    allReady = false;
+                    break;
+                }
+
+                // Check that every partition has a leader assigned
+                foreach (var partition in topic.Partitions)
+                {
+                    if (partition.LeaderId < 0 ||
+                        partition.ErrorCode is Protocol.ErrorCode.LeaderNotAvailable)
+                    {
+                        allReady = false;
+                        break;
+                    }
+                }
+
+                if (!allReady)
+                    break;
+            }
+
+            if (allReady)
+                return;
+
+            await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public async ValueTask DeleteTopicsAsync(
