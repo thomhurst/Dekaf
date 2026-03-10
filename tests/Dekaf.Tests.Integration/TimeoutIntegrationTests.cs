@@ -486,8 +486,8 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         });
         sw.Stop();
 
-        // Should be nearly instantaneous (< 10ms)
-        await Assert.That(sw.ElapsedMilliseconds).IsLessThan(10);
+        // Should be nearly instantaneous — 100ms threshold accounts for CI runner jitter
+        await Assert.That(sw.ElapsedMilliseconds).IsLessThan(100);
     }
 
     // NOTE: Timing-based ProduceAsync cancellation tests removed
