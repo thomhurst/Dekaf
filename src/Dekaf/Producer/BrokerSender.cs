@@ -620,7 +620,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 earliestBackoff = newCarryOver[i].RetryNotBefore;
 
                             var deadlineTicks = newCarryOver[i].StopwatchCreatedTicks +
-                                (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+                                _options.DeliveryTimeoutTicks;
                             if (deadlineTicks < earliestDeadlineTicks)
                                 earliestDeadlineTicks = deadlineTicks;
                         }
@@ -826,7 +826,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         var writeIndex = 0;
         var now = Stopwatch.GetTimestamp();
-        var deliveryTimeoutTicks = (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+        var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
         for (var i = 0; i < _pendingResponses.Count; i++)
         {
             var pending = _pendingResponses[i];
@@ -1054,7 +1054,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         // Check delivery deadline
         var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
-            (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+            _options.DeliveryTimeoutTicks;
 
         if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
         {
@@ -1114,7 +1114,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Set backoff via RetryNotBefore instead of Task.Delay
             batch.RetryNotBefore = Stopwatch.GetTimestamp() +
-                (long)(_options.RetryBackoffMs * (Stopwatch.Frequency / 1000.0));
+                _options.RetryBackoffTicks;
         }
 
         _statisticsCollector.RecordRetry();
@@ -1339,7 +1339,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     // Check delivery deadline before retrying
                     var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
-                        (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+                        _options.DeliveryTimeoutTicks;
 
                     if (Stopwatch.GetTimestamp() >= deliveryDeadlineTicks)
                     {
@@ -1358,7 +1358,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         _mutedPartitions.TryAdd(batch.TopicPartition, 0);
                         batch.IsRetry = true;
                         batch.RetryNotBefore = Stopwatch.GetTimestamp() +
-                            (long)(_options.RetryBackoffMs * (Stopwatch.Frequency / 1000.0));
+                            _options.RetryBackoffTicks;
                         _sendFailedRetries.Add(batch);
 #if DEBUG
                         batch.DebugLastTransition = (int)BatchTransition.AddedToSendFailedRetries;
@@ -1636,7 +1636,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             var batch = carryOver[i];
             var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
-                (long)(_options.DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+                _options.DeliveryTimeoutTicks;
 
             if (now >= deliveryDeadlineTicks)
             {
