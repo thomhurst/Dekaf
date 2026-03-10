@@ -425,7 +425,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             else
                             {
                                 var anyResponseTask = WaitForAnyPendingResponseAsync();
-                                await Task.WhenAny(channelWaitVt.AsTask(), anyResponseTask).ConfigureAwait(false);
+                                var deadlineTask = GetEarliestDeliveryDeadlineDelayAsync(cancellationToken);
+                                await Task.WhenAny(channelWaitVt.AsTask(), anyResponseTask, deadlineTask).ConfigureAwait(false);
                             }
                         }
                     }
@@ -602,6 +603,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // nested WhenAny allocation. The outer WhenAny handles everything.
                         for (var i = 0; i < _pendingResponses.Count; i++)
                             reusableWaitTasks.Add(_pendingResponses[i].ResponseTask);
+
+                        // Delivery deadline timer for pending responses — ensures the
+                        // loop wakes to expire timed-out batches even if response tasks
+                        // hang (e.g., silent connection failure past request timeout).
+                        reusableWaitTasks.Add(
+                            GetEarliestDeliveryDeadlineDelayAsync(cancellationToken));
                     }
 
                     // When carry-over exists, wait for unmute signal and calculate
@@ -1629,16 +1636,51 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// For count >= 2, <see cref="Task.WhenAny"/> already wraps faults, so this is only
     /// strictly needed for count=1, but we apply it uniformly for clarity.
     /// </summary>
+    /// <summary>
+    /// Returns a task that completes when the earliest pending response reaches its delivery
+    /// deadline. This ensures the send loop wakes periodically to run ProcessCompletedResponses
+    /// even if all response tasks hang (e.g., silent connection failure past the request timeout).
+    /// Called from the single-threaded send loop only.
+    /// </summary>
+    private Task GetEarliestDeliveryDeadlineDelayAsync(CancellationToken cancellationToken)
+    {
+        var now = Stopwatch.GetTimestamp();
+        var earliestDeadline = long.MaxValue;
+        for (var i = 0; i < _pendingResponses.Count; i++)
+        {
+            // Use the earliest batch creation time + delivery timeout as the deadline.
+            // RequestStartTime is close enough — it's set right before sending.
+            var deadline = _pendingResponses[i].RequestStartTime + _options.DeliveryTimeoutTicks;
+            if (deadline < earliestDeadline)
+                earliestDeadline = deadline;
+        }
+
+        if (earliestDeadline >= long.MaxValue)
+            return Task.Delay(Timeout.Infinite, cancellationToken);
+
+        var delayTicks = earliestDeadline - now;
+        if (delayTicks <= 0)
+            return Task.CompletedTask;
+
+        var delayMs = (int)(delayTicks * 1000.0 / Stopwatch.Frequency);
+        return Task.Delay(Math.Max(1, delayMs), cancellationToken);
+    }
+
     private async Task AwaitAnyPendingResponseIgnoringFaultsAsync(CancellationToken cancellationToken)
     {
         try
         {
+            // Use delivery timeout as an upper bound to ensure the send loop wakes
+            // even if response tasks hang (e.g., silent connection failure, broker not
+            // responding past the request timeout). ProcessCompletedResponses runs at
+            // the top of each loop iteration and handles delivery timeout expiration.
+            var timeout = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
             await WaitForAnyPendingResponseAsync()
-                .WaitAsync(cancellationToken).ConfigureAwait(false);
+                .WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
-            // Response task faulted (connection error, timeout, etc.).
+            // Response task faulted, timed out, or delivery deadline elapsed.
             // ProcessCompletedResponses will handle it — we just needed to wake up.
         }
     }
