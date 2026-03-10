@@ -39,7 +39,7 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
 
         // Poll until at least one stats callback fires
         await Assert.That(() => stats.Count)
-            .WaitsFor(c => c.IsGreaterThanOrEqualTo(1), timeout: TimeSpan.FromSeconds(10));
+            .Eventually(c => c.IsGreaterThanOrEqualTo(1), timeout: TimeSpan.FromSeconds(10));
 
         var latestStats = stats.OrderByDescending(s => s.Timestamp).First();
         await Assert.That(latestStats.MessagesProduced).IsGreaterThanOrEqualTo(messageCount);
@@ -71,7 +71,7 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
 
         // Poll until multiple stats callbacks fire
         await Assert.That(() => stats.Count)
-            .WaitsFor(c => c.IsGreaterThanOrEqualTo(2), timeout: TimeSpan.FromSeconds(10));
+            .Eventually(c => c.IsGreaterThanOrEqualTo(2), timeout: TimeSpan.FromSeconds(10));
     }
 
     [Test]
@@ -109,7 +109,7 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
 
         // Poll until stats callback fires with group info
         await Assert.That(() => stats.Count)
-            .WaitsFor(c => c.IsGreaterThanOrEqualTo(1), timeout: TimeSpan.FromSeconds(10));
+            .Eventually(c => c.IsGreaterThanOrEqualTo(1), timeout: TimeSpan.FromSeconds(10));
 
         var latestStats = stats.OrderByDescending(s => s.Timestamp).First();
         await Assert.That(latestStats.GroupId).IsEqualTo(groupId);
