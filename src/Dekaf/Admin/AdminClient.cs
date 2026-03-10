@@ -56,11 +56,9 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
-
         var opts = options ?? new CreateTopicsOptions();
 
-        // Convert NewTopic to CreateTopicData
+        // Materialize before retry to avoid re-enumeration of potentially lazy sequences
         var topicData = topics.Select(t => new CreateTopicData
         {
             Name = t.Name,
@@ -78,45 +76,50 @@ public sealed class AdminClient : IAdminClient
             }).ToList()
         }).ToList();
 
-        var request = new CreateTopicsRequest
+        await WithRetryAsync(async () =>
         {
-            Topics = topicData,
-            TimeoutMs = opts.TimeoutMs,
-            ValidateOnly = opts.ValidateOnly
-        };
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
 
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.CreateTopics,
-            CreateTopicsRequest.LowestSupportedVersion,
-            CreateTopicsRequest.HighestSupportedVersion);
-
-        var response = await controller.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        // Check for errors
-        var createdTopicNames = new List<string>(response.Topics.Count);
-        foreach (var topic in response.Topics)
-        {
-            if (topic.ErrorCode != Protocol.ErrorCode.None)
+            var request = new CreateTopicsRequest
             {
-                throw new KafkaException(topic.ErrorCode,
-                    $"Failed to create topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
+                Topics = topicData,
+                TimeoutMs = opts.TimeoutMs,
+                ValidateOnly = opts.ValidateOnly
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.CreateTopics,
+                CreateTopicsRequest.LowestSupportedVersion,
+                CreateTopicsRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<CreateTopicsRequest, CreateTopicsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            // Check for errors
+            var createdTopicNames = new List<string>(response.Topics.Count);
+            foreach (var topic in response.Topics)
+            {
+                if (topic.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new KafkaException(topic.ErrorCode,
+                        $"Failed to create topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
+                }
+
+                createdTopicNames.Add(topic.Name);
             }
 
-            createdTopicNames.Add(topic.Name);
-        }
-
-        // Wait until metadata shows all created topics with partition leaders assigned.
-        // The broker acknowledges topic creation before leader election completes,
-        // so a single metadata refresh may return topics with LeaderNotAvailable.
-        // Poll until every partition has a leader, matching the retry pattern in
-        // MetadataManager.GetTopicMetadataSlowAsync.
-        if (!opts.ValidateOnly)
-        {
-            await WaitForTopicLeadersAsync(createdTopicNames, cancellationToken).ConfigureAwait(false);
-        }
+            // Wait until metadata shows all created topics with partition leaders assigned.
+            // The broker acknowledges topic creation before leader election completes,
+            // so a single metadata refresh may return topics with LeaderNotAvailable.
+            // Poll until every partition has a leader, matching the retry pattern in
+            // MetadataManager.GetTopicMetadataSlowAsync.
+            if (!opts.ValidateOnly)
+            {
+                await WaitForTopicLeadersAsync(createdTopicNames, cancellationToken).ConfigureAwait(false);
+            }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask WaitForTopicLeadersAsync(
@@ -170,50 +173,53 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
-
         var opts = options ?? new DeleteTopicsOptions();
         var names = topicNames.ToList();
 
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.DeleteTopics,
-            DeleteTopicsRequest.LowestSupportedVersion,
-            DeleteTopicsRequest.HighestSupportedVersion);
-
-        DeleteTopicsRequest request;
-        if (apiVersion >= 6)
+        await WithRetryAsync(async () =>
         {
-            // v6+: Use Topics array with name/id
-            request = new DeleteTopicsRequest
-            {
-                Topics = names.Select(n => new DeleteTopicState { Name = n }).ToList(),
-                TimeoutMs = opts.TimeoutMs
-            };
-        }
-        else
-        {
-            // v0-v5: Use TopicNames array
-            request = new DeleteTopicsRequest
-            {
-                TopicNames = names,
-                TimeoutMs = opts.TimeoutMs
-            };
-        }
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
 
-        var response = await controller.SendAsync<DeleteTopicsRequest, DeleteTopicsResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DeleteTopics,
+                DeleteTopicsRequest.LowestSupportedVersion,
+                DeleteTopicsRequest.HighestSupportedVersion);
 
-        // Check for errors
-        foreach (var topic in response.Responses)
-        {
-            if (topic.ErrorCode != Protocol.ErrorCode.None)
+            DeleteTopicsRequest request;
+            if (apiVersion >= 6)
             {
-                throw new KafkaException(topic.ErrorCode,
-                    $"Failed to delete topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
+                // v6+: Use Topics array with name/id
+                request = new DeleteTopicsRequest
+                {
+                    Topics = names.Select(n => new DeleteTopicState { Name = n }).ToList(),
+                    TimeoutMs = opts.TimeoutMs
+                };
             }
-        }
+            else
+            {
+                // v0-v5: Use TopicNames array
+                request = new DeleteTopicsRequest
+                {
+                    TopicNames = names,
+                    TimeoutMs = opts.TimeoutMs
+                };
+            }
+
+            var response = await controller.SendAsync<DeleteTopicsRequest, DeleteTopicsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            // Check for errors
+            foreach (var topic in response.Responses)
+            {
+                if (topic.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new KafkaException(topic.ErrorCode,
+                        $"Failed to delete topic '{topic.Name}': {topic.ErrorMessage ?? topic.ErrorCode.ToString()}");
+                }
+            }
+        }, cancellationToken).ConfigureAwait(false);
 
         // Refresh metadata so deleted topics are no longer visible in ListTopicsAsync
         await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
@@ -287,72 +293,75 @@ public sealed class AdminClient : IAdminClient
 
         var groupIdList = groupIds.ToList();
 
-        // Find coordinator for each group and batch groups by coordinator
-        var groupsByCoordinator = new Dictionary<int, List<string>>();
-        foreach (var groupId in groupIdList)
+        return await WithRetryAsync<IReadOnlyDictionary<string, GroupDescription>>(async () =>
         {
-            var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-            if (!groupsByCoordinator.TryGetValue(coordinatorId, out var groups))
+            // Find coordinator for each group and batch groups by coordinator
+            var groupsByCoordinator = new Dictionary<int, List<string>>();
+            foreach (var groupId in groupIdList)
             {
-                groups = [];
-                groupsByCoordinator[coordinatorId] = groups;
-            }
-            groups.Add(groupId);
-        }
-
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.DescribeGroups,
-            DescribeGroupsRequest.LowestSupportedVersion,
-            DescribeGroupsRequest.HighestSupportedVersion);
-
-        var result = new Dictionary<string, GroupDescription>();
-
-        // Send requests per coordinator
-        foreach (var (coordinatorId, groups) in groupsByCoordinator)
-        {
-            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
-
-            var request = new DescribeGroupsRequest
-            {
-                Groups = groups
-            };
-
-            var response = await connection.SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(
-                request,
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
-
-            foreach (var group in response.Groups)
-            {
-                if (group.ErrorCode != Protocol.ErrorCode.None)
+                var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+                if (!groupsByCoordinator.TryGetValue(coordinatorId, out var groups))
                 {
-                    throw new Errors.GroupException(group.ErrorCode,
-                        $"DescribeConsumerGroups failed for group '{group.GroupId}': {group.ErrorCode}")
+                    groups = [];
+                    groupsByCoordinator[coordinatorId] = groups;
+                }
+                groups.Add(groupId);
+            }
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DescribeGroups,
+                DescribeGroupsRequest.LowestSupportedVersion,
+                DescribeGroupsRequest.HighestSupportedVersion);
+
+            var result = new Dictionary<string, GroupDescription>();
+
+            // Send requests per coordinator
+            foreach (var (coordinatorId, groups) in groupsByCoordinator)
+            {
+                var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+
+                var request = new DescribeGroupsRequest
+                {
+                    Groups = groups
+                };
+
+                var response = await connection.SendAsync<DescribeGroupsRequest, DescribeGroupsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                foreach (var group in response.Groups)
+                {
+                    if (group.ErrorCode != Protocol.ErrorCode.None)
                     {
-                        GroupId = group.GroupId
+                        throw new Errors.GroupException(group.ErrorCode,
+                            $"DescribeConsumerGroups failed for group '{group.GroupId}': {group.ErrorCode}")
+                        {
+                            GroupId = group.GroupId
+                        };
+                    }
+
+                    result[group.GroupId] = new GroupDescription
+                    {
+                        GroupId = group.GroupId,
+                        ProtocolType = group.ProtocolType,
+                        ProtocolData = group.ProtocolData,
+                        State = group.GroupState,
+                        CoordinatorId = coordinatorId,
+                        Members = group.Members.Select(m => new MemberDescription
+                        {
+                            MemberId = m.MemberId,
+                            GroupInstanceId = m.GroupInstanceId,
+                            ClientId = m.ClientId,
+                            ClientHost = m.ClientHost,
+                            Assignment = ParseMemberAssignment(m.MemberAssignment)
+                        }).ToList()
                     };
                 }
-
-                result[group.GroupId] = new GroupDescription
-                {
-                    GroupId = group.GroupId,
-                    ProtocolType = group.ProtocolType,
-                    ProtocolData = group.ProtocolData,
-                    State = group.GroupState,
-                    CoordinatorId = coordinatorId,
-                    Members = group.Members.Select(m => new MemberDescription
-                    {
-                        MemberId = m.MemberId,
-                        GroupInstanceId = m.GroupInstanceId,
-                        ClientId = m.ClientId,
-                        ClientHost = m.ClientHost,
-                        Assignment = ParseMemberAssignment(m.MemberAssignment)
-                    }).ToList()
-                };
             }
-        }
 
-        return result;
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<GroupListing>> ListConsumerGroupsAsync(
@@ -362,63 +371,67 @@ public sealed class AdminClient : IAdminClient
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         var opts = options ?? new ListConsumerGroupsOptions();
-        var brokers = _metadataManager.Metadata.GetBrokers();
-        if (brokers.Count == 0)
+
+        return await WithRetryAsync<IReadOnlyList<GroupListing>>(async () =>
         {
-            throw new InvalidOperationException("No brokers available");
-        }
-
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.ListGroups,
-            ListGroupsRequest.LowestSupportedVersion,
-            ListGroupsRequest.HighestSupportedVersion);
-
-        var request = new ListGroupsRequest
-        {
-            StatesFilter = apiVersion >= 4 ? opts.States : null
-        };
-
-        // Query all brokers since each only knows about groups it coordinates
-        var seenGroupIds = new HashSet<string>();
-        var result = new List<GroupListing>();
-
-        foreach (var broker in brokers)
-        {
-            var connection = await _connectionPool.GetConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
-
-            var response = await connection.SendAsync<ListGroupsRequest, ListGroupsResponse>(
-                request,
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
-
-            if (response.ErrorCode != Protocol.ErrorCode.None)
+            var brokers = _metadataManager.Metadata.GetBrokers();
+            if (brokers.Count == 0)
             {
-                throw new KafkaException(response.ErrorCode,
-                    $"ListConsumerGroups failed on broker {broker.NodeId}: {response.ErrorCode}");
+                throw new InvalidOperationException("No brokers available");
             }
 
-            foreach (var group in response.Groups)
-            {
-                if (!seenGroupIds.Add(group.GroupId))
-                    continue;
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.ListGroups,
+                ListGroupsRequest.LowestSupportedVersion,
+                ListGroupsRequest.HighestSupportedVersion);
 
-                // Client-side state filtering if broker doesn't support v4+
-                if (apiVersion < 4 && opts.States is { Count: > 0 } && group.GroupState is not null)
+            var request = new ListGroupsRequest
+            {
+                StatesFilter = apiVersion >= 4 ? opts.States : null
+            };
+
+            // Query all brokers since each only knows about groups it coordinates
+            var seenGroupIds = new HashSet<string>();
+            var result = new List<GroupListing>();
+
+            foreach (var broker in brokers)
+            {
+                var connection = await _connectionPool.GetConnectionAsync(broker.NodeId, cancellationToken).ConfigureAwait(false);
+
+                var response = await connection.SendAsync<ListGroupsRequest, ListGroupsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                if (response.ErrorCode != Protocol.ErrorCode.None)
                 {
-                    if (!opts.States.Contains(group.GroupState, StringComparer.OrdinalIgnoreCase))
-                        continue;
+                    throw new KafkaException(response.ErrorCode,
+                        $"ListConsumerGroups failed on broker {broker.NodeId}: {response.ErrorCode}");
                 }
 
-                result.Add(new GroupListing
+                foreach (var group in response.Groups)
                 {
-                    GroupId = group.GroupId,
-                    ProtocolType = group.ProtocolType,
-                    State = group.GroupState
-                });
-            }
-        }
+                    if (!seenGroupIds.Add(group.GroupId))
+                        continue;
 
-        return result;
+                    // Client-side state filtering if broker doesn't support v4+
+                    if (apiVersion < 4 && opts.States is { Count: > 0 } && group.GroupState is not null)
+                    {
+                        if (!opts.States.Contains(group.GroupState, StringComparer.OrdinalIgnoreCase))
+                            continue;
+                    }
+
+                    result.Add(new GroupListing
+                    {
+                        GroupId = group.GroupId,
+                        ProtocolType = group.ProtocolType,
+                        State = group.GroupState
+                    });
+                }
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask DeleteConsumerGroupsAsync(
@@ -429,50 +442,53 @@ public sealed class AdminClient : IAdminClient
 
         var groupIdList = groupIds.ToList();
 
-        // Find coordinator for each group and batch by coordinator
-        var groupsByCoordinator = new Dictionary<int, List<string>>();
-        foreach (var groupId in groupIdList)
+        await WithRetryAsync(async () =>
         {
-            var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-            if (!groupsByCoordinator.TryGetValue(coordinatorId, out var groups))
+            // Find coordinator for each group and batch by coordinator
+            var groupsByCoordinator = new Dictionary<int, List<string>>();
+            foreach (var groupId in groupIdList)
             {
-                groups = [];
-                groupsByCoordinator[coordinatorId] = groups;
-            }
-            groups.Add(groupId);
-        }
-
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.DeleteGroups,
-            DeleteGroupsRequest.LowestSupportedVersion,
-            DeleteGroupsRequest.HighestSupportedVersion);
-
-        foreach (var (coordinatorId, groups) in groupsByCoordinator)
-        {
-            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
-
-            var request = new DeleteGroupsRequest
-            {
-                GroupsNames = groups
-            };
-
-            var response = await connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
-                request,
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
-
-            foreach (var groupResult in response.Results)
-            {
-                if (groupResult.ErrorCode != Protocol.ErrorCode.None)
+                var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+                if (!groupsByCoordinator.TryGetValue(coordinatorId, out var groups))
                 {
-                    throw new Errors.GroupException(groupResult.ErrorCode,
-                        $"DeleteConsumerGroups failed for group '{groupResult.GroupId}': {groupResult.ErrorCode}")
+                    groups = [];
+                    groupsByCoordinator[coordinatorId] = groups;
+                }
+                groups.Add(groupId);
+            }
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DeleteGroups,
+                DeleteGroupsRequest.LowestSupportedVersion,
+                DeleteGroupsRequest.HighestSupportedVersion);
+
+            foreach (var (coordinatorId, groups) in groupsByCoordinator)
+            {
+                var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
+
+                var request = new DeleteGroupsRequest
+                {
+                    GroupsNames = groups
+                };
+
+                var response = await connection.SendAsync<DeleteGroupsRequest, DeleteGroupsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                foreach (var groupResult in response.Results)
+                {
+                    if (groupResult.ErrorCode != Protocol.ErrorCode.None)
                     {
-                        GroupId = groupResult.GroupId
-                    };
+                        throw new Errors.GroupException(groupResult.ErrorCode,
+                            $"DeleteConsumerGroups failed for group '{groupResult.GroupId}': {groupResult.ErrorCode}")
+                        {
+                            GroupId = groupResult.GroupId
+                        };
+                    }
                 }
             }
-        }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> ListConsumerGroupOffsetsAsync(
@@ -481,59 +497,62 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        // Find group coordinator
-        var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-        var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
-
-        var request = new OffsetFetchRequest
+        return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, long>>(async () =>
         {
-            GroupId = groupId,
-            Topics = null // Fetch all
-        };
+            // Find group coordinator
+            var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
 
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.OffsetFetch,
-            OffsetFetchRequest.LowestSupportedVersion,
-            OffsetFetchRequest.HighestSupportedVersion);
-
-        var response = await connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        var result = new Dictionary<TopicPartition, long>();
-
-        // v8+ uses Groups array; v0-v7 uses flat Topics
-        IReadOnlyList<OffsetFetchResponseTopic>? topics = response.Topics;
-        if (topics is null && response.Groups is { Count: > 0 })
-        {
-            var group = response.Groups[0];
-            if (group.ErrorCode != Protocol.ErrorCode.None)
+            var request = new OffsetFetchRequest
             {
-                throw new Errors.GroupException(group.ErrorCode,
-                    $"ListConsumerGroupOffsets failed for group '{groupId}': {group.ErrorCode}")
-                {
-                    GroupId = groupId
-                };
-            }
-            topics = group.Topics;
-        }
+                GroupId = groupId,
+                Topics = null // Fetch all
+            };
 
-        if (topics is not null)
-        {
-            foreach (var topic in topics)
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.OffsetFetch,
+                OffsetFetchRequest.LowestSupportedVersion,
+                OffsetFetchRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<OffsetFetchRequest, OffsetFetchResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            var result = new Dictionary<TopicPartition, long>();
+
+            // v8+ uses Groups array; v0-v7 uses flat Topics
+            IReadOnlyList<OffsetFetchResponseTopic>? topics = response.Topics;
+            if (topics is null && response.Groups is { Count: > 0 })
             {
-                foreach (var partition in topic.Partitions)
+                var group = response.Groups[0];
+                if (group.ErrorCode != Protocol.ErrorCode.None)
                 {
-                    if (partition.CommittedOffset >= 0)
+                    throw new Errors.GroupException(group.ErrorCode,
+                        $"ListConsumerGroupOffsets failed for group '{groupId}': {group.ErrorCode}")
                     {
-                        result[new TopicPartition(topic.Name, partition.PartitionIndex)] = partition.CommittedOffset;
+                        GroupId = groupId
+                    };
+                }
+                topics = group.Topics;
+            }
+
+            if (topics is not null)
+            {
+                foreach (var topic in topics)
+                {
+                    foreach (var partition in topic.Partitions)
+                    {
+                        if (partition.CommittedOffset >= 0)
+                        {
+                            result[new TopicPartition(topic.Name, partition.PartitionIndex)] = partition.CommittedOffset;
+                        }
                     }
                 }
             }
-        }
 
-        return result;
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask AlterConsumerGroupOffsetsAsync(
@@ -542,9 +561,6 @@ public sealed class AdminClient : IAdminClient
         CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
-        var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-        var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
 
         var topicOffsets = offsets.GroupBy(o => o.Topic).Select(g => new OffsetCommitRequestTopic
         {
@@ -556,38 +572,44 @@ public sealed class AdminClient : IAdminClient
             }).ToList()
         }).ToList();
 
-        var request = new OffsetCommitRequest
+        await WithRetryAsync(async () =>
         {
-            GroupId = groupId,
-            GenerationIdOrMemberEpoch = -1,
-            MemberId = string.Empty,
-            Topics = topicOffsets
-        };
+            var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
 
-        // Cap at v7 for admin offset commits — v8+ requires valid MemberId/GenerationId
-        // for group membership validation, which admin operations don't have.
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.OffsetCommit,
-            OffsetCommitRequest.LowestSupportedVersion,
-            Math.Min(OffsetCommitRequest.HighestSupportedVersion, (short)7));
-
-        var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        // Check for errors
-        foreach (var topic in response.Topics)
-        {
-            foreach (var partition in topic.Partitions)
+            var request = new OffsetCommitRequest
             {
-                if (partition.ErrorCode != Protocol.ErrorCode.None)
+                GroupId = groupId,
+                GenerationIdOrMemberEpoch = -1,
+                MemberId = string.Empty,
+                Topics = topicOffsets
+            };
+
+            // Cap at v7 for admin offset commits — v8+ requires valid MemberId/GenerationId
+            // for group membership validation, which admin operations don't have.
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.OffsetCommit,
+                OffsetCommitRequest.LowestSupportedVersion,
+                Math.Min(OffsetCommitRequest.HighestSupportedVersion, (short)7));
+
+            var response = await connection.SendAsync<OffsetCommitRequest, OffsetCommitResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            // Check for errors
+            foreach (var topic in response.Topics)
+            {
+                foreach (var partition in topic.Partitions)
                 {
-                    throw new Errors.GroupException(partition.ErrorCode,
-                        $"AlterConsumerGroupOffsets failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}");
+                    if (partition.ErrorCode != Protocol.ErrorCode.None)
+                    {
+                        throw new Errors.GroupException(partition.ErrorCode,
+                            $"AlterConsumerGroupOffsets failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}");
+                    }
                 }
             }
-        }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, long>> DeleteRecordsAsync(
@@ -596,79 +618,82 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        // Group offsets by partition leader
-        var partitionsByLeader = new Dictionary<int, List<(TopicPartition Tp, long Offset)>>();
-
-        foreach (var (tp, offset) in offsets)
+        return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, long>>(async () =>
         {
-            var leaderNode = _metadataManager.Metadata.GetPartitionLeader(tp.Topic, tp.Partition);
-            if (leaderNode is null)
+            // Group offsets by partition leader
+            var partitionsByLeader = new Dictionary<int, List<(TopicPartition Tp, long Offset)>>();
+
+            foreach (var (tp, offset) in offsets)
             {
-                throw new KafkaException(Protocol.ErrorCode.LeaderNotAvailable,
-                    $"No leader available for {tp.Topic}-{tp.Partition}");
+                var leaderNode = _metadataManager.Metadata.GetPartitionLeader(tp.Topic, tp.Partition);
+                if (leaderNode is null)
+                {
+                    throw new KafkaException(Protocol.ErrorCode.LeaderNotAvailable,
+                        $"No leader available for {tp.Topic}-{tp.Partition}");
+                }
+
+                var leaderId = leaderNode.NodeId;
+                if (!partitionsByLeader.TryGetValue(leaderId, out var leaderOffsets))
+                {
+                    leaderOffsets = [];
+                    partitionsByLeader[leaderId] = leaderOffsets;
+                }
+                leaderOffsets.Add((tp, offset));
             }
 
-            var leaderId = leaderNode.NodeId;
-            if (!partitionsByLeader.TryGetValue(leaderId, out var leaderOffsets))
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DeleteRecords,
+                DeleteRecordsRequest.LowestSupportedVersion,
+                DeleteRecordsRequest.HighestSupportedVersion);
+
+            var result = new Dictionary<TopicPartition, long>();
+
+            foreach (var (leaderId, leaderOffsets) in partitionsByLeader)
             {
-                leaderOffsets = [];
-                partitionsByLeader[leaderId] = leaderOffsets;
-            }
-            leaderOffsets.Add((tp, offset));
-        }
+                var connection = await _connectionPool.GetConnectionAsync(leaderId, cancellationToken).ConfigureAwait(false);
 
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.DeleteRecords,
-            DeleteRecordsRequest.LowestSupportedVersion,
-            DeleteRecordsRequest.HighestSupportedVersion);
-
-        var result = new Dictionary<TopicPartition, long>();
-
-        foreach (var (leaderId, leaderOffsets) in partitionsByLeader)
-        {
-            var connection = await _connectionPool.GetConnectionAsync(leaderId, cancellationToken).ConfigureAwait(false);
-
-            // Build topics array from offsets grouped by topic
-            var topics = leaderOffsets
-                .GroupBy(o => o.Tp.Topic)
-                .Select(g => new DeleteRecordsRequestTopic
-                {
-                    Name = g.Key,
-                    Partitions = g.Select(o => new DeleteRecordsRequestPartition
+                // Build topics array from offsets grouped by topic
+                var topics = leaderOffsets
+                    .GroupBy(o => o.Tp.Topic)
+                    .Select(g => new DeleteRecordsRequestTopic
                     {
-                        PartitionIndex = o.Tp.Partition,
-                        Offset = o.Offset
-                    }).ToList()
-                }).ToList();
+                        Name = g.Key,
+                        Partitions = g.Select(o => new DeleteRecordsRequestPartition
+                        {
+                            PartitionIndex = o.Tp.Partition,
+                            Offset = o.Offset
+                        }).ToList()
+                    }).ToList();
 
-            var request = new DeleteRecordsRequest
-            {
-                Topics = topics
-            };
-
-            var response = await connection.SendAsync<DeleteRecordsRequest, DeleteRecordsResponse>(
-                request,
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
-
-            foreach (var topic in response.Topics)
-            {
-                foreach (var partition in topic.Partitions)
+                var request = new DeleteRecordsRequest
                 {
-                    var tp = new TopicPartition(topic.Name, partition.PartitionIndex);
+                    Topics = topics
+                };
 
-                    if (partition.ErrorCode != Protocol.ErrorCode.None)
+                var response = await connection.SendAsync<DeleteRecordsRequest, DeleteRecordsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                foreach (var topic in response.Topics)
+                {
+                    foreach (var partition in topic.Partitions)
                     {
-                        throw new KafkaException(partition.ErrorCode,
-                            $"DeleteRecords failed for {tp.Topic}-{tp.Partition}: {partition.ErrorCode}");
+                        var tp = new TopicPartition(topic.Name, partition.PartitionIndex);
+
+                        if (partition.ErrorCode != Protocol.ErrorCode.None)
+                        {
+                            throw new KafkaException(partition.ErrorCode,
+                                $"DeleteRecords failed for {tp.Topic}-{tp.Partition}: {partition.ErrorCode}");
+                        }
+
+                        result[tp] = partition.LowWatermark;
                     }
-
-                    result[tp] = partition.LowWatermark;
                 }
             }
-        }
 
-        return result;
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask CreatePartitionsAsync(
@@ -677,37 +702,40 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
-
         var topics = newPartitionCounts.Select(kvp => new CreatePartitionsTopic
         {
             Name = kvp.Key,
             Count = kvp.Value
         }).ToList();
 
-        var request = new CreatePartitionsRequest
+        await WithRetryAsync(async () =>
         {
-            Topics = topics
-        };
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
 
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.CreatePartitions,
-            CreatePartitionsRequest.LowestSupportedVersion,
-            CreatePartitionsRequest.HighestSupportedVersion);
-
-        var response = await controller.SendAsync<CreatePartitionsRequest, CreatePartitionsResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        foreach (var topicResult in response.Results)
-        {
-            if (topicResult.ErrorCode != Protocol.ErrorCode.None)
+            var request = new CreatePartitionsRequest
             {
-                throw new KafkaException(topicResult.ErrorCode,
-                    $"CreatePartitions failed for topic '{topicResult.Name}': {topicResult.ErrorMessage ?? topicResult.ErrorCode.ToString()}");
+                Topics = topics
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.CreatePartitions,
+                CreatePartitionsRequest.LowestSupportedVersion,
+                CreatePartitionsRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<CreatePartitionsRequest, CreatePartitionsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            foreach (var topicResult in response.Results)
+            {
+                if (topicResult.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new KafkaException(topicResult.ErrorCode,
+                        $"CreatePartitions failed for topic '{topicResult.Name}': {topicResult.ErrorMessage ?? topicResult.ErrorCode.ToString()}");
+                }
             }
-        }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyDictionary<string, IReadOnlyList<ScramCredentialInfo>>> DescribeUserScramCredentialsAsync(
@@ -717,54 +745,57 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
-
         var usersList = users?.Select(u => new UserName { Name = u }).ToList();
 
-        var request = new DescribeUserScramCredentialsRequest
+        return await WithRetryAsync<IReadOnlyDictionary<string, IReadOnlyList<ScramCredentialInfo>>>(async () =>
         {
-            Users = usersList
-        };
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
 
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.DescribeUserScramCredentials,
-            DescribeUserScramCredentialsRequest.LowestSupportedVersion,
-            DescribeUserScramCredentialsRequest.HighestSupportedVersion);
-
-        var response = await controller.SendAsync<DescribeUserScramCredentialsRequest, DescribeUserScramCredentialsResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        // Check top-level error
-        if (response.ErrorCode != Protocol.ErrorCode.None)
-        {
-            throw new KafkaException(response.ErrorCode,
-                $"DescribeUserScramCredentials failed: {response.ErrorMessage ?? response.ErrorCode.ToString()}");
-        }
-
-        var result = new Dictionary<string, IReadOnlyList<ScramCredentialInfo>>();
-
-        foreach (var userResult in response.Results)
-        {
-            if (userResult.ErrorCode != Protocol.ErrorCode.None)
+            var request = new DescribeUserScramCredentialsRequest
             {
-                throw new KafkaException(userResult.ErrorCode,
-                    $"DescribeUserScramCredentials failed for user '{userResult.User}': {userResult.ErrorMessage ?? userResult.ErrorCode.ToString()}");
+                Users = usersList
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DescribeUserScramCredentials,
+                DescribeUserScramCredentialsRequest.LowestSupportedVersion,
+                DescribeUserScramCredentialsRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<DescribeUserScramCredentialsRequest, DescribeUserScramCredentialsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            // Check top-level error
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new KafkaException(response.ErrorCode,
+                    $"DescribeUserScramCredentials failed: {response.ErrorMessage ?? response.ErrorCode.ToString()}");
             }
 
-            var credentials = userResult.CredentialInfos
-                .Select(c => new ScramCredentialInfo
+            var result = new Dictionary<string, IReadOnlyList<ScramCredentialInfo>>();
+
+            foreach (var userResult in response.Results)
+            {
+                if (userResult.ErrorCode != Protocol.ErrorCode.None)
                 {
-                    Mechanism = (ScramMechanism)c.Mechanism,
-                    Iterations = c.Iterations
-                })
-                .ToList();
+                    throw new KafkaException(userResult.ErrorCode,
+                        $"DescribeUserScramCredentials failed for user '{userResult.User}': {userResult.ErrorMessage ?? userResult.ErrorCode.ToString()}");
+                }
 
-            result[userResult.User] = credentials;
-        }
+                var credentials = userResult.CredentialInfos
+                    .Select(c => new ScramCredentialInfo
+                    {
+                        Mechanism = (ScramMechanism)c.Mechanism,
+                        Iterations = c.Iterations
+                    })
+                    .ToList();
 
-        return result;
+                result[userResult.User] = credentials;
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask AlterUserScramCredentialsAsync(
@@ -774,8 +805,7 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
-
+        // Materialize before retry to avoid re-enumeration of potentially lazy sequences
         var deletions = new List<ScramCredentialDeletion>();
         var upsertions = new List<ScramCredentialUpsertion>();
 
@@ -811,31 +841,36 @@ public sealed class AdminClient : IAdminClient
             }
         }
 
-        var request = new AlterUserScramCredentialsRequest
+        await WithRetryAsync(async () =>
         {
-            Deletions = deletions,
-            Upsertions = upsertions
-        };
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
 
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.AlterUserScramCredentials,
-            AlterUserScramCredentialsRequest.LowestSupportedVersion,
-            AlterUserScramCredentialsRequest.HighestSupportedVersion);
-
-        var response = await controller.SendAsync<AlterUserScramCredentialsRequest, AlterUserScramCredentialsResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        // Check for errors
-        foreach (var result in response.Results)
-        {
-            if (result.ErrorCode != Protocol.ErrorCode.None)
+            var request = new AlterUserScramCredentialsRequest
             {
-                throw new KafkaException(result.ErrorCode,
-                    $"AlterUserScramCredentials failed for user '{result.User}': {result.ErrorMessage ?? result.ErrorCode.ToString()}");
+                Deletions = deletions,
+                Upsertions = upsertions
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.AlterUserScramCredentials,
+                AlterUserScramCredentialsRequest.LowestSupportedVersion,
+                AlterUserScramCredentialsRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<AlterUserScramCredentialsRequest, AlterUserScramCredentialsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            // Check for errors
+            foreach (var result in response.Results)
+            {
+                if (result.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new KafkaException(result.ErrorCode,
+                        $"AlterUserScramCredentials failed for user '{result.User}': {result.ErrorMessage ?? result.ErrorCode.ToString()}");
+                }
             }
-        }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private static byte[] ComputeSaltedPassword(string password, byte[] salt, int iterations, ScramMechanism mechanism)
@@ -864,75 +899,78 @@ public sealed class AdminClient : IAdminClient
         var opts = options ?? new DescribeConfigsOptions();
         var resourceList = resources.ToList();
 
-        // Any broker can handle DescribeConfigs
-        var brokers = _metadataManager.Metadata.GetBrokers();
-        if (brokers.Count == 0)
+        return await WithRetryAsync<IReadOnlyDictionary<ConfigResource, IReadOnlyList<ConfigEntry>>>(async () =>
         {
-            throw new InvalidOperationException("No brokers available");
-        }
-
-        var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
-
-        var request = new DescribeConfigsRequest
-        {
-            Resources = resourceList.Select(r => new DescribeConfigsResource
+            // Any broker can handle DescribeConfigs
+            var brokers = _metadataManager.Metadata.GetBrokers();
+            if (brokers.Count == 0)
             {
-                ResourceType = (sbyte)r.Type,
-                ResourceName = r.Name,
-                ConfigurationKeys = null // Fetch all configs
-            }).ToList(),
-            IncludeSynonyms = opts.IncludeSynonyms,
-            IncludeDocumentation = opts.IncludeDocumentation
-        };
-
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.DescribeConfigs,
-            DescribeConfigsRequest.LowestSupportedVersion,
-            DescribeConfigsRequest.HighestSupportedVersion);
-
-        var response = await connection.SendAsync<DescribeConfigsRequest, DescribeConfigsResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        var result = new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>();
-
-        foreach (var resourceResult in response.Results)
-        {
-            if (resourceResult.ErrorCode != Protocol.ErrorCode.None)
-            {
-                throw new KafkaException(resourceResult.ErrorCode,
-                    $"Failed to describe configs for {(ConfigResourceType)resourceResult.ResourceType}:{resourceResult.ResourceName}: " +
-                    $"{resourceResult.ErrorMessage ?? resourceResult.ErrorCode.ToString()}");
+                throw new InvalidOperationException("No brokers available");
             }
 
-            var configResource = new ConfigResource
+            var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+
+            var request = new DescribeConfigsRequest
             {
-                Type = (ConfigResourceType)resourceResult.ResourceType,
-                Name = resourceResult.ResourceName
+                Resources = resourceList.Select(r => new DescribeConfigsResource
+                {
+                    ResourceType = (sbyte)r.Type,
+                    ResourceName = r.Name,
+                    ConfigurationKeys = null // Fetch all configs
+                }).ToList(),
+                IncludeSynonyms = opts.IncludeSynonyms,
+                IncludeDocumentation = opts.IncludeDocumentation
             };
 
-            var entries = resourceResult.Configs.Select(c => new ConfigEntry
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DescribeConfigs,
+                DescribeConfigsRequest.LowestSupportedVersion,
+                DescribeConfigsRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<DescribeConfigsRequest, DescribeConfigsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            var result = new Dictionary<ConfigResource, IReadOnlyList<ConfigEntry>>();
+
+            foreach (var resourceResult in response.Results)
             {
-                Name = c.Name,
-                Value = c.Value,
-                IsReadOnly = c.ReadOnly,
-                IsDefault = c.ConfigSource == (sbyte)ConfigSource.DefaultConfig || c.IsDefault,
-                IsSensitive = c.IsSensitive,
-                Source = (ConfigSource)c.ConfigSource,
-                Synonyms = c.Synonyms?.Select(s => new ConfigSynonym
+                if (resourceResult.ErrorCode != Protocol.ErrorCode.None)
                 {
-                    Name = s.Name,
-                    Value = s.Value,
-                    Source = (ConfigSource)s.Source
-                }).ToList(),
-                Documentation = c.Documentation
-            }).ToList();
+                    throw new KafkaException(resourceResult.ErrorCode,
+                        $"Failed to describe configs for {(ConfigResourceType)resourceResult.ResourceType}:{resourceResult.ResourceName}: " +
+                        $"{resourceResult.ErrorMessage ?? resourceResult.ErrorCode.ToString()}");
+                }
 
-            result[configResource] = entries;
-        }
+                var configResource = new ConfigResource
+                {
+                    Type = (ConfigResourceType)resourceResult.ResourceType,
+                    Name = resourceResult.ResourceName
+                };
 
-        return result;
+                var entries = resourceResult.Configs.Select(c => new ConfigEntry
+                {
+                    Name = c.Name,
+                    Value = c.Value,
+                    IsReadOnly = c.ReadOnly,
+                    IsDefault = c.ConfigSource == (sbyte)ConfigSource.DefaultConfig || c.IsDefault,
+                    IsSensitive = c.IsSensitive,
+                    Source = (ConfigSource)c.ConfigSource,
+                    Synonyms = c.Synonyms?.Select(s => new ConfigSynonym
+                    {
+                        Name = s.Name,
+                        Value = s.Value,
+                        Source = (ConfigSource)s.Source
+                    }).ToList(),
+                    Documentation = c.Documentation
+                }).ToList();
+
+                result[configResource] = entries;
+            }
+
+            return result;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask AlterConfigsAsync(
@@ -944,50 +982,53 @@ public sealed class AdminClient : IAdminClient
 
         var opts = options ?? new AlterConfigsOptions();
 
-        // Any broker can handle AlterConfigs
-        var brokers = _metadataManager.Metadata.GetBrokers();
-        if (brokers.Count == 0)
+        await WithRetryAsync(async () =>
         {
-            throw new InvalidOperationException("No brokers available");
-        }
-
-        var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
-
-        var request = new AlterConfigsRequest
-        {
-            Resources = configs.Select(kvp => new AlterConfigsResource
+            // Any broker can handle AlterConfigs
+            var brokers = _metadataManager.Metadata.GetBrokers();
+            if (brokers.Count == 0)
             {
-                ResourceType = (sbyte)kvp.Key.Type,
-                ResourceName = kvp.Key.Name,
-                Configs = kvp.Value.Select(e => new AlterableConfig
-                {
-                    Name = e.Name,
-                    Value = e.Value
-                }).ToList()
-            }).ToList(),
-            ValidateOnly = opts.ValidateOnly
-        };
-
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.AlterConfigs,
-            AlterConfigsRequest.LowestSupportedVersion,
-            AlterConfigsRequest.HighestSupportedVersion);
-
-        var response = await connection.SendAsync<AlterConfigsRequest, AlterConfigsResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        // Check for errors
-        foreach (var resourceResponse in response.Responses)
-        {
-            if (resourceResponse.ErrorCode != Protocol.ErrorCode.None)
-            {
-                throw new KafkaException(resourceResponse.ErrorCode,
-                    $"Failed to alter configs for {(ConfigResourceType)resourceResponse.ResourceType}:{resourceResponse.ResourceName}: " +
-                    $"{resourceResponse.ErrorMessage ?? resourceResponse.ErrorCode.ToString()}");
+                throw new InvalidOperationException("No brokers available");
             }
-        }
+
+            var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+
+            var request = new AlterConfigsRequest
+            {
+                Resources = configs.Select(kvp => new AlterConfigsResource
+                {
+                    ResourceType = (sbyte)kvp.Key.Type,
+                    ResourceName = kvp.Key.Name,
+                    Configs = kvp.Value.Select(e => new AlterableConfig
+                    {
+                        Name = e.Name,
+                        Value = e.Value
+                    }).ToList()
+                }).ToList(),
+                ValidateOnly = opts.ValidateOnly
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.AlterConfigs,
+                AlterConfigsRequest.LowestSupportedVersion,
+                AlterConfigsRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<AlterConfigsRequest, AlterConfigsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            // Check for errors
+            foreach (var resourceResponse in response.Responses)
+            {
+                if (resourceResponse.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new KafkaException(resourceResponse.ErrorCode,
+                        $"Failed to alter configs for {(ConfigResourceType)resourceResponse.ResourceType}:{resourceResponse.ResourceName}: " +
+                        $"{resourceResponse.ErrorMessage ?? resourceResponse.ErrorCode.ToString()}");
+                }
+            }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask IncrementalAlterConfigsAsync(
@@ -999,51 +1040,54 @@ public sealed class AdminClient : IAdminClient
 
         var opts = options ?? new IncrementalAlterConfigsOptions();
 
-        // Any broker can handle IncrementalAlterConfigs
-        var brokers = _metadataManager.Metadata.GetBrokers();
-        if (brokers.Count == 0)
+        await WithRetryAsync(async () =>
         {
-            throw new InvalidOperationException("No brokers available");
-        }
-
-        var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
-
-        var request = new IncrementalAlterConfigsRequest
-        {
-            Resources = configs.Select(kvp => new IncrementalAlterConfigsResource
+            // Any broker can handle IncrementalAlterConfigs
+            var brokers = _metadataManager.Metadata.GetBrokers();
+            if (brokers.Count == 0)
             {
-                ResourceType = (sbyte)kvp.Key.Type,
-                ResourceName = kvp.Key.Name,
-                Configs = kvp.Value.Select(a => new IncrementalAlterableConfig
-                {
-                    Name = a.Name,
-                    ConfigOperation = (sbyte)a.Operation,
-                    Value = a.Value
-                }).ToList()
-            }).ToList(),
-            ValidateOnly = opts.ValidateOnly
-        };
-
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.IncrementalAlterConfigs,
-            IncrementalAlterConfigsRequest.LowestSupportedVersion,
-            IncrementalAlterConfigsRequest.HighestSupportedVersion);
-
-        var response = await connection.SendAsync<IncrementalAlterConfigsRequest, IncrementalAlterConfigsResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        // Check for errors
-        foreach (var resourceResponse in response.Responses)
-        {
-            if (resourceResponse.ErrorCode != Protocol.ErrorCode.None)
-            {
-                throw new KafkaException(resourceResponse.ErrorCode,
-                    $"Failed to incrementally alter configs for {(ConfigResourceType)resourceResponse.ResourceType}:{resourceResponse.ResourceName}: " +
-                    $"{resourceResponse.ErrorMessage ?? resourceResponse.ErrorCode.ToString()}");
+                throw new InvalidOperationException("No brokers available");
             }
-        }
+
+            var connection = await _connectionPool.GetConnectionAsync(brokers[0].NodeId, cancellationToken).ConfigureAwait(false);
+
+            var request = new IncrementalAlterConfigsRequest
+            {
+                Resources = configs.Select(kvp => new IncrementalAlterConfigsResource
+                {
+                    ResourceType = (sbyte)kvp.Key.Type,
+                    ResourceName = kvp.Key.Name,
+                    Configs = kvp.Value.Select(a => new IncrementalAlterableConfig
+                    {
+                        Name = a.Name,
+                        ConfigOperation = (sbyte)a.Operation,
+                        Value = a.Value
+                    }).ToList()
+                }).ToList(),
+                ValidateOnly = opts.ValidateOnly
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.IncrementalAlterConfigs,
+                IncrementalAlterConfigsRequest.LowestSupportedVersion,
+                IncrementalAlterConfigsRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<IncrementalAlterConfigsRequest, IncrementalAlterConfigsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            // Check for errors
+            foreach (var resourceResponse in response.Responses)
+            {
+                if (resourceResponse.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    throw new KafkaException(resourceResponse.ErrorCode,
+                        $"Failed to incrementally alter configs for {(ConfigResourceType)resourceResponse.ResourceType}:{resourceResponse.ResourceName}: " +
+                        $"{resourceResponse.ErrorMessage ?? resourceResponse.ErrorCode.ToString()}");
+                }
+            }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask CreateAclsAsync(
@@ -1052,8 +1096,6 @@ public sealed class AdminClient : IAdminClient
         CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
-        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
 
         var bindings = aclBindings.ToList();
         if (bindings.Count == 0)
@@ -1070,32 +1112,37 @@ public sealed class AdminClient : IAdminClient
             PermissionType = (sbyte)b.Entry.Permission
         }).ToList();
 
-        var request = new CreateAclsRequest
+        await WithRetryAsync(async () =>
         {
-            Creations = creations
-        };
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
 
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.CreateAcls,
-            CreateAclsRequest.LowestSupportedVersion,
-            CreateAclsRequest.HighestSupportedVersion);
-
-        var response = await controller.SendAsync<CreateAclsRequest, CreateAclsResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        // Check for errors
-        for (var i = 0; i < response.Results.Count; i++)
-        {
-            var result = response.Results[i];
-            if (result.ErrorCode != Protocol.ErrorCode.None)
+            var request = new CreateAclsRequest
             {
-                var binding = bindings[i];
-                throw new KafkaException(result.ErrorCode,
-                    $"Failed to create ACL for {binding.Pattern.Type}:{binding.Pattern.Name}: {result.ErrorMessage ?? result.ErrorCode.ToString()}");
+                Creations = creations
+            };
+
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.CreateAcls,
+                CreateAclsRequest.LowestSupportedVersion,
+                CreateAclsRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<CreateAclsRequest, CreateAclsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            // Check for errors
+            for (var i = 0; i < response.Results.Count; i++)
+            {
+                var result = response.Results[i];
+                if (result.ErrorCode != Protocol.ErrorCode.None)
+                {
+                    var binding = bindings[i];
+                    throw new KafkaException(result.ErrorCode,
+                        $"Failed to create ACL for {binding.Pattern.Type}:{binding.Pattern.Name}: {result.ErrorMessage ?? result.ErrorCode.ToString()}");
+                }
             }
-        }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<AclBinding>> DeleteAclsAsync(
@@ -1104,8 +1151,6 @@ public sealed class AdminClient : IAdminClient
         CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
-
-        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
 
         var filterList = filters.ToList();
         if (filterList.Count == 0)
@@ -1122,60 +1167,65 @@ public sealed class AdminClient : IAdminClient
             PermissionType = (sbyte)f.Permission
         }).ToList();
 
-        var request = new DeleteAclsRequest
+        return await WithRetryAsync<IReadOnlyList<AclBinding>>(async () =>
         {
-            Filters = deleteFilters
-        };
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
 
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.DeleteAcls,
-            DeleteAclsRequest.LowestSupportedVersion,
-            DeleteAclsRequest.HighestSupportedVersion);
-
-        var response = await controller.SendAsync<DeleteAclsRequest, DeleteAclsResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        var deletedBindings = new List<AclBinding>();
-
-        // Check for errors and collect deleted ACLs
-        foreach (var filterResult in response.FilterResults)
-        {
-            if (filterResult.ErrorCode != Protocol.ErrorCode.None)
+            var request = new DeleteAclsRequest
             {
-                throw new KafkaException(filterResult.ErrorCode,
-                    $"Failed to delete ACLs: {filterResult.ErrorMessage ?? filterResult.ErrorCode.ToString()}");
-            }
+                Filters = deleteFilters
+            };
 
-            foreach (var matchingAcl in filterResult.MatchingAcls)
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DeleteAcls,
+                DeleteAclsRequest.LowestSupportedVersion,
+                DeleteAclsRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<DeleteAclsRequest, DeleteAclsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            var deletedBindings = new List<AclBinding>();
+
+            // Check for errors and collect deleted ACLs
+            foreach (var filterResult in response.FilterResults)
             {
-                if (matchingAcl.ErrorCode != Protocol.ErrorCode.None)
+                if (filterResult.ErrorCode != Protocol.ErrorCode.None)
                 {
-                    throw new KafkaException(matchingAcl.ErrorCode,
-                        $"Failed to delete ACL for {matchingAcl.ResourceName}: {matchingAcl.ErrorMessage ?? matchingAcl.ErrorCode.ToString()}");
+                    throw new KafkaException(filterResult.ErrorCode,
+                        $"Failed to delete ACLs: {filterResult.ErrorMessage ?? filterResult.ErrorCode.ToString()}");
                 }
 
-                deletedBindings.Add(new AclBinding
+                foreach (var matchingAcl in filterResult.MatchingAcls)
                 {
-                    Pattern = new ResourcePattern
+                    if (matchingAcl.ErrorCode != Protocol.ErrorCode.None)
                     {
-                        Type = (ResourceType)matchingAcl.ResourceType,
-                        Name = matchingAcl.ResourceName,
-                        PatternType = (PatternType)matchingAcl.PatternType
-                    },
-                    Entry = new AccessControlEntry
-                    {
-                        Principal = matchingAcl.Principal,
-                        Host = matchingAcl.Host,
-                        Operation = (AclOperation)matchingAcl.Operation,
-                        Permission = (AclPermissionType)matchingAcl.PermissionType
+                        throw new KafkaException(matchingAcl.ErrorCode,
+                            $"Failed to delete ACL for {matchingAcl.ResourceName}: {matchingAcl.ErrorMessage ?? matchingAcl.ErrorCode.ToString()}");
                     }
-                });
-            }
-        }
 
-        return deletedBindings;
+                    deletedBindings.Add(new AclBinding
+                    {
+                        Pattern = new ResourcePattern
+                        {
+                            Type = (ResourceType)matchingAcl.ResourceType,
+                            Name = matchingAcl.ResourceName,
+                            PatternType = (PatternType)matchingAcl.PatternType
+                        },
+                        Entry = new AccessControlEntry
+                        {
+                            Principal = matchingAcl.Principal,
+                            Host = matchingAcl.Host,
+                            Operation = (AclOperation)matchingAcl.Operation,
+                            Permission = (AclPermissionType)matchingAcl.PermissionType
+                        }
+                    });
+                }
+            }
+
+            return deletedBindings;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<AclBinding>> DescribeAclsAsync(
@@ -1185,61 +1235,64 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
-
-        var request = new DescribeAclsRequest
+        return await WithRetryAsync<IReadOnlyList<AclBinding>>(async () =>
         {
-            ResourceTypeFilter = (sbyte)filter.ResourceType,
-            ResourceNameFilter = filter.ResourceName,
-            PatternTypeFilter = (sbyte)filter.PatternType,
-            PrincipalFilter = filter.Principal,
-            HostFilter = filter.Host,
-            Operation = (sbyte)filter.Operation,
-            PermissionType = (sbyte)filter.Permission
-        };
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
 
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.DescribeAcls,
-            DescribeAclsRequest.LowestSupportedVersion,
-            DescribeAclsRequest.HighestSupportedVersion);
-
-        var response = await controller.SendAsync<DescribeAclsRequest, DescribeAclsResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        if (response.ErrorCode != Protocol.ErrorCode.None)
-        {
-            throw new KafkaException(response.ErrorCode,
-                $"Failed to describe ACLs: {response.ErrorMessage ?? response.ErrorCode.ToString()}");
-        }
-
-        var bindings = new List<AclBinding>();
-
-        foreach (var resource in response.Resources)
-        {
-            foreach (var acl in resource.Acls)
+            var request = new DescribeAclsRequest
             {
-                bindings.Add(new AclBinding
-                {
-                    Pattern = new ResourcePattern
-                    {
-                        Type = (ResourceType)resource.ResourceType,
-                        Name = resource.ResourceName,
-                        PatternType = (PatternType)resource.PatternType
-                    },
-                    Entry = new AccessControlEntry
-                    {
-                        Principal = acl.Principal,
-                        Host = acl.Host,
-                        Operation = (AclOperation)acl.Operation,
-                        Permission = (AclPermissionType)acl.PermissionType
-                    }
-                });
-            }
-        }
+                ResourceTypeFilter = (sbyte)filter.ResourceType,
+                ResourceNameFilter = filter.ResourceName,
+                PatternTypeFilter = (sbyte)filter.PatternType,
+                PrincipalFilter = filter.Principal,
+                HostFilter = filter.Host,
+                Operation = (sbyte)filter.Operation,
+                PermissionType = (sbyte)filter.Permission
+            };
 
-        return bindings;
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.DescribeAcls,
+                DescribeAclsRequest.LowestSupportedVersion,
+                DescribeAclsRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<DescribeAclsRequest, DescribeAclsResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new KafkaException(response.ErrorCode,
+                    $"Failed to describe ACLs: {response.ErrorMessage ?? response.ErrorCode.ToString()}");
+            }
+
+            var bindings = new List<AclBinding>();
+
+            foreach (var resource in response.Resources)
+            {
+                foreach (var acl in resource.Acls)
+                {
+                    bindings.Add(new AclBinding
+                    {
+                        Pattern = new ResourcePattern
+                        {
+                            Type = (ResourceType)resource.ResourceType,
+                            Name = resource.ResourceName,
+                            PatternType = (PatternType)resource.PatternType
+                        },
+                        Entry = new AccessControlEntry
+                        {
+                            Principal = acl.Principal,
+                            Host = acl.Host,
+                            Operation = (AclOperation)acl.Operation,
+                            Permission = (AclPermissionType)acl.PermissionType
+                        }
+                    });
+                }
+            }
+
+            return bindings;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask DeleteConsumerGroupOffsetsAsync(
@@ -1253,10 +1306,7 @@ public sealed class AdminClient : IAdminClient
 
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
-        var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
-
-        // Group partitions by topic
+        // Group partitions by topic — materialize before retry to avoid re-enumeration
         var topicPartitions = partitions
             .GroupBy(p => p.Topic)
             .Select(g => new OffsetDeleteRequestTopic
@@ -1269,47 +1319,53 @@ public sealed class AdminClient : IAdminClient
             })
             .ToList();
 
-        var request = new OffsetDeleteRequest
+        await WithRetryAsync(async () =>
         {
-            GroupId = groupId,
-            Topics = topicPartitions
-        };
+            var coordinatorId = await FindGroupCoordinatorAsync(groupId, cancellationToken).ConfigureAwait(false);
+            var connection = await _connectionPool.GetConnectionAsync(coordinatorId, cancellationToken).ConfigureAwait(false);
 
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.OffsetDelete,
-            OffsetDeleteRequest.LowestSupportedVersion,
-            OffsetDeleteRequest.HighestSupportedVersion);
-
-        var response = await connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        // Check for top-level error
-        if (response.ErrorCode != Protocol.ErrorCode.None)
-        {
-            throw new Errors.GroupException(response.ErrorCode,
-                $"DeleteConsumerGroupOffsets failed for group '{groupId}': {response.ErrorCode}")
+            var request = new OffsetDeleteRequest
             {
-                GroupId = groupId
+                GroupId = groupId,
+                Topics = topicPartitions
             };
-        }
 
-        // Check for per-partition errors
-        foreach (var topic in response.Topics)
-        {
-            foreach (var partition in topic.Partitions)
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.OffsetDelete,
+                OffsetDeleteRequest.LowestSupportedVersion,
+                OffsetDeleteRequest.HighestSupportedVersion);
+
+            var response = await connection.SendAsync<OffsetDeleteRequest, OffsetDeleteResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            // Check for top-level error
+            if (response.ErrorCode != Protocol.ErrorCode.None)
             {
-                if (partition.ErrorCode != Protocol.ErrorCode.None)
+                throw new Errors.GroupException(response.ErrorCode,
+                    $"DeleteConsumerGroupOffsets failed for group '{groupId}': {response.ErrorCode}")
                 {
-                    throw new Errors.GroupException(partition.ErrorCode,
-                        $"DeleteConsumerGroupOffsets failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                    GroupId = groupId
+                };
+            }
+
+            // Check for per-partition errors
+            foreach (var topic in response.Topics)
+            {
+                foreach (var partition in topic.Partitions)
+                {
+                    if (partition.ErrorCode != Protocol.ErrorCode.None)
                     {
-                        GroupId = groupId
-                    };
+                        throw new Errors.GroupException(partition.ErrorCode,
+                            $"DeleteConsumerGroupOffsets failed for {topic.Name}-{partition.PartitionIndex}: {partition.ErrorCode}")
+                        {
+                            GroupId = groupId
+                        };
+                    }
                 }
             }
-        }
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyDictionary<TopicPartition, ListOffsetsResultInfo>> ListOffsetsAsync(
@@ -1322,91 +1378,94 @@ public sealed class AdminClient : IAdminClient
         var opts = options ?? new ListOffsetsOptions();
         var specList = specs.ToList();
 
-        // Get partition leaders from metadata and group specs by leader
-        var partitionsByLeader = new Dictionary<int, List<ListOffsetsRequestTopic>>();
-
-        foreach (var spec in specList)
+        return await WithRetryAsync(async () =>
         {
-            var leaderNode = _metadataManager.Metadata.GetPartitionLeader(spec.TopicPartition.Topic, spec.TopicPartition.Partition);
-            if (leaderNode is null)
-            {
-                throw new KafkaException(Protocol.ErrorCode.LeaderNotAvailable,
-                    $"No leader available for {spec.TopicPartition.Topic}-{spec.TopicPartition.Partition}");
-            }
+            // Get partition leaders from metadata and group specs by leader
+            var partitionsByLeader = new Dictionary<int, List<ListOffsetsRequestTopic>>();
 
-            var leaderId = leaderNode.NodeId;
-
-            if (!partitionsByLeader.TryGetValue(leaderId, out var leaderTopics))
+            foreach (var spec in specList)
             {
-                leaderTopics = [];
-                partitionsByLeader[leaderId] = leaderTopics;
-            }
-
-            var topicEntry = leaderTopics.FirstOrDefault(t => t.Name == spec.TopicPartition.Topic);
-            if (topicEntry is null)
-            {
-                topicEntry = new ListOffsetsRequestTopic
+                var leaderNode = _metadataManager.Metadata.GetPartitionLeader(spec.TopicPartition.Topic, spec.TopicPartition.Partition);
+                if (leaderNode is null)
                 {
-                    Name = spec.TopicPartition.Topic,
-                    Partitions = new List<ListOffsetsRequestPartition>()
-                };
-                leaderTopics.Add(topicEntry);
-            }
+                    throw new KafkaException(Protocol.ErrorCode.LeaderNotAvailable,
+                        $"No leader available for {spec.TopicPartition.Topic}-{spec.TopicPartition.Partition}");
+                }
 
-            ((List<ListOffsetsRequestPartition>)topicEntry.Partitions).Add(new ListOffsetsRequestPartition
-            {
-                PartitionIndex = spec.TopicPartition.Partition,
-                Timestamp = GetTimestampForSpec(spec)
-            });
-        }
+                var leaderId = leaderNode.NodeId;
 
-        var result = new Dictionary<TopicPartition, ListOffsetsResultInfo>();
-
-        // Send requests to each leader
-        foreach (var (leaderId, topics) in partitionsByLeader)
-        {
-            var connection = await _connectionPool.GetConnectionAsync(leaderId, cancellationToken).ConfigureAwait(false);
-
-            var request = new ListOffsetsRequest
-            {
-                ReplicaId = -1, // Consumer request
-                IsolationLevel = opts.IsolationLevel,
-                Topics = topics
-            };
-
-            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-                Protocol.ApiKey.ListOffsets,
-                ListOffsetsRequest.LowestSupportedVersion,
-                ListOffsetsRequest.HighestSupportedVersion);
-
-            var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
-                request,
-                apiVersion,
-                cancellationToken).ConfigureAwait(false);
-
-            foreach (var topic in response.Topics)
-            {
-                foreach (var partition in topic.Partitions)
+                if (!partitionsByLeader.TryGetValue(leaderId, out var leaderTopics))
                 {
-                    var tp = new TopicPartition(topic.Name, partition.PartitionIndex);
+                    leaderTopics = [];
+                    partitionsByLeader[leaderId] = leaderTopics;
+                }
 
-                    if (partition.ErrorCode != Protocol.ErrorCode.None)
+                var topicEntry = leaderTopics.FirstOrDefault(t => t.Name == spec.TopicPartition.Topic);
+                if (topicEntry is null)
+                {
+                    topicEntry = new ListOffsetsRequestTopic
                     {
-                        throw new KafkaException(partition.ErrorCode,
-                            $"ListOffsets failed for {tp.Topic}-{tp.Partition}: {partition.ErrorCode}");
-                    }
-
-                    result[tp] = new ListOffsetsResultInfo
-                    {
-                        Offset = partition.Offset,
-                        Timestamp = partition.Timestamp,
-                        LeaderEpoch = partition.LeaderEpoch >= 0 ? partition.LeaderEpoch : null
+                        Name = spec.TopicPartition.Topic,
+                        Partitions = new List<ListOffsetsRequestPartition>()
                     };
+                    leaderTopics.Add(topicEntry);
+                }
+
+                ((List<ListOffsetsRequestPartition>)topicEntry.Partitions).Add(new ListOffsetsRequestPartition
+                {
+                    PartitionIndex = spec.TopicPartition.Partition,
+                    Timestamp = GetTimestampForSpec(spec)
+                });
+            }
+
+            var result = new Dictionary<TopicPartition, ListOffsetsResultInfo>();
+
+            // Send requests to each leader
+            foreach (var (leaderId, topics) in partitionsByLeader)
+            {
+                var connection = await _connectionPool.GetConnectionAsync(leaderId, cancellationToken).ConfigureAwait(false);
+
+                var request = new ListOffsetsRequest
+                {
+                    ReplicaId = -1, // Consumer request
+                    IsolationLevel = opts.IsolationLevel,
+                    Topics = topics
+                };
+
+                var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                    Protocol.ApiKey.ListOffsets,
+                    ListOffsetsRequest.LowestSupportedVersion,
+                    ListOffsetsRequest.HighestSupportedVersion);
+
+                var response = await connection.SendAsync<ListOffsetsRequest, ListOffsetsResponse>(
+                    request,
+                    apiVersion,
+                    cancellationToken).ConfigureAwait(false);
+
+                foreach (var topic in response.Topics)
+                {
+                    foreach (var partition in topic.Partitions)
+                    {
+                        var tp = new TopicPartition(topic.Name, partition.PartitionIndex);
+
+                        if (partition.ErrorCode != Protocol.ErrorCode.None)
+                        {
+                            throw new KafkaException(partition.ErrorCode,
+                                $"ListOffsets failed for {tp.Topic}-{tp.Partition}: {partition.ErrorCode}");
+                        }
+
+                        result[tp] = new ListOffsetsResultInfo
+                        {
+                            Offset = partition.Offset,
+                            Timestamp = partition.Timestamp,
+                            LeaderEpoch = partition.LeaderEpoch >= 0 ? partition.LeaderEpoch : null
+                        };
+                    }
                 }
             }
-        }
 
-        return result;
+            return (IReadOnlyDictionary<TopicPartition, ListOffsetsResultInfo>)result;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private static long GetTimestampForSpec(TopicPartitionOffsetSpec spec)
@@ -1429,11 +1488,9 @@ public sealed class AdminClient : IAdminClient
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
-        var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
-
         var opts = options ?? new ElectLeadersOptions();
 
-        // Build topic partitions array if specified
+        // Materialize before retry to avoid re-enumeration of potentially lazy sequences
         IReadOnlyList<ElectLeadersRequestTopic>? topicPartitions = null;
         if (partitions is not null)
         {
@@ -1451,46 +1508,51 @@ public sealed class AdminClient : IAdminClient
             }
         }
 
-        var request = new ElectLeadersRequest
+        return await WithRetryAsync<IReadOnlyDictionary<TopicPartition, ElectLeadersResultInfo>>(async () =>
         {
-            ElectionType = (byte)electionType,
-            TopicPartitions = topicPartitions,
-            TimeoutMs = opts.TimeoutMs
-        };
+            var controller = await GetControllerAsync(cancellationToken).ConfigureAwait(false);
 
-        var apiVersion = _metadataManager.GetNegotiatedApiVersion(
-            Protocol.ApiKey.ElectLeaders,
-            ElectLeadersRequest.LowestSupportedVersion,
-            ElectLeadersRequest.HighestSupportedVersion);
-
-        var response = await controller.SendAsync<ElectLeadersRequest, ElectLeadersResponse>(
-            request,
-            apiVersion,
-            cancellationToken).ConfigureAwait(false);
-
-        // Check top-level error
-        if (response.ErrorCode != Protocol.ErrorCode.None)
-        {
-            throw new KafkaException(response.ErrorCode, $"ElectLeaders failed: {response.ErrorCode}");
-        }
-
-        // Build results
-        var results = new Dictionary<TopicPartition, ElectLeadersResultInfo>();
-        foreach (var topic in response.ReplicaElectionResults)
-        {
-            foreach (var partition in topic.PartitionResult)
+            var request = new ElectLeadersRequest
             {
-                var tp = new TopicPartition(topic.Topic, partition.PartitionId);
-                results[tp] = new ElectLeadersResultInfo
-                {
-                    TopicPartition = tp,
-                    ErrorCode = partition.ErrorCode,
-                    ErrorMessage = partition.ErrorMessage
-                };
-            }
-        }
+                ElectionType = (byte)electionType,
+                TopicPartitions = topicPartitions,
+                TimeoutMs = opts.TimeoutMs
+            };
 
-        return results;
+            var apiVersion = _metadataManager.GetNegotiatedApiVersion(
+                Protocol.ApiKey.ElectLeaders,
+                ElectLeadersRequest.LowestSupportedVersion,
+                ElectLeadersRequest.HighestSupportedVersion);
+
+            var response = await controller.SendAsync<ElectLeadersRequest, ElectLeadersResponse>(
+                request,
+                apiVersion,
+                cancellationToken).ConfigureAwait(false);
+
+            // Check top-level error
+            if (response.ErrorCode != Protocol.ErrorCode.None)
+            {
+                throw new KafkaException(response.ErrorCode, $"ElectLeaders failed: {response.ErrorCode}");
+            }
+
+            // Build results
+            var results = new Dictionary<TopicPartition, ElectLeadersResultInfo>();
+            foreach (var topic in response.ReplicaElectionResults)
+            {
+                foreach (var partition in topic.PartitionResult)
+                {
+                    var tp = new TopicPartition(topic.Topic, partition.PartitionId);
+                    results[tp] = new ElectLeadersResultInfo
+                    {
+                        TopicPartition = tp,
+                        ErrorCode = partition.ErrorCode,
+                        ErrorMessage = partition.ErrorMessage
+                    };
+                }
+            }
+
+            return results;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask EnsureInitializedAsync(CancellationToken cancellationToken)
@@ -1498,6 +1560,42 @@ public sealed class AdminClient : IAdminClient
         if (_metadataManager.Metadata.LastRefreshed == default)
         {
             await _metadataManager.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private const int MaxRetries = 3;
+    private const int RetryDelayMs = 500;
+
+    private async ValueTask WithRetryAsync(Func<ValueTask> operation, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await operation().ConfigureAwait(false);
+                return;
+            }
+            catch (Errors.KafkaException ex) when (ex.IsRetriable && attempt < MaxRetries)
+            {
+                await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+                await Task.Delay(RetryDelayMs, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async ValueTask<T> WithRetryAsync<T>(Func<ValueTask<T>> operation, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await operation().ConfigureAwait(false);
+            }
+            catch (Errors.KafkaException ex) when (ex.IsRetriable && attempt < MaxRetries)
+            {
+                await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+                await Task.Delay(RetryDelayMs, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 
