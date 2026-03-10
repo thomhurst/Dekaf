@@ -45,8 +45,8 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         using var cts = new CancellationTokenSource();
         var hostTask = host.RunAsync(cts.Token);
 
-        // Give the consumer a moment to start
-        await Task.Delay(3000).ConfigureAwait(false);
+        // Give the consumer a moment to start and join the group
+        await Task.Delay(1000).ConfigureAwait(false);
 
         // Produce messages
         await using var producer = await Kafka.CreateProducer<string, string>()
@@ -120,7 +120,7 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         var hostTask = host.RunAsync(cts.Token);
 
         // Let it start
-        await Task.Delay(2000).ConfigureAwait(false);
+        await Task.Delay(1000).ConfigureAwait(false);
 
         // Stop
         cts.Cancel();

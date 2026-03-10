@@ -105,8 +105,6 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
                 using var client = new TcpClient();
                 await client.ConnectAsync(host, port).ConfigureAwait(false);
                 Console.WriteLine("[KafkaTestContainer] Kafka is accepting connections");
-                // Give it a moment to fully initialize
-                await Task.Delay(2000).ConfigureAwait(false);
                 return;
             }
             catch
@@ -147,11 +145,10 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
 
         await CreateTopicViaAdminClientAsync(topicName, partitions, replicationFactor).ConfigureAwait(false);
 
-        // Wait for topic metadata to propagate.
-        // In containerized environments, metadata propagation can be slow.
-        // A fixed delay is battle-tested and reliable across all container types.
-        // Subclasses or tests that need active polling can call WaitForTopicReadyAsync() directly.
-        await Task.Delay(3000).ConfigureAwait(false);
+        // Poll until topic appears in metadata instead of a fixed delay.
+        // Active polling typically completes in <1s vs the old 3s fixed delay,
+        // saving ~2s per topic × 75+ topics = minutes of CI time.
+        await WaitForTopicReadyAsync(topicName).ConfigureAwait(false);
         Console.WriteLine($"[KafkaTestContainer] Topic '{topicName}' created");
     }
 

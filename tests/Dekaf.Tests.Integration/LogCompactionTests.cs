@@ -33,8 +33,8 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
             }
         ]);
 
-        // Wait for topic creation
-        await Task.Delay(2000).ConfigureAwait(false);
+        // Wait for topic to appear in metadata
+        await KafkaContainer.WaitForTopicReadyAsync(topicName).ConfigureAwait(false);
 
         // Verify the topic config
         var configs = await adminClient.DescribeConfigsAsync([

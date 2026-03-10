@@ -11,4 +11,20 @@ namespace Dekaf.Tests.Integration;
 public abstract class KafkaIntegrationTest(KafkaTestContainer kafkaTestContainer)
 {
     public KafkaTestContainer KafkaContainer { get; } = kafkaTestContainer;
+
+    /// <summary>
+    /// Polls until a condition is true, replacing fixed <c>Task.Delay</c> waits.
+    /// Returns as soon as the condition is met, avoiding unnecessary delays.
+    /// </summary>
+    protected static async Task WaitForConditionAsync(
+        Func<bool> condition,
+        TimeSpan timeout,
+        int pollIntervalMs = 100)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+        while (!condition())
+        {
+            await Task.Delay(pollIntervalMs, cts.Token).ConfigureAwait(false);
+        }
+    }
 }
