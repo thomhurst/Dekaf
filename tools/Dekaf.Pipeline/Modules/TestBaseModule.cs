@@ -47,13 +47,13 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
                 new DotNetRunOptions
                 {
                     NoBuild = true,
-                    Configuration = "Debug",
+                    Configuration = "Release",
                     Framework = framework,
                     Arguments = [
                         "--",
                             "--hangdump",
                             "--hangdump-timeout", "15m",
-                            "--log-level", "Debug",
+                            "--log-level", "Trace",
                             "--output", "Detailed"
                     ]
                 },
