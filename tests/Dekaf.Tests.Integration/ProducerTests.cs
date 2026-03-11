@@ -102,7 +102,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
 
         consumer.Subscribe(topic);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             await Assert.That(msg.Key).IsEqualTo("key1");

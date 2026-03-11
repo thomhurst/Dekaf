@@ -376,12 +376,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 // Read from the event channel lazily during coalescing (like main reads
                 // from its bounded batch channel). Non-batch events are consumed as signals
-                // only. When carry-over produced a coalesced batch, read at most 1 new batch
-                // from the channel to prevent carry-over growth while still draining gradually.
-                // Without this limit, duplicate-partition batches (single-partition workloads)
-                // would cause unbounded carry-over growth and O(n²) scanning.
+                // only. When carry-over exists, limit new channel reads to the remaining
+                // capacity (maxCoalesce - carry-over count) to bound carry-over growth.
+                // This prevents O(n²) scanning from single-partition duplicate accumulation
+                // while maintaining throughput for multi-partition workloads.
                 {
-                    var channelReadLimit = (hadCarryOver && coalescedCount > 0) ? 1 : maxCoalesce;
+                    var channelReadLimit = hadCarryOver
+                        ? Math.Max(1, maxCoalesce - pendingCarryOver.Count)
+                        : maxCoalesce;
                     var channelReads = 0;
                     while (channelReads < channelReadLimit && eventReader.TryRead(out var evt))
                     {
