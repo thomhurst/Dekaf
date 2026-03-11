@@ -304,7 +304,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var carryOverA = new List<ReadyBatch>();
         var carryOverB = new List<ReadyBatch>();
         var pendingCarryOver = carryOverA;
-        var drainedBatches = new List<ReadyBatch>();
 
         ReadyBatch[]? coalescedBatches = null;
         var coalescedCount = 0;
@@ -317,16 +316,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 LogSendLoopIteration(_brokerId, pendingCarryOver.Count, _pendingResponses.Count);
 
-                // ── 1. Drain all available events ──
-                drainedBatches.Clear();
-                while (eventReader.TryRead(out var evt))
-                {
-                    if (evt.Type == SendLoopEventType.NewBatch)
-                        drainedBatches.Add(evt.Batch!);
-                    // ResponseReady and Unmute are wake-up signals only — no data to process
-                }
-
-                // ── 1b. Poll pending responses (like Java's client.poll()) ──
+                // ── 1. Poll pending responses (like Java's client.poll()) ──
+                // Signal events (ResponseReady, Unmute) may have woken us up — processing
+                // completed responses here handles them. Batch events stay in the channel
+                // and are read lazily during coalescing (step 5) to avoid O(n²) carry-over growth.
                 ProcessCompletedResponses(pendingCarryOver, cancellationToken);
 
                 // ── 2. Pick up send-failed retries ──
@@ -380,23 +373,25 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     pendingCarryOver.Clear();
                 }
 
-                // Process drained batches through CoalesceBatch. Unlike main (which reads
-                // from a bounded channel during coalescing), the branch drains all events
-                // upfront, so we must process them all here — otherwise they pile up in
-                // carry-over indefinitely. Ordering is preserved by CoalesceBatch: retry
-                // batches (from carry-over) are already coalesced above, muted partitions
-                // block new batches, and coalescedPartitions prevents duplicates.
+                // Read from the event channel lazily during coalescing (like main reads
+                // from its bounded batch channel). Non-batch events are consumed as signals
+                // only. When carry-over produced a coalesced batch, read at most 1 new batch
+                // from the channel to prevent carry-over growth while still draining gradually.
+                // Without this limit, duplicate-partition batches (single-partition workloads)
+                // would cause unbounded carry-over growth and O(n²) scanning.
                 {
-                    var i = 0;
-                    for (; i < drainedBatches.Count; i++)
+                    var channelReadLimit = (hadCarryOver && coalescedCount > 0) ? 1 : maxCoalesce;
+                    var channelReads = 0;
+                    while (channelReads < channelReadLimit && eventReader.TryRead(out var evt))
                     {
-                        if (coalescedCount >= maxCoalesce)
-                            break;
-                        CoalesceBatch(drainedBatches[i], coalescedBatches, ref coalescedCount,
-                            coalescedPartitions, newCarryOver);
+                        if (evt.Type == SendLoopEventType.NewBatch)
+                        {
+                            channelReads++;
+                            CoalesceBatch(evt.Batch!, coalescedBatches, ref coalescedCount,
+                                coalescedPartitions, newCarryOver);
+                        }
+                        // ResponseReady/Unmute: consumed as wake-up signals, no data to process
                     }
-                    for (; i < drainedBatches.Count; i++)
-                        newCarryOver.Add(drainedBatches[i]);
                 }
 
                 if (newCarryOver.Count > 0)
@@ -460,8 +455,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // ── 7. Compute timeout and wait ──
                 pendingCarryOver = newCarryOver;
 
-                if (pendingCarryOver.Count == 0 && _pendingResponses.Count == 0
-                    && drainedBatches.Count == 0)
+                if (pendingCarryOver.Count == 0 && _pendingResponses.Count == 0)
                 {
                     if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
                         break;
