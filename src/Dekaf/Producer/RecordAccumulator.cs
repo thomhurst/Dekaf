@@ -565,13 +565,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly ConcurrentDictionary<TopicPartition, object> _partitionSealLocks = new();
 
     /// <summary>
-    /// Temporary channel kept for sender loop compatibility until Task 5 rewrites SenderLoopAsync
-    /// to drain from partition deques directly. Completed on close/dispose to unblock the sender loop.
-    /// </summary>
-    private readonly Channel<ReadyBatch> _readyBatches = Channel.CreateUnbounded<ReadyBatch>(
-        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
-
-    /// <summary>
     /// Per-partition deques of sealed ReadyBatches, matching Java's
     /// ConcurrentMap&lt;TopicPartition, Deque&lt;ProducerBatch&gt;&gt;.
     /// Accessed by producer threads (AddLast under lock) and sender thread (drain).
@@ -1011,13 +1004,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Adds a sealed ReadyBatch to its partition deque (back) and signals the sender loop.
-    /// Replaces the old _readyBatches.Writer.TryWrite() pattern.
     /// Called under per-partition seal lock.
     /// </summary>
-    /// <remarks>
-    /// Temporarily also writes to _readyBatches channel for sender loop compatibility.
-    /// The channel write will be removed in Task 5 when SenderLoopAsync is rewritten to drain deques.
-    /// </remarks>
     private void EnqueueSealedBatch(ReadyBatch readyBatch)
     {
         var pd = GetOrCreateDeque(readyBatch.TopicPartition);
@@ -1025,10 +1013,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             pd.AddLast(readyBatch);
         }
-
-        // Temporary: also write to channel so the existing sender loop and tests can drain batches.
-        // This dual-write will be removed in Task 5 when the sender loop drains from deques directly.
-        _readyBatches.Writer.TryWrite(readyBatch);
 
         SignalWakeup();
     }
@@ -1059,10 +1043,28 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Temporary: exposes the ready batches channel reader for KafkaProducer.SenderLoop.
-    /// Will be removed in Task 5 when the sender loop is rewritten to drain partition deques.
+    /// Drains one ReadyBatch from any non-empty partition deque.
+    /// Used by tests to simulate sender loop draining without MetadataManager.
     /// </summary>
-    internal ChannelReader<ReadyBatch> ReadyBatches => _readyBatches.Reader;
+    internal bool TryDrainBatch([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ReadyBatch? batch)
+    {
+        foreach (var kvp in _partitionDeques)
+        {
+            var pd = kvp.Value;
+            lock (pd.Lock)
+            {
+                var b = pd.PollFirst();
+                if (b is not null)
+                {
+                    batch = b;
+                    return true;
+                }
+            }
+        }
+
+        batch = null;
+        return false;
+    }
 
     /// <summary>
     /// Returns a ReadyBatch to the pool for reuse.
@@ -2810,8 +2812,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Signal the sender loop to wake up and exit
         SignalWakeup();
-        // Temporary: complete the channel so the sender loop's WaitToReadAsync unblocks (removed in Task 5)
-        _readyBatches.Writer.Complete();
         LogClosedChannelCompleted();
     }
 
@@ -2859,13 +2859,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 // Timeout or cancellation - proceed with immediate shutdown
                 CompleteAppendWorkerChannels();
-                _readyBatches.Writer.Complete();
             }
             catch
             {
                 // Other exceptions (e.g., no connection) - proceed with immediate shutdown
                 CompleteAppendWorkerChannels();
-                _readyBatches.Writer.Complete();
             }
         }
 

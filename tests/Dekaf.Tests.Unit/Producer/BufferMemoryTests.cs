@@ -555,18 +555,25 @@ public class BufferMemoryTests
             var doneTaskWasCompleted = false;
             var drainTask = Task.Run(async () =>
             {
-                await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
+                while (!cts.Token.IsCancellationRequested)
                 {
-                    // Simulate sender loop: complete delivery
-                    batch.CompleteDelivery();
+                    if (accumulator.TryDrainBatch(out var batch))
+                    {
+                        // Simulate sender loop: complete delivery
+                        batch.CompleteDelivery();
 
-                    // Capture DoneTask state BEFORE returning to pool (which resets it)
-                    doneTaskWasCompleted = batch.DoneTask.IsCompleted;
+                        // Capture DoneTask state BEFORE returning to pool (which resets it)
+                        doneTaskWasCompleted = batch.DoneTask.IsCompleted;
 
-                    // Exit pipeline and return to pool
-                    accumulator.OnBatchExitsPipeline(batch);
-                    accumulator.ReturnReadyBatch(batch);
-                    break; // Only expect one batch
+                        // Exit pipeline and return to pool
+                        accumulator.OnBatchExitsPipeline(batch);
+                        accumulator.ReturnReadyBatch(batch);
+                        break; // Only expect one batch
+                    }
+                    else
+                    {
+                        await accumulator.WaitForWakeupAsync(100, cts.Token);
+                    }
                 }
             }, cts.Token);
 
@@ -619,18 +626,25 @@ public class BufferMemoryTests
             var receivedCount = 0;
             var drainTask = Task.Run(async () =>
             {
-                await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
+                while (!cts.Token.IsCancellationRequested)
                 {
-                    // Increment count BEFORE exiting pipeline to avoid race with FlushAsync
-                    Interlocked.Increment(ref receivedCount);
+                    if (accumulator.TryDrainBatch(out var batch))
+                    {
+                        // Increment count BEFORE exiting pipeline to avoid race with FlushAsync
+                        Interlocked.Increment(ref receivedCount);
 
-                    batch.CompleteDelivery();
-                    accumulator.OnBatchExitsPipeline(batch);
-                    batch.CompleteSend(0, DateTimeOffset.UtcNow);
-                    accumulator.ReturnReadyBatch(batch);
+                        batch.CompleteDelivery();
+                        accumulator.OnBatchExitsPipeline(batch);
+                        batch.CompleteSend(0, DateTimeOffset.UtcNow);
+                        accumulator.ReturnReadyBatch(batch);
 
-                    if (Volatile.Read(ref receivedCount) >= batchCount)
-                        break;
+                        if (Volatile.Read(ref receivedCount) >= batchCount)
+                            break;
+                    }
+                    else
+                    {
+                        await accumulator.WaitForWakeupAsync(100, cts.Token);
+                    }
                 }
             }, cts.Token);
 
@@ -692,11 +706,18 @@ public class BufferMemoryTests
 
             var drainTask = Task.Run(async () =>
             {
-                await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
+                while (!cts.Token.IsCancellationRequested)
                 {
-                    batch.CompleteDelivery();
-                    accumulator.OnBatchExitsPipeline(batch);
-                    accumulator.ReturnReadyBatch(batch);
+                    if (accumulator.TryDrainBatch(out var batch))
+                    {
+                        batch.CompleteDelivery();
+                        accumulator.OnBatchExitsPipeline(batch);
+                        accumulator.ReturnReadyBatch(batch);
+                    }
+                    else
+                    {
+                        await accumulator.WaitForWakeupAsync(100, cts.Token);
+                    }
                 }
             }, cts.Token);
 
@@ -754,15 +775,22 @@ public class BufferMemoryTests
             var receivedBatches = 0;
             var drainTask = Task.Run(async () =>
             {
-                await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
+                while (!cts.Token.IsCancellationRequested)
                 {
-                    receivedBatches++;
-                    batch.CompleteDelivery();
-                    accumulator.OnBatchExitsPipeline(batch);
-                    batch.CompleteSend(0, DateTimeOffset.UtcNow);
-                    accumulator.ReturnReadyBatch(batch);
-                    if (receivedBatches >= batchCount)
-                        break;
+                    if (accumulator.TryDrainBatch(out var batch))
+                    {
+                        receivedBatches++;
+                        batch.CompleteDelivery();
+                        accumulator.OnBatchExitsPipeline(batch);
+                        batch.CompleteSend(0, DateTimeOffset.UtcNow);
+                        accumulator.ReturnReadyBatch(batch);
+                        if (receivedBatches >= batchCount)
+                            break;
+                    }
+                    else
+                    {
+                        await accumulator.WaitForWakeupAsync(100, cts.Token);
+                    }
                 }
             }, cts.Token);
 

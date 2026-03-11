@@ -258,7 +258,7 @@ public class RecordAccumulatorConcurrencyTests
                     while (!Volatile.Read(ref cancelled))
                     {
                         // Read and drain ready batches to release memory
-                        if (accumulator.ReadyBatches.TryRead(out var readyBatch))
+                        if (accumulator.TryDrainBatch(out var readyBatch))
                         {
                             accumulator.ReleaseMemory(readyBatch.DataSize);
                             accumulator.OnBatchExitsPipeline(readyBatch);
@@ -361,7 +361,7 @@ public class RecordAccumulatorConcurrencyTests
                 {
                     while (!Volatile.Read(ref cancelled))
                     {
-                        if (accumulator.ReadyBatches.TryRead(out var batch))
+                        if (accumulator.TryDrainBatch(out var batch))
                         {
                             Interlocked.Increment(ref readyBatchCount);
                             accumulator.ReleaseMemory(batch.DataSize);
@@ -510,7 +510,7 @@ public class RecordAccumulatorConcurrencyTests
                 {
                     while (!Volatile.Read(ref cancelled))
                     {
-                        if (accumulator.ReadyBatches.TryRead(out var batch))
+                        if (accumulator.TryDrainBatch(out var batch))
                         {
                             accumulator.ReleaseMemory(batch.DataSize);
                             accumulator.OnBatchExitsPipeline(batch);
