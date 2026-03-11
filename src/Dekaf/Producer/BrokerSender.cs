@@ -419,7 +419,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             reusableResponseTasks.Clear();
                             for (var i = 0; i < _pendingResponses.Count; i++)
                                 reusableResponseTasks.Add(_pendingResponses[i].ResponseTask);
-                            await Task.WhenAny(reusableResponseTasks).ConfigureAwait(false);
+                            await Task.WhenAny(reusableResponseTasks)
+                                .WaitAsync(cancellationToken).ConfigureAwait(false);
                         }
                     }
 
