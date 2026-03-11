@@ -307,6 +307,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         ReadyBatch[]? coalescedBatches = null;
         var coalescedCount = 0;
+        var reusableResponseTasks = new List<Task>(_maxInFlight);
 
         try
         {
@@ -406,16 +407,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     while (_pendingResponses.Count >= _maxInFlight)
                     {
                         // Poll for completed responses to free in-flight slots.
-                        // Batch events stay in the unbounded channel — draining them here
-                        // would move thousands of batches to carry-over, causing O(n²) scanning.
                         ProcessCompletedResponses(newCarryOver, cancellationToken);
 
                         if (_pendingResponses.Count >= _maxInFlight)
                         {
-                            // Wait for a ContinueWith wake-up (ResponseReady signal) or
-                            // new batch arrival. Either wakes us to re-poll responses.
-                            await eventReader.WaitToReadAsync(cancellationToken)
-                                .ConfigureAwait(false);
+                            // Wait for any pending response to complete directly.
+                            // Cannot use eventReader.WaitToReadAsync here — the channel may
+                            // contain unread NewBatch events that cause immediate (synchronous)
+                            // return, creating a spin loop that starves the thread pool and
+                            // prevents I/O completion callbacks from running.
+                            reusableResponseTasks.Clear();
+                            for (var i = 0; i < _pendingResponses.Count; i++)
+                                reusableResponseTasks.Add(_pendingResponses[i].ResponseTask);
+                            await Task.WhenAny(reusableResponseTasks).ConfigureAwait(false);
                         }
                     }
 
