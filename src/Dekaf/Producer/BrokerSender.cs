@@ -380,38 +380,27 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     pendingCarryOver.Clear();
                 }
 
+                // Process drained batches through CoalesceBatch. Unlike main (which reads
+                // from a bounded channel during coalescing), the branch drains all events
+                // upfront, so we must process them all here — otherwise they pile up in
+                // carry-over indefinitely. Ordering is preserved by CoalesceBatch: retry
+                // batches (from carry-over) are already coalesced above, muted partitions
+                // block new batches, and coalescedPartitions prevents duplicates.
                 {
-                    var batchReadLimit = (hadCarryOver && coalescedCount > 0) ? 1 : maxCoalesce;
-                    var batchReads = 0;
-                    for (var i = 0; i < drainedBatches.Count && batchReads < batchReadLimit; i++)
+                    var i = 0;
+                    for (; i < drainedBatches.Count; i++)
                     {
-                        batchReads++;
+                        if (coalescedCount >= maxCoalesce)
+                            break;
                         CoalesceBatch(drainedBatches[i], coalescedBatches, ref coalescedCount,
                             coalescedPartitions, newCarryOver);
                     }
-                    for (var i = batchReads; i < drainedBatches.Count; i++)
+                    for (; i < drainedBatches.Count; i++)
                         newCarryOver.Add(drainedBatches[i]);
                 }
 
                 if (newCarryOver.Count > 0)
-                {
                     SweepExpiredCarryOver(newCarryOver);
-
-                    // DIAGNOSTIC: Log carry-over state when batches are stuck
-                    if (newCarryOver.Count > 0)
-                    {
-                        var mutedCount = 0;
-                        var retryCount = 0;
-                        for (var i = 0; i < newCarryOver.Count; i++)
-                        {
-                            if (_mutedPartitions.Contains(newCarryOver[i].TopicPartition)) mutedCount++;
-                            if (newCarryOver[i].IsRetry) retryCount++;
-                        }
-                        if (mutedCount > 0)
-                            LogCarryOverState(_brokerId, newCarryOver.Count, mutedCount, retryCount,
-                                coalescedCount, _pendingResponses.Count, _mutedPartitions.Count);
-                    }
-                }
 
                 // ── 6. Send or wait ──
                 if (coalescedCount > 0)
@@ -848,13 +837,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             if (now < pending.RequestStartTime + deliveryTimeoutTicks)
                 continue;
-
-            // DIAGNOSTIC: Log why ProcessCompletedResponses didn't catch this response
-            LogSweepCaughtTimedOutResponse(_brokerId, pending.Count,
-                pending.ResponseTask.IsCompleted,
-                pending.ResponseTask.IsFaulted,
-                pending.ResponseTask.IsCanceled,
-                Stopwatch.GetElapsedTime(pending.RequestStartTime).TotalSeconds);
 
             var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
             var anyBatchRemaining = false;
@@ -1435,13 +1417,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             if (now >= deliveryDeadlineTicks)
             {
-                // DIAGNOSTIC: Why was this batch stuck in carry-over?
-                LogCarryOverBatchExpired(_brokerId, batch.TopicPartition.Topic,
-                    batch.TopicPartition.Partition, batch.IsRetry,
-                    _mutedPartitions.Contains(batch.TopicPartition),
-                    Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks).TotalSeconds,
-                    carryOver.Count);
-
                 // Unmute partition for retry batches (they caused the mute).
                 // Non-retry muted batches: don't unmute — the retry batch for this
                 // partition may still be in play and will unmute on its own expiry.
@@ -1656,15 +1631,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] non-fatal exception during batch cleanup step (suppressed)")]
     private partial void LogBatchCleanupStepFailed(Exception exception, int brokerId);
-
-    [LoggerMessage(Level = LogLevel.Error, Message = "BrokerSender[{BrokerId}] DIAGNOSTIC: carry-over batch expired {Topic}-{Partition} isRetry={IsRetry} isMuted={IsMuted} age={AgeSeconds:F1}s carryOverCount={CarryOverCount}")]
-    private partial void LogCarryOverBatchExpired(int brokerId, string topic, int partition, bool isRetry, bool isMuted, double ageSeconds, int carryOverCount);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] DIAGNOSTIC: carry-over has muted batches: total={CarryOverTotal} muted={MutedCount} retry={RetryCount} coalesced={CoalescedCount} pending={PendingCount} mutedPartitions={MutedPartitionCount}")]
-    private partial void LogCarryOverState(int brokerId, int carryOverTotal, int mutedCount, int retryCount, int coalescedCount, int pendingCount, int mutedPartitionCount);
-
-    [LoggerMessage(Level = LogLevel.Error, Message = "BrokerSender[{BrokerId}] DIAGNOSTIC: sweep caught timed-out response batchCount={BatchCount} taskCompleted={TaskCompleted} taskFaulted={TaskFaulted} taskCanceled={TaskCanceled} age={AgeSeconds:F1}s")]
-    private partial void LogSweepCaughtTimedOutResponse(int brokerId, int batchCount, bool taskCompleted, bool taskFaulted, bool taskCanceled, double ageSeconds);
 
     #endregion
 }
