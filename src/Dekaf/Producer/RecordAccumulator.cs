@@ -645,6 +645,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _sequenceNumbers.Clear();
     }
 
+    /// <summary>
+    /// Resets sequence numbers for specific partitions only (Java-style per-partition reset).
+    /// Called during client-side epoch bump for idempotent producers — only the partitions
+    /// that triggered OOSN/InvalidProducerEpoch need their sequences reset to 0.
+    /// Unaffected partitions keep their current sequence counters; the broker carries
+    /// forward per-partition sequence state across epoch bumps (KIP-360).
+    /// </summary>
+    internal void ResetSequencesForPartitions(IReadOnlyCollection<TopicPartition> partitions)
+    {
+        foreach (var tp in partitions)
+            _sequenceNumbers.TryRemove(tp, out _);
+    }
+
     // Buffer memory tracking for backpressure
     private readonly ulong _maxBufferMemory;
     private long _bufferedBytes;

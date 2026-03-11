@@ -92,7 +92,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly ProducerStatisticsCollector _statisticsCollector;
     private readonly Action<ReadyBatch>? _rerouteBatch;
     private readonly Action<TopicPartition, long, DateTimeOffset, int, Exception?>? _onAcknowledgement;
-    private readonly Func<short, CancellationToken, ValueTask<(long ProducerId, short ProducerEpoch)>>? _bumpEpoch;
+    private readonly Func<short, IReadOnlyCollection<TopicPartition>, (long ProducerId, short ProducerEpoch)>? _bumpEpoch;
     private readonly Func<short>? _getCurrentEpoch;
     private readonly ILogger _logger;
 
@@ -179,6 +179,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // between concurrent response handlers. Value is the stale epoch (-1 = no bump needed).
     private int _epochBumpRequestedForEpoch = -1;
 
+    // Partitions that triggered OOSN/InvalidProducerEpoch and need sequence reset
+    // during the next epoch bump (Java-style per-partition reset, KIP-360).
+    // Single-threaded send loop — no locks needed.
+    private readonly HashSet<TopicPartition> _partitionsNeedingSequenceReset = new();
+
     // Pinned connection: the send loop reuses a single connection to preserve wire order.
     // With multiple connections per broker (round-robin pool), requests on different
     // TCP connections can arrive at the broker out of order, causing OOSN. By pinning
@@ -200,7 +205,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Action<int> setProduceApiVersion,
         Func<bool> isTransactional,
         Func<TopicPartition, CancellationToken, ValueTask>? ensurePartitionInTransaction,
-        Func<short, CancellationToken, ValueTask<(long ProducerId, short ProducerEpoch)>>? bumpEpoch,
+        Func<short, IReadOnlyCollection<TopicPartition>, (long ProducerId, short ProducerEpoch)>? bumpEpoch,
         Func<short>? getCurrentEpoch,
         Action<ReadyBatch>? rerouteBatch,
         Action<TopicPartition, long, DateTimeOffset, int, Exception?>? onAcknowledgement,
@@ -333,7 +338,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // ── 3. Sweep delivery timeouts ──
                 SweepPendingResponseTimeouts(pendingCarryOver, cancellationToken);
 
-                // ── 4. Epoch bump ──
+                // ── 4. Epoch bump (Java-style client-side, KIP-360) ──
+                // Synchronous: no network call, just epoch+1 + per-partition sequence reset.
+                // The broker accepts the bumped epoch when it sees seq=0 for affected partitions.
                 var staleEpoch = Volatile.Read(ref _epochBumpRequestedForEpoch);
                 if (staleEpoch >= 0 && _bumpEpoch is not null)
                 {
@@ -342,10 +349,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         var currentEpoch = _getCurrentEpoch?.Invoke() ?? -1;
                         if (currentEpoch >= 0 && currentEpoch <= (short)staleEpoch)
                         {
-                            await _bumpEpoch((short)staleEpoch, cancellationToken)
-                                .ConfigureAwait(false);
+                            _bumpEpoch((short)staleEpoch, _partitionsNeedingSequenceReset);
                         }
 
+                        _partitionsNeedingSequenceReset.Clear();
                         Interlocked.CompareExchange(ref _epochBumpRequestedForEpoch, -1, staleEpoch);
                     }
                     catch (OperationCanceledException)
@@ -1002,6 +1009,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             LogEpochBumpSignaled(errorCode, batch.TopicPartition.Topic, batch.TopicPartition.Partition,
                 batch.RecordBatch.BaseSequence);
+
+            // Track which partition needs sequence reset (Java-style per-partition reset)
+            _partitionsNeedingSequenceReset.Add(batch.TopicPartition);
 
             // Signal the send loop to bump the epoch
             Interlocked.CompareExchange(ref _epochBumpRequestedForEpoch,
