@@ -526,8 +526,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Value = "value1"
         }, cts.Token);
 
-        // Fast path appends synchronously, so message is already committed
-        await Task.Delay(50).ConfigureAwait(false);
+        // Fast path appends synchronously, so message is already in the batch buffer.
+        // Allow ample time for the send loop to send the batch and receive the response
+        // before cancelling — CI runners can be slow under parallel test load.
+        await Task.Delay(2000).ConfigureAwait(false);
         cts.Cancel();
 
         // Assert - Completes successfully despite cancellation

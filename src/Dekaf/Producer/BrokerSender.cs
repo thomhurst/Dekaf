@@ -374,12 +374,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     pendingCarryOver.Clear();
                 }
 
-                // Read from the event channel lazily during coalescing. Stop reading
-                // when partition slots are saturated — once carry-over from channel reads
-                // exceeds the number of unique partitions seen, all further reads will go
-                // to carry-over (O(n²) scanning). This naturally adapts to any partition count:
-                // multi-partition reads many (throughput), single-partition reads few (bounded).
+                // Read from the event channel lazily during coalescing (like main reads
+                // from its bounded batch channel). Non-batch events are consumed as signals.
+                // Carry-over budget: limit channel-read carry-overs so total carry-over
+                // never exceeds maxCoalesce. This bounds carry-over growth while allowing
+                // multi-partition workloads to fill all partition slots from the channel.
+                // On main, the bounded channel (capacity 10) prevents this naturally;
+                // the unbounded event channel needs an explicit budget instead.
                 {
+                    var carryOverBudget = maxCoalesce - newCarryOver.Count;
                     var channelReads = 0;
                     var channelCarryOvers = 0;
                     while (channelReads < maxCoalesce && eventReader.TryRead(out var evt))
@@ -393,10 +396,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             if (newCarryOver.Count > carryBefore)
                             {
                                 channelCarryOvers++;
-                                // All partition slots filled — further reads go to carry-over.
-                                // Allow up to partitionCount carry-overs before stopping to
-                                // drain one full round of duplicates from the channel.
-                                if (channelCarryOvers > coalescedPartitions.Count)
+                                if (channelCarryOvers >= carryOverBudget)
                                     break;
                             }
                         }
