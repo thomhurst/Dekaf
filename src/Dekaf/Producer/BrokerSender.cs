@@ -488,26 +488,43 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // responses and re-coalesce. Carry-over batches that were blocked by
                     // duplicate-partition will coalesce next time (coalescedPartitions is cleared).
                 }
+                else if (_pendingResponses.Count > 0)
+                {
+                    // Carry-over (possibly all muted) and/or pending responses — wait for
+                    // any response to complete. Cannot use eventReader.WaitToReadAsync here
+                    // because the channel may contain stale NewBatch events that cause
+                    // immediate return, creating a spin loop when all carry-over is muted.
+                    // Direct Task.WhenAny on response tasks bypasses the channel and wakes
+                    // exactly when a response completes (which may unmute a partition).
+                    reusableResponseTasks.Clear();
+                    for (var i = 0; i < _pendingResponses.Count; i++)
+                        reusableResponseTasks.Add(_pendingResponses[i].ResponseTask);
+                    try
+                    {
+                        await Task.WhenAny(reusableResponseTasks)
+                            .WaitAsync(TimeSpan.FromMilliseconds(100), cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (TimeoutException)
+                    {
+                        // Periodic wake-up — loop back to re-check and sweep timeouts
+                    }
+                }
+                else if (pendingCarryOver.Count > 0)
+                {
+                    // Carry-over exists but no pending responses (e.g. retry backoff waiting).
+                    // Timed wait — loop back after earliest retry backoff or delivery deadline.
+                    var wakeupMs = ComputeNextWakeupMs(pendingCarryOver);
+                    if (wakeupMs > 0)
+                    {
+                        await Task.Delay(Math.Min(wakeupMs, 100), cancellationToken).ConfigureAwait(false);
+                    }
+                }
                 else if (!eventReader.TryPeek(out _))
                 {
-                    // No carry-over, only pending responses — wait for response with timeout.
-                    var timeoutMs = ComputeNextWakeupMs(pendingCarryOver);
-                    if (timeoutMs > 0)
-                    {
-                        using var timeoutCts = _pollTimeoutCtsPool.Rent();
-                        timeoutCts.CancelAfter(timeoutMs);
-                        using var reg = cancellationToken.CanBeCanceled
-                            ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
-                            : default;
-                        try
-                        {
-                            await eventReader.WaitToReadAsync(timeoutCts.Token)
-                                .ConfigureAwait(false);
-                        }
-                        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                        {
-                        }
-                    }
+                    // No carry-over, no pending responses, no events — wait for new batch.
+                    if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+                        break;
                 }
             }
         }
