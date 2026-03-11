@@ -111,6 +111,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-producer-throttle")
                 .WithLinger(TimeSpan.FromMilliseconds(5))
+                .WithIdempotence(false)
                 .WithAcks(Acks.Leader)
                 .BuildAsync();
 
@@ -262,6 +263,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-producer-baseline")
                 .WithLinger(TimeSpan.FromMilliseconds(5))
+                .WithIdempotence(false)
                 .WithAcks(Acks.Leader)
                 .BuildAsync();
 
@@ -292,6 +294,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-producer-throttled")
                 .WithLinger(TimeSpan.FromMilliseconds(5))
+                .WithIdempotence(false)
                 .WithAcks(Acks.Leader)
                 .BuildAsync();
 
@@ -356,6 +359,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-no-throttle")
             .WithLinger(TimeSpan.FromMilliseconds(5))
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
             .WithStatisticsHandler(s => stats.Add(s))

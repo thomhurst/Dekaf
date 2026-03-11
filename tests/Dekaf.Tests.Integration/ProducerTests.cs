@@ -791,6 +791,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-sync")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .BuildAsync();
 
@@ -834,6 +835,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-callback")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .BuildAsync();
 
@@ -869,6 +871,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-sync-batch")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .BuildAsync();
@@ -921,6 +924,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-sync-concurrent")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .BuildAsync();
 
