@@ -97,6 +97,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly ILogger _logger;
 
     private readonly Channel<SendLoopEvent> _eventChannel;
+    private readonly SemaphoreSlim _batchGate; // Limits batch events in the channel (backpressure)
     private readonly CancellationTokenSourcePool _pollTimeoutCtsPool = new();
     private readonly Task _sendLoopTask;
     private readonly CancellationTokenSource _cts;
@@ -230,6 +231,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             SingleWriter = false
         });
 
+        // Limit batch events in the channel to prevent unbounded queuing.
+        // On main, a bounded batch channel (capacity ~10) provides natural backpressure.
+        // With the unified unbounded event channel, this semaphore provides equivalent
+        // backpressure for batch events without blocking signal events (ResponseReady,
+        // Unmute). The capacity matches maxCoalesce so the send loop always has enough
+        // batches to fill one coalesced request.
+        var maxCoalesce = options.MaxInFlightRequestsPerConnection * 4;
+        _batchGate = new SemaphoreSlim(maxCoalesce, maxCoalesce);
+
         _maxInFlight = options.MaxInFlightRequestsPerConnection;
 
         // Only mute at send time when limited to 1 in-flight request.
@@ -248,27 +258,55 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     /// <summary>
     /// Enqueues a batch for sending to this broker.
-    /// TryWrite on the unbounded event channel always succeeds unless the channel is completed
-    /// (send loop exited). BufferMemory provides the backpressure — the channel does not need bounding.
+    /// The batch gate semaphore provides backpressure when the channel has many queued batches,
+    /// preventing unbounded queuing that causes retry cascades on transient errors.
     /// </summary>
     public ValueTask EnqueueAsync(ReadyBatch batch, CancellationToken cancellationToken)
     {
-        if (_eventChannel.Writer.TryWrite(SendLoopEvent.NewBatch(batch)))
-            return ValueTask.CompletedTask;
+        // Non-blocking try-acquire (timeout 0) — returns immediately, no token needed.
+#pragma warning disable CA2016
+        if (_batchGate.Wait(0))
+#pragma warning restore CA2016
+        {
+            if (_eventChannel.Writer.TryWrite(SendLoopEvent.NewBatch(batch)))
+                return ValueTask.CompletedTask;
 
+            _batchGate.Release();
+            FailEnqueuedBatch(batch);
+            return ValueTask.CompletedTask;
+        }
+
+        return EnqueueSlowAsync(batch, cancellationToken);
+    }
+
+    private async ValueTask EnqueueSlowAsync(ReadyBatch batch, CancellationToken cancellationToken)
+    {
+        await _batchGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        if (_eventChannel.Writer.TryWrite(SendLoopEvent.NewBatch(batch)))
+            return;
+
+        _batchGate.Release();
         FailEnqueuedBatch(batch);
-        return ValueTask.CompletedTask;
     }
 
     /// <summary>
     /// Synchronous enqueue for the reroute callback (called from BrokerSender's send loop
-    /// when a retry discovers the leader moved). TryWrite on unbounded channel always succeeds
-    /// unless the channel is completed.
+    /// when a retry discovers the leader moved). Uses non-blocking semaphore acquisition.
     /// </summary>
     public void Enqueue(ReadyBatch batch)
     {
-        if (!_eventChannel.Writer.TryWrite(SendLoopEvent.NewBatch(batch)))
+        if (!_batchGate.Wait(0))
+        {
             FailEnqueuedBatch(batch);
+            return;
+        }
+
+        if (!_eventChannel.Writer.TryWrite(SendLoopEvent.NewBatch(batch)))
+        {
+            _batchGate.Release();
+            FailEnqueuedBatch(batch);
+        }
     }
 
     private void FailEnqueuedBatch(ReadyBatch batch)
@@ -374,31 +412,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     pendingCarryOver.Clear();
                 }
 
-                // Read from the event channel lazily during coalescing (like main reads
-                // from its bounded batch channel). Non-batch events are consumed as signals.
-                // Carry-over budget: limit channel-read carry-overs so total carry-over
-                // never exceeds maxCoalesce. This bounds carry-over growth while allowing
-                // multi-partition workloads to fill all partition slots from the channel.
-                // On main, the bounded channel (capacity 10) prevents this naturally;
-                // the unbounded event channel needs an explicit budget instead.
+                // Drain available events from the channel. The batch gate semaphore
+                // limits how many NewBatch events can be in the channel at once, so the
+                // channel cannot have more than maxCoalesce batch events. Signal events
+                // (ResponseReady, Unmute) are lightweight and not gated.
                 {
-                    var carryOverBudget = maxCoalesce - newCarryOver.Count;
                     var channelReads = 0;
-                    var channelCarryOvers = 0;
                     while (channelReads < maxCoalesce && eventReader.TryRead(out var evt))
                     {
                         if (evt.Type == SendLoopEventType.NewBatch)
                         {
-                            var carryBefore = newCarryOver.Count;
+                            _batchGate.Release();
                             channelReads++;
                             CoalesceBatch(evt.Batch!, coalescedBatches, ref coalescedCount,
                                 coalescedPartitions, newCarryOver);
-                            if (newCarryOver.Count > carryBefore)
-                            {
-                                channelCarryOvers++;
-                                if (channelCarryOvers >= carryOverBudget)
-                                    break;
-                            }
                         }
                         // ResponseReady/Unmute: consumed as wake-up signals, no data to process
                     }
@@ -575,7 +602,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             while (eventReader.TryRead(out var evt))
             {
                 if (evt.Type == SendLoopEventType.NewBatch)
+                {
+                    _batchGate.Release();
                     FailAndCleanupBatch(evt.Batch!, disposedException);
+                }
             }
         }
     }
@@ -1598,6 +1628,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         _cts.Dispose();
+        _batchGate.Dispose();
         _pollTimeoutCtsPool.Clear();
     }
 
