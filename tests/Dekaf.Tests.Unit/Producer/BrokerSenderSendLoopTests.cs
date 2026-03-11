@@ -13,7 +13,7 @@ namespace Dekaf.Tests.Unit.Producer;
 
 /// <summary>
 /// Behavioral tests for BrokerSender's send loop, verifying:
-/// - Response completion wakes the send loop (via Task.WhenAny, not ContinueWith)
+/// - Response completion wakes the send loop (via event channel, not Task.WhenAny)
 /// - In-flight request limiting via _pendingResponses.Count
 /// - Fire-and-forget (Acks.None) path doesn't track in-flight
 /// - Faulted responses wake the send loop
@@ -150,9 +150,8 @@ public sealed class BrokerSenderSendLoopTests
     [Test]
     public async Task SendLoop_ResponseCompletion_WakesSendLoopAndProcessesBatch()
     {
-        // Verifies that when a response task completes, the send loop wakes up
-        // (via Task.WhenAny on pending response tasks) and processes the batch.
-        // This is the core behavioral change: no ContinueWith callback needed.
+        // Verifies that when a response task completes, the ContinueWith bridge
+        // pushes a ResponseCompleted event to the unified channel, waking the send loop.
 
         var tcs = new TaskCompletionSource<ProduceResponse>();
         var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
@@ -180,7 +179,7 @@ public sealed class BrokerSenderSendLoopTests
             // Wait for the send loop to actually send the request
             await requestSent.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-            // Complete the response — send loop should wake via Task.WhenAny and process it
+            // Complete the response — ContinueWith pushes event, send loop wakes and processes
             tcs.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 42));
 
             // Wait for acknowledgement (with timeout to detect missed wakeup)
@@ -293,7 +292,7 @@ public sealed class BrokerSenderSendLoopTests
         // With maxInFlight=1, enqueue batches sequentially so each becomes its own
         // request. The second request can only be sent after the first response completes.
         // This verifies the in-flight wait loop correctly uses _pendingResponses.Count
-        // and wakes via Task.WhenAny.
+        // and wakes via the event channel.
 
         var tcs1 = new TaskCompletionSource<ProduceResponse>();
         var tcs2 = new TaskCompletionSource<ProduceResponse>();
@@ -365,9 +364,8 @@ public sealed class BrokerSenderSendLoopTests
     [Test]
     public async Task SendLoop_FaultedResponse_WakesSendLoopAndRetries()
     {
-        // When a response task faults (e.g., connection error), the send loop should
-        // wake via Task.WhenAny and handle the error (retry the batch).
-        // Verifies faulted tasks are detected without ContinueWith.
+        // When a response task faults (e.g., connection error), the ContinueWith bridge
+        // pushes a ResponseCompleted event. The send loop processes it and retries the batch.
 
         var tcs1 = new TaskCompletionSource<ProduceResponse>();
         var tcs2 = new TaskCompletionSource<ProduceResponse>();
@@ -429,8 +427,8 @@ public sealed class BrokerSenderSendLoopTests
     public async Task SendLoop_MultipleInFlight_AllResponsesProcessed()
     {
         // With maxInFlight=5, multiple requests can be in-flight simultaneously.
-        // Completing responses in any order should work because the send loop
-        // uses Task.WhenAny to detect ANY response completion.
+        // Completing responses in any order should work because each response
+        // pushes a ResponseCompleted event to the unified channel.
 
         const int batchCount = 3;
         var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
