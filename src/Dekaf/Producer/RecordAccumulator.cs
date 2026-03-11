@@ -230,15 +230,10 @@ public readonly struct PooledMemory
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Ownership Semantics:</b> When passed to <see cref="RecordAccumulator.TryAppendFireAndForgetBatch"/>,
+/// <b>Ownership Semantics:</b> When passed to batch append methods,
 /// ownership of pooled resources (Key.Array, Value.Array, PooledHeaderArray) transfers to the accumulator
 /// for successfully appended records. The accumulator will return these arrays to their pools when the
 /// batch completes or fails.
-/// </para>
-/// <para>
-/// <b>Partial Failure:</b> If the batch operation fails partway through (e.g., accumulator disposed),
-/// the caller is responsible for returning pooled resources for records that were NOT appended.
-/// The return value indicates how many records were successfully appended.
 /// </para>
 /// </remarks>
 public readonly struct ProducerRecordData
@@ -589,9 +584,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly SemaphoreSlim _wakeupSignal = new(0, 1);
 
     // Per-partition-affine append workers: each worker owns a channel and processes
-    // appends for a subset of partitions (partition % workerCount). This eliminates
-    // contention on CAS spin, ConcurrentDictionary lookups, and per-partition seal locks
-    // when many threads miss the fast path and fall through to the slow (async) append path.
+    // appends for a subset of partitions (partition % workerCount). This reduces
+    // contention on ConcurrentDictionary lookups when many threads fall through
+    // to the slow (async) append path.
     private readonly Channel<AppendWorkItem>[] _appendWorkerChannels;
     private readonly int _appendWorkerCount;
     private Task[]? _appendWorkerTasks;
@@ -694,28 +689,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
     private readonly SemaphoreSlim _asyncBufferSpaceSignal = new(0, 1);
 
-    // Multi-partition thread-local cache for scenarios where messages go to multiple partitions.
-    // Uses a small fixed-size array indexed by partition modulo cache size.
-    // This handles common scenarios (3-16 partitions) with near-100% cache hit rate.
-    // Cache size of 16 covers most production scenarios while keeping memory footprint small.
-    private const int MultiPartitionCacheSize = 16;
-
-    [ThreadStatic]
-    private static PartitionBatchCacheEntry[]? t_partitionBatchCache;
-    [ThreadStatic]
-    private static RecordAccumulator? t_partitionBatchCacheOwner;
-
-    /// <summary>
-    /// Entry in the multi-partition batch cache.
-    /// Stores the topic, partition, and batch reference for quick lookup.
-    /// </summary>
-    private struct PartitionBatchCacheEntry
-    {
-        public string? Topic;
-        public int Partition;
-        public PartitionBatch? Batch;
-    }
-
     // Cache for TopicPartition instances to avoid repeated allocations.
     // Using a nested ConcurrentDictionary: outer key is topic (string), inner key is partition (int).
     // This allows O(1) lookup without allocating a TopicPartition struct on the hot path.
@@ -736,8 +709,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Per-partition state matching Java's Deque&lt;ProducerBatch&gt; design.
     /// The deque holds sealed ReadyBatches waiting to be drained by the sender loop.
     /// CurrentBatch is the unsealed batch accepting new records.
-    /// Thread-safety: all access to Deque must be under Lock. CurrentBatch access
-    /// uses the existing _exclusiveAccess CAS + per-partition seal lock pattern.
+    /// Thread-safety: all access to Deque and CurrentBatch must be under Lock.
     /// </summary>
     private sealed class PartitionDeque
     {
@@ -1334,8 +1306,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Helper: tries to append a record to the given batch using the appropriate method
-    /// based on the record type (completion source, callback, or fire-and-forget).
+    /// Helper: tries to append a record to the given batch.
     /// Called under the deque lock.
     /// </summary>
     private bool TryAppendToBatch(
@@ -1349,20 +1320,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int estimatedSize)
     {
-        RecordAppendResult result;
-
-        if (completionSource is not null)
-        {
-            result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completionSource);
-        }
-        else if (callback is not null)
-        {
-            result = batch.TryAppendWithCallback(timestamp, key, value, headers, pooledHeaderArray, callback);
-        }
-        else
-        {
-            result = batch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
-        }
+        var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completionSource, callback);
 
         if (result.Success)
         {
@@ -1632,8 +1590,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     /// <param name="topicPartition">The topic-partition to look up.</param>
     /// <param name="batch">The batch if found, null otherwise.</param>
-    /// <returns>True if a batch exists, false otherwise.</returns>
-    internal bool TryGetBatch(TopicPartition topicPartition, out PartitionBatch? batch)
+    /// <summary>
+    /// Checks for batches that have exceeded linger time.
+    /// Uses conditional removal to avoid race conditions where a new batch might be created
+    /// between Complete() and TryRemove() calls.
+    /// </summary>
+    /// <summary>
+    /// Tries to get an existing batch for the given topic-partition.
+    /// Used by tests for batch introspection.
+    /// </summary>
+    internal bool TryGetBatch(string topic, int partition, out PartitionBatch? batch)
     {
         if (_disposed)
         {
@@ -1641,6 +1607,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return false;
         }
 
+        var topicPartition = GetOrCreateTopicPartition(topic, partition);
         if (_partitionDeques.TryGetValue(topicPartition, out var pd))
         {
             batch = pd.CurrentBatch;
@@ -1651,94 +1618,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return false;
     }
 
-    /// <summary>
-    /// Tries to get an existing batch by topic and partition using thread-local cache.
-    /// This is the fast path that avoids TopicPartition allocation.
-    /// </summary>
-    /// <param name="topic">The topic name.</param>
-    /// <param name="partition">The partition number.</param>
-    /// <param name="batch">The batch if found, null otherwise.</param>
-    /// <returns>True if a batch exists, false otherwise.</returns>
-    internal bool TryGetBatch(string topic, int partition, out PartitionBatch? batch)
-    {
-        if (_disposed)
-        {
-            batch = null;
-            return false;
-        }
-
-        // Use thread-local multi-partition cache for fast lookup
-        var cache = t_partitionBatchCache;
-        var cacheOwner = t_partitionBatchCacheOwner;
-
-        if (cache is not null && ReferenceEquals(cacheOwner, this))
-        {
-            var index = partition & (MultiPartitionCacheSize - 1);
-            ref var entry = ref cache[index];
-
-            if (entry.Topic == topic && entry.Partition == partition && entry.Batch is not null)
-            {
-                // Cache hit - verify batch is still valid (not completed) AND still belongs
-                // to the correct partition. The batch object may have been recycled via the pool
-                // and Reset() for a different partition while this thread-local cache entry is stale.
-                var cachedBatch = entry.Batch;
-                if (cachedBatch.Arena is not null && cachedBatch.TopicPartition.Partition == partition)
-                {
-                    batch = cachedBatch;
-                    return true;
-                }
-                // Batch was completed or recycled for a different partition, clear cache entry
-                entry.Batch = null;
-            }
-        }
-
-        // Cache miss - look up in partition deques
-        var topicPartition = GetOrCreateTopicPartition(topic, partition);
-
-        if (_partitionDeques.TryGetValue(topicPartition, out var pd))
-        {
-            batch = pd.CurrentBatch;
-            if (batch is not null)
-            {
-                // Update thread-local cache for next time
-                UpdatePartitionCache(topic, partition, batch);
-                return true;
-            }
-        }
-
-        batch = null;
-        return false;
-    }
-
-    /// <summary>
-    /// Updates the thread-local partition cache.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void UpdatePartitionCache(string topic, int partition, PartitionBatch? batch)
-    {
-        var cache = t_partitionBatchCache;
-        if (cache is null || !ReferenceEquals(t_partitionBatchCacheOwner, this))
-        {
-            cache = new PartitionBatchCacheEntry[MultiPartitionCacheSize];
-            t_partitionBatchCache = cache;
-            t_partitionBatchCacheOwner = this;
-        }
-
-        var index = partition & (MultiPartitionCacheSize - 1);
-        cache[index] = new PartitionBatchCacheEntry
-        {
-            Topic = topic,
-            Partition = partition,
-            Batch = batch
-        };
-    }
-
-
-    /// <summary>
-    /// Checks for batches that have exceeded linger time.
-    /// Uses conditional removal to avoid race conditions where a new batch might be created
-    /// between Complete() and TryRemove() calls.
-    /// </summary>
     /// <remarks>
     /// Optimized with multiple fast paths:
     /// 1. Empty dictionary check - avoids enumeration overhead
@@ -2155,15 +2034,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         LogDisposeStarted(_partitionDeques.Count, inFlightBatches);
         _disposed = true;
 
-        // Invalidate thread-local caches if they point to this accumulator
-        if (t_partitionBatchCacheOwner == this)
-        {
-            t_partitionBatchCacheOwner = null;
-            if (t_partitionBatchCache is { } cache)
-            {
-                Array.Clear(cache);
-            }
-        }
 
         // Clear the TopicPartition cache to release memory
         _topicPartitionCache.Clear();
@@ -2449,12 +2319,8 @@ internal sealed class PartitionBatchPool
 /// Tracks pooled arrays that are returned when the batch completes.
 /// Uses ArrayPool-backed arrays instead of List to eliminate allocations.
 ///
-/// Thread-safety: Multiple threads can call TryAppend concurrently (via ConcurrentDictionary.AddOrUpdate),
-/// so we use CAS-based exclusive access to protect array mutations and field updates. This is ideal because:
-/// - Critical sections are very short (<100ns)
-/// - Lock is per-partition, so no cross-partition contention
-/// - CAS is faster than SpinLock/Monitor for the common single-producer case
-/// Complete() coordinates with TryAppend via the same _exclusiveAccess flag.
+/// Thread-safety: All access is serialized by the per-partition deque lock (PartitionDeque.Lock).
+/// No internal synchronization is needed.
 /// </summary>
 internal sealed class PartitionBatch
 {
@@ -2483,22 +2349,6 @@ internal sealed class PartitionBatch
 
     private Header[][] _pooledHeaderArrays;
     private int _pooledHeaderArrayCount;
-
-    // Exclusive access flag for CAS-based synchronization.
-    // Uses Interlocked.CompareExchange for atomic claim/release:
-    // - 0 = no one is currently appending (available)
-    // - 1 = a thread is currently appending (busy)
-    //
-    // All append methods and Complete() coordinate via this flag:
-    // 1. CAS(0 -> 1): If success, we have exclusive access
-    // 2. CAS fails: Someone else has access, spin wait until available
-    // 3. After work completes, set back to 0 to release
-    //
-    // This is correct because:
-    // - Only one thread can win the CAS at a time
-    // - The winner has exclusive access until it releases
-    // - Losers spin until the winner releases
-    private int _exclusiveAccess;
 
     private long _baseTimestamp;
     private int _estimatedSize;
@@ -2575,10 +2425,10 @@ internal sealed class PartitionBatch
     /// Called when renting from the pool.
     /// </summary>
     /// <remarks>
-    /// IMPORTANT: _isCompleted and _exclusiveAccess must ONLY be reset here, NOT in PrepareForPooling().
-    /// Resetting them in PrepareForPooling() creates a race condition where a stale reference from
+    /// IMPORTANT: _isCompleted must ONLY be reset here, NOT in PrepareForPooling().
+    /// Resetting it in PrepareForPooling() creates a race condition where a stale reference from
     /// another thread could successfully append to the pooled batch (since _isCompleted would be 0),
-    /// and those messages would be lost when Reset() is later called. By only resetting these flags
+    /// and those messages would be lost when Reset() is later called. By only resetting this flag
     /// at rent time, we ensure that any stale references fail the _isCompleted check in TryAppend().
     /// </remarks>
     internal void Reset(TopicPartition topicPartition)
@@ -2594,7 +2444,6 @@ internal sealed class PartitionBatch
         _estimatedSize = 0;
         _isCompleted = 0;  // Only reset here - see remarks
         _completedBatch = null;
-        _exclusiveAccess = 0;  // Only reset here - see remarks
     }
 
     /// <summary>
@@ -2622,8 +2471,8 @@ internal sealed class PartitionBatch
         _pooledHeaderArrays = ArrayPool<Header[]>.Shared.Rent(8);
 
         // Reset counters and state for reuse.
-        // IMPORTANT: Do NOT reset _isCompleted or _exclusiveAccess here!
-        // These must only be reset in Reset() when the batch is actually rented.
+        // IMPORTANT: Do NOT reset _isCompleted here!
+        // It must only be reset in Reset() when the batch is actually rented.
         // If we reset _isCompleted here, a stale reference from another thread could
         // successfully append to this pooled batch (since _isCompleted would be 0),
         // and those messages would be lost when Reset() is later called.
@@ -2635,7 +2484,6 @@ internal sealed class PartitionBatch
         _estimatedSize = 0;
         // _isCompleted stays at 1 - batch is "completed" while in pool
         _completedBatch = null;
-        // _exclusiveAccess stays at 0 (should already be 0 from Complete())
     }
 
     /// <summary>
@@ -2655,64 +2503,29 @@ internal sealed class PartitionBatch
     public long CreatedAtTicks => _createdAt.Ticks;
 
     /// <summary>
-    /// Appends a record to the batch with completion tracking.
-    /// Uses lock-free CAS-based synchronization for the common single-producer case,
-    /// falling back to spin-wait under contention.
+    /// Appends a record to the batch. Handles all three record types:
+    /// completion-tracked (ProduceAsync), callback (Send with handler), and fire-and-forget (Send).
+    /// Caller must hold the per-partition deque lock.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public RecordAppendResult TryAppend(
         long timestamp,
         PooledMemory key,
         PooledMemory value,
         IReadOnlyList<Header>? headers,
         Header[]? pooledHeaderArray,
-        PooledValueTaskSource<RecordMetadata> completion)
+        PooledValueTaskSource<RecordMetadata>? completionSource,
+        Action<RecordMetadata, Exception?>? callback)
     {
-        // Pre-compute record size outside the lock - depends only on input parameters
         var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
 
-        // FAST PATH: Try to atomically claim exclusive access via CAS.
-        // If we win (exchange 0 -> 1), we have exclusive access and can proceed without spinning.
-        // This is the common case for single-producer patterns.
-        if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-        {
-            try
-            {
-                return TryAppendCore(timestamp, key, value, headers, pooledHeaderArray, completion, recordSize);
-            }
-            finally
-            {
-                // Release exclusive access
-                Volatile.Write(ref _exclusiveAccess, 0);
-            }
-        }
-
-        // SLOW PATH: CAS failed - another thread is appending. Spin until we can claim access.
-        return TryAppendWithSpinWait(timestamp, key, value, headers, pooledHeaderArray, completion, recordSize);
-    }
-
-    /// <summary>
-    /// Core append logic with completion tracking. Called when we have exclusive access.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private RecordAppendResult TryAppendCore(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        PooledValueTaskSource<RecordMetadata> completion,
-        int recordSize)
-    {
-        // Check if batch was completed - Complete() nulls out arrays without synchronization,
-        // so we must check this before accessing any arrays.
+        // Check if batch was completed
         if (Volatile.Read(ref _isCompleted) != 0)
         {
             return new RecordAppendResult(false);
         }
 
         // Defensive check: if arrays are null, batch is in inconsistent state (being pooled)
-        if (_records is null || _completionSources is null || _pooledArrays is null)
+        if (_records is null || _pooledArrays is null)
         {
             return new RecordAppendResult(false);
         }
@@ -2733,7 +2546,7 @@ internal sealed class PartitionBatch
         {
             GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
         }
-        if (_completionSourceCount >= _completionSources.Length)
+        if (completionSource is not null && _completionSourceCount >= _completionSources.Length)
         {
             GrowArray(ref _completionSources, ref _completionSourceCount, ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared);
         }
@@ -2745,336 +2558,13 @@ internal sealed class PartitionBatch
         {
             GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
         }
-
-        // Track pooled arrays for returning to pool later
-        if (key.Array is not null)
+        if (callback is not null)
         {
-            _pooledArrays[_pooledArrayCount++] = key.Array;
-        }
-        if (value.Array is not null)
-        {
-            _pooledArrays[_pooledArrayCount++] = value.Array;
-        }
-        if (pooledHeaderArray is not null)
-        {
-            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
-        }
-
-        var timestampDelta = timestamp - _baseTimestamp;
-        var record = new Record
-        {
-            TimestampDelta = timestampDelta,
-            OffsetDelta = _recordCount,
-            Key = key.Memory,
-            IsKeyNull = key.IsNull,
-            Value = value.Memory,
-            IsValueNull = value.IsNull,
-            Headers = headers
-        };
-
-        _records[_recordCount++] = record;
-        _estimatedSize += recordSize;
-
-        // Use the passed-in completion source - no allocation here
-        _completionSources[_completionSourceCount++] = completion;
-        // Track inside exclusive lock - this MUST match batch completion count
-        ProducerDebugCounters.RecordCompletionSourceStoredInBatch();
-
-        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
-    }
-
-    /// <summary>
-    /// Slow path for TryAppend when CAS fails due to contention.
-    /// Spins until exclusive access is available.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private RecordAppendResult TryAppendWithSpinWait(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        PooledValueTaskSource<RecordMetadata> completion,
-        int recordSize)
-    {
-        var spinner = new SpinWait();
-        while (true)
-        {
-            // Early exit if already completed
-            if (_isCompleted != 0)
-                return new RecordAppendResult(false);
-
-            spinner.SpinOnce();
-
-            if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
+            _callbacks ??= ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Rent(_initialRecordCapacity);
+            if (_callbackCount >= _callbacks.Length)
             {
-                try
-                {
-                    return TryAppendCore(timestamp, key, value, headers, pooledHeaderArray, completion, recordSize);
-                }
-                finally
-                {
-                    Volatile.Write(ref _exclusiveAccess, 0);
-                }
+                GrowArray(ref _callbacks!, ref _callbackCount, ArrayPool<Action<RecordMetadata, Exception?>?>.Shared);
             }
-        }
-    }
-
-    /// <summary>
-    /// Fire-and-forget version of TryAppend that skips completion source tracking.
-    /// This is significantly faster for fire-and-forget produces since it avoids:
-    /// 1. Renting a PooledValueTaskSource
-    /// 2. Storing the completion source in the batch
-    /// 3. Setting the result when the batch completes
-    ///
-    /// Uses lock-free CAS-based synchronization for exclusive access, which is faster
-    /// than SpinLock for the common single-producer case while remaining correct under
-    /// multi-producer contention.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public RecordAppendResult TryAppendFireAndForget(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray)
-    {
-        // Pre-compute record size outside the lock - depends only on input parameters
-        var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
-
-        // FAST PATH: Try to atomically claim exclusive access via CAS.
-        // If we win (exchange 0 -> 1), we have exclusive access and can proceed without spinning.
-        // This is the common case for single-producer patterns.
-        if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-        {
-            try
-            {
-                return TryAppendFireAndForgetCore(timestamp, key, value, headers, pooledHeaderArray, recordSize);
-            }
-            finally
-            {
-                // Release exclusive access
-                Volatile.Write(ref _exclusiveAccess, 0);
-            }
-        }
-
-        // SLOW PATH: CAS failed - another thread is appending. Spin until we can claim access.
-        return TryAppendFireAndForgetWithSpinWait(timestamp, key, value, headers, pooledHeaderArray, recordSize);
-    }
-
-    /// <summary>
-    /// Appends a record with a delivery callback stored directly in the batch.
-    /// This is the zero-allocation path for Send(message, callback) - no PooledValueTaskSource needed.
-    /// Callbacks are invoked inline on the sender thread when the batch completes.
-    ///
-    /// Uses lock-free CAS-based synchronization for exclusive access.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public RecordAppendResult TryAppendWithCallback(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback)
-    {
-        // Pre-compute record size outside the lock
-        var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
-
-        // FAST PATH: Try to atomically claim exclusive access via CAS.
-        if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-        {
-            try
-            {
-                return TryAppendWithCallbackCore(timestamp, key, value, headers, pooledHeaderArray, callback, recordSize);
-            }
-            finally
-            {
-                Volatile.Write(ref _exclusiveAccess, 0);
-            }
-        }
-
-        // SLOW PATH: Spin until we can claim access.
-        return TryAppendWithCallbackSpinWait(timestamp, key, value, headers, pooledHeaderArray, callback, recordSize);
-    }
-
-    /// <summary>
-    /// Core append logic with callback storage. Called when we hold exclusive access.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private RecordAppendResult TryAppendWithCallbackCore(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback,
-        int recordSize)
-    {
-        // Check if batch was completed
-        if (Volatile.Read(ref _isCompleted) != 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        // Defensive check: if arrays are null, batch is in inconsistent state
-        if (_records is null || _pooledArrays is null)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        if (_recordCount == 0)
-        {
-            _baseTimestamp = timestamp;
-        }
-
-        // Check size limit
-        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        // Grow arrays if needed
-        if (_recordCount >= _records.Length)
-        {
-            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
-        }
-        if (_pooledArrayCount + 2 >= _pooledArrays.Length)
-        {
-            GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
-        }
-        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
-        {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
-        }
-
-        // Ensure callback array exists and has space
-        _callbacks ??= ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Rent(_initialRecordCapacity);
-        if (_callbackCount >= _callbacks.Length)
-        {
-            GrowArray(ref _callbacks!, ref _callbackCount, ArrayPool<Action<RecordMetadata, Exception?>?>.Shared);
-        }
-
-        // Track pooled arrays
-        if (key.Array is not null)
-        {
-            _pooledArrays[_pooledArrayCount++] = key.Array;
-        }
-        if (value.Array is not null)
-        {
-            _pooledArrays[_pooledArrayCount++] = value.Array;
-        }
-        if (pooledHeaderArray is not null)
-        {
-            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
-        }
-
-        var timestampDelta = timestamp - _baseTimestamp;
-        var record = new Record
-        {
-            TimestampDelta = timestampDelta,
-            OffsetDelta = _recordCount,
-            Key = key.Memory,
-            IsKeyNull = key.IsNull,
-            Value = value.Memory,
-            IsValueNull = value.IsNull,
-            Headers = headers
-        };
-
-        _records[_recordCount] = record;
-        _callbacks[_callbackCount++] = callback;
-        _recordCount++;
-        _estimatedSize += recordSize;
-
-        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
-    }
-
-    /// <summary>
-    /// Slow path for TryAppendWithCallback - spins until exclusive access is available.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private RecordAppendResult TryAppendWithCallbackSpinWait(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback,
-        int recordSize)
-    {
-        var spin = new SpinWait();
-
-        while (true)
-        {
-            if (_isCompleted != 0)
-                return new RecordAppendResult(false);
-
-            if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-            {
-                try
-                {
-                    return TryAppendWithCallbackCore(timestamp, key, value, headers, pooledHeaderArray, callback, recordSize);
-                }
-                finally
-                {
-                    Volatile.Write(ref _exclusiveAccess, 0);
-                }
-            }
-
-            spin.SpinOnce();
-        }
-    }
-
-    /// <summary>
-    /// Core append logic without locking. Called when we've verified single-producer pattern
-    /// or when we already hold the lock.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private RecordAppendResult TryAppendFireAndForgetCore(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        int recordSize)
-    {
-        // Check if batch was completed - Complete() nulls out arrays without synchronization,
-        // so we must check this before accessing any arrays.
-        if (Volatile.Read(ref _isCompleted) != 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        // Defensive check: if arrays are null, batch is in inconsistent state (being pooled)
-        if (_records is null || _pooledArrays is null)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        if (_recordCount == 0)
-        {
-            _baseTimestamp = timestamp;
-        }
-
-        // Check size limit
-        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        // Grow arrays if needed (rare - only happens if batch fills beyond initial capacity)
-        if (_recordCount >= _records.Length)
-        {
-            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
-        }
-        // Note: No need to grow _completionSources for fire-and-forget
-        if (_pooledArrayCount + 2 >= _pooledArrays.Length) // +2 for key and value
-        {
-            GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
-        }
-        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
-        {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
         }
 
         // Track pooled arrays for returning to pool later
@@ -3092,7 +2582,7 @@ internal sealed class PartitionBatch
         }
 
         var timestampDelta = timestamp - _baseTimestamp;
-        var record = new Record
+        _records[_recordCount] = new Record
         {
             TimestampDelta = timestampDelta,
             OffsetDelta = _recordCount,
@@ -3103,430 +2593,21 @@ internal sealed class PartitionBatch
             Headers = headers
         };
 
-        _records[_recordCount++] = record;
-        _estimatedSize += recordSize;
-
-        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
-    }
-
-    /// <summary>
-    /// Arena-based fire-and-forget append. Key/value data is already in the batch's arena.
-    /// This is the zero-allocation path - no per-message ArrayPool rentals.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public RecordAppendResult TryAppendFromArena(
-        long timestamp,
-        ArenaSlice keySlice,
-        bool isKeyNull,
-        ArenaSlice valueSlice,
-        bool isValueNull,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray)
-    {
-        var recordSize = EstimateRecordSize(keySlice.Length, valueSlice.Length, headers);
-
-        // FAST PATH: Try to atomically claim exclusive access via CAS.
-        if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
+        if (completionSource is not null)
         {
-            try
-            {
-                return TryAppendFromArenaCore(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, recordSize);
-            }
-            finally
-            {
-                Volatile.Write(ref _exclusiveAccess, 0);
-            }
+            _completionSources[_completionSourceCount++] = completionSource;
+            ProducerDebugCounters.RecordCompletionSourceStoredInBatch();
         }
 
-        // SLOW PATH: Spin until we can claim access.
-        return TryAppendFromArenaWithSpinWait(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, recordSize);
-    }
-
-    /// <summary>
-    /// Core append logic for arena-based data. No per-message array tracking needed.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private RecordAppendResult TryAppendFromArenaCore(
-        long timestamp,
-        ArenaSlice keySlice,
-        bool isKeyNull,
-        ArenaSlice valueSlice,
-        bool isValueNull,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        int recordSize)
-    {
-        if (Volatile.Read(ref _isCompleted) != 0)
+        if (callback is not null)
         {
-            return new RecordAppendResult(false);
+            _callbacks![_callbackCount++] = callback;
         }
 
-        if (_recordCount == 0)
-        {
-            _baseTimestamp = timestamp;
-        }
-
-        // Check size limit
-        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        // Grow records array if needed
-        if (_recordCount >= _records.Length)
-        {
-            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
-        }
-        // Track pooled header arrays (rare)
-        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
-        {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
-        }
-        if (pooledHeaderArray is not null)
-        {
-            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
-        }
-
-        // Create record with Memory referencing the arena buffer
-        // Key and value data is already in the arena, we just store the slice info
-        var arena = _arena!;
-        var timestampDelta = timestamp - _baseTimestamp;
-        var record = new Record
-        {
-            TimestampDelta = timestampDelta,
-            OffsetDelta = _recordCount,
-            Key = isKeyNull ? ReadOnlyMemory<byte>.Empty : arena.Buffer.AsMemory(keySlice.Offset, keySlice.Length),
-            IsKeyNull = isKeyNull,
-            Value = isValueNull ? ReadOnlyMemory<byte>.Empty : arena.Buffer.AsMemory(valueSlice.Offset, valueSlice.Length),
-            IsValueNull = isValueNull,
-            Headers = headers
-        };
-
-        _records[_recordCount++] = record;
-        _estimatedSize += recordSize;
-
-        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private RecordAppendResult TryAppendFromArenaWithSpinWait(
-        long timestamp,
-        ArenaSlice keySlice,
-        bool isKeyNull,
-        ArenaSlice valueSlice,
-        bool isValueNull,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        int recordSize)
-    {
-        var spin = new SpinWait();
-        while (true)
-        {
-            // Early exit if already completed
-            if (_isCompleted != 0)
-                return new RecordAppendResult(false);
-
-            if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-            {
-                try
-                {
-                    return TryAppendFromArenaCore(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, recordSize);
-                }
-                finally
-                {
-                    Volatile.Write(ref _exclusiveAccess, 0);
-                }
-            }
-            spin.SpinOnce();
-        }
-    }
-
-    /// <summary>
-    /// Arena-based append with delivery callback stored directly in the batch.
-    /// This is the zero-allocation path for Send(message, callback) with arena serialization.
-    /// Callbacks are invoked inline on the sender thread when the batch completes.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public RecordAppendResult TryAppendFromArenaWithCallback(
-        long timestamp,
-        ArenaSlice keySlice,
-        bool isKeyNull,
-        ArenaSlice valueSlice,
-        bool isValueNull,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback)
-    {
-        var recordSize = EstimateRecordSize(keySlice.Length, valueSlice.Length, headers);
-
-        // FAST PATH: Try to atomically claim exclusive access via CAS.
-        if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-        {
-            try
-            {
-                return TryAppendFromArenaWithCallbackCore(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, callback, recordSize);
-            }
-            finally
-            {
-                Volatile.Write(ref _exclusiveAccess, 0);
-            }
-        }
-
-        // SLOW PATH: Spin until we can claim access.
-        return TryAppendFromArenaWithCallbackSpinWait(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, callback, recordSize);
-    }
-
-    /// <summary>
-    /// Core append logic for arena-based data with callback.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private RecordAppendResult TryAppendFromArenaWithCallbackCore(
-        long timestamp,
-        ArenaSlice keySlice,
-        bool isKeyNull,
-        ArenaSlice valueSlice,
-        bool isValueNull,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback,
-        int recordSize)
-    {
-        if (Volatile.Read(ref _isCompleted) != 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        if (_recordCount == 0)
-        {
-            _baseTimestamp = timestamp;
-        }
-
-        // Check size limit
-        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        // Grow records array if needed
-        if (_recordCount >= _records.Length)
-        {
-            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
-        }
-        // Track pooled header arrays (rare)
-        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
-        {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
-        }
-        if (pooledHeaderArray is not null)
-        {
-            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
-        }
-
-        // Ensure callback array exists and has space
-        _callbacks ??= ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Rent(_initialRecordCapacity);
-        if (_callbackCount >= _callbacks.Length)
-        {
-            GrowArray(ref _callbacks!, ref _callbackCount, ArrayPool<Action<RecordMetadata, Exception?>?>.Shared);
-        }
-
-        // Create record with Memory referencing the arena buffer
-        var arena = _arena!;
-        var timestampDelta = timestamp - _baseTimestamp;
-        var record = new Record
-        {
-            TimestampDelta = timestampDelta,
-            OffsetDelta = _recordCount,
-            Key = isKeyNull ? ReadOnlyMemory<byte>.Empty : arena.Buffer.AsMemory(keySlice.Offset, keySlice.Length),
-            IsKeyNull = isKeyNull,
-            Value = isValueNull ? ReadOnlyMemory<byte>.Empty : arena.Buffer.AsMemory(valueSlice.Offset, valueSlice.Length),
-            IsValueNull = isValueNull,
-            Headers = headers
-        };
-
-        _records[_recordCount] = record;
-        _callbacks[_callbackCount++] = callback;
         _recordCount++;
         _estimatedSize += recordSize;
 
         return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private RecordAppendResult TryAppendFromArenaWithCallbackSpinWait(
-        long timestamp,
-        ArenaSlice keySlice,
-        bool isKeyNull,
-        ArenaSlice valueSlice,
-        bool isValueNull,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback,
-        int recordSize)
-    {
-        var spin = new SpinWait();
-        while (true)
-        {
-            if (_isCompleted != 0)
-                return new RecordAppendResult(false);
-
-            if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-            {
-                try
-                {
-                    return TryAppendFromArenaWithCallbackCore(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, callback, recordSize);
-                }
-                finally
-                {
-                    Volatile.Write(ref _exclusiveAccess, 0);
-                }
-            }
-            spin.SpinOnce();
-        }
-    }
-
-    /// <summary>
-    /// Slow path: spins until exclusive access is available, then appends.
-    /// Called when CAS failed because another thread is currently appending.
-    /// Uses SpinWait for efficient spinning that adapts to contention level.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private RecordAppendResult TryAppendFireAndForgetWithSpinWait(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        int recordSize)
-    {
-        var spin = new SpinWait();
-
-        while (true)
-        {
-            // Early exit if already completed
-            if (_isCompleted != 0)
-                return new RecordAppendResult(false);
-
-            // Try to claim exclusive access
-            if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-            {
-                try
-                {
-                    return TryAppendFireAndForgetCore(timestamp, key, value, headers, pooledHeaderArray, recordSize);
-                }
-                finally
-                {
-                    // Release exclusive access
-                    Volatile.Write(ref _exclusiveAccess, 0);
-                }
-            }
-
-            // Someone else has access, spin and retry
-            spin.SpinOnce();
-        }
-    }
-
-    /// <summary>
-    /// Batch append for fire-and-forget produces. Appends multiple records with a single lock acquisition.
-    /// Returns the number of records successfully appended before the batch became full.
-    /// This amortizes lock overhead over N messages, providing significant throughput improvement.
-    /// </summary>
-    public int TryAppendFireAndForgetBatch(
-        ReadOnlySpan<ProducerRecordData> items,
-        int startIndex = 0)
-    {
-        if (items.Length == 0 || startIndex >= items.Length)
-            return 0;
-
-        // Use CAS-based locking to coordinate with Complete() which also uses _exclusiveAccess
-        var spinner = new SpinWait();
-        while (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) != 0)
-        {
-            // Early exit if already completed
-            if (_isCompleted != 0)
-                return 0;
-
-            spinner.SpinOnce();
-        }
-
-        try
-        {
-            // Check if batch was completed while we were waiting for the lock.
-            if (Volatile.Read(ref _isCompleted) != 0)
-            {
-                return 0;
-            }
-
-            var appended = 0;
-
-            for (var i = startIndex; i < items.Length; i++)
-            {
-                ref readonly var item = ref items[i];
-                var recordSize = EstimateRecordSize(item.Key.Length, item.Value.Length, item.Headers);
-
-                // Set base timestamp from first record
-                if (_recordCount == 0)
-                {
-                    _baseTimestamp = item.Timestamp;
-                }
-
-                // Check size limit
-                if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
-                {
-                    // Batch is full, return count of appended records
-                    return appended;
-                }
-
-                // Grow arrays if needed
-                if (_recordCount >= _records.Length)
-                {
-                    GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
-                }
-                if (_pooledArrayCount + 2 >= _pooledArrays.Length)
-                {
-                    GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
-                }
-                if (item.PooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
-                {
-                    GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
-                }
-
-                // Track pooled arrays
-                if (item.Key.Array is not null)
-                {
-                    _pooledArrays[_pooledArrayCount++] = item.Key.Array;
-                }
-                if (item.Value.Array is not null)
-                {
-                    _pooledArrays[_pooledArrayCount++] = item.Value.Array;
-                }
-                if (item.PooledHeaderArray is not null)
-                {
-                    _pooledHeaderArrays[_pooledHeaderArrayCount++] = item.PooledHeaderArray;
-                }
-
-                var timestampDelta = item.Timestamp - _baseTimestamp;
-                _records[_recordCount] = new Record
-                {
-                    TimestampDelta = timestampDelta,
-                    OffsetDelta = _recordCount,
-                    Key = item.Key.Memory,
-                    IsKeyNull = item.Key.IsNull,
-                    Value = item.Value.Memory,
-                    IsValueNull = false,
-                    Headers = item.Headers
-                };
-
-                _recordCount++;
-                _estimatedSize += recordSize;
-                appended++;
-            }
-
-            return appended;
-        }
-        finally
-        {
-            Volatile.Write(ref _exclusiveAccess, 0);
-        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -3583,97 +2664,76 @@ internal sealed class PartitionBatch
             return _completedBatch;
         }
 
-        // Wait for any in-progress appends to complete before modifying arrays.
-        // This coordinates with the CAS-based exclusive access used by TryAppend/TryAppendFireAndForget.
-        // NOTE: We MUST spin until we get exclusive access. The Interlocked.Exchange above ensures
-        // only one thread proceeds past this point, so there's no need for an early exit check.
-        // A previous buggy early exit check (`if (_isCompleted != 0)`) would always trigger since
-        // WE just set _isCompleted = 1, causing premature return with null and orphaning completion sources.
-        var spinner = new SpinWait();
-        while (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) != 0)
+        // Called under deque lock - no concurrent access is possible.
+
+        if (_recordCount == 0)
         {
-            spinner.SpinOnce();
+            // Empty batch - return arrays to pool immediately
+            ReturnBatchArraysToPool();
+            return null;
         }
 
-        // Now we hold exclusive access - safe to modify arrays.
-        // Use try/finally to ensure lock is always released, even if an exception occurs
-        // (e.g., OutOfMemoryException during ReadyBatch allocation).
-        try
+        // Use pooled records array directly with wrapper to avoid allocation
+        // ReadyBatch will return the array to pool in Cleanup()
+        var pooledRecordsArray = _records;
+        var attributes = RecordBatchAttributes.None;
+        if (_isTransactional)
         {
-            if (_recordCount == 0)
-            {
-                // Empty batch - return arrays to pool immediately
-                ReturnBatchArraysToPool();
-                return null;
-            }
-
-            // Use pooled records array directly with wrapper to avoid allocation
-            // ReadyBatch will return the array to pool in Cleanup()
-            var pooledRecordsArray = _records;
-            var attributes = RecordBatchAttributes.None;
-            if (_isTransactional)
-            {
-                attributes |= RecordBatchAttributes.IsTransactional;
-            }
-
-            // Sequences are assigned by BrokerSender.SendCoalescedAsync at send time.
-            // This eliminates a race between the accumulator's seal thread and the
-            // send loop's epoch bump recovery (ResetSequenceNumbers) that caused
-            // OutOfOrderSequenceNumber errors when both threads called
-            // GetAndIncrementSequence on the same shared counter.
-            var baseSequence = -1;
-
-            var batch = new RecordBatch
-            {
-                BaseOffset = 0,
-                BaseTimestamp = _baseTimestamp,
-                MaxTimestamp = _baseTimestamp + (_recordCount > 0 ? pooledRecordsArray[_recordCount - 1].TimestampDelta : 0),
-                LastOffsetDelta = _recordCount - 1,
-                ProducerId = _producerId,
-                ProducerEpoch = _producerEpoch,
-                BaseSequence = baseSequence,
-                Attributes = attributes,
-                Records = new RecordListWrapper(pooledRecordsArray, _recordCount)
-            };
-            _records = null!;
-
-            // Rent ReadyBatch from pool or create new if no pool available
-            // This eliminates per-batch class allocations at high throughput
-            var readyBatch = _readyBatchPool?.Rent() ?? new ReadyBatch();
-
-            // Initialize with batch data - ownership of arrays transfers to ReadyBatch
-            // PooledValueTaskSource auto-returns to its pool when GetResult() is called
-            readyBatch.Initialize(
-                _topicPartition,
-                batch,
-                _completionSources,
-                _completionSourceCount,
-                _pooledArrays,
-                _pooledArrayCount,
-                _pooledHeaderArrays,
-                _pooledHeaderArrayCount,
-                _estimatedSize,
-                pooledRecordsArray,
-                _arena,
-                _callbacks,
-                _callbackCount);
-
-            _completedBatch = readyBatch;
-
-            // Null out references - ownership transferred to ReadyBatch
-            _completionSources = null!;
-            _pooledArrays = null!;
-            _pooledHeaderArrays = null!;
-            _arena = null;
-            _callbacks = null;
-
-            return _completedBatch;
+            attributes |= RecordBatchAttributes.IsTransactional;
         }
-        finally
+
+        // Sequences are assigned by BrokerSender.SendCoalescedAsync at send time.
+        // This eliminates a race between the accumulator's seal thread and the
+        // send loop's epoch bump recovery (ResetSequenceNumbers) that caused
+        // OutOfOrderSequenceNumber errors when both threads called
+        // GetAndIncrementSequence on the same shared counter.
+        var baseSequence = -1;
+
+        var batch = new RecordBatch
         {
-            // Release exclusive access - always release even if exception occurred
-            Volatile.Write(ref _exclusiveAccess, 0);
-        }
+            BaseOffset = 0,
+            BaseTimestamp = _baseTimestamp,
+            MaxTimestamp = _baseTimestamp + (_recordCount > 0 ? pooledRecordsArray[_recordCount - 1].TimestampDelta : 0),
+            LastOffsetDelta = _recordCount - 1,
+            ProducerId = _producerId,
+            ProducerEpoch = _producerEpoch,
+            BaseSequence = baseSequence,
+            Attributes = attributes,
+            Records = new RecordListWrapper(pooledRecordsArray, _recordCount)
+        };
+        _records = null!;
+
+        // Rent ReadyBatch from pool or create new if no pool available
+        // This eliminates per-batch class allocations at high throughput
+        var readyBatch = _readyBatchPool?.Rent() ?? new ReadyBatch();
+
+        // Initialize with batch data - ownership of arrays transfers to ReadyBatch
+        // PooledValueTaskSource auto-returns to its pool when GetResult() is called
+        readyBatch.Initialize(
+            _topicPartition,
+            batch,
+            _completionSources,
+            _completionSourceCount,
+            _pooledArrays,
+            _pooledArrayCount,
+            _pooledHeaderArrays,
+            _pooledHeaderArrayCount,
+            _estimatedSize,
+            pooledRecordsArray,
+            _arena,
+            _callbacks,
+            _callbackCount);
+
+        _completedBatch = readyBatch;
+
+        // Null out references - ownership transferred to ReadyBatch
+        _completionSources = null!;
+        _pooledArrays = null!;
+        _pooledHeaderArrays = null!;
+        _arena = null;
+        _callbacks = null;
+
+        return _completedBatch;
     }
 
     private void ReturnBatchArraysToPool()
