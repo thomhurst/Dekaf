@@ -52,8 +52,7 @@ public abstract class RunIntegrationTestsModule : Module<IReadOnlyList<CommandRe
             "--",
             "--hangdump",
             "--hangdump-timeout", "15m", // Creates diagnostic dump then kills process if it hangs
-            "--log-level", "Trace",
-            "--output", "Detailed",
+            "--log-level", "Debug",
             "--treenode-filter", $"/**[Category={Category}]"
         };
 

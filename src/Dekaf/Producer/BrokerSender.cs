@@ -687,15 +687,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         List<ReadyBatch> pendingCarryOver,
         CancellationToken cancellationToken)
     {
-        for (var i = _pendingResponses.Count - 1; i >= 0; i--)
+        // CRITICAL: Process responses in FORWARD order (oldest request first).
+        // With multi-inflight, R1 and R2 may both complete with errors for the same partition.
+        // Forward iteration ensures R1's retry batches are added to carry-over before R2's,
+        // preserving per-partition FIFO ordering during the next coalescing pass.
+        // Reverse iteration (swap-with-last O(1) removal) would process R2 before R1,
+        // causing the newer batch to be coalesced first and violating ordering.
+        var writeIdx = 0;
+        for (var i = 0; i < _pendingResponses.Count; i++)
         {
             var pending = _pendingResponses[i];
             if (!pending.ResponseTask.IsCompleted)
+            {
+                // Keep this entry — compact in-place
+                _pendingResponses[writeIdx++] = pending;
                 continue;
-
-            // Remove using swap-with-last (O(1))
-            _pendingResponses[i] = _pendingResponses[^1];
-            _pendingResponses.RemoveAt(_pendingResponses.Count - 1);
+            }
 
             var task = pending.ResponseTask;
             var batches = pending.Batches;
@@ -750,6 +757,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
+
+        // Compact: remove processed entries from the end
+        if (writeIdx < _pendingResponses.Count)
+            _pendingResponses.RemoveRange(writeIdx, _pendingResponses.Count - writeIdx);
     }
 
     /// <summary>
