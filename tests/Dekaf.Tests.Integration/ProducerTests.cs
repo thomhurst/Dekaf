@@ -93,14 +93,14 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await Assert.That(metadata.Offset).IsEqualTo(-1); // Unknown for acks=0
 
         // Verify the message was actually produced by consuming it
+        // Use Assign (not Subscribe) to skip consumer group join — avoids slow rebalance on CI
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-verify")
-            .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .BuildAsync();
 
-        consumer.Subscribe(topic);
+        consumer.Assign(new TopicPartition(topic, metadata.Partition));
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))

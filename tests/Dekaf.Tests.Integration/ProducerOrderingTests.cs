@@ -500,6 +500,9 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
 
+        // Warm up metadata and broker connection before the burst.
+        await producer.ProduceAsync(topic, "warmup", "warmup");
+
         // Produce in waves with flushes between to create distinct drain cycles
         for (var wave = 0; wave < wavesCount; wave++)
         {
@@ -529,7 +532,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
         for (var p = 0; p < 4; p++) messagesByPartition[p] = [];
 
-        var totalExpected = wavesCount * messagesPerWave;
+        var totalExpected = wavesCount * messagesPerWave + 1; // +1 for warmup
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
@@ -542,7 +545,8 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         // Verify per-partition ordering: offsets must be strictly monotonically increasing
         for (var p = 0; p < 4; p++)
         {
-            var partitionMessages = messagesByPartition[p];
+            var partitionMessages = messagesByPartition[p]
+                .Where(m => m.Key != "warmup").ToList();
             var expectedCount = wavesCount * messagesPerWave / 4;
             await Assert.That(partitionMessages).Count().IsEqualTo(expectedCount);
 
@@ -725,6 +729,9 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
 
+        // Warm up metadata and broker connection before the burst.
+        await producer.ProduceAsync(topic, "warmup", "warmup");
+
         for (var p = 0; p < 16; p++)
         {
             for (var i = 0; i < messagesPerPartition; i++)
@@ -751,7 +758,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
         for (var p = 0; p < 16; p++) messagesByPartition[p] = [];
 
-        var totalExpected = 16 * messagesPerPartition;
+        var totalExpected = 16 * messagesPerPartition + 1; // +1 for warmup
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
@@ -763,7 +770,8 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
 
         for (var p = 0; p < 16; p++)
         {
-            var partitionMessages = messagesByPartition[p];
+            var partitionMessages = messagesByPartition[p]
+                .Where(m => m.Key != "warmup").ToList();
             await Assert.That(partitionMessages).Count().IsEqualTo(messagesPerPartition);
 
             for (var i = 0; i < messagesPerPartition; i++)
@@ -946,6 +954,11 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithLinger(TimeSpan.FromMilliseconds(1)) // Aggressive linger timer
             .BuildAsync();
 
+        // Warm up metadata and broker connection before the burst.
+        // Without this, the first produce request may hit NotLeaderOrFollower
+        // on a newly created topic, causing a retry cascade with the unbounded event channel.
+        await producer.ProduceAsync(topic, "warmup", "warmup");
+
         var partitionSeq = new int[8];
 
         for (var wave = 0; wave < waves; wave++)
@@ -981,7 +994,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
         for (var p = 0; p < 8; p++) messagesByPartition[p] = [];
 
-        var totalExpected = waves * messagesPerWave;
+        var totalExpected = waves * messagesPerWave + 1; // +1 for warmup
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
@@ -993,7 +1006,8 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
 
         for (var p = 0; p < 8; p++)
         {
-            var partitionMessages = messagesByPartition[p];
+            var partitionMessages = messagesByPartition[p]
+                .Where(m => m.Key != "warmup").ToList();
             var expectedCount = partitionSeq[p];
 
             // Verify correct count per partition
@@ -1105,6 +1119,9 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             .WithLinger(TimeSpan.FromMilliseconds(1))
             .BuildAsync();
 
+        // Warm up metadata and broker connection before the burst.
+        await producer.ProduceAsync(topic, "warmup", "warmup");
+
         for (var i = 0; i < messagesPerPartition; i++)
         {
             for (var p = 0; p < 16; p++)
@@ -1135,7 +1152,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         var messagesByPartition = new Dictionary<int, List<ConsumeResult<string, string>>>();
         for (var p = 0; p < 16; p++) messagesByPartition[p] = [];
 
-        var totalExpected = 16 * messagesPerPartition;
+        var totalExpected = 16 * messagesPerPartition + 1; // +1 for warmup
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
@@ -1147,7 +1164,8 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
 
         for (var p = 0; p < 16; p++)
         {
-            var partitionMessages = messagesByPartition[p];
+            var partitionMessages = messagesByPartition[p]
+                .Where(m => m.Key != "warmup").ToList();
             await Assert.That(partitionMessages).Count().IsEqualTo(messagesPerPartition);
 
             for (var i = 0; i < partitionMessages.Count; i++)
