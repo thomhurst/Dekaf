@@ -376,29 +376,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 // Read from the event channel lazily during coalescing (like main reads
                 // from its bounded batch channel). Non-batch events are consumed as signals.
-                // Carry-over budget: limit channel-read carry-overs so total carry-over
-                // never exceeds maxCoalesce. This bounds carry-over growth while allowing
-                // multi-partition workloads to fill all partition slots from the channel.
-                // On main, the bounded channel (capacity 10) prevents this naturally;
-                // the unbounded event channel needs an explicit budget instead.
+                // On main, the bounded channel (capacity ~10) provides natural backpressure.
+                // The unbounded event channel allows all batches to queue up, so we limit
+                // reads to maxCoalesce per iteration. Carry-over from duplicate partitions
+                // is bounded by the channel contents and drains each iteration as batches
+                // are coalesced and sent.
                 {
-                    var carryOverBudget = maxCoalesce - newCarryOver.Count;
                     var channelReads = 0;
-                    var channelCarryOvers = 0;
                     while (channelReads < maxCoalesce && eventReader.TryRead(out var evt))
                     {
                         if (evt.Type == SendLoopEventType.NewBatch)
                         {
-                            var carryBefore = newCarryOver.Count;
                             channelReads++;
                             CoalesceBatch(evt.Batch!, coalescedBatches, ref coalescedCount,
                                 coalescedPartitions, newCarryOver);
-                            if (newCarryOver.Count > carryBefore)
-                            {
-                                channelCarryOvers++;
-                                if (channelCarryOvers >= carryOverBudget)
-                                    break;
-                            }
                         }
                         // ResponseReady/Unmute: consumed as wake-up signals, no data to process
                     }
