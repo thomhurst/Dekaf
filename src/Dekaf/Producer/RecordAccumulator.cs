@@ -563,7 +563,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly ProducerOptions _options;
     private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
     private readonly ConcurrentDictionary<TopicPartition, object> _partitionSealLocks = new();
-    private readonly Channel<ReadyBatch> _readyBatches;
+
+    /// <summary>
+    /// Temporary channel kept for sender loop compatibility until Task 5 rewrites SenderLoopAsync
+    /// to drain from partition deques directly. Completed on close/dispose to unblock the sender loop.
+    /// </summary>
+    private readonly Channel<ReadyBatch> _readyBatches = Channel.CreateUnbounded<ReadyBatch>(
+        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
 
     /// <summary>
     /// Per-partition deques of sealed ReadyBatches, matching Java's
@@ -627,8 +633,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     // Coordination lock between FlushAsyncCore and ExpireLingerAsyncCore.
     // Prevents a race where the linger timer removes batch-0 from _batches (TryRemove succeeds)
-    // but before it writes to _readyBatches, FlushAsync snapshots _batches (missing batch-0),
-    // seals batch-1, and writes it to _readyBatches first — reversing batch ordering.
+    // but before it enqueues to the partition deque, FlushAsync snapshots _batches (missing batch-0),
+    // seals batch-1, and enqueues it first — reversing batch ordering.
     private readonly SemaphoreSlim _flushLingerLock = new(1, 1);
 
     private readonly ILogger _logger;
@@ -1003,6 +1009,30 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         catch (SemaphoreFullException) { }
     }
 
+    /// <summary>
+    /// Adds a sealed ReadyBatch to its partition deque (back) and signals the sender loop.
+    /// Replaces the old _readyBatches.Writer.TryWrite() pattern.
+    /// Called under per-partition seal lock.
+    /// </summary>
+    /// <remarks>
+    /// Temporarily also writes to _readyBatches channel for sender loop compatibility.
+    /// The channel write will be removed in Task 5 when SenderLoopAsync is rewritten to drain deques.
+    /// </remarks>
+    private void EnqueueSealedBatch(ReadyBatch readyBatch)
+    {
+        var pd = GetOrCreateDeque(readyBatch.TopicPartition);
+        lock (pd.Lock)
+        {
+            pd.AddLast(readyBatch);
+        }
+
+        // Temporary: also write to channel so the existing sender loop and tests can drain batches.
+        // This dual-write will be removed in Task 5 when the sender loop drains from deques directly.
+        _readyBatches.Writer.TryWrite(readyBatch);
+
+        SignalWakeup();
+    }
+
     internal async ValueTask<bool> WaitForWakeupAsync(int timeoutMs, CancellationToken cancellationToken)
     {
         return await _wakeupSignal.WaitAsync(timeoutMs, cancellationToken).ConfigureAwait(false);
@@ -1017,14 +1047,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = options.BufferMemory;
 
-        // Use unbounded channel for ready batches - backpressure is now handled by buffer memory tracking
-        // Single channel design: batches go directly to sender loop (no intermediate CompletionLoop)
-        _readyBatches = Channel.CreateUnbounded<ReadyBatch>(new UnboundedChannelOptions
-        {
-            SingleReader = true,
-            SingleWriter = false
-        });
-
         // Create per-partition-affine append worker channels.
         // Each channel is SingleReader (one worker) but allows multiple writers (caller threads).
         _appendWorkerCount = Math.Clamp(Environment.ProcessorCount, 1, 8);
@@ -1037,8 +1059,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Exposes the ready batches channel reader for KafkaProducer.SenderLoop.
-    /// Simplified architecture: batches go directly from append → ready channel → sender loop.
+    /// Temporary: exposes the ready batches channel reader for KafkaProducer.SenderLoop.
+    /// Will be removed in Task 5 when the sender loop is rewritten to drain partition deques.
     /// </summary>
     internal ChannelReader<ReadyBatch> ReadyBatches => _readyBatches.Reader;
 
@@ -1625,16 +1647,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         // Track delivery task for FlushAsync
                         OnBatchEntersPipeline(readyBatch);
 
-                        // Write to unbounded channel — TryWrite always succeeds unless writer is completed (disposal)
-                        if (!_readyBatches.Writer.TryWrite(readyBatch))
-                        {
-                            ProducerDebugCounters.RecordBatchFailedToQueue();
-                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            OnBatchExitsPipeline(readyBatch);
-                            ReleaseMemory(readyBatch.DataSize);
-                            _batchPool.Return(batch);
-                            throw new ObjectDisposedException(nameof(RecordAccumulator));
-                        }
+                        EnqueueSealedBatch(readyBatch);
 
                         ProducerDebugCounters.RecordBatchQueuedToReady();
                         // Return the completed batch shell to the pool for reuse
@@ -1757,18 +1770,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         // Track delivery task for FlushAsync
                         OnBatchEntersPipeline(readyBatch);
 
-                        // Non-blocking write to unbounded channel - should always succeed
-                        // If it fails (channel completed), the producer is being disposed
-                        if (!_readyBatches.Writer.TryWrite(readyBatch))
-                        {
-                            ProducerDebugCounters.RecordBatchFailedToQueue();
-                            // Channel is closed, fail the batch and return false
-                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            OnBatchExitsPipeline(readyBatch); // Decrement counter on failure
-                            // Release the batch's buffer memory since it won't go through producer
-                            ReleaseMemory(readyBatch.DataSize);
-                            return false;
-                        }
+                        EnqueueSealedBatch(readyBatch);
 
                         ProducerDebugCounters.RecordBatchQueuedToReady();
                         // Return the completed batch shell to the pool for reuse
@@ -1907,15 +1909,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     // Track delivery task for FlushAsync to wait on
                     OnBatchEntersPipeline(readyBatch);
 
-                    if (!_readyBatches.Writer.TryWrite(readyBatch))
-                    {
-                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                        OnBatchExitsPipeline(readyBatch); // Decrement counter on failure
-                        // Release the batch's buffer memory since it won't go through producer
-                        ReleaseMemory(readyBatch.DataSize);
-                        t_cachedBatch = null;
-                        return false;
-                    }
+                    EnqueueSealedBatch(readyBatch);
 
                     // Return the completed batch shell to the pool for reuse
                     _batchPool.Return(oldBatch);
@@ -2081,16 +2075,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         // Track delivery task for FlushAsync
                         OnBatchEntersPipeline(readyBatch);
 
-                        if (!_readyBatches.Writer.TryWrite(readyBatch))
-                        {
-                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            OnBatchExitsPipeline(readyBatch);
-                            ReleaseMemory(readyBatch.DataSize);
-                            t_cachedBatch = null;
-                            mpCache[cacheIndex].Batch = null;
-                            _batchPool.Return(batch);
-                            return false;
-                        }
+                        EnqueueSealedBatch(readyBatch);
 
                         // Return the completed batch shell to the pool for reuse
                         _batchPool.Return(batch);
@@ -2191,14 +2176,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     {
                         OnBatchEntersPipeline(readyBatch);
 
-                        if (!_readyBatches.Writer.TryWrite(readyBatch))
-                        {
-                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            OnBatchExitsPipeline(readyBatch);
-                            ReleaseMemory(readyBatch.DataSize);
-                            _batchPool.Return(batch);
-                            return false;
-                        }
+                        EnqueueSealedBatch(readyBatch);
 
                         _batchPool.Return(batch);
                     }
@@ -2308,28 +2286,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 // Track delivery task for FlushAsync
                                 OnBatchEntersPipeline(readyBatch);
 
-                                try
-                                {
-                                    if (!_readyBatches.Writer.TryWrite(readyBatch))
-                                    {
-                                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                                        OnBatchExitsPipeline(readyBatch);
-                                        ReleaseMemory(readyBatch.DataSize);
-                                        t_cachedBatch = null;
-                                        _batchPool.Return(batch);
-                                        return false;
-                                    }
+                                EnqueueSealedBatch(readyBatch);
 
-                                    // Return the completed batch shell to the pool for reuse
-                                    _batchPool.Return(batch);
-                                }
-                                catch
-                                {
-                                    readyBatch.Fail(new InvalidOperationException("Batch append failed"));
-                                    OnBatchExitsPipeline(readyBatch);
-                                    ReleaseMemory(readyBatch.DataSize);
-                                    throw;
-                                }
+                                // Return the completed batch shell to the pool for reuse
+                                _batchPool.Return(batch);
                             }
                         }
                     }
@@ -2404,72 +2364,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Seals a single batch and writes it to the ready channel for delivery.
-    /// Handles Complete → decrement pending count → track delivery → channel write → error handling → pool return.
+    /// Seals a single batch, enqueues it to the partition deque, and returns the shell to the pool.
+    /// Handles Complete → decrement pending count → track delivery → enqueue → pool return.
     /// </summary>
-    /// <returns>True if the batch was sealed and written; false if Complete() returned null.</returns>
-    private async ValueTask<bool> SealBatchToChannelAsync(
-        PartitionBatch batch,
-        CancellationToken cancellationToken)
-    {
-        var readyBatch = batch.Complete();
-        if (readyBatch is null)
-            return false;
-
-        LogBatchSealed(batch.TopicPartition.Topic, batch.TopicPartition.Partition, batch.RecordCount, readyBatch.DataSize);
-
-        // Decrement pending awaited produce count by the number of completion sources in this batch
-        if (readyBatch.CompletionSourcesCount > 0)
-            Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
-        ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
-        // Track delivery task for FlushAsync
-        OnBatchEntersPipeline(readyBatch);
-
-        // Try synchronous write first to avoid async state machine allocation
-        if (!_readyBatches.Writer.TryWrite(readyBatch))
-        {
-            try
-            {
-                // Channel is bounded or busy, fall back to async
-                await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-                ProducerDebugCounters.RecordBatchQueuedToReady();
-            }
-            catch
-            {
-                ProducerDebugCounters.RecordBatchFailedToQueue();
-                // CRITICAL: Use nested try-finally to ensure memory is ALWAYS released
-                // even if readyBatch.Fail() itself throws an exception
-                try
-                {
-                    readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                    OnBatchExitsPipeline(readyBatch); // Decrement counter on failure
-                }
-                finally
-                {
-                    // ALWAYS release memory to prevent permanent leak
-                    ReleaseMemory(readyBatch.DataSize);
-                }
-                throw;
-            }
-        }
-#if DEBUG
-        else
-        {
-            ProducerDebugCounters.RecordBatchQueuedToReady();
-        }
-#endif
-
-        // Return the completed batch shell to the pool for reuse
-        _batchPool.Return(batch);
-        return true;
-    }
-
-    /// <summary>
-    /// Synchronous version of <see cref="SealBatchToChannelAsync"/> for use inside per-partition locks.
-    /// Since the ready channel is unbounded, TryWrite always succeeds unless the writer is completed (disposal).
-    /// This avoids the need for async WriteAsync inside a lock block.
-    /// </summary>
-    private void SealBatchToChannelSync(PartitionBatch batch)
+    private void SealBatchToDeque(PartitionBatch batch)
     {
         var readyBatch = batch.Complete();
         if (readyBatch is null)
@@ -2482,21 +2380,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
         OnBatchEntersPipeline(readyBatch);
 
-        if (!_readyBatches.Writer.TryWrite(readyBatch))
-        {
-            ProducerDebugCounters.RecordBatchFailedToQueue();
-            try
-            {
-                readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                OnBatchExitsPipeline(readyBatch);
-            }
-            finally
-            {
-                ReleaseMemory(readyBatch.DataSize);
-            }
-            _batchPool.Return(batch);
-            return;
-        }
+        EnqueueSealedBatch(readyBatch);
 
         ProducerDebugCounters.RecordBatchQueuedToReady();
         _batchPool.Return(batch);
@@ -2543,7 +2427,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             {
                                 ResetOldestBatchTrackingIfEmpty();
                                 ProducerDebugCounters.RecordBatchFlushedFromDictionary();
-                                SealBatchToChannelSync(batch);
+                                SealBatchToDeque(batch);
                             }
                         }
                     }
@@ -2568,7 +2452,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                                 // Note: We don't call ResetOldestBatchTrackingIfEmpty() here because
                                 // linger mode already recalculates _oldestBatchCreatedTicks
                                 // at the end of enumeration based on remaining batches.
-                                SealBatchToChannelSync(batch);
+                                SealBatchToDeque(batch);
                             }
                         }
                     }
@@ -2608,7 +2492,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Tracks a batch entering the pipeline: increments counter and adds to reference-tracking dictionary.
-    /// Called when a batch is completed and queued to _readyBatches.
+    /// Called when a batch is completed and enqueued to a partition deque.
     /// </summary>
     private void OnBatchEntersPipeline(ReadyBatch batch)
     {
@@ -2921,10 +2805,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // needs the disposal event (set later in DisposeAsync) to unblock.
         CompleteAppendWorkerChannels();
 
-        // Flush all pending batches to the ready channel
+        // Flush all pending batches to the partition deques
         await FlushAsync(cancellationToken).ConfigureAwait(false);
 
-        // Complete the channel - sender will drain remaining batches and exit
+        // Signal the sender loop to wake up and exit
+        SignalWakeup();
+        // Temporary: complete the channel so the sender loop's WaitToReadAsync unblocks (removed in Task 5)
         _readyBatches.Writer.Complete();
         LogClosedChannelCompleted();
     }
@@ -3056,20 +2942,28 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Drain and fail any remaining batches still in the ready channel
+        // Drain and fail any remaining batches still in partition deques
         // After graceful close above, this handles:
         // - Unit tests with no sender loop
         // - Timeout scenarios where batches didn't send in time
         // - Batches that were added after close but before disposal completed
-        while (_readyBatches.Reader.TryRead(out var readyBatch))
+        foreach (var kvp in _partitionDeques)
         {
-            readyBatch.Fail(disposedException);
-            if (!readyBatch.MemoryReleased)
+            var pd = kvp.Value;
+            lock (pd.Lock)
             {
-                ReleaseMemory(readyBatch.DataSize);
-                readyBatch.MemoryReleased = true;
+                while (pd.Count > 0)
+                {
+                    var readyBatch = pd.PollFirst()!;
+                    readyBatch.Fail(disposedException);
+                    if (!readyBatch.MemoryReleased)
+                    {
+                        ReleaseMemory(readyBatch.DataSize);
+                        readyBatch.MemoryReleased = true;
+                    }
+                    OnBatchExitsPipeline(readyBatch); // Decrement counter for batches drained during disposal
+                }
             }
-            OnBatchExitsPipeline(readyBatch); // Decrement counter for batches drained during disposal
         }
 
         // Wait for all in-flight batches to complete with a timeout using counter-based tracking
@@ -3093,19 +2987,27 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Final drain: catch any batches that may have been added during our cleanup
-        while (_readyBatches.Reader.TryRead(out var batch))
+        foreach (var kvp in _partitionDeques)
         {
-            if (batch is not null)
+            var pd = kvp.Value;
+            lock (pd.Lock)
             {
-                batch.Fail(disposedException);
-                if (!batch.MemoryReleased)
+                while (pd.Count > 0)
                 {
-                    ReleaseMemory(batch.DataSize);
-                    batch.MemoryReleased = true;
+                    var batch = pd.PollFirst()!;
+                    batch.Fail(disposedException);
+                    if (!batch.MemoryReleased)
+                    {
+                        ReleaseMemory(batch.DataSize);
+                        batch.MemoryReleased = true;
+                    }
+                    OnBatchExitsPipeline(batch); // Decrement counter
                 }
-                OnBatchExitsPipeline(batch); // Decrement counter
             }
         }
+
+        // Signal wakeup so the sender loop can exit if still waiting
+        SignalWakeup();
 
         // Sweep for orphaned batches whose references were lost from BrokerSender data structures.
         // This is the last line of defense: if a batch was tracked via OnBatchEntersPipeline but
