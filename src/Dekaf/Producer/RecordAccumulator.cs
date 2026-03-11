@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
 using Dekaf.Errors;
+using Dekaf.Metadata;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Microsoft.Extensions.Logging;
@@ -791,6 +792,221 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     private PartitionDeque GetOrCreateDeque(TopicPartition tp)
         => _partitionDeques.GetOrAdd(tp, static _ => new PartitionDeque());
+
+    /// <summary>Result of Ready() check — which brokers have sendable data.</summary>
+    internal readonly record struct ReadyCheckResult(
+        HashSet<int> ReadyNodes,
+        int NextCheckDelayMs);
+
+    /// <summary>
+    /// Checks all partition deques for sendable data, matching Java's RecordAccumulator.ready().
+    /// Returns broker IDs with at least one partition whose head batch is sendable
+    /// (batch is complete, linger expired, or flush in progress).
+    /// Only called from the sender thread.
+    /// </summary>
+    internal ReadyCheckResult Ready(MetadataManager metadataManager, long nowMs)
+    {
+        var readyNodes = new HashSet<int>();
+        var nextCheckDelayMs = int.MaxValue;
+        var lingerMs = _options.LingerMs;
+        var flushInProgress = Volatile.Read(ref _flushTcs) is not null;
+
+        foreach (var kvp in _partitionDeques)
+        {
+            var tp = kvp.Key;
+            var pd = kvp.Value;
+
+            if (_mutedPartitions.Contains(tp))
+                continue;
+
+            ReadyBatch? head;
+            lock (pd.Lock)
+            {
+                head = pd.PeekFirst();
+            }
+
+            if (head is null)
+                continue;
+
+            // Check retry backoff
+            if (head.IsRetry && head.RetryNotBefore > 0)
+            {
+                var backoffRemaining = head.RetryNotBefore - Stopwatch.GetTimestamp();
+                if (backoffRemaining > 0)
+                {
+                    var backoffMs = (int)(backoffRemaining * 1000 / Stopwatch.Frequency);
+                    nextCheckDelayMs = Math.Min(nextCheckDelayMs, backoffMs);
+                    continue;
+                }
+            }
+
+            // Find leader for this partition
+            var leader = metadataManager.TryGetCachedPartitionLeader(tp.Topic, tp.Partition);
+            if (leader is null)
+                continue;
+
+            // A batch is sendable if: deque has >1 batch (head is complete),
+            // OR linger expired, OR flush in progress
+            bool sendable;
+            lock (pd.Lock)
+            {
+                var waitedMs = head.AgeMs;
+                var expired = waitedMs >= lingerMs;
+                var full = pd.Count > 1;
+                sendable = full || expired || flushInProgress || head.IsRetry;
+            }
+
+            if (sendable)
+            {
+                readyNodes.Add(leader.NodeId);
+            }
+            else
+            {
+                var timeLeftMs = Math.Max(0, lingerMs - head.AgeMs);
+                nextCheckDelayMs = Math.Min(nextCheckDelayMs, timeLeftMs);
+            }
+        }
+
+        return new ReadyCheckResult(readyNodes, nextCheckDelayMs == int.MaxValue ? 100 : nextCheckDelayMs);
+    }
+
+    /// <summary>
+    /// Drains one batch per partition for each ready broker, matching Java's RecordAccumulator.drain().
+    /// Returns per-broker batch lists. Only called from the sender thread.
+    /// </summary>
+    internal Dictionary<int, List<ReadyBatch>> Drain(
+        MetadataManager metadataManager,
+        HashSet<int> readyNodes,
+        int maxRequestSize)
+    {
+        var result = new Dictionary<int, List<ReadyBatch>>(readyNodes.Count);
+
+        foreach (var nodeId in readyNodes)
+        {
+            var batches = DrainBatchesForOneNode(metadataManager, nodeId, maxRequestSize);
+            if (batches.Count > 0)
+                result[nodeId] = batches;
+        }
+
+        return result;
+    }
+
+    private List<ReadyBatch> DrainBatchesForOneNode(
+        MetadataManager metadataManager,
+        int nodeId,
+        int maxRequestSize)
+    {
+        var ready = new List<ReadyBatch>();
+        var partitions = metadataManager.GetPartitionsForNode(nodeId);
+        if (partitions is null || partitions.Count == 0)
+            return ready;
+
+        if (!_drainIndex.TryGetValue(nodeId, out var startIndex))
+            startIndex = 0;
+
+        var size = 0;
+        var count = partitions.Count;
+
+        for (var i = 0; i < count; i++)
+        {
+            var idx = (startIndex + i) % count;
+            var tp = partitions[idx];
+
+            _drainIndex[nodeId] = (startIndex + i + 1) % count;
+
+            if (_mutedPartitions.Contains(tp))
+                continue;
+
+            var pd = _partitionDeques.GetValueOrDefault(tp);
+            if (pd is null)
+                continue;
+
+            ReadyBatch? batch;
+            lock (pd.Lock)
+            {
+                batch = pd.PeekFirst();
+                if (batch is null)
+                    continue;
+
+                if (batch.IsRetry && batch.RetryNotBefore > 0
+                    && Stopwatch.GetTimestamp() < batch.RetryNotBefore)
+                    continue;
+
+                if (ready.Count > 0 && size + batch.DataSize > maxRequestSize)
+                    break;
+
+                batch = pd.PollFirst();
+            }
+
+            if (batch is not null)
+            {
+                size += batch.DataSize;
+                ready.Add(batch);
+            }
+        }
+
+        return ready;
+    }
+
+    /// <summary>
+    /// Puts a failed batch back at the front of its partition deque for retry.
+    /// Matches Java's RecordAccumulator.reenqueue() with addFirst.
+    /// For idempotent producers, uses insertInSequenceOrder to maintain sequence ordering.
+    /// </summary>
+    internal void Reenqueue(ReadyBatch batch, long nowMs)
+    {
+        batch.Reenqueued(nowMs);
+        var pd = GetOrCreateDeque(batch.TopicPartition);
+        lock (pd.Lock)
+        {
+            if (ProducerId >= 0)
+                InsertInSequenceOrder(pd, batch);
+            else
+                pd.AddFirst(batch);
+        }
+        SignalWakeup();
+    }
+
+    private static void InsertInSequenceOrder(PartitionDeque pd, ReadyBatch batch)
+    {
+        if (batch.RecordBatch.BaseSequence < 0)
+        {
+            pd.AddFirst(batch);
+            return;
+        }
+
+        var insertIdx = 0;
+        for (var i = 0; i < pd.Deque.Count; i++)
+        {
+            if (pd.Deque[i].RecordBatch.BaseSequence >= 0
+                && pd.Deque[i].RecordBatch.BaseSequence < batch.RecordBatch.BaseSequence)
+            {
+                insertIdx = i + 1;
+            }
+            else
+            {
+                break;
+            }
+        }
+        pd.Deque.Insert(insertIdx, batch);
+    }
+
+    internal void MutePartition(TopicPartition tp) => _mutedPartitions.Add(tp);
+    internal void UnmutePartition(TopicPartition tp) => _mutedPartitions.Remove(tp);
+    internal bool IsMuted(TopicPartition tp) => _mutedPartitions.Contains(tp);
+
+    internal void SignalWakeup()
+    {
+        // Non-blocking signal — if already signaled, this is a no-op
+        // SemaphoreSlim.Release throws if count would exceed max, so use try-catch
+        try { _wakeupSignal.Release(); }
+        catch (SemaphoreFullException) { }
+    }
+
+    internal async ValueTask<bool> WaitForWakeupAsync(int timeoutMs, CancellationToken cancellationToken)
+    {
+        return await _wakeupSignal.WaitAsync(timeoutMs, cancellationToken).ConfigureAwait(false);
+    }
 
     public RecordAccumulator(ProducerOptions options, ILogger? logger = null)
     {
@@ -4509,6 +4725,23 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// </summary>
     internal long StopwatchCreatedTicks { get; private set; }
 
+    /// <summary>
+    /// Age of this batch in milliseconds since creation (or since last reenqueue).
+    /// Used by Ready() to determine if linger time has expired.
+    /// </summary>
+    internal int AgeMs => (int)((Stopwatch.GetTimestamp() - _createdTimestamp) * 1000 / Stopwatch.Frequency);
+    private long _createdTimestamp;
+
+    /// <summary>
+    /// Called when this batch is reenqueued for retry. Resets the age timer
+    /// and marks the batch as a retry so Ready() knows to apply backoff.
+    /// </summary>
+    internal void Reenqueued(long nowMs)
+    {
+        _createdTimestamp = Stopwatch.GetTimestamp();
+        IsRetry = true;
+    }
+
     // Batch-level completion tracking using resettable ManualResetValueTaskSourceCore
     // Never faults - uses SetResult(true) for success, SetResult(false) for failure
     private ManualResetValueTaskSourceCore<bool> _doneCore;
@@ -4566,6 +4799,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _callbacks = callbacks;
         _callbackCount = callbackCount;
         StopwatchCreatedTicks = Stopwatch.GetTimestamp();
+        _createdTimestamp = StopwatchCreatedTicks;
     }
 
     /// <summary>

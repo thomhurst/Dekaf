@@ -236,6 +236,24 @@ public sealed partial class MetadataManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// Returns all TopicPartitions currently led by the given broker node.
+    /// Used by the sender loop's drain algorithm for per-broker batch selection.
+    /// </summary>
+    internal IReadOnlyList<TopicPartition>? GetPartitionsForNode(int nodeId)
+    {
+        var result = new List<TopicPartition>();
+        foreach (var topic in _metadata.GetTopics())
+        {
+            foreach (var partition in topic.Partitions)
+            {
+                if (partition.LeaderId == nodeId)
+                    result.Add(new TopicPartition(topic.Name, partition.PartitionIndex));
+            }
+        }
+        return result.Count > 0 ? result : null;
+    }
+
+    /// <summary>
     /// Forces a metadata refresh.
     /// </summary>
     public async ValueTask RefreshMetadataAsync(CancellationToken cancellationToken = default)
