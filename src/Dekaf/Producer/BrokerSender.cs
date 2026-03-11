@@ -141,6 +141,99 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         };
     }
 
+    /// <summary>
+    /// Per-partition carry-over queues matching Java Kafka's per-partition Deque design.
+    /// Retries go to the FRONT (AddFirst), new batches to the BACK (Add).
+    /// Guarantees per-partition FIFO ordering during coalescing.
+    /// Single-threaded: only accessed by the send loop.
+    /// </summary>
+    private sealed class PartitionCarryOver
+    {
+        private readonly Dictionary<TopicPartition, List<ReadyBatch>> _partitions = new();
+        private int _count;
+
+        public int Count => _count;
+
+        /// <summary>Add to back of partition queue (normal carry-over, new batches).</summary>
+        public void Add(ReadyBatch batch)
+        {
+            if (!_partitions.TryGetValue(batch.TopicPartition, out var queue))
+            {
+                queue = new List<ReadyBatch>(4);
+                _partitions[batch.TopicPartition] = queue;
+            }
+            queue.Add(batch);
+            _count++;
+        }
+
+        /// <summary>
+        /// Add to front of partition queue (retries, epoch bump — older batches first).
+        /// Matches Java's Deque.addFirst() for reenqueue.
+        /// </summary>
+        public void AddFirst(ReadyBatch batch)
+        {
+            if (!_partitions.TryGetValue(batch.TopicPartition, out var queue))
+            {
+                queue = new List<ReadyBatch>(4);
+                _partitions[batch.TopicPartition] = queue;
+            }
+            queue.Insert(0, batch);
+            _count++;
+        }
+
+        /// <summary>
+        /// Drains all batches to the destination in per-partition FIFO order, then clears.
+        /// Used before coalescing to iterate in deterministic per-partition order.
+        /// </summary>
+        public void DrainTo(List<ReadyBatch> destination)
+        {
+            foreach (var kvp in _partitions)
+            {
+                var queue = kvp.Value;
+                for (var i = 0; i < queue.Count; i++)
+                    destination.Add(queue[i]);
+                queue.Clear();
+            }
+            _count = 0;
+        }
+
+        public void Clear()
+        {
+            foreach (var kvp in _partitions)
+                kvp.Value.Clear();
+            _count = 0;
+        }
+
+        /// <summary>Iterates all batches across all partitions (for fail/cleanup/wakeup).</summary>
+        public void ForEach(Action<ReadyBatch> action)
+        {
+            foreach (var kvp in _partitions)
+                for (var i = 0; i < kvp.Value.Count; i++)
+                    action(kvp.Value[i]);
+        }
+
+        /// <summary>
+        /// Sweeps expired batches matching the predicate. Calls onRemoved for each,
+        /// then removes it from its partition queue.
+        /// </summary>
+        public void SweepWhere(Func<ReadyBatch, bool> shouldRemove, Action<ReadyBatch> onRemoved)
+        {
+            foreach (var kvp in _partitions)
+            {
+                var queue = kvp.Value;
+                for (var i = queue.Count - 1; i >= 0; i--)
+                {
+                    if (shouldRemove(queue[i]))
+                    {
+                        onRemoved(queue[i]);
+                        queue.RemoveAt(i);
+                        _count--;
+                    }
+                }
+            }
+        }
+    }
+
     private readonly List<PendingResponse> _pendingResponses = new();
 
     // Batches that failed during SendCoalescedAsync (connection error, etc.) and need retry.
@@ -306,9 +399,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var maxCoalesce = _options.MaxInFlightRequestsPerConnection * 4;
 
         var coalescedPartitions = new HashSet<TopicPartition>();
-        var carryOverA = new List<ReadyBatch>();
-        var carryOverB = new List<ReadyBatch>();
-        var pendingCarryOver = carryOverA;
+        var carryOver = new PartitionCarryOver();
+        var drainList = new List<ReadyBatch>();
 
         ReadyBatch[]? coalescedBatches = null;
         var coalescedCount = 0;
@@ -320,23 +412,26 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                LogSendLoopIteration(_brokerId, pendingCarryOver.Count, _pendingResponses.Count);
+                LogSendLoopIteration(_brokerId, carryOver.Count, _pendingResponses.Count);
 
                 // ── 1. Poll pending responses (like Java's client.poll()) ──
                 // Signal events (ResponseReady, Unmute) may have woken us up — processing
                 // completed responses here handles them. Batch events stay in the channel
                 // and are read lazily during coalescing (step 5) to avoid O(n²) carry-over growth.
-                ProcessCompletedResponses(pendingCarryOver, cancellationToken);
+                ProcessCompletedResponses(carryOver, cancellationToken);
 
                 // ── 2. Pick up send-failed retries ──
+                // Use AddFirst: retries are older batches that must go before any newer
+                // carry-over batches for the same partition (Java's Deque.addFirst).
                 if (_sendFailedRetries.Count > 0)
                 {
-                    pendingCarryOver.AddRange(_sendFailedRetries);
+                    for (var i = 0; i < _sendFailedRetries.Count; i++)
+                        carryOver.AddFirst(_sendFailedRetries[i]);
                     _sendFailedRetries.Clear();
                 }
 
                 // ── 3. Sweep delivery timeouts ──
-                SweepPendingResponseTimeouts(pendingCarryOver, cancellationToken);
+                SweepPendingResponseTimeouts(carryOver, cancellationToken);
 
                 // ── 4. Epoch bump (Java-style client-side, KIP-360) ──
                 // Synchronous: no network call, just epoch+1 + per-partition sequence reset.
@@ -367,19 +462,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 // ── 5. Coalesce ──
                 coalescedPartitions.Clear();
-                var newCarryOver = pendingCarryOver == carryOverA ? carryOverB : carryOverA;
-                newCarryOver.Clear();
                 coalescedCount = 0;
                 coalescedBatches = ArrayPool<ReadyBatch>.Shared.Rent(maxCoalesce);
 
-                var hadCarryOver = pendingCarryOver.Count > 0;
+                // Drain carry-over into temp list for iteration. Per-partition FIFO order
+                // ensures oldest batch per partition is seen first (Java's Deque.pollFirst).
+                drainList.Clear();
+                var hadCarryOver = carryOver.Count > 0;
                 if (hadCarryOver)
-                {
-                    for (var i = 0; i < pendingCarryOver.Count; i++)
-                        CoalesceBatch(pendingCarryOver[i], coalescedBatches, ref coalescedCount,
-                            coalescedPartitions, newCarryOver);
-                    pendingCarryOver.Clear();
-                }
+                    carryOver.DrainTo(drainList);
+
+                for (var i = 0; i < drainList.Count; i++)
+                    CoalesceBatch(drainList[i], coalescedBatches, ref coalescedCount,
+                        coalescedPartitions, carryOver);
 
                 // Read from the event channel lazily during coalescing (like main reads
                 // from its bounded batch channel). Non-batch events are consumed as signals.
@@ -389,18 +484,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // On main, the bounded channel (capacity 10) prevents this naturally;
                 // the unbounded event channel needs an explicit budget instead.
                 {
-                    var carryOverBudget = maxCoalesce - newCarryOver.Count;
+                    var carryOverBudget = maxCoalesce - carryOver.Count;
                     var channelReads = 0;
                     var channelCarryOvers = 0;
                     while (channelReads < maxCoalesce && eventReader.TryRead(out var evt))
                     {
                         if (evt.Type == SendLoopEventType.NewBatch)
                         {
-                            var carryBefore = newCarryOver.Count;
+                            var carryBefore = carryOver.Count;
                             channelReads++;
                             CoalesceBatch(evt.Batch!, coalescedBatches, ref coalescedCount,
-                                coalescedPartitions, newCarryOver);
-                            if (newCarryOver.Count > carryBefore)
+                                coalescedPartitions, carryOver);
+                            if (carryOver.Count > carryBefore)
                             {
                                 channelCarryOvers++;
                                 if (channelCarryOvers >= carryOverBudget)
@@ -411,8 +506,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
-                if (newCarryOver.Count > 0)
-                    SweepExpiredCarryOver(newCarryOver);
+                if (carryOver.Count > 0)
+                    SweepExpiredCarryOver(carryOver);
 
                 // ── 6. Send or wait ──
                 var sentThisIteration = false;
@@ -424,14 +519,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     while (_pendingResponses.Count >= _maxInFlight)
                     {
                         // Poll for completed responses to free in-flight slots.
-                        ProcessCompletedResponses(newCarryOver, cancellationToken);
+                        ProcessCompletedResponses(carryOver, cancellationToken);
 
                         if (_pendingResponses.Count >= _maxInFlight)
                         {
                             // Sweep delivery timeouts to free zombie entries (hung responses
                             // whose batches have expired). Without this, the send loop blocks
                             // forever when a response task never completes.
-                            SweepPendingResponseTimeouts(newCarryOver, cancellationToken);
+                            SweepPendingResponseTimeouts(carryOver, cancellationToken);
                             if (_pendingResponses.Count < _maxInFlight)
                                 break;
 
@@ -464,12 +559,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // epoch bump (step 4) runs before re-coalescing.
                     if (Volatile.Read(ref _epochBumpRequestedForEpoch) >= 0)
                     {
+                        // Epoch bump pending — move coalesced batches back to carry-over front.
+                        // These are older batches that need re-sequencing after the bump.
+                        // AddFirst ensures they go before any newer carry-over batches
+                        // for the same partition (Java's Deque.addFirst for reenqueue).
                         for (var i = 0; i < coalescedCount; i++)
-                            newCarryOver.Add(coalescedBatches[i]);
+                            carryOver.AddFirst(coalescedBatches[i]);
                         ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
                         coalescedBatches = null;
                         coalescedCount = 0;
-                        pendingCarryOver = newCarryOver;
                         continue;
                     }
 
@@ -490,15 +588,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 7. Compute timeout and wait ──
-                pendingCarryOver = newCarryOver;
-
-                if (pendingCarryOver.Count == 0 && _pendingResponses.Count == 0)
+                if (carryOver.Count == 0 && _pendingResponses.Count == 0)
                 {
                     // Fully idle — wait for any event (new batch, response, unmute).
                     if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
                         break;
                 }
-                else if (pendingCarryOver.Count > 0 && sentThisIteration)
+                else if (carryOver.Count > 0 && sentThisIteration)
                 {
                     // Carry-over exists and we sent batches — loop immediately to process
                     // responses and re-coalesce. Carry-over batches that were blocked by
@@ -526,11 +622,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // Periodic wake-up — loop back to re-check and sweep timeouts
                     }
                 }
-                else if (pendingCarryOver.Count > 0)
+                else if (carryOver.Count > 0)
                 {
                     // Carry-over exists but no pending responses (e.g. retry backoff waiting).
                     // Timed wait — loop back after earliest retry backoff or delivery deadline.
-                    var wakeupMs = ComputeNextWakeupMs(pendingCarryOver);
+                    var wakeupMs = ComputeNextWakeupMs(carryOver);
                     if (wakeupMs > 0)
                     {
                         await Task.Delay(Math.Min(wakeupMs, 100), cancellationToken).ConfigureAwait(false);
@@ -567,8 +663,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
             _pendingResponses.Clear();
 
-            FailCarryOverBatches(carryOverA);
-            FailCarryOverBatches(carryOverB);
+            FailCarryOverBatches(carryOver);
 
             if (coalescedBatches is not null)
             {
@@ -598,14 +693,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         ReadyBatch[] coalescedBatches,
         ref int coalescedCount,
         HashSet<TopicPartition> coalescedPartitions,
-        List<ReadyBatch> newCarryOver)
+        PartitionCarryOver carryOver)
     {
         if (batch.IsRetry)
         {
             // Check backoff — carry over if backoff hasn't elapsed
             if (batch.RetryNotBefore > 0 && Stopwatch.GetTimestamp() < batch.RetryNotBefore)
             {
-                newCarryOver.Add(batch);
+                carryOver.Add(batch);
                 return;
             }
 
@@ -640,7 +735,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 // Same partition already in this request (shouldn't happen — only one
                 // retry per partition at a time). Carry over as safety net.
-                newCarryOver.Add(batch);
+                carryOver.Add(batch);
                 return;
             }
 
@@ -658,14 +753,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (_mutedPartitions.Contains(batch.TopicPartition))
         {
             LogPartitionMuted(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-            newCarryOver.Add(batch);
+            carryOver.Add(batch);
             return;
         }
 
         // Ensure at most one batch per partition per coalesced request
         if (!coalescedPartitions.Add(batch.TopicPartition))
         {
-            newCarryOver.Add(batch);
+            carryOver.Add(batch);
             return;
         }
 
@@ -684,7 +779,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Uses compact-in-place pattern to avoid list allocation during removal.
     /// </summary>
     private void ProcessCompletedResponses(
-        List<ReadyBatch> pendingCarryOver,
+        PartitionCarryOver carryOver,
         CancellationToken cancellationToken)
     {
         // CRITICAL: Process responses in FORWARD order (oldest request first).
@@ -722,7 +817,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         try
                         {
                             HandleRetriableBatch(batches[j], ErrorCode.NetworkException,
-                                pendingCarryOver, cancellationToken);
+                                carryOver, cancellationToken);
                         }
                         catch (Exception batchEx)
                         {
@@ -753,7 +848,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             ProcessResponseBatches(batches, count, responseLookup, requestStartTime,
-                pendingCarryOver, cancellationToken);
+                carryOver, cancellationToken);
 
             ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
@@ -773,7 +868,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         int count,
         Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? responseLookup,
         long requestStartTime,
-        List<ReadyBatch> pendingCarryOver,
+        PartitionCarryOver carryOver,
         CancellationToken cancellationToken)
     {
         for (var j = 0; j < count; j++)
@@ -797,7 +892,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     LogNoResponseForPartition(expectedTopic, expectedPartition);
                     HandleRetriableBatch(batch, ErrorCode.NetworkException,
-                        pendingCarryOver, cancellationToken);
+                        carryOver, cancellationToken);
                     batches[j] = null!;
                     continue;
                 }
@@ -818,14 +913,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             batch.RecordBatch.ProducerEpoch, batch.RecordBatch.ProducerId);
 
                         HandleRetriableBatch(batch, partitionResponse.ErrorCode,
-                            pendingCarryOver, cancellationToken);
+                            carryOver, cancellationToken);
                         batches[j] = null!;
                         continue;
                     }
 
                     var failureException = new KafkaException(partitionResponse.ErrorCode,
                         $"Produce failed: {partitionResponse.ErrorCode}");
-                    UnmutePartition(batch.TopicPartition);
+                    if (_muteOnSend)
+                        UnmutePartition(batch.TopicPartition);
                     try { CompleteInflightEntry(batch); }
                     catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                     _statisticsCollector.RecordBatchFailed(expectedTopic, expectedPartition,
@@ -850,7 +946,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     continue;
                 }
 
-                UnmutePartition(batch.TopicPartition);
+                // Only unmute on success when mute-on-send is active (maxInFlight <= 1).
+                // With maxInFlight > 1, partitions are muted only on error (HandleRetriableBatch).
+                // Unconditionally unmuting on success would prematurely clear the mute set by a
+                // DIFFERENT failed batch for the same partition still pending retry. This allows
+                // newer carry-over batches to skip ahead of the older retry batch, violating
+                // per-partition FIFO ordering. CoalesceBatch already unmutes when processing the
+                // retry batch, which is the correct unmute point for multi-inflight.
+                // This matches Java Kafka's conservative muting: partitions stay muted until the
+                // retry batch is actually re-sent, not when a sibling batch succeeds.
+                if (_muteOnSend)
+                    UnmutePartition(batch.TopicPartition);
                 LogBatchCompleted(_brokerId, expectedTopic, expectedPartition, partitionResponse.BaseOffset);
                 _statisticsCollector.RecordBatchDelivered(expectedTopic, expectedPartition,
                     batch.CompletionSourcesCount);
@@ -890,7 +996,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// the edge case where response tasks hang past the delivery timeout.
     /// </summary>
     private void SweepPendingResponseTimeouts(
-        List<ReadyBatch> pendingCarryOver,
+        PartitionCarryOver carryOver,
         CancellationToken cancellationToken)
     {
         if (_pendingResponses.Count == 0) return;
@@ -950,7 +1056,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Returns 0 if a deadline has already passed (immediate re-loop).
     /// Returns int.MaxValue if nothing is pending.
     /// </summary>
-    private int ComputeNextWakeupMs(List<ReadyBatch> carryOver)
+    private int ComputeNextWakeupMs(PartitionCarryOver carryOver)
     {
         var now = Stopwatch.GetTimestamp();
         var earliestTicks = long.MaxValue;
@@ -962,15 +1068,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 earliestTicks = deadline;
         }
 
-        for (var i = 0; i < carryOver.Count; i++)
+        var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
+        carryOver.ForEach(batch =>
         {
-            if (carryOver[i].RetryNotBefore > 0 && carryOver[i].RetryNotBefore < earliestTicks)
-                earliestTicks = carryOver[i].RetryNotBefore;
+            if (batch.RetryNotBefore > 0 && batch.RetryNotBefore < earliestTicks)
+                earliestTicks = batch.RetryNotBefore;
 
-            var deadlineTicks = carryOver[i].StopwatchCreatedTicks + _options.DeliveryTimeoutTicks;
+            var deadlineTicks = batch.StopwatchCreatedTicks + deliveryTimeoutTicks;
             if (deadlineTicks < earliestTicks)
                 earliestTicks = deadlineTicks;
-        }
+        });
 
         if (earliestTicks >= long.MaxValue)
             return int.MaxValue;
@@ -988,7 +1095,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Called inline from ProcessCompletedResponses in the single-threaded send loop.
     /// </summary>
     private void HandleRetriableBatch(ReadyBatch batch, ErrorCode errorCode,
-        List<ReadyBatch> pendingCarryOver, CancellationToken cancellationToken)
+        PartitionCarryOver carryOver, CancellationToken cancellationToken)
     {
         // Check delivery deadline
         var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
@@ -1067,9 +1174,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Diagnostics.DekafMetrics.Retries.Add(1,
             new System.Diagnostics.TagList { { Diagnostics.DekafDiagnostics.MessagingDestinationName, batch.TopicPartition.Topic } });
 
-        // Add to carry-over — deterministic order since we process responses forward (FIFO)
+        // Add to FRONT of partition queue — retry batches are older and must be sent
+        // before any newer carry-over batches for the same partition.
+        // Matches Java's Deque.addFirst() for reenqueue (RecordAccumulator.reenqueue).
         batch.IsRetry = true;
-        pendingCarryOver.Add(batch);
+        carryOver.AddFirst(batch);
 #if DEBUG
         batch.DebugLastTransition = (int)BatchTransition.AddedToCarryOver;
         batch.DebugLastBrokerId = _brokerId;
@@ -1476,16 +1585,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Prevents muted batches from sitting indefinitely while their partition's retry cycles.
     /// Called from the single-threaded send loop after coalescing.
     /// </summary>
-    private void SweepExpiredCarryOver(List<ReadyBatch> carryOver)
+    private void SweepExpiredCarryOver(PartitionCarryOver carryOver)
     {
         var now = Stopwatch.GetTimestamp();
-        for (var i = carryOver.Count - 1; i >= 0; i--)
-        {
-            var batch = carryOver[i];
-            var deliveryDeadlineTicks = batch.StopwatchCreatedTicks +
-                _options.DeliveryTimeoutTicks;
+        var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
 
-            if (now >= deliveryDeadlineTicks)
+        carryOver.SweepWhere(
+            batch => now >= batch.StopwatchCreatedTicks + deliveryTimeoutTicks,
+            batch =>
             {
                 // Unmute partition for retry batches (they caused the mute).
                 // Non-retry muted batches: don't unmute — the retry batch for this
@@ -1506,16 +1613,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     elapsed,
                     configured,
                     $"Delivery timeout exceeded for {batch.TopicPartition}"));
-                carryOver.RemoveAt(i);
-            }
-        }
+            });
     }
 
-    private void FailCarryOverBatches(List<ReadyBatch> carryOver)
+    private void FailCarryOverBatches(PartitionCarryOver carryOver)
     {
         var disposedException = new ObjectDisposedException(nameof(BrokerSender));
-        for (var i = 0; i < carryOver.Count; i++)
-            FailAndCleanupBatch(carryOver[i], disposedException);
+        carryOver.ForEach(batch => FailAndCleanupBatch(batch, disposedException));
     }
 
     private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)
