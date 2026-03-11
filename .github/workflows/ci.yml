@@ -118,10 +118,12 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
           dotnet-quality: 'preview'
 
-      - name: Pre-pull Kafka Images
-        run: |
-          docker pull confluentinc/cp-kafka:7.5.0
-          docker pull confluentinc/cp-schema-registry:7.5.0
+      - name: Expose GitHub Actions Runtime
+        uses: actions/github-script@v8
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env['ACTIONS_RUNTIME_TOKEN']);
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env['ACTIONS_RESULTS_URL']);
 
       - name: Run Pipeline
         env:
