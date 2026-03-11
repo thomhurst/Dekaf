@@ -454,11 +454,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 if (pendingCarryOver.Count == 0 && _pendingResponses.Count == 0)
                 {
+                    // Fully idle — wait for any event (new batch, response, unmute).
                     if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
                         break;
                 }
+                else if (pendingCarryOver.Count > 0)
+                {
+                    // Carry-over exists — loop immediately to coalesce it.
+                    // coalescedPartitions is cleared each iteration, so carry-over batches
+                    // that were blocked by duplicate-partition will coalesce next time.
+                    // If the channel has data too, even better — TryRead will find it.
+                }
                 else if (!eventReader.TryPeek(out _))
                 {
+                    // No carry-over, only pending responses — wait for response with timeout.
                     var timeoutMs = ComputeNextWakeupMs(pendingCarryOver);
                     if (timeoutMs > 0)
                     {
