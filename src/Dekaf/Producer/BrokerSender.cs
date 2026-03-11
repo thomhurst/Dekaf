@@ -23,9 +23,9 @@ namespace Dekaf.Producer;
 ///
 /// All wake-up sources (new batches, response completions, partition unmutes) flow through
 /// a single <see cref="_eventChannel"/> — like Java Kafka's Sender.poll() model. Response
-/// tasks bridge into the channel via <c>ContinueWith</c> that only does a thread-safe
-/// <c>TryWrite</c> (no shared state mutation). The send loop drains events, processes
-/// responses inline, then waits on one <c>WaitToReadAsync</c> with a computed timeout.
+/// tasks complete and signal the channel via lightweight <c>ContinueWith</c> wake-ups;
+/// the send loop then polls <c>_pendingResponses</c> for completed tasks (like main's
+/// ProcessCompletedResponses). This avoids cross-thread reference sharing of batches arrays.
 ///
 /// Per-partition ordering during retries uses a mute set (aligned with the Java Kafka
 /// producer): when a batch enters retry, its partition is muted so no newer batches
@@ -37,8 +37,8 @@ namespace Dekaf.Producer;
 /// before the next send. This eliminates all races between concurrent handlers.
 ///
 /// In-flight request limiting uses <see cref="_pendingResponses"/> count (exclusively owned
-/// by the send loop) as the in-flight measure. <c>_pendingResponses</c> is now only a
-/// safety net for delivery timeout sweeps; response processing is done inline via events.
+/// by the send loop) as the in-flight measure. Completed responses are processed by polling
+/// <c>_pendingResponses</c> for completed tasks on each iteration.
 ///
 /// All writes go through the send loop — there are no out-of-loop write paths.
 /// </summary>
@@ -52,10 +52,10 @@ namespace Dekaf.Producer;
 /// because they are only ever touched by the send loop thread.
 /// </para>
 /// <para>
-/// Response completion is detected via <c>ContinueWith</c> callbacks that write
-/// <see cref="SendLoopEvent.ResponseCompleted"/> events to the unified channel. The send loop
-/// processes these events inline during its drain phase — no <c>Task.WhenAny</c> or cross-thread
-/// mutations needed. In-flight capacity is measured by <c>_pendingResponses.Count</c>.
+/// Response completion is detected by polling <c>_pendingResponses</c> for completed tasks
+/// (checking <c>ResponseTask.IsCompleted</c>). <c>ContinueWith</c> callbacks write lightweight
+/// <see cref="SendLoopEvent.ResponseReady"/> signals to wake up the send loop when responses
+/// arrive. In-flight capacity is measured by <c>_pendingResponses.Count</c>.
 /// </para>
 /// <para>
 /// External threads (producer callers) interact with BrokerSender only through the unbounded
@@ -64,7 +64,7 @@ namespace Dekaf.Producer;
 /// </para>
 /// <para><b>Epoch bump synchronization:</b></para>
 /// <para>
-/// When a response handler (running inline in <see cref="ProcessResponseEvent"/>) encounters
+/// When a response handler (running inline in <see cref="ProcessCompletedResponses"/>) encounters
 /// an <c>OutOfOrderSequenceNumber</c>, <c>InvalidProducerEpoch</c>, or <c>UnknownProducerId</c>
 /// error, it signals the need for an epoch bump by writing the stale epoch value into
 /// <see cref="_epochBumpRequestedForEpoch"/> via <c>Interlocked.CompareExchange</c> (CAS from -1
@@ -102,10 +102,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly CancellationTokenSource _cts;
 
     // Pending responses: send-loop owned (single-threaded). Entries are added when a pipelined
-    // request is sent and normally removed by ProcessResponseEvent when the ContinueWith fires.
+    // request is sent and removed by ProcessCompletedResponses when the response task completes.
     // SweepPendingResponseTimeouts is a safety net for the edge case where response tasks hang
     // past the delivery timeout.
     private readonly record struct PendingResponse(
+        Task<ProduceResponse> ResponseTask,
         ReadyBatch[] Batches,
         int Count,
         long RequestStartTime);
@@ -113,7 +114,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private enum SendLoopEventType : byte
     {
         NewBatch,
-        ResponseCompleted,
+        ResponseReady, // Lightweight signal: a response task completed, poll _pendingResponses
         Unmute
     }
 
@@ -121,13 +122,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private struct SendLoopEvent
     {
         public SendLoopEventType Type;
-
         public ReadyBatch? Batch;
-
-        public Task<ProduceResponse>? ResponseTask;
-        public ReadyBatch[]? ResponseBatches;
-        public int ResponseBatchCount;
-        public long ResponseRequestStartTime;
 
         public static SendLoopEvent NewBatch(ReadyBatch batch) => new()
         {
@@ -135,14 +130,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             Batch = batch
         };
 
-        public static SendLoopEvent ResponseCompleted(
-            Task<ProduceResponse> task, ReadyBatch[] batches, int count, long startTime) => new()
+        public static SendLoopEvent ResponseReady() => new()
         {
-            Type = SendLoopEventType.ResponseCompleted,
-            ResponseTask = task,
-            ResponseBatches = batches,
-            ResponseBatchCount = count,
-            ResponseRequestStartTime = startTime
+            Type = SendLoopEventType.ResponseReady
         };
 
         public static SendLoopEvent Unmute() => new()
@@ -331,18 +321,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 drainedBatches.Clear();
                 while (eventReader.TryRead(out var evt))
                 {
-                    switch (evt.Type)
-                    {
-                        case SendLoopEventType.NewBatch:
-                            drainedBatches.Add(evt.Batch!);
-                            break;
-                        case SendLoopEventType.ResponseCompleted:
-                            ProcessResponseEvent(in evt, pendingCarryOver, cancellationToken);
-                            break;
-                        case SendLoopEventType.Unmute:
-                            break;
-                    }
+                    if (evt.Type == SendLoopEventType.NewBatch)
+                        drainedBatches.Add(evt.Batch!);
+                    // ResponseReady and Unmute are wake-up signals only — no data to process
                 }
+
+                // ── 1b. Poll pending responses (like Java's client.poll()) ──
+                ProcessCompletedResponses(pendingCarryOver, cancellationToken);
 
                 // ── 2. Pick up send-failed retries ──
                 if (_sendFailedRetries.Count > 0)
@@ -419,13 +404,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     while (_pendingResponses.Count >= _maxInFlight)
                     {
+                        // Drain any new events (new batches go to carry-over)
                         while (eventReader.TryRead(out var evt))
                         {
-                            if (evt.Type == SendLoopEventType.ResponseCompleted)
-                                ProcessResponseEvent(in evt, newCarryOver, cancellationToken);
-                            else if (evt.Type == SendLoopEventType.NewBatch)
+                            if (evt.Type == SendLoopEventType.NewBatch)
                                 newCarryOver.Add(evt.Batch!);
                         }
+
+                        // Poll for completed responses to free in-flight slots
+                        ProcessCompletedResponses(newCarryOver, cancellationToken);
 
                         if (_pendingResponses.Count >= _maxInFlight)
                         {
@@ -528,18 +515,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
             }
 
-            // Drain remaining events. ResponseCompleted events share their ReadyBatch[]
-            // array with _pendingResponses entries (same reference). The cleanup above
-            // already returned those arrays to the pool, so we must NOT return them again
-            // here — double-returning corrupts the ArrayPool. The batch null-checks above
-            // (pr.Batches[j] = null via clearArray: true) prevent double-failing.
+            // Drain remaining events — only NewBatch events carry batches that need cleanup.
+            // ResponseReady and Unmute events are lightweight signals with no data.
             while (eventReader.TryRead(out var evt))
             {
                 if (evt.Type == SendLoopEventType.NewBatch)
                     FailAndCleanupBatch(evt.Batch!, disposedException);
-                // ResponseCompleted events: batches already failed and array already
-                // returned to pool by the _pendingResponses cleanup above.
-                // Unmute events: no-op.
             }
         }
     }
@@ -636,79 +617,77 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Processes a single completed response event from the event channel.
-    /// Called inline from the send loop's event drain — equivalent to Java's
-    /// handleProduceResponse callback invoked inside NetworkClient.poll().
+    /// Polls _pendingResponses for completed response tasks and processes them inline.
+    /// Equivalent to Java's Sender processing completed sends inside NetworkClient.poll().
+    /// Uses compact-in-place pattern to avoid list allocation during removal.
     /// </summary>
-    private void ProcessResponseEvent(
-        in SendLoopEvent evt,
+    private void ProcessCompletedResponses(
         List<ReadyBatch> pendingCarryOver,
         CancellationToken cancellationToken)
     {
-        Debug.Assert(evt.Type == SendLoopEventType.ResponseCompleted);
-
-        var batches = evt.ResponseBatches!;
-        var count = evt.ResponseBatchCount;
-        var requestStartTime = evt.ResponseRequestStartTime;
-        var task = evt.ResponseTask!;
-
-        for (var i = 0; i < _pendingResponses.Count; i++)
+        for (var i = _pendingResponses.Count - 1; i >= 0; i--)
         {
-            if (ReferenceEquals(_pendingResponses[i].Batches, batches))
-            {
-                _pendingResponses[i] = _pendingResponses[^1];
-                _pendingResponses.RemoveAt(_pendingResponses.Count - 1);
-                break;
-            }
-        }
+            var pending = _pendingResponses[i];
+            if (!pending.ResponseTask.IsCompleted)
+                continue;
 
-        if (task.IsFaulted || task.IsCanceled)
-        {
-            var ex = task.Exception?.InnerException ?? new OperationCanceledException();
-            LogResponseFailed(ex, _brokerId);
-            _pinnedConnection = null;
+            // Remove using swap-with-last (O(1))
+            _pendingResponses[i] = _pendingResponses[^1];
+            _pendingResponses.RemoveAt(_pendingResponses.Count - 1);
 
-            for (var j = 0; j < count; j++)
+            var task = pending.ResponseTask;
+            var batches = pending.Batches;
+            var count = pending.Count;
+            var requestStartTime = pending.RequestStartTime;
+
+            if (task.IsFaulted || task.IsCanceled)
             {
-                if (batches[j] is not null)
+                var ex = task.Exception?.InnerException ?? new OperationCanceledException();
+                LogResponseFailed(ex, _brokerId);
+                _pinnedConnection = null;
+
+                for (var j = 0; j < count; j++)
                 {
-                    try
+                    if (batches[j] is not null)
                     {
-                        HandleRetriableBatch(batches[j], ErrorCode.NetworkException,
-                            pendingCarryOver, cancellationToken);
+                        try
+                        {
+                            HandleRetriableBatch(batches[j], ErrorCode.NetworkException,
+                                pendingCarryOver, cancellationToken);
+                        }
+                        catch (Exception batchEx)
+                        {
+                            try { FailAndCleanupBatch(batches[j], ex); }
+                            catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                            LogBatchCleanupStepFailed(batchEx, _brokerId);
+                        }
                     }
-                    catch (Exception batchEx)
-                    {
-                        try { FailAndCleanupBatch(batches[j], ex); }
-                        catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-                        LogBatchCleanupStepFailed(batchEx, _brokerId);
-                    }
+                }
+
+                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+                continue;
+            }
+
+            var response = task.Result;
+            var elapsedTicks = Stopwatch.GetTimestamp() - requestStartTime;
+            var latencyMs = (long)(elapsedTicks * 1000.0 / Stopwatch.Frequency);
+            _statisticsCollector.RecordResponseReceived(latencyMs);
+
+            Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? responseLookup = null;
+            foreach (var topicResp in response.Responses)
+            {
+                foreach (var partResp in topicResp.PartitionResponses)
+                {
+                    responseLookup ??= new Dictionary<(string, int), ProduceResponsePartitionData>();
+                    responseLookup[(topicResp.Name, partResp.Index)] = partResp;
                 }
             }
 
+            ProcessResponseBatches(batches, count, responseLookup, requestStartTime,
+                pendingCarryOver, cancellationToken);
+
             ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
-            return;
         }
-
-        var response = task.Result;
-        var elapsedTicks = Stopwatch.GetTimestamp() - requestStartTime;
-        var latencyMs = (long)(elapsedTicks * 1000.0 / Stopwatch.Frequency);
-        _statisticsCollector.RecordResponseReceived(latencyMs);
-
-        Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? responseLookup = null;
-        foreach (var topicResp in response.Responses)
-        {
-            foreach (var partResp in topicResp.PartitionResponses)
-            {
-                responseLookup ??= new Dictionary<(string, int), ProduceResponsePartitionData>();
-                responseLookup[(topicResp.Name, partResp.Index)] = partResp;
-            }
-        }
-
-        ProcessResponseBatches(batches, count, responseLookup, requestStartTime,
-            pendingCarryOver, cancellationToken);
-
-        ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
     }
 
     /// <summary>
@@ -1183,15 +1162,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            var pendingResponse = new PendingResponse(batches, count, requestStartTime);
+            var pendingResponse = new PendingResponse(responseTask, batches, count, requestStartTime);
             _pendingResponses.Add(pendingResponse);
 
-            _ = responseTask.ContinueWith(static (task, state) =>
+            // Signal the send loop to wake up and poll when the response arrives.
+            // Only a lightweight signal — actual processing happens in ProcessCompletedResponses.
+            _ = responseTask.ContinueWith(static (_, state) =>
             {
-                var (writer, b, c, start) =
-                    ((ChannelWriter<SendLoopEvent>, ReadyBatch[], int, long))state!;
-                writer.TryWrite(SendLoopEvent.ResponseCompleted(task, b, c, start));
-            }, (_eventChannel.Writer, batches, count, requestStartTime),
+                ((ChannelWriter<SendLoopEvent>)state!).TryWrite(SendLoopEvent.ResponseReady());
+            }, _eventChannel.Writer,
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
