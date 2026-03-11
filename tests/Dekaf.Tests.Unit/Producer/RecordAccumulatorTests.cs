@@ -40,7 +40,7 @@ public class RecordAccumulatorTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            var result = await accumulator.AppendAsync(
+            var result = accumulator.Append(
                 topicPartition.Topic,
                 topicPartition.Partition,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -49,22 +49,24 @@ public class RecordAccumulatorTests
                 null,
                 null,
                 completion,
-                CancellationToken.None);
+                null);
 
-            await Assert.That(result.Success).IsTrue();
+            await Assert.That(result).IsTrue();
 
             // Use reflection to access the internal PartitionBatch
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
+            var deques = dequesField!.GetValue(accumulator)!;
 
             // Get TryGetValue method
-            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
             var parameters = new object[] { topicPartition, null! };
-            var found = (bool)tryGetValueMethod!.Invoke(batches, parameters)!;
+            var found = (bool)tryGetValueMethod!.Invoke(deques, parameters)!;
             await Assert.That(found).IsTrue();
 
-            var partitionBatch = parameters[1];
+            var partitionDeque = parameters[1];
+            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
+            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
 
             // Get the Complete method via reflection
             var completeMethod = partitionBatch!.GetType().GetMethod("Complete");
@@ -106,7 +108,7 @@ public class RecordAccumulatorTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            await accumulator.AppendAsync(
+            accumulator.Append(
                 topicPartition.Topic,
                 topicPartition.Partition,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -115,17 +117,19 @@ public class RecordAccumulatorTests
                 null,
                 null,
                 completion,
-                CancellationToken.None);
+                null);
 
             // Get the PartitionBatch and call Complete()
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
+            var deques = dequesField!.GetValue(accumulator)!;
 
-            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
             var parameters = new object[] { topicPartition, null! };
-            tryGetValueMethod!.Invoke(batches, parameters);
-            var partitionBatch = parameters[1];
+            tryGetValueMethod!.Invoke(deques, parameters);
+            var partitionDeque = parameters[1];
+            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
+            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
 
             var completeMethod = partitionBatch!.GetType().GetMethod("Complete");
             var readyBatch = completeMethod!.Invoke(partitionBatch, null);
@@ -178,7 +182,7 @@ public class RecordAccumulatorTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            await accumulator.AppendAsync(
+            accumulator.Append(
                 topicPartition.Topic,
                 topicPartition.Partition,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -187,17 +191,19 @@ public class RecordAccumulatorTests
                 null,
                 null,
                 completion,
-                CancellationToken.None);
+                null);
 
             // Get ReadyBatch
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
+            var deques = dequesField!.GetValue(accumulator)!;
 
-            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
             var parameters = new object[] { topicPartition, null! };
-            tryGetValueMethod!.Invoke(batches, parameters);
-            var partitionBatch = parameters[1];
+            tryGetValueMethod!.Invoke(deques, parameters);
+            var partitionDeque = parameters[1];
+            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
+            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
 
             var completeMethod = partitionBatch!.GetType().GetMethod("Complete");
             var readyBatch = (ReadyBatch)completeMethod!.Invoke(partitionBatch, null)!;
@@ -241,21 +247,21 @@ public class RecordAccumulatorTests
         {
             const int threadCount = 10;
             const int recordsPerThread = 100;
-            var tasks = new List<Task<List<RecordAppendResult>>>();
+            var tasks = new List<Task<List<bool>>>();
 
             // Launch multiple threads that all append to the same partition
             for (int i = 0; i < threadCount; i++)
             {
                 var task = Task.Run(async () =>
                 {
-                    var results = new List<RecordAppendResult>();
+                    var results = new List<bool>();
                     for (int j = 0; j < recordsPerThread; j++)
                     {
                         var completion = pool.Rent();
                         var pooledKey = new PooledMemory(null, 0, isNull: true);
                         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-                        var result = await accumulator.AppendAsync(
+                        var result = accumulator.Append(
                             topicPartition.Topic,
                             topicPartition.Partition,
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -264,7 +270,7 @@ public class RecordAccumulatorTests
                             null,
                             null,
                             completion,
-                            CancellationToken.None).ConfigureAwait(false);
+                            null);
 
                         results.Add(result);
                     }
@@ -277,21 +283,23 @@ public class RecordAccumulatorTests
             var allResults = await Task.WhenAll(tasks);
 
             // Verify all appends succeeded (or correctly failed when batch was full)
-            var totalSuccess = allResults.SelectMany(r => r).Count(r => r.Success);
+            var totalSuccess = allResults.SelectMany(r => r).Count(r => r);
             await Assert.That(totalSuccess).IsGreaterThan(0);
 
             // Get the batch and verify it has the expected number of records
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
+            var deques = dequesField!.GetValue(accumulator)!;
 
-            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
             var parameters = new object[] { topicPartition, null! };
-            var found = (bool)tryGetValueMethod!.Invoke(batches, parameters)!;
+            var found = (bool)tryGetValueMethod!.Invoke(deques, parameters)!;
 
             if (found)
             {
-                var partitionBatch = parameters[1];
+                var partitionDeque = parameters[1];
+            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
+            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
                 var recordCountProperty = partitionBatch!.GetType().GetProperty("RecordCount");
                 var recordCount = (int)recordCountProperty!.GetValue(partitionBatch)!;
 
@@ -337,7 +345,7 @@ public class RecordAccumulatorTests
                         var pooledKey = new PooledMemory(null, 0, isNull: true);
                         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-                        var result = await accumulator.AppendAsync(
+                        var result = accumulator.Append(
                             topicPartition.Topic,
                             topicPartition.Partition,
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -346,9 +354,9 @@ public class RecordAccumulatorTests
                             null,
                             null,
                             completion,
-                            CancellationToken.None).ConfigureAwait(false);
+                            null);
 
-                        await Assert.That(result.Success).IsTrue();
+                        await Assert.That(result).IsTrue();
                     }
                 });
                 tasks.Add(task);
@@ -358,12 +366,12 @@ public class RecordAccumulatorTests
             await Task.WhenAll(tasks);
 
             // Verify each partition has its own batch with the correct number of records
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
+            var deques = dequesField!.GetValue(accumulator)!;
 
-            var countProperty = batches.GetType().GetProperty("Count");
-            var batchCount = (int)countProperty!.GetValue(batches)!;
+            var countProperty = deques.GetType().GetProperty("Count");
+            var batchCount = (int)countProperty!.GetValue(deques)!;
 
             // Should have one batch per partition
             await Assert.That(batchCount).IsEqualTo(partitionCount);
@@ -410,7 +418,7 @@ public class RecordAccumulatorTests
                         var pooledKey = new PooledMemory(null, 0, isNull: true);
                         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-                        var result = await accumulator.AppendAsync(
+                        var result = accumulator.Append(
                             topicPartition.Topic,
                             topicPartition.Partition,
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -419,9 +427,9 @@ public class RecordAccumulatorTests
                             null,
                             null,
                             completion,
-                            CancellationToken.None).ConfigureAwait(false);
+                            null);
 
-                        if (result.Success)
+                        if (result)
                             successCount++;
                     }
 
@@ -467,34 +475,36 @@ public class RecordAccumulatorTests
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
             // Fire-and-forget append - no completion source needed
-            var result = accumulator.TryAppendFireAndForget(
+            var result = accumulator.Append(
                 "test-topic",
                 0,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 pooledKey,
                 pooledValue,
                 null,
-                null);
+                null, null, null);
 
             await Assert.That(result).IsTrue();
 
             // Verify a batch was created with a record
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
+            var deques = dequesField!.GetValue(accumulator)!;
 
-            var countProperty = batches.GetType().GetProperty("Count");
-            var batchCount = (int)countProperty!.GetValue(batches)!;
+            var countProperty = deques.GetType().GetProperty("Count");
+            var batchCount = (int)countProperty!.GetValue(deques)!;
             await Assert.That(batchCount).IsEqualTo(1);
 
             // Get the partition batch and verify it has a record
             var topicPartition = new TopicPartition("test-topic", 0);
-            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
             var parameters = new object[] { topicPartition, null! };
-            var found = (bool)tryGetValueMethod!.Invoke(batches, parameters)!;
+            var found = (bool)tryGetValueMethod!.Invoke(deques, parameters)!;
             await Assert.That(found).IsTrue();
 
-            var partitionBatch = parameters[1];
+            var partitionDeque = parameters[1];
+            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
+            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
             var recordCountProperty = partitionBatch!.GetType().GetProperty("RecordCount");
             var recordCount = (int)recordCountProperty!.GetValue(partitionBatch)!;
             await Assert.That(recordCount).IsEqualTo(1);
@@ -531,14 +541,14 @@ public class RecordAccumulatorTests
                 var pooledKey = new PooledMemory(null, 0, isNull: true);
                 var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-                var result = accumulator.TryAppendFireAndForget(
+                var result = accumulator.Append(
                     "test-topic",
                     0,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     pooledKey,
                     pooledValue,
                     null,
-                    null);
+                    null, null, null);
 
                 if (result) successCount++;
             }
@@ -546,16 +556,18 @@ public class RecordAccumulatorTests
             await Assert.That(successCount).IsEqualTo(appendCount);
 
             // Verify the batch has all records
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
+            var deques = dequesField!.GetValue(accumulator)!;
 
             var topicPartition = new TopicPartition("test-topic", 0);
-            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
             var parameters = new object[] { topicPartition, null! };
-            tryGetValueMethod!.Invoke(batches, parameters);
+            tryGetValueMethod!.Invoke(deques, parameters);
 
-            var partitionBatch = parameters[1];
+            var partitionDeque = parameters[1];
+            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
+            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
             var recordCountProperty = partitionBatch!.GetType().GetProperty("RecordCount");
             var recordCount = (int)recordCountProperty!.GetValue(partitionBatch)!;
             await Assert.That(recordCount).IsEqualTo(appendCount);
@@ -588,28 +600,30 @@ public class RecordAccumulatorTests
             var pooledKey = new PooledMemory(keyArray, keyData.Length);
             var pooledValue = new PooledMemory(valueArray, valueData.Length);
 
-            var result = accumulator.TryAppendFireAndForget(
+            var result = accumulator.Append(
                 "test-topic",
                 0,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 pooledKey,
                 pooledValue,
                 null,
-                null);
+                null, null, null);
 
             await Assert.That(result).IsTrue();
 
             // Get the batch and verify arrays are tracked
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
+            var deques = dequesField!.GetValue(accumulator)!;
 
             var topicPartition = new TopicPartition("test-topic", 0);
-            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
             var parameters = new object[] { topicPartition, null! };
-            tryGetValueMethod!.Invoke(batches, parameters);
+            tryGetValueMethod!.Invoke(deques, parameters);
 
-            var partitionBatch = parameters[1];
+            var partitionDeque = parameters[1];
+            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
+            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
 
             // Verify pooled arrays are tracked (via reflection)
             var pooledArrayCountField = partitionBatch!.GetType().GetField("_pooledArrayCount",
@@ -637,14 +651,14 @@ public class RecordAccumulatorTests
         var pooledKey = new PooledMemory(null, 0, isNull: true);
         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-        var result = accumulator.TryAppendFireAndForget(
+        var result = accumulator.Append(
             "test-topic",
             0,
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             pooledKey,
             pooledValue,
             null,
-            null);
+            null, null, null);
 
         await Assert.That(result).IsFalse();
     }
@@ -673,14 +687,14 @@ public class RecordAccumulatorTests
                         var pooledKey = new PooledMemory(null, 0, isNull: true);
                         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-                        if (accumulator.TryAppendFireAndForget(
+                        if (accumulator.Append(
                             "test-topic",
                             i % 3, // Distribute across 3 partitions
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                             pooledKey,
                             pooledValue,
                             null,
-                            null))
+                            null, null, null))
                         {
                             successCount++;
                         }
@@ -697,11 +711,11 @@ public class RecordAccumulatorTests
             await Assert.That(totalSuccess).IsGreaterThan(0);
 
             // Verify we didn't corrupt any data structures
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
-            var countProperty = batches.GetType().GetProperty("Count");
-            var batchCount = (int)countProperty!.GetValue(batches)!;
+            var deques = dequesField!.GetValue(accumulator)!;
+            var countProperty = deques.GetType().GetProperty("Count");
+            var batchCount = (int)countProperty!.GetValue(deques)!;
 
             // Should have batches for the 3 partitions we used
             await Assert.That(batchCount).IsGreaterThanOrEqualTo(1);
@@ -742,14 +756,14 @@ public class RecordAccumulatorTests
                 var pooledKey = new PooledMemory(keyArray, 10);
                 var pooledValue = new PooledMemory(valueArray, 10);
 
-                if (accumulator.TryAppendFireAndForget(
+                if (accumulator.Append(
                     "test-topic",
                     0,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     pooledKey,
                     pooledValue,
                     null,
-                    null))
+                    null, null, null))
                 {
                     successCount++;
                 }
@@ -849,14 +863,14 @@ public class RecordAccumulatorTests
                 var pooledKey = new PooledMemory(null, 0, isNull: true);
                 var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-                var result = accumulator.TryAppendFireAndForget(
+                var result = accumulator.Append(
                     "test-topic",
                     0, // Same partition
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     pooledKey,
                     pooledValue,
                     null,
-                    null);
+                    null, null, null);
 
                 if (result) successCount++;
             }
@@ -899,14 +913,14 @@ public class RecordAccumulatorTests
                     var pooledKey = new PooledMemory(null, 0, isNull: true);
                     var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-                    var result = accumulator.TryAppendFireAndForget(
+                    var result = accumulator.Append(
                         "test-topic",
                         partition,
                         DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                         pooledKey,
                         pooledValue,
                         null,
-                        null);
+                        null, null, null);
 
                     if (result) successCount++;
                 }
@@ -915,11 +929,11 @@ public class RecordAccumulatorTests
             await Assert.That(successCount).IsEqualTo(partitionCount * appendsPerPartition);
 
             // Verify all partitions have batches
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
-            var countProperty = batches.GetType().GetProperty("Count");
-            var batchCount = (int)countProperty!.GetValue(batches)!;
+            var deques = dequesField!.GetValue(accumulator)!;
+            var countProperty = deques.GetType().GetProperty("Count");
+            var batchCount = (int)countProperty!.GetValue(deques)!;
 
             await Assert.That(batchCount).IsEqualTo(partitionCount);
         }
@@ -940,9 +954,9 @@ public class RecordAccumulatorTests
         // Populate cache with first accumulator
         var pooledKey1 = new PooledMemory(null, 0, isNull: true);
         var pooledValue1 = new PooledMemory(null, 0, isNull: true);
-        var result1 = accumulator1.TryAppendFireAndForget(
+        var result1 = accumulator1.Append(
             "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            pooledKey1, pooledValue1, null, null);
+            pooledKey1, pooledValue1, null, null, null, null);
         await Assert.That(result1).IsTrue();
 
         // Dispose first accumulator (should clear cache if on same thread)
@@ -951,9 +965,9 @@ public class RecordAccumulatorTests
         // Attempt to use disposed accumulator - should fail
         var pooledKey2 = new PooledMemory(null, 0, isNull: true);
         var pooledValue2 = new PooledMemory(null, 0, isNull: true);
-        var result2 = accumulator1.TryAppendFireAndForget(
+        var result2 = accumulator1.Append(
             "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            pooledKey2, pooledValue2, null, null);
+            pooledKey2, pooledValue2, null, null, null, null);
         await Assert.That(result2).IsFalse();
 
         // Create new accumulator - should work independently
@@ -962,9 +976,9 @@ public class RecordAccumulatorTests
         {
             var pooledKey3 = new PooledMemory(null, 0, isNull: true);
             var pooledValue3 = new PooledMemory(null, 0, isNull: true);
-            var result3 = accumulator2.TryAppendFireAndForget(
+            var result3 = accumulator2.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey3, pooledValue3, null, null);
+                pooledKey3, pooledValue3, null, null, null, null);
             await Assert.That(result3).IsTrue();
         }
         finally
@@ -987,25 +1001,25 @@ public class RecordAccumulatorTests
             // Append to accumulator1 (populates cache)
             var pooledKey1 = new PooledMemory(null, 0, isNull: true);
             var pooledValue1 = new PooledMemory(null, 0, isNull: true);
-            var result1 = accumulator1.TryAppendFireAndForget(
+            var result1 = accumulator1.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey1, pooledValue1, null, null);
+                pooledKey1, pooledValue1, null, null, null, null);
             await Assert.That(result1).IsTrue();
 
             // Append to accumulator2 (should not use accumulator1's cache)
             var pooledKey2 = new PooledMemory(null, 0, isNull: true);
             var pooledValue2 = new PooledMemory(null, 0, isNull: true);
-            var result2 = accumulator2.TryAppendFireAndForget(
+            var result2 = accumulator2.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey2, pooledValue2, null, null);
+                pooledKey2, pooledValue2, null, null, null, null);
             await Assert.That(result2).IsTrue();
 
             // Verify each accumulator has its own batch
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 
-            var batches1 = batchesField!.GetValue(accumulator1)!;
-            var batches2 = batchesField.GetValue(accumulator2)!;
+            var batches1 = dequesField!.GetValue(accumulator1)!;
+            var batches2 = dequesField.GetValue(accumulator2)!;
 
             var countProperty1 = batches1.GetType().GetProperty("Count");
             var countProperty2 = batches2.GetType().GetProperty("Count");
@@ -1025,26 +1039,7 @@ public class RecordAccumulatorTests
     #region Batch Append Tests
 
     [Test]
-    public async Task TryAppendFireAndForgetBatch_EmptyBatch_ReturnsTrue()
-    {
-        var options = CreateTestOptions();
-        var accumulator = new RecordAccumulator(options);
-
-        try
-        {
-            var result = accumulator.TryAppendFireAndForgetBatch(
-                "test-topic", 0, ReadOnlySpan<ProducerRecordData>.Empty);
-
-            await Assert.That(result).IsTrue();
-        }
-        finally
-        {
-            await accumulator.DisposeAsync();
-        }
-    }
-
-    [Test]
-    public async Task TryAppendFireAndForgetBatch_SingleItem_AppendsSuccessfully()
+    public async Task Append_FireAndForget_SingleItem_AppendsSuccessfully()
     {
         var options = new ProducerOptions
         {
@@ -1058,27 +1053,21 @@ public class RecordAccumulatorTests
 
         try
         {
-            var records = new ProducerRecordData[]
-            {
-                new ProducerRecordData
-                {
-                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    Key = new PooledMemory(null, 0, isNull: true),
-                    Value = new PooledMemory(null, 0, isNull: true),
-                    Headers = null,
-                    PooledHeaderArray = null
-                }
-            };
+            var result = accumulator.Append(
+                "test-topic", 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                new PooledMemory(null, 0, isNull: true),
+                new PooledMemory(null, 0, isNull: true),
+                null, null, null, null);
 
-            var result = accumulator.TryAppendFireAndForgetBatch("test-topic", 0, records);
             await Assert.That(result).IsTrue();
 
             // Verify batch was created
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
-            var countProperty = batches.GetType().GetProperty("Count");
-            await Assert.That((int)countProperty!.GetValue(batches)!).IsEqualTo(1);
+            var deques = dequesField!.GetValue(accumulator)!;
+            var countProperty = deques.GetType().GetProperty("Count");
+            await Assert.That((int)countProperty!.GetValue(deques)!).IsEqualTo(1);
         }
         finally
         {
@@ -1087,7 +1076,7 @@ public class RecordAccumulatorTests
     }
 
     [Test]
-    public async Task TryAppendFireAndForgetBatch_MultipleItems_AppendsAll()
+    public async Task Append_FireAndForget_MultipleItems_AppendsAll()
     {
         var options = new ProducerOptions
         {
@@ -1102,35 +1091,31 @@ public class RecordAccumulatorTests
         try
         {
             const int itemCount = 100;
-            var records = new ProducerRecordData[itemCount];
             var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
             for (int i = 0; i < itemCount; i++)
             {
-                records[i] = new ProducerRecordData
-                {
-                    Timestamp = timestamp,
-                    Key = new PooledMemory(null, 0, isNull: true),
-                    Value = new PooledMemory(null, 0, isNull: true),
-                    Headers = null,
-                    PooledHeaderArray = null
-                };
+                var result = accumulator.Append(
+                    "test-topic", 0, timestamp,
+                    new PooledMemory(null, 0, isNull: true),
+                    new PooledMemory(null, 0, isNull: true),
+                    null, null, null, null);
+                await Assert.That(result).IsTrue();
             }
 
-            var result = accumulator.TryAppendFireAndForgetBatch("test-topic", 0, records);
-            await Assert.That(result).IsTrue();
-
             // Verify all records were added
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
+            var deques = dequesField!.GetValue(accumulator)!;
 
             var topicPartition = new TopicPartition("test-topic", 0);
-            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
             var parameters = new object[] { topicPartition, null! };
-            tryGetValueMethod!.Invoke(batches, parameters);
+            tryGetValueMethod!.Invoke(deques, parameters);
 
-            var partitionBatch = parameters[1];
+            var partitionDeque = parameters[1];
+            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
+            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
             var recordCountProperty = partitionBatch!.GetType().GetProperty("RecordCount");
             var recordCount = (int)recordCountProperty!.GetValue(partitionBatch)!;
             await Assert.That(recordCount).IsEqualTo(itemCount);
@@ -1142,30 +1127,24 @@ public class RecordAccumulatorTests
     }
 
     [Test]
-    public async Task TryAppendFireAndForgetBatch_DisposedAccumulator_ReturnsFalse()
+    public async Task Append_FireAndForget_DisposedAccumulator_ReturnsFalse()
     {
         var options = CreateTestOptions();
         var accumulator = new RecordAccumulator(options);
         await accumulator.DisposeAsync();
 
-        var records = new ProducerRecordData[]
-        {
-            new ProducerRecordData
-            {
-                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                Key = new PooledMemory(null, 0, isNull: true),
-                Value = new PooledMemory(null, 0, isNull: true),
-                Headers = null,
-                PooledHeaderArray = null
-            }
-        };
+        var result = accumulator.Append(
+            "test-topic", 0,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            new PooledMemory(null, 0, isNull: true),
+            new PooledMemory(null, 0, isNull: true),
+            null, null, null, null);
 
-        var result = accumulator.TryAppendFireAndForgetBatch("test-topic", 0, records);
         await Assert.That(result).IsFalse();
     }
 
     [Test]
-    public async Task TryAppendFireAndForgetBatch_WithPooledMemory_TracksArrays()
+    public async Task Append_FireAndForget_WithPooledMemory_TracksArrays()
     {
         var options = new ProducerOptions
         {
@@ -1182,32 +1161,28 @@ public class RecordAccumulatorTests
             var keyArray = ArrayPool<byte>.Shared.Rent(10);
             var valueArray = ArrayPool<byte>.Shared.Rent(20);
 
-            var records = new ProducerRecordData[]
-            {
-                new ProducerRecordData
-                {
-                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    Key = new PooledMemory(keyArray, 10),
-                    Value = new PooledMemory(valueArray, 20),
-                    Headers = null,
-                    PooledHeaderArray = null
-                }
-            };
+            var result = accumulator.Append(
+                "test-topic", 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                new PooledMemory(keyArray, 10),
+                new PooledMemory(valueArray, 20),
+                null, null, null, null);
 
-            var result = accumulator.TryAppendFireAndForgetBatch("test-topic", 0, records);
             await Assert.That(result).IsTrue();
 
             // Verify pooled arrays are tracked
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
+            var deques = dequesField!.GetValue(accumulator)!;
 
             var topicPartition = new TopicPartition("test-topic", 0);
-            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
             var parameters = new object[] { topicPartition, null! };
-            tryGetValueMethod!.Invoke(batches, parameters);
+            tryGetValueMethod!.Invoke(deques, parameters);
 
-            var partitionBatch = parameters[1];
+            var partitionDeque = parameters[1];
+            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
+            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
             var pooledArrayCountField = partitionBatch!.GetType().GetField("_pooledArrayCount",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
             var pooledArrayCount = (int)pooledArrayCountField!.GetValue(partitionBatch)!;
@@ -1251,14 +1226,14 @@ public class RecordAccumulatorTests
                 var pooledKey = new PooledMemory(null, 0, isNull: true);
                 var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-                var result = accumulator.TryAppendFireAndForget(
+                var result = accumulator.Append(
                     "test-topic",
                     0,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     pooledKey,
                     pooledValue,
                     null,
-                    null);
+                    null, null, null);
 
                 if (result) successCount++;
             }
@@ -1266,16 +1241,18 @@ public class RecordAccumulatorTests
             await Assert.That(successCount).IsEqualTo(appendCount);
 
             // Verify the batch has all records (proves no data corruption from lock-free path)
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
+            var deques = dequesField!.GetValue(accumulator)!;
 
             var topicPartition = new TopicPartition("test-topic", 0);
-            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
             var parameters = new object[] { topicPartition, null! };
-            tryGetValueMethod!.Invoke(batches, parameters);
+            tryGetValueMethod!.Invoke(deques, parameters);
 
-            var partitionBatch = parameters[1];
+            var partitionDeque = parameters[1];
+            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
+            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
             var recordCountProperty = partitionBatch!.GetType().GetProperty("RecordCount");
             var recordCount = (int)recordCountProperty!.GetValue(partitionBatch)!;
             await Assert.That(recordCount).IsEqualTo(appendCount);
@@ -1326,14 +1303,14 @@ public class RecordAccumulatorTests
                         var pooledKey = new PooledMemory(null, 0, isNull: true);
                         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-                        if (accumulator.TryAppendFireAndForget(
+                        if (accumulator.Append(
                             "test-topic",
                             0, // All threads to same partition - forces ownership transfers
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                             pooledKey,
                             pooledValue,
                             null,
-                            null))
+                            null, null, null))
                         {
                             Interlocked.Increment(ref successCount);
                         }
@@ -1348,16 +1325,18 @@ public class RecordAccumulatorTests
             await Assert.That(successCount).IsEqualTo(totalExpected);
 
             // Verify the batch has all records (proves ownership transfers worked correctly)
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
+            var deques = dequesField!.GetValue(accumulator)!;
 
             var topicPartition = new TopicPartition("test-topic", 0);
-            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
             var parameters = new object[] { topicPartition, null! };
-            tryGetValueMethod!.Invoke(batches, parameters);
+            tryGetValueMethod!.Invoke(deques, parameters);
 
-            var partitionBatch = parameters[1];
+            var partitionDeque = parameters[1];
+            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
+            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
             var recordCountProperty = partitionBatch!.GetType().GetProperty("RecordCount");
             var recordCount = (int)recordCountProperty!.GetValue(partitionBatch)!;
             await Assert.That(recordCount).IsEqualTo(totalExpected);
@@ -1397,14 +1376,14 @@ public class RecordAccumulatorTests
                 var pooledKey = new PooledMemory(keyArray, 10);
                 var pooledValue = new PooledMemory(valueArray, 10);
 
-                if (accumulator.TryAppendFireAndForget(
+                if (accumulator.Append(
                     "test-topic",
                     0,
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     pooledKey,
                     pooledValue,
                     null,
-                    null))
+                    null, null, null))
                 {
                     successCount++;
                 }
@@ -1537,7 +1516,7 @@ public class RecordAccumulatorTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            var result = await accumulator.AppendAsync(
+            var result = accumulator.Append(
                 topicPartition.Topic,
                 topicPartition.Partition,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -1546,18 +1525,20 @@ public class RecordAccumulatorTests
                 null,
                 null,
                 completion,
-                CancellationToken.None);
+                null);
 
-            await Assert.That(result.Success).IsTrue();
+            await Assert.That(result).IsTrue();
 
             // Get the ReadyBatch via reflection
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
-            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var deques = dequesField!.GetValue(accumulator)!;
+            var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
             var parameters = new object[] { topicPartition, null! };
-            tryGetValueMethod!.Invoke(batches, parameters);
-            var partitionBatch = parameters[1];
+            tryGetValueMethod!.Invoke(deques, parameters);
+            var partitionDeque = parameters[1];
+            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
+            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
 
             var completeMethod = partitionBatch!.GetType().GetMethod("Complete");
             var readyBatch = (ReadyBatch)completeMethod!.Invoke(partitionBatch, null)!;
@@ -1595,7 +1576,7 @@ public class RecordAccumulatorTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            await accumulator.AppendAsync(
+            accumulator.Append(
                 topicPartition.Topic,
                 topicPartition.Partition,
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
@@ -1604,16 +1585,18 @@ public class RecordAccumulatorTests
                 null,
                 null,
                 completion,
-                CancellationToken.None);
+                null);
 
             // Get ReadyBatch
-            var batchesField = typeof(RecordAccumulator).GetField("_batches",
+            var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var batches = batchesField!.GetValue(accumulator)!;
-            var tryGetValueMethod = batches.GetType().GetMethod("TryGetValue");
+            var deques = dequesField!.GetValue(accumulator)!;
+            var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
             var parameters = new object[] { topicPartition, null! };
-            tryGetValueMethod!.Invoke(batches, parameters);
-            var partitionBatch = parameters[1];
+            tryGetValueMethod!.Invoke(deques, parameters);
+            var partitionDeque = parameters[1];
+            var currentBatchField = partitionDeque!.GetType().GetField("CurrentBatch");
+            var partitionBatch = currentBatchField!.GetValue(partitionDeque);
 
             var completeMethod = partitionBatch!.GetType().GetMethod("Complete");
             var readyBatch = (ReadyBatch)completeMethod!.Invoke(partitionBatch, null)!;

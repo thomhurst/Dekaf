@@ -1098,14 +1098,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
 
             // Append to accumulator
-            if (!_accumulator.TryAppendFireAndForget(
+            if (!_accumulator.Append(
                 topic,
                 partition,
                 timestampMs,
                 key,
                 valueMemory,
                 recordHeaders,
-                pooledHeaderArray))
+                pooledHeaderArray,
+                null,
+                null))
             {
                 CleanupPooledResources(key, valueMemory, pooledHeaderArray);
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -1223,7 +1225,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             // Append to accumulator synchronously (non-blocking memory reservation).
             // Returns false when buffer is full OR accumulator is disposed.
-            if (!_accumulator.TryAppendSync(
+            if (!_accumulator.TryAppendWithCompletion(
                 message.Topic,
                 partition,
                 timestampMs,
@@ -1679,7 +1681,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
 
             // Append to accumulator with callback
-            if (!_accumulator.TryAppendWithCallback(
+            if (!_accumulator.Append(
                 topic,
                 partition,
                 timestampMs,
@@ -1687,6 +1689,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 valueMemory,
                 recordHeaders,
                 pooledHeaderArray,
+                null,
                 callback))
             {
                 CleanupPooledResources(key, valueMemory, pooledHeaderArray);

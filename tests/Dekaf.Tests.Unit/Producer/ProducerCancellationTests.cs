@@ -62,9 +62,9 @@ public class ProducerCancellationTests
             // Add a message to create a batch
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
-            accumulator.TryAppendFireAndForget(
+            accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null);
+                pooledKey, pooledValue, null, null, null, null);
 
             // Start a background task to drain batches (simulates sender loop)
             using var cts = new CancellationTokenSource(15000);
@@ -199,9 +199,9 @@ public class ProducerCancellationTests
             var pooledValue = new PooledMemory(null, 0, isNull: true);
             for (int i = 0; i < 10; i++)
             {
-                accumulator.TryAppendFireAndForget(
+                accumulator.Append(
                     "test-topic", i % 3, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, null);
+                    pooledKey, pooledValue, null, null, null, null);
             }
 
             // Act - Start multiple flushes with pre-cancelled tokens

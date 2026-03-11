@@ -40,15 +40,15 @@ public class BufferMemoryTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            var result1 = accumulator.TryAppendFireAndForget(
+            var result1 = accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null);
+                pooledKey, pooledValue, null, null, null, null);
 
             await Assert.That(result1).IsTrue();
 
-            var result2 = accumulator.TryAppendFireAndForget(
+            var result2 = accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null);
+                pooledKey, pooledValue, null, null, null, null);
 
             await Assert.That(result2).IsTrue();
 
@@ -78,13 +78,13 @@ public class BufferMemoryTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            accumulator.TryAppendFireAndForget(
+            accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null);
+                pooledKey, pooledValue, null, null, null, null);
 
-            accumulator.TryAppendFireAndForget(
+            accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null);
+                pooledKey, pooledValue, null, null, null, null);
 
             // Verify memory is reserved
             var bufferedBytesBeforeRelease = accumulator.BufferedBytes;
@@ -96,12 +96,16 @@ public class BufferMemoryTests
                 var batchSize = batch!.EstimatedSize;
 
                 // Simulate the batch being sent - release the memory.
-                // In production, the batch is removed from _batches before sending.
+                // In production, CurrentBatch is set to null when sealed.
                 // We must do the same to prevent DisposeAsync from double-releasing.
-                var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                     System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                ((System.Collections.IDictionary)batchesField!.GetValue(accumulator)!).Remove(
-                    new TopicPartition("test-topic", 0));
+                var deques = dequesField!.GetValue(accumulator)!;
+                var tryGetMethod = deques.GetType().GetMethod("TryGetValue");
+                var parms = new object[] { new TopicPartition("test-topic", 0), null! };
+                tryGetMethod!.Invoke(deques, parms);
+                var pd = parms[1]!;
+                pd.GetType().GetField("CurrentBatch")!.SetValue(pd, null);
 
                 accumulator.ReleaseMemory(batchSize);
 
@@ -133,17 +137,17 @@ public class BufferMemoryTests
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-            accumulator.TryAppendFireAndForget(
+            accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null);
+                pooledKey, pooledValue, null, null, null, null);
 
-            accumulator.TryAppendFireAndForget(
+            accumulator.Append(
                 "test-topic", 1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null);
+                pooledKey, pooledValue, null, null, null, null);
 
-            accumulator.TryAppendFireAndForget(
+            accumulator.Append(
                 "test-topic", 2, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null);
+                pooledKey, pooledValue, null, null, null, null);
 
             // Assert: Verify memory was reserved for all partitions
             var bufferedBytes = accumulator.BufferedBytes;
@@ -176,9 +180,9 @@ public class BufferMemoryTests
             // Append 10 messages
             for (int i = 0; i < 10; i++)
             {
-                var result = accumulator.TryAppendFireAndForget(
+                var result = accumulator.Append(
                     "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, null);
+                    pooledKey, pooledValue, null, null, null, null);
 
                 await Assert.That(result).IsTrue();
             }
@@ -218,29 +222,33 @@ public class BufferMemoryTests
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 
             // First batch
-            accumulator.TryAppendFireAndForget(
+            accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null);
+                pooledKey, pooledValue, null, null, null, null);
 
             var bufferedAfterFirst = accumulator.BufferedBytes;
             await Assert.That(bufferedAfterFirst).IsGreaterThan(0);
 
             // Second batch to different partition
-            accumulator.TryAppendFireAndForget(
+            accumulator.Append(
                 "test-topic", 1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null);
+                pooledKey, pooledValue, null, null, null, null);
 
             var bufferedAfterSecond = accumulator.BufferedBytes;
             await Assert.That(bufferedAfterSecond).IsGreaterThan(bufferedAfterFirst);
 
-            // Release first batch - also remove from _batches to prevent double-release
-            // during disposal (in production, batches are removed before sending)
+            // Release first batch - also clear CurrentBatch to prevent double-release
+            // during disposal (in production, CurrentBatch is nulled when sealed)
             if (accumulator.TryGetBatch("test-topic", 0, out var batch1))
             {
-                var batchesField = typeof(RecordAccumulator).GetField("_batches",
+                var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
                     System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                ((System.Collections.IDictionary)batchesField!.GetValue(accumulator)!).Remove(
-                    new TopicPartition("test-topic", 0));
+                var deques = dequesField!.GetValue(accumulator)!;
+                var tryGetMethod = deques.GetType().GetMethod("TryGetValue");
+                var parms = new object[] { new TopicPartition("test-topic", 0), null! };
+                tryGetMethod!.Invoke(deques, parms);
+                var pd = parms[1]!;
+                pd.GetType().GetField("CurrentBatch")!.SetValue(pd, null);
 
                 accumulator.ReleaseMemory(batch1!.EstimatedSize);
             }
@@ -294,14 +302,14 @@ public class BufferMemoryTests
                     rentedArrays.Add(valueBytes); // Track for cleanup
                     var pooledValue = new PooledMemory(valueBytes, 200);
 
-                    accumulator.TryAppendFireAndForget(
+                    accumulator.Append(
                         "test-topic",
                         0,
                         DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                         pooledKey,
                         pooledValue,
                         null,
-                        null);
+                        null, null, null);
                     messageCount++;
                 }
             }
@@ -363,9 +371,9 @@ public class BufferMemoryTests
 
                 var exception = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
                 {
-                    accumulator.TryAppendFireAndForget(
+                    accumulator.Append(
                         "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                        pooledKey, pooledValue, null, null);
+                        pooledKey, pooledValue, null, null, null, null);
                     await Task.CompletedTask.ConfigureAwait(false);
                 });
 
@@ -403,9 +411,9 @@ public class BufferMemoryTests
 
             var ex = await Assert.ThrowsAsync<KafkaTimeoutException>(async () =>
             {
-                accumulator.TryAppendFireAndForget(
+                accumulator.Append(
                     "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, null);
+                    pooledKey, pooledValue, null, null, null, null);
                 await Task.CompletedTask.ConfigureAwait(false);
             });
 
@@ -439,9 +447,9 @@ public class BufferMemoryTests
             {
                 for (int i = 0; i < 20; i++)
                 {
-                    accumulator.TryAppendFireAndForget(
+                    accumulator.Append(
                         "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                        pooledKey, pooledValue, null, null);
+                        pooledKey, pooledValue, null, null, null, null);
                     successCount++;
                 }
             }
@@ -480,9 +488,9 @@ public class BufferMemoryTests
             // After disposal, TryAppendFireAndForget should return false immediately
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
-            var resultAfterDisposal = accumulator.TryAppendFireAndForget(
+            var resultAfterDisposal = accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null);
+                pooledKey, pooledValue, null, null, null, null);
 
             await Assert.That(resultAfterDisposal).IsFalse();
         }
@@ -512,11 +520,11 @@ public class BufferMemoryTests
         // Add fire-and-forget messages
         for (int i = 0; i < 10; i++)
         {
-            accumulator.TryAppendFireAndForget(
+            accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 new PooledMemory(null, 0, isNull: true),
                 new PooledMemory(null, 0, isNull: true),
-                null, null);
+                null, null, null, null);
         }
 
         // Dispose should complete quickly (completion loop processes batches)
@@ -544,11 +552,11 @@ public class BufferMemoryTests
         try
         {
             // Append to create batch
-            accumulator.TryAppendFireAndForget(
+            accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 new PooledMemory(null, 0, isNull: true),
                 new PooledMemory(null, 0, isNull: true),
-                null, null);
+                null, null, null, null);
 
             // Start background task to drain batches (simulates sender loop)
             using var cts = new CancellationTokenSource(15000);
@@ -613,11 +621,11 @@ public class BufferMemoryTests
             // Create multiple batches across different partitions
             for (int i = 0; i < batchCount; i++)
             {
-                accumulator.TryAppendFireAndForget(
+                accumulator.Append(
                     "test-topic", i, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     new PooledMemory(null, 0, isNull: true),
                     new PooledMemory(null, 0, isNull: true),
-                    null, null);
+                    null, null, null, null);
             }
 
             // Start background task to drain batches (simulates sender loop)
@@ -684,11 +692,11 @@ public class BufferMemoryTests
             // Add multiple fire-and-forget messages across 5 partitions
             for (int i = 0; i < 50; i++)
             {
-                accumulator.TryAppendFireAndForget(
+                accumulator.Append(
                     "test-topic", i % 5, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     new PooledMemory(null, 0, isNull: true),
                     new PooledMemory(null, 0, isNull: true),
-                    null, null);
+                    null, null, null, null);
             }
 
             // Start background task to drain batches (simulates sender loop)
@@ -763,11 +771,11 @@ public class BufferMemoryTests
             // Create batches
             for (int i = 0; i < batchCount; i++)
             {
-                accumulator.TryAppendFireAndForget(
+                accumulator.Append(
                     "test-topic", i, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     new PooledMemory(null, 0, isNull: true),
                     new PooledMemory(null, 0, isNull: true),
-                    null, null);
+                    null, null, null, null);
             }
 
             // Start background task to drain batches (simulates sender loop)
@@ -817,11 +825,11 @@ public class BufferMemoryTests
         // Add some messages
         for (int i = 0; i < 10; i++)
         {
-            accumulator.TryAppendFireAndForget(
+            accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 new PooledMemory(null, 0, isNull: true),
                 new PooledMemory(null, 0, isNull: true),
-                null, null);
+                null, null, null, null);
         }
 
         // Disposal should complete quickly (completion loop stops)
