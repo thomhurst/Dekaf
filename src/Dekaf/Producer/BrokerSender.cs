@@ -374,23 +374,31 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     pendingCarryOver.Clear();
                 }
 
-                // Read from the event channel lazily during coalescing (like main reads
-                // from its bounded batch channel). Non-batch events are consumed as signals
-                // only. Limit total batches handled per iteration (coalesced + carry-over) to
-                // maxCoalesce. Subtract both coalescedCount and newCarryOver.Count to account
-                // for carry-over batches that went back to carry-over (duplicate partitions).
-                // This prevents O(n²) carry-over growth while maintaining multi-partition throughput.
+                // Read from the event channel lazily during coalescing. Stop reading
+                // when partition slots are saturated — once carry-over from channel reads
+                // exceeds the number of unique partitions seen, all further reads will go
+                // to carry-over (O(n²) scanning). This naturally adapts to any partition count:
+                // multi-partition reads many (throughput), single-partition reads few (bounded).
                 {
-                    var channelReadLimit = Math.Max(1,
-                        maxCoalesce - coalescedCount - newCarryOver.Count);
                     var channelReads = 0;
-                    while (channelReads < channelReadLimit && eventReader.TryRead(out var evt))
+                    var channelCarryOvers = 0;
+                    while (channelReads < maxCoalesce && eventReader.TryRead(out var evt))
                     {
                         if (evt.Type == SendLoopEventType.NewBatch)
                         {
+                            var carryBefore = newCarryOver.Count;
                             channelReads++;
                             CoalesceBatch(evt.Batch!, coalescedBatches, ref coalescedCount,
                                 coalescedPartitions, newCarryOver);
+                            if (newCarryOver.Count > carryBefore)
+                            {
+                                channelCarryOvers++;
+                                // All partition slots filled — further reads go to carry-over.
+                                // Allow up to partitionCount carry-overs before stopping to
+                                // drain one full round of duplicates from the channel.
+                                if (channelCarryOvers > coalescedPartitions.Count)
+                                    break;
+                            }
                         }
                         // ResponseReady/Unmute: consumed as wake-up signals, no data to process
                     }
