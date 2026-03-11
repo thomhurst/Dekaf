@@ -1453,39 +1453,43 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // The loop will increment again before the next TryAppend attempt.
             Interlocked.Decrement(ref _pendingAwaitedProduceCount);
 
-            // Batch is full - atomically remove it from dictionary BEFORE completing.
-            // Only the thread that wins the TryRemove race will complete the batch.
-            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
+            // Batch is full - seal under per-partition lock to preserve ordering.
+            // Without this lock, the linger timer can interleave between TryRemove
+            // and TryWrite, writing an older batch to the channel AFTER this newer one.
+            lock (GetPartitionSealLock(topicPartition))
             {
-                // Reset oldest batch tracking if dictionary is now empty
-                ResetOldestBatchTrackingIfEmpty();
-
-                var readyBatch = batch.Complete();
-                if (readyBatch is not null)
+                if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
                 {
-                    // Decrement pending awaited produce count by the number of completion sources in this batch
-                    if (readyBatch.CompletionSourcesCount > 0)
-                        Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
-                    ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
-                    // Track delivery task for FlushAsync
-                    OnBatchEntersPipeline(readyBatch);
+                    // Reset oldest batch tracking if dictionary is now empty
+                    ResetOldestBatchTrackingIfEmpty();
 
-                    // Non-blocking write to unbounded channel - should always succeed
-                    // If it fails (channel completed), the producer is being disposed
-                    if (!_readyBatches.Writer.TryWrite(readyBatch))
+                    var readyBatch = batch.Complete();
+                    if (readyBatch is not null)
                     {
-                        ProducerDebugCounters.RecordBatchFailedToQueue();
-                        // Channel is closed, fail the batch and return false
-                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                        OnBatchExitsPipeline(readyBatch); // Decrement counter on failure
-                        // Release the batch's buffer memory since it won't go through producer
-                        ReleaseMemory(readyBatch.DataSize);
-                        return false;
-                    }
+                        // Decrement pending awaited produce count by the number of completion sources in this batch
+                        if (readyBatch.CompletionSourcesCount > 0)
+                            Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
+                        ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+                        // Track delivery task for FlushAsync
+                        OnBatchEntersPipeline(readyBatch);
 
-                    ProducerDebugCounters.RecordBatchQueuedToReady();
-                    // Return the completed batch shell to the pool for reuse
-                    _batchPool.Return(batch);
+                        // Non-blocking write to unbounded channel - should always succeed
+                        // If it fails (channel completed), the producer is being disposed
+                        if (!_readyBatches.Writer.TryWrite(readyBatch))
+                        {
+                            ProducerDebugCounters.RecordBatchFailedToQueue();
+                            // Channel is closed, fail the batch and return false
+                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
+                            OnBatchExitsPipeline(readyBatch); // Decrement counter on failure
+                            // Release the batch's buffer memory since it won't go through producer
+                            ReleaseMemory(readyBatch.DataSize);
+                            return false;
+                        }
+
+                        ProducerDebugCounters.RecordBatchQueuedToReady();
+                        // Return the completed batch shell to the pool for reuse
+                        _batchPool.Return(batch);
+                    }
                 }
             }
         }
