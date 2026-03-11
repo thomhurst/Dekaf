@@ -461,6 +461,8 @@ public class RecordAccumulatorConcurrencyTests
 
                         if (result)
                             Interlocked.Increment(ref successCount);
+                        else
+                            Interlocked.Increment(ref failedCount);
                     }
                     catch (ObjectDisposedException)
                     {
