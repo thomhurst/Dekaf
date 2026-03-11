@@ -2459,96 +2459,95 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // batches. The per-broker in-flight semaphore enables pipelining across different partitions.
         // Ordering across retries relies on broker idempotent producer support (sequence numbers + epoch).
         //
-        // SenderLoopAsync is now a simple router: drain batches, look up leader, enqueue to
-        // the appropriate BrokerSender. BrokerSender handles coalescing, retry, and in-flight
-        // limiting internally.
-
-        var channelReader = _accumulator.ReadyBatches;
+        // Ready → Drain → Distribute loop:
+        // 1. Ready() checks which brokers have sendable data (sealed batches in partition deques)
+        // 2. Drain() pulls one batch per partition for each ready broker
+        // 3. Distribute routes pre-drained batch lists to BrokerSenders
+        // 4. WaitForWakeupAsync() sleeps until a new batch is sealed or a response arrives
 
         try
         {
-            while (await channelReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+            while (!cancellationToken.IsCancellationRequested)
             {
-                while (channelReader.TryRead(out var batch))
+                // 1. Check which brokers have sendable data
+                var readyResult = _accumulator.Ready(_metadataManager, Stopwatch.GetTimestamp());
+
+                if (readyResult.ReadyNodes.Count > 0)
                 {
-                    // Complete delivery task (fire-and-forget semantic: batch is "ready")
-                    batch.CompleteDelivery();
-#if DEBUG
-                    batch.DebugLastTransition = (int)BatchTransition.CompleteDelivery;
-#endif
+                    // 2. Drain one batch per partition for each ready broker
+                    var batches = _accumulator.Drain(
+                        _metadataManager,
+                        readyResult.ReadyNodes,
+                        _options.MaxRequestSize > 0 ? _options.MaxRequestSize : 1048576);
 
-                    // NOTE: Inflight tracker registration is deferred to BrokerSender.SendCoalescedAsync
-                    // (send time) rather than here (drain time). Registering at drain time caused a
-                    // deadlock: queued-but-not-sent batches appeared as predecessors of retry batches
-                    // in the inflight list but could never complete. Moving registration to send time
-                    // ensures only batches actually hitting the wire are tracked.
-
-                    // Buffer memory is held until batch completion (success or permanent failure),
-                    // matching Java's RecordAccumulator.deallocate() behavior. This ensures
-                    // BufferMemory accurately reflects physical memory in use and provides
-                    // true end-to-end backpressure: producers block on ReserveMemory until
-                    // batches are acknowledged and cleaned up by BrokerSender.CleanupBatch().
-
-                    // Look up leader and route to the appropriate broker sender
-                    try
+                    // 3. Distribute pre-drained batch lists to broker senders
+                    foreach (var (brokerId, batchList) in batches)
                     {
-                        var leader = _metadataManager.Metadata.GetPartitionLeader(
-                            batch.TopicPartition.Topic,
-                            batch.TopicPartition.Partition);
-
-                        if (leader is null)
-                        {
-                            // No leader cached — do async lookup with timeout to prevent
-                            // hanging the sender loop if metadata refresh is blocked
-                            LogNoLeaderCached(batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                            using var metadataCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                            metadataCts.CancelAfter(TimeSpan.FromSeconds(30));
-                            try
-                            {
-                                leader = await _metadataManager.GetPartitionLeaderAsync(
-                                    batch.TopicPartition.Topic,
-                                    batch.TopicPartition.Partition,
-                                    metadataCts.Token).ConfigureAwait(false);
-                            }
-                            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                            {
-                                // Metadata lookup timed out — fall through to fail the batch below
-                                leader = null;
-                            }
-                        }
-
-                        if (leader is null)
-                        {
-                            // Still no leader — fail the batch
-                            LogLeaderStillUnavailable(batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                            FailAndCleanupBatch(batch, new KafkaException(ErrorCode.LeaderNotAvailable, "No leader available"));
+                        if (batchList.Count == 0)
                             continue;
+
+                        // Complete delivery task for each batch
+                        for (var i = 0; i < batchList.Count; i++)
+                        {
+                            batchList[i].CompleteDelivery();
+#if DEBUG
+                            batchList[i].DebugLastTransition = (int)BatchTransition.CompleteDelivery;
+#endif
                         }
 
-                        var brokerSender = GetOrCreateBrokerSender(leader.NodeId);
-                        LogBatchRouted(batch.TopicPartition.Topic, batch.TopicPartition.Partition, leader.NodeId);
+                        try
+                        {
+                            var brokerSender = GetOrCreateBrokerSender(brokerId);
+
+                            // Bridge: enqueue each batch individually via existing BrokerSender path
+                            // Task 6 will replace this with a batch-list channel
+                            for (var i = 0; i < batchList.Count; i++)
+                            {
 #if DEBUG
-                        batch.DebugLastTransition = (int)BatchTransition.EnqueuedToBrokerSender;
-                        batch.DebugLastBrokerId = leader.NodeId;
-                        Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} EnqueuedToBrokerSender broker={leader.NodeId}");
+                                batchList[i].DebugLastTransition = (int)BatchTransition.EnqueuedToBrokerSender;
+                                batchList[i].DebugLastBrokerId = brokerId;
 #endif
-                        await brokerSender.EnqueueAsync(batch, cancellationToken).ConfigureAwait(false);
+                                await brokerSender.EnqueueAsync(batchList[i], cancellationToken)
+                                    .ConfigureAwait(false);
+                            }
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            // Fail remaining batches
+                            for (var i = 0; i < batchList.Count; i++)
+                                FailAndCleanupBatch(batchList[i],
+                                    new OperationCanceledException(cancellationToken));
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            // Fail all batches in this batch list
+                            for (var i = 0; i < batchList.Count; i++)
+                                FailAndCleanupBatch(batchList[i], ex);
+                        }
                     }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                    {
-                        FailAndCleanupBatch(batch, new OperationCanceledException(cancellationToken));
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        FailAndCleanupBatch(batch, ex);
-                    }
+                }
+
+                // 4. Wait for wakeup signal (new batch sealed, response complete, or timeout)
+                try
+                {
+                    await _accumulator.WaitForWakeupAsync(
+                        readyResult.ReadyNodes.Count > 0 ? 0 : readyResult.NextCheckDelayMs,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
                 }
             }
         }
-        finally
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Sender loop exiting — broker senders will be disposed in DisposeAsync
+            // Normal shutdown
+        }
+        catch (Exception ex)
+        {
+            LogSenderLoopFailed(ex);
         }
     }
 
@@ -3370,6 +3369,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Non-fatal exception during batch cleanup step (suppressed)")]
     private partial void LogBatchCleanupStepFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Sender loop failed with unexpected exception")]
+    private partial void LogSenderLoopFailed(Exception ex);
 
     #endregion
 }
