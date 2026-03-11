@@ -409,35 +409,25 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // Poll for completed responses to free in-flight slots.
                         ProcessCompletedResponses(newCarryOver, cancellationToken);
 
+                        // Sweep delivery timeouts to free zombie entries (hung responses
+                        // whose batches have expired). Without this, the capacity wait
+                        // blocks forever when a response task never completes.
+                        SweepPendingResponseTimeouts(newCarryOver, cancellationToken);
+
                         if (_pendingResponses.Count >= _maxInFlight)
                         {
-                            // Sweep delivery timeouts to free zombie entries (hung responses
-                            // whose batches have expired). Without this, the send loop blocks
-                            // forever when a response task never completes.
-                            SweepPendingResponseTimeouts(newCarryOver, cancellationToken);
-                            if (_pendingResponses.Count < _maxInFlight)
-                                break;
-
-                            // Wait for any pending response to complete.
-                            // Cannot use eventReader.WaitToReadAsync here — the channel may
-                            // contain unread NewBatch events that cause immediate (synchronous)
-                            // return, creating a spin loop that starves the thread pool and
-                            // prevents I/O completion callbacks from running.
-                            // Uses a 100ms periodic wake-up to re-sweep delivery timeouts
-                            // for zombie entries that expire while we're waiting.
-                            reusableResponseTasks.Clear();
-                            for (var i = 0; i < _pendingResponses.Count; i++)
-                                reusableResponseTasks.Add(_pendingResponses[i].ResponseTask);
-                            try
-                            {
-                                await Task.WhenAny(reusableResponseTasks)
-                                    .WaitAsync(TimeSpan.FromMilliseconds(100), cancellationToken)
-                                    .ConfigureAwait(false);
-                            }
-                            catch (TimeoutException)
-                            {
-                                // Periodic wake-up — loop back to re-check responses and timeouts
-                            }
+                            // Wait for any event, then consume one to make forward progress.
+                            // The channel may contain stale NewBatch events (from step 5's
+                            // channelReadLimit throttle) that cause WaitToReadAsync to return
+                            // immediately. Consuming one per iteration drains them until the
+                            // channel is empty, at which point WaitToReadAsync properly blocks
+                            // waiting for a ResponseReady signal from a completing response.
+                            // NewBatch events are parked in carry-over — bounded by channel
+                            // drain rate and processed in the next coalescing pass.
+                            await eventReader.WaitToReadAsync(cancellationToken)
+                                .ConfigureAwait(false);
+                            if (eventReader.TryRead(out var evt) && evt.Type == SendLoopEventType.NewBatch)
+                                newCarryOver.Add(evt.Batch!);
                         }
                     }
 
