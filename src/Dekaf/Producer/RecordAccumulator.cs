@@ -628,6 +628,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private volatile bool _disposed;
     private volatile bool _closed;
 
+    /// <summary>
+    /// True after CloseAsync has been called. Used by the sender loop to know
+    /// when to exit after draining remaining batches.
+    /// </summary>
+    internal bool Closed => _closed;
+
     // Transaction support: ProducerId, ProducerEpoch, and transactional flag
     // Set by KafkaProducer.InitTransactionsAsync after successful InitProducerId
     internal long ProducerId { get; set; } = -1;
@@ -1656,6 +1662,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         return ExpireLingerAsyncCore(cancellationToken);
+    }
+
+    /// <summary>
+    /// Checks if any partition deque has pending work (unsealed or sealed batches).
+    /// Used by the sender loop to decide when to exit after close.
+    /// </summary>
+    internal bool HasPendingBatches()
+    {
+        foreach (var kvp in _partitionDeques)
+        {
+            var pd = kvp.Value;
+            if (pd.CurrentBatch is not null || pd.Count > 0)
+                return true;
+        }
+        return false;
     }
 
     /// <summary>

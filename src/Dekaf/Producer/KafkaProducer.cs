@@ -2193,7 +2193,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     }
                 }
 
-                // 4. Wait for wakeup signal (new batch sealed, response complete, or timeout)
+                // 4. Exit after close when all work is drained.
+                // CloseAsync seals all batches, signals wakeup, and sets Closed.
+                // Once we've drained everything, there's nothing left to do.
+                if (_accumulator.Closed && readyResult.ReadyNodes.Count == 0 && !_accumulator.HasPendingBatches())
+                    break;
+
+                // 5. Wait for wakeup signal (new batch sealed, response complete, or timeout)
                 try
                 {
                     await _accumulator.WaitForWakeupAsync(
@@ -2848,7 +2854,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             // 2. Wait for sender to drain remaining batches
             // CRITICAL: Don't cancel _senderCts yet - sender needs to process flushed batches
-            // The sender will exit naturally when the ready batches channel completes (done in CloseAsync)
+            // The sender exits naturally when Closed is set and all deques are drained
             if (hasTimeout)
                 await _senderTask.WaitAsync(shutdownCts.Token).ConfigureAwait(false);
             else
