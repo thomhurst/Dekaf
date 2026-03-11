@@ -976,6 +976,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Complete inflight entry — will be re-registered after epoch bump
             try { CompleteInflightEntry(batch); }
             catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+
+            // Apply backoff to prevent tight retry loops if the epoch bump doesn't
+            // resolve the error (e.g., broker keeps rejecting with OOSN).
+            batch.RetryNotBefore = Stopwatch.GetTimestamp() +
+                _options.RetryBackoffTicks;
         }
         else if (isEpochBumpError && _bumpEpoch is null
             && batch.InflightEntry is not null
