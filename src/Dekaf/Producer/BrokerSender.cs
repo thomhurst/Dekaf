@@ -405,18 +405,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     while (_pendingResponses.Count >= _maxInFlight)
                     {
-                        // Drain any new events (new batches go to carry-over)
-                        while (eventReader.TryRead(out var evt))
-                        {
-                            if (evt.Type == SendLoopEventType.NewBatch)
-                                newCarryOver.Add(evt.Batch!);
-                        }
-
-                        // Poll for completed responses to free in-flight slots
+                        // Poll for completed responses to free in-flight slots.
+                        // Batch events stay in the unbounded channel — draining them here
+                        // would move thousands of batches to carry-over, causing O(n²) scanning.
                         ProcessCompletedResponses(newCarryOver, cancellationToken);
 
                         if (_pendingResponses.Count >= _maxInFlight)
                         {
+                            // Wait for a ContinueWith wake-up (ResponseReady signal) or
+                            // new batch arrival. Either wakes us to re-poll responses.
                             await eventReader.WaitToReadAsync(cancellationToken)
                                 .ConfigureAwait(false);
                         }
