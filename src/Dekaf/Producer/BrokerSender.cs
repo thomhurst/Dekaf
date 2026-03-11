@@ -411,16 +411,33 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                         if (_pendingResponses.Count >= _maxInFlight)
                         {
-                            // Wait for any pending response to complete directly.
+                            // Sweep delivery timeouts to free zombie entries (hung responses
+                            // whose batches have expired). Without this, the send loop blocks
+                            // forever when a response task never completes.
+                            SweepPendingResponseTimeouts(newCarryOver, cancellationToken);
+                            if (_pendingResponses.Count < _maxInFlight)
+                                break;
+
+                            // Wait for any pending response to complete.
                             // Cannot use eventReader.WaitToReadAsync here — the channel may
                             // contain unread NewBatch events that cause immediate (synchronous)
                             // return, creating a spin loop that starves the thread pool and
                             // prevents I/O completion callbacks from running.
+                            // Uses a 100ms periodic wake-up to re-sweep delivery timeouts
+                            // for zombie entries that expire while we're waiting.
                             reusableResponseTasks.Clear();
                             for (var i = 0; i < _pendingResponses.Count; i++)
                                 reusableResponseTasks.Add(_pendingResponses[i].ResponseTask);
-                            await Task.WhenAny(reusableResponseTasks)
-                                .WaitAsync(cancellationToken).ConfigureAwait(false);
+                            try
+                            {
+                                await Task.WhenAny(reusableResponseTasks)
+                                    .WaitAsync(TimeSpan.FromMilliseconds(100), cancellationToken)
+                                    .ConfigureAwait(false);
+                            }
+                            catch (TimeoutException)
+                            {
+                                // Periodic wake-up — loop back to re-check responses and timeouts
+                            }
                         }
                     }
 
