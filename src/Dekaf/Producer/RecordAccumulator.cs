@@ -564,6 +564,31 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly ConcurrentDictionary<TopicPartition, object> _partitionSealLocks = new();
     private readonly Channel<ReadyBatch> _readyBatches;
 
+    /// <summary>
+    /// Per-partition deques of sealed ReadyBatches, matching Java's
+    /// ConcurrentMap&lt;TopicPartition, Deque&lt;ProducerBatch&gt;&gt;.
+    /// Accessed by producer threads (AddLast under lock) and sender thread (drain).
+    /// </summary>
+    private readonly ConcurrentDictionary<TopicPartition, PartitionDeque> _partitionDeques = new();
+
+    /// <summary>
+    /// Muted partitions — skipped by Ready() and Drain().
+    /// Plain HashSet (only accessed from sender thread, matching Java).
+    /// </summary>
+    private readonly HashSet<TopicPartition> _mutedPartitions = new();
+
+    /// <summary>
+    /// Per-broker drain index for fair round-robin partition ordering.
+    /// Matches Java's nodesDrainIndex HashMap.
+    /// </summary>
+    private readonly Dictionary<int, int> _drainIndex = new();
+
+    /// <summary>
+    /// Signaled when new data is available for the sender loop to drain.
+    /// Set by seal paths and reenqueue. Sender loop resets after wake.
+    /// </summary>
+    private readonly SemaphoreSlim _wakeupSignal = new(0, 1);
+
     // Per-partition-affine append workers: each worker owns a channel and processes
     // appends for a subset of partitions (partition % workerCount). This eliminates
     // contention on CAS spin, ConcurrentDictionary lookups, and per-partition seal locks
@@ -723,6 +748,49 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // For extreme cases with thousands of topics, the memory overhead is still minor and worth the
     // allocation elimination in the critical produce path.
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, TopicPartition>> _topicPartitionCache = new();
+
+    /// <summary>
+    /// Per-partition state matching Java's Deque&lt;ProducerBatch&gt; design.
+    /// The deque holds sealed ReadyBatches waiting to be drained by the sender loop.
+    /// CurrentBatch is the unsealed batch accepting new records.
+    /// Thread-safety: all access to Deque must be under Lock. CurrentBatch access
+    /// uses the existing _exclusiveAccess CAS + per-partition seal lock pattern.
+    /// </summary>
+    private sealed class PartitionDeque
+    {
+        /// <summary>Sealed batches waiting to drain. Front = oldest (drain target).</summary>
+        public readonly List<ReadyBatch> Deque = new(4);
+
+        /// <summary>Per-partition lock for deque access (matches Java's synchronized(deque)).</summary>
+        public readonly object Lock = new();
+
+        /// <summary>Number of batches in the deque.</summary>
+        public int Count => Deque.Count;
+
+        /// <summary>Remove and return the first batch (oldest). Returns null if empty.</summary>
+        public ReadyBatch? PollFirst()
+        {
+            if (Deque.Count == 0) return null;
+            var batch = Deque[0];
+            Deque.RemoveAt(0);
+            return batch;
+        }
+
+        /// <summary>Return the first batch without removing. Returns null if empty.</summary>
+        public ReadyBatch? PeekFirst()
+        {
+            return Deque.Count > 0 ? Deque[0] : null;
+        }
+
+        /// <summary>Add to back of deque (normal seal path).</summary>
+        public void AddLast(ReadyBatch batch) => Deque.Add(batch);
+
+        /// <summary>Add to front of deque (retry/reenqueue — Java's addFirst).</summary>
+        public void AddFirst(ReadyBatch batch) => Deque.Insert(0, batch);
+    }
+
+    private PartitionDeque GetOrCreateDeque(TopicPartition tp)
+        => _partitionDeques.GetOrAdd(tp, static _ => new PartitionDeque());
 
     public RecordAccumulator(ProducerOptions options, ILogger? logger = null)
     {
