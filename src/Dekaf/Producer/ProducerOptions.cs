@@ -104,13 +104,21 @@ public sealed class ProducerOptions
 
     /// <summary>
     /// <see cref="DeliveryTimeoutMs"/> converted to <see cref="Stopwatch"/> ticks.
+    /// Cached on first access to avoid repeated floating-point multiply.
     /// </summary>
-    internal long DeliveryTimeoutTicks => (long)(DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0));
+    private long _deliveryTimeoutTicks;
+    internal long DeliveryTimeoutTicks =>
+        _deliveryTimeoutTicks != 0 ? _deliveryTimeoutTicks
+        : (_deliveryTimeoutTicks = (long)(DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0)));
 
     /// <summary>
     /// <see cref="RetryBackoffMs"/> converted to <see cref="Stopwatch"/> ticks.
+    /// Cached on first access to avoid repeated floating-point multiply.
     /// </summary>
-    internal long RetryBackoffTicks => (long)(RetryBackoffMs * (Stopwatch.Frequency / 1000.0));
+    private long _retryBackoffTicks;
+    internal long RetryBackoffTicks =>
+        _retryBackoffTicks != 0 ? _retryBackoffTicks
+        : (_retryBackoffTicks = (long)(RetryBackoffMs * (Stopwatch.Frequency / 1000.0)));
 
     /// <summary>
     /// Enables idempotent producer mode, which ensures that messages are delivered exactly once

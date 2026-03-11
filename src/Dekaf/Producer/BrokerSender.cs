@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -181,8 +180,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Muted partitions: partitions with a retry in progress or limited to 1 in-flight
     // batch (when _muteOnSend). Prevents newer batches from being sent, maintaining
     // per-partition ordering. Aligned with Java Kafka producer's mute mechanism.
-    // Written and read by the single-threaded send loop (ProcessResponseEvent/CoalesceBatch).
-    private readonly ConcurrentDictionary<TopicPartition, byte> _mutedPartitions = new();
+    // Exclusively owned by the single-threaded send loop — no concurrent access.
+    private readonly HashSet<TopicPartition> _mutedPartitions = new();
 
     // Epoch bump recovery flag (Java Kafka Sender pattern): set by response handlers
     // when OutOfOrderSequenceNumber is received. The single-threaded send loop checks
@@ -322,7 +321,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         try
         {
-            while (!cancellationToken.IsCancellationRequested)
+            while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -433,6 +432,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             await eventReader.WaitToReadAsync(cancellationToken)
                                 .ConfigureAwait(false);
                         }
+                    }
+
+                    // If a response processed during the in-flight wait triggered an epoch
+                    // bump request, we must NOT send the already-coalesced batches — they have
+                    // stale epoch/sequences. Move them back to carry-over and loop back so the
+                    // epoch bump (step 4) runs before re-coalescing.
+                    if (Volatile.Read(ref _epochBumpRequestedForEpoch) >= 0)
+                    {
+                        for (var i = 0; i < coalescedCount; i++)
+                            newCarryOver.Add(coalescedBatches[i]);
+                        ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
+                        coalescedBatches = null;
+                        coalescedCount = 0;
+                        pendingCarryOver = newCarryOver;
+                        continue;
                     }
 
                     LogSendingCoalesced(_brokerId, coalescedCount);
@@ -577,7 +591,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Retry batch: unmute the partition and coalesce it ahead of newer batches.
             batch.IsRetry = false;
             batch.RetryNotBefore = 0;
-            _mutedPartitions.TryRemove(batch.TopicPartition, out _);
+            _mutedPartitions.Remove(batch.TopicPartition);
 
             if (!coalescedPartitions.Add(batch.TopicPartition))
             {
@@ -598,10 +612,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         // Normal batch: skip muted partitions (retry in progress)
-        if (_mutedPartitions.ContainsKey(batch.TopicPartition))
+        if (_mutedPartitions.Contains(batch.TopicPartition))
         {
             LogPartitionMuted(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-            newCarryOver ??= [];
             newCarryOver.Add(batch);
             return;
         }
@@ -609,7 +622,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Ensure at most one batch per partition per coalesced request
         if (!coalescedPartitions.Add(batch.TopicPartition))
         {
-            newCarryOver ??= [];
             newCarryOver.Add(batch);
             return;
         }
@@ -759,6 +771,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         continue;
                     }
 
+                    var failureException = new KafkaException(partitionResponse.ErrorCode,
+                        $"Produce failed: {partitionResponse.ErrorCode}");
                     UnmutePartition(batch.TopicPartition);
                     try { CompleteInflightEntry(batch); }
                     catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
@@ -766,8 +780,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         batch.CompletionSourcesCount);
                     try
                     {
-                        batch.Fail(new KafkaException(partitionResponse.ErrorCode,
-                            $"Produce failed: {partitionResponse.ErrorCode}"));
+                        batch.Fail(failureException);
 #if DEBUG
                         batch.DebugLastTransition = (int)BatchTransition.FailCalled;
                         Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} FailCalled (non-retriable) broker={_brokerId} error={partitionResponse.ErrorCode}");
@@ -777,9 +790,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     try
                     {
                         _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,
-                            batch.CompletionSourcesCount,
-                            new KafkaException(partitionResponse.ErrorCode,
-                                $"Produce failed: {partitionResponse.ErrorCode}"));
+                            batch.CompletionSourcesCount, failureException);
                     }
                     catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
                     CleanupBatch(batch);
@@ -948,7 +959,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         // Mute partition so no newer batches overtake the retry (ordering guarantee).
-        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
+        _mutedPartitions.Add(batch.TopicPartition);
 
         var isEpochBumpError = errorCode is ErrorCode.OutOfOrderSequenceNumber
             or ErrorCode.InvalidProducerEpoch or ErrorCode.UnknownProducerId;
@@ -1194,7 +1205,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (_muteOnSend)
             {
                 for (var i = 0; i < count; i++)
-                    _mutedPartitions.TryAdd(batches[i].TopicPartition, 0);
+                    _mutedPartitions.Add(batches[i].TopicPartition);
             }
 
             LogPipelinedSend(_brokerId, count, _pendingResponses.Count);
@@ -1241,7 +1252,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     else
                     {
                         // Mute partition (ordering guarantee) and queue for retry.
-                        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
+                        _mutedPartitions.Add(batch.TopicPartition);
                         batch.IsRetry = true;
                         batch.RetryNotBefore = Stopwatch.GetTimestamp() +
                             _options.RetryBackoffTicks;
@@ -1396,7 +1407,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void UnmutePartition(TopicPartition tp)
     {
-        _mutedPartitions.TryRemove(tp, out _);
+        _mutedPartitions.Remove(tp);
         _eventChannel.Writer.TryWrite(SendLoopEvent.Unmute());
     }
 
