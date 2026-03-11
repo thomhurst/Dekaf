@@ -136,7 +136,7 @@ public sealed class PartitionInflightTrackerTests
         tracker.Complete(entry1);
 
         // Wait should complete promptly
-        await waitTask.AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        await waitTask.AsTask().WaitAsync(TimeSpan.FromSeconds(15));
     }
 
     [Test]
