@@ -399,6 +399,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     SweepExpiredCarryOver(newCarryOver);
 
                 // ── 6. Send or wait ──
+                var sentThisIteration = false;
                 if (coalescedCount > 0)
                 {
                     if (_pendingResponses.Count >= _maxInFlight)
@@ -463,6 +464,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     coalescedCount = 0;
                     await SendCoalescedAsync(batchesToSend, countToSend, cancellationToken)
                         .ConfigureAwait(false);
+                    sentThisIteration = true;
                 }
                 else
                 {
@@ -480,12 +482,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
                         break;
                 }
-                else if (pendingCarryOver.Count > 0)
+                else if (pendingCarryOver.Count > 0 && sentThisIteration)
                 {
-                    // Carry-over exists — loop immediately to coalesce it.
-                    // coalescedPartitions is cleared each iteration, so carry-over batches
-                    // that were blocked by duplicate-partition will coalesce next time.
-                    // If the channel has data too, even better — TryRead will find it.
+                    // Carry-over exists and we sent batches — loop immediately to process
+                    // responses and re-coalesce. Carry-over batches that were blocked by
+                    // duplicate-partition will coalesce next time (coalescedPartitions is cleared).
                 }
                 else if (!eventReader.TryPeek(out _))
                 {
