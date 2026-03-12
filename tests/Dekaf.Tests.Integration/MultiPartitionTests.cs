@@ -10,6 +10,19 @@ namespace Dekaf.Tests.Integration;
 [ParallelLimiter<MessagingTestLimit>]
 public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafka)
 {
+    /// <summary>
+    /// Produces a warmup message to each partition to ensure the broker has fully initialized
+    /// the partition and its producer state tracking.
+    /// </summary>
+    private static async Task WarmUpAllPartitions(IKafkaProducer<string, string> producer, string topic, int partitions)
+    {
+        for (var p = 0; p < partitions; p++)
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic, Key = "warmup", Value = "warmup", Partition = p
+            });
+    }
+
     [Test]
     public async Task MultiPartition_KeyBasedPartitioning_SameKeyGoesToSamePartition()
     {
@@ -20,6 +33,8 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .BuildAsync();
+
+        await WarmUpAllPartitions(producer, topic, 5);
 
         // Act - produce multiple messages with same key
         var results = new List<RecordMetadata>();
@@ -50,6 +65,8 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .WithClientId("test-producer")
             .BuildAsync();
 
+        await WarmUpAllPartitions(producer, topic, 5);
+
         // Act - produce messages with different keys
         var results = new List<RecordMetadata>();
         for (var i = 0; i < 50; i++)
@@ -79,6 +96,8 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .WithClientId("test-producer")
             .BuildAsync();
 
+        await WarmUpAllPartitions(producer, topic, 3);
+
         // Produce to all partitions
         for (var p = 0; p < 3; p++)
         {
@@ -100,12 +119,19 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
 
         consumer.Assign(new TopicPartition(topic, 1));
 
+        var messages = new List<ConsumeResult<string, string>>();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
 
-        // Assert
-        await Assert.That(result).IsNotNull();
-        var r = result!.Value;
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            messages.Add(msg);
+            if (messages.Count >= 2) break; // 1 warmup + 1 actual
+        }
+
+        // Assert - filter out warmup
+        var actual = messages.Where(m => m.Key != "warmup").ToList();
+        await Assert.That(actual).Count().IsEqualTo(1);
+        var r = actual[0];
         await Assert.That(r.Partition).IsEqualTo(1);
         await Assert.That(r.Value).IsEqualTo("value-partition-1");
     }
@@ -120,6 +146,8 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .BuildAsync();
+
+        await WarmUpAllPartitions(producer, topic, 4);
 
         // Produce to partitions 0, 1, and 2
         for (var p = 0; p < 3; p++)
@@ -150,12 +178,13 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 2) break;
+            if (messages.Count >= 4) break; // 2 warmup + 2 actual
         }
 
-        // Assert - should only get messages from partitions 0 and 2
-        await Assert.That(messages).Count().IsEqualTo(2);
-        var partitions = messages.Select(m => m.Partition).OrderBy(p => p).ToList();
+        // Assert - should only get messages from partitions 0 and 2 (filter out warmup)
+        var actual = messages.Where(m => m.Key != "warmup").ToList();
+        await Assert.That(actual).Count().IsEqualTo(2);
+        var partitions = actual.Select(m => m.Partition).OrderBy(p => p).ToList();
         int[] expectedPartitions = [0, 2];
         await Assert.That(partitions).IsEquivalentTo(expectedPartitions);
     }
@@ -231,6 +260,8 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .WithClientId("test-producer")
             .BuildAsync();
 
+        await WarmUpAllPartitions(producer, topic, 2);
+
         // Produce ordered messages to partition 0
         for (var i = 0; i < 10; i++)
         {
@@ -258,15 +289,15 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 10) break;
+            if (messages.Count >= 11) break; // 1 warmup + 10 actual
         }
 
-        // Assert - order should be preserved
-        await Assert.That(messages).Count().IsEqualTo(10);
+        // Assert - order should be preserved (filter out warmup)
+        var actual = messages.Where(m => m.Key != "warmup").ToList();
+        await Assert.That(actual).Count().IsEqualTo(10);
         for (var i = 0; i < 10; i++)
         {
-            await Assert.That(messages[i].Offset).IsEqualTo(i);
-            await Assert.That(messages[i].Value).IsEqualTo($"value-{i:D2}");
+            await Assert.That(actual[i].Value).IsEqualTo($"value-{i:D2}");
         }
     }
 
@@ -280,6 +311,8 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .BuildAsync();
+
+        await WarmUpAllPartitions(producer, topic, 2);
 
         // Produce to both partitions
         for (var i = 0; i < 5; i++)
@@ -310,7 +343,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         consumer.Assign(
             new TopicPartition(topic, 0),
             new TopicPartition(topic, 1));
-        consumer.Seek(new TopicPartitionOffset(topic, 0, 3));
+        consumer.Seek(new TopicPartitionOffset(topic, 0, 4)); // offset 0 = warmup, 1-5 = actual; seek past warmup+3
 
         // Consume from partition 0
         var messages = new List<ConsumeResult<string, string>>();
@@ -325,9 +358,9 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             }
         }
 
-        // Assert - partition 0 should start from offset 3
+        // Assert - partition 0 should start from offset 4 (after warmup + 3 actual)
         await Assert.That(messages[0].Partition).IsEqualTo(0);
-        await Assert.That(messages[0].Offset).IsEqualTo(3);
+        await Assert.That(messages[0].Offset).IsEqualTo(4);
     }
 
     [Test]
@@ -341,6 +374,8 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .BuildAsync();
+
+        await WarmUpAllPartitions(producer, topic, 10);
 
         // Produce to all 10 partitions
         for (var p = 0; p < 10; p++)
@@ -370,12 +405,13 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 10) break;
+            if (messages.Count >= 20) break; // 10 warmup + 10 actual
         }
 
-        // Assert - should get all 10 messages from all partitions
-        await Assert.That(messages).Count().IsEqualTo(10);
-        var partitions = messages.Select(m => m.Partition).Distinct().OrderBy(p => p).ToList();
+        // Assert - should get all 10 messages from all partitions (filter out warmup)
+        var actual = messages.Where(m => m.Key != "warmup").ToList();
+        await Assert.That(actual).Count().IsEqualTo(10);
+        var partitions = actual.Select(m => m.Partition).Distinct().OrderBy(p => p).ToList();
         await Assert.That(partitions).IsEquivalentTo(Enumerable.Range(0, 10));
     }
 
@@ -390,6 +426,8 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .BuildAsync();
+
+        await WarmUpAllPartitions(producer, topic, 5);
 
         // Produce same key multiple times
         var expectedPartition = -1;
@@ -429,12 +467,13 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 5) break;
+            if (messages.Count >= 10) break; // 5 warmup + 5 actual
         }
 
-        // Assert - all should be from same partition
-        await Assert.That(messages).Count().IsEqualTo(5);
-        foreach (var msg in messages)
+        // Assert - all consistent-key messages should be from same partition
+        var actual = messages.Where(m => m.Key == "consistent-key").ToList();
+        await Assert.That(actual).Count().IsEqualTo(5);
+        foreach (var msg in actual)
         {
             await Assert.That(msg.Partition).IsEqualTo(expectedPartition);
             await Assert.That(msg.Key).IsEqualTo("consistent-key");

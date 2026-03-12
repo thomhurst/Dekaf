@@ -451,7 +451,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 3. Handle timed-out requests (Java handleTimedOutRequests pattern) ──
-                HandleTimedOutRequests(carryOver, cancellationToken);
+                HandleTimedOutRequests();
 
                 // ── 4. Epoch bump (Java-style client-side, KIP-360) ──
                 // Synchronous: no network call, just epoch+1 + per-partition sequence reset.
@@ -546,7 +546,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // Handle timed-out requests (Java pattern) to free zombie entries.
                             // Without this, the send loop blocks forever when a response task
                             // never completes.
-                            HandleTimedOutRequests(carryOver, cancellationToken);
+                            HandleTimedOutRequests();
                             if (_pendingResponses.Count < _maxInFlight)
                                 break;
 
@@ -1127,27 +1127,26 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// <summary>
     /// Java-style request timeout handling (handleTimedOutRequests pattern).
     /// On every send loop iteration, checks if ANY pending response has exceeded the
-    /// request timeout. If so, invalidates the connection and fails ALL pending responses
-    /// as retriable disconnections — exactly like Java's NetworkClient.handleTimedOutRequests()
-    /// which closes the connection and calls cancelInFlightRequests() for the node.
+    /// request timeout. If so, closes the connection — exactly like Java's
+    /// NetworkClient.handleTimedOutRequests() which closes the selector channel.
     /// <para/>
-    /// This is more robust than per-request async CTS timeouts because it runs centrally
-    /// in the single-threaded send loop and cannot be silently lost. It also ensures that
-    /// batches whose delivery deadline has expired are permanently failed rather than retried.
+    /// Closing the connection causes the ReceiveLoop to exit with EOF, which triggers
+    /// FailAllPendingRequests on the KafkaConnection. All in-flight response tasks fault,
+    /// and ProcessCompletedResponses picks them up on the next iteration — naturally
+    /// routing each batch through HandleRetriableBatch for retry or permanent failure.
+    /// <para/>
+    /// This avoids manually processing batches here (which can race with the per-request
+    /// CTS timeout path) and ensures a single, consistent batch processing path through
+    /// ProcessCompletedResponses.
     /// </summary>
-    private void HandleTimedOutRequests(
-        PartitionCarryOver carryOver,
-        CancellationToken cancellationToken)
+    private void HandleTimedOutRequests()
     {
         if (_pendingResponses.Count == 0) return;
 
         var now = Stopwatch.GetTimestamp();
         var requestTimeoutTicks = _options.RequestTimeoutTicks;
-        var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
 
         // Check if ANY pending response has exceeded the request timeout.
-        // Java checks all in-flight requests on every poll and closes the connection
-        // if any request has timed out.
         var hasTimedOut = false;
         for (var i = 0; i < _pendingResponses.Count; i++)
         {
@@ -1161,55 +1160,36 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (!hasTimedOut)
             return;
 
-        // Request timeout detected — invalidate connection (like Java closing the selector).
-        // All pending responses are failed, just as Java's cancelInFlightRequests() does.
+        // Request timeout detected — close the connection (like Java closing the selector).
+        // FailAllPendingRequests will fire on the connection, faulting all response tasks.
+        // ProcessCompletedResponses will handle them on the next send loop iteration.
+        var conn = _pinnedConnection;
         _pinnedConnection = null;
         LogRequestTimeoutDisconnection(_brokerId, _pendingResponses.Count);
 
-        for (var i = 0; i < _pendingResponses.Count; i++)
+        if (conn is not null)
         {
-            var pending = _pendingResponses[i];
-            for (var j = 0; j < pending.Count; j++)
-            {
-                var batch = pending.Batches[j];
-                if (batch is null) continue;
-
-                batch.AppendDiag('T'); // Timed-out request
-
-                // Check delivery deadline: if exceeded, permanently fail the batch.
-                // Otherwise, retry (like Java's handleProduceResponse for disconnected requests).
-                if (now >= batch.StopwatchCreatedTicks + deliveryTimeoutTicks)
-                {
-                    UnmutePartition(batch.TopicPartition);
-                    var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
-                    var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
-                    try
-                    {
-                        FailAndCleanupBatch(batch, new KafkaTimeoutException(
-                            TimeoutKind.Delivery, elapsed, configured,
-                            $"Delivery timeout exceeded while awaiting response for {batch.TopicPartition}"));
-                    }
-                    catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-                }
-                else
-                {
-                    try
-                    {
-                        HandleRetriableBatch(batch, ErrorCode.NetworkException,
-                            carryOver, cancellationToken);
-                    }
-                    catch (Exception batchEx)
-                    {
-                        try { FailAndCleanupBatch(batch, batchEx); }
-                        catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-                    }
-                }
-            }
-
-            ArrayPool<ReadyBatch>.Shared.Return(pending.Batches, clearArray: true);
+            // Fire-and-forget disposal. DisposeAsync cancels the ReceiveLoop CTS,
+            // which triggers FailAllPendingRequests → all response tasks fault.
+            // Observe the task to prevent UnobservedTaskException.
+            _ = DisposeConnectionOnTimeoutAsync(conn);
         }
+    }
 
-        _pendingResponses.Clear();
+    /// <summary>
+    /// Disposes a connection that was closed due to request timeout.
+    /// Runs asynchronously to avoid blocking the send loop.
+    /// </summary>
+    private async Task DisposeConnectionOnTimeoutAsync(IKafkaConnection connection)
+    {
+        try
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogBatchCleanupStepFailed(ex, _brokerId);
+        }
     }
 
     /// <summary>
