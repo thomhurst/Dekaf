@@ -1875,12 +1875,26 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             expiredCount++;
             var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
 
+            // Diagnostic: capture partition state to help identify why batch was orphaned
+            var isMuted = _mutedPartitions.ContainsKey(batch.TopicPartition);
+            var inDeque = false;
+            var dequeCount = 0;
+            if (_partitionDeques.TryGetValue(batch.TopicPartition, out var pd))
+            {
+                lock (pd.Lock)
+                {
+                    dequeCount = pd.Count;
+                    inDeque = pd.Deque.Contains(batch);
+                }
+            }
+
             FailAndRelease(batch, new KafkaTimeoutException(
                 TimeoutKind.Delivery,
                 elapsed,
                 configured,
                 $"Delivery timeout exceeded for orphaned batch {batch.TopicPartition} " +
-                $"(elapsed: {elapsed.TotalSeconds:F1}s, limit: {configured.TotalSeconds:F0}s)"));
+                $"(elapsed: {elapsed.TotalSeconds:F1}s/{configured.TotalSeconds:F0}s, " +
+                $"muted={isMuted}, inDeque={inDeque}, dequeCount={dequeCount})"));
             // Do NOT return to pool here. BrokerSender may still reference this batch
             // in _pendingResponses. BrokerSender.CleanupBatch will return it when it
             // processes the response. For truly orphaned batches (no BrokerSender reference),
