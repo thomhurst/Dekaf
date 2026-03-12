@@ -782,8 +782,28 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         if (batch.IsRetry)
         {
+            // Check delivery deadline before re-sending. Without this, a retrying batch
+            // can loop past HandleRetriableBatch's deadline check indefinitely when the
+            // broker keeps returning fast retriable errors — the batch is coalesced/sent/
+            // responded/retried in a tight loop, and SweepExpiredCarryOver never sees it
+            // because it's already drained from carry-over by the time the sweep runs.
+            var now = Stopwatch.GetTimestamp();
+            if (now >= batch.StopwatchCreatedTicks + _options.DeliveryTimeoutTicks)
+            {
+                LogDeliveryTimeoutExceeded(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+                UnmutePartition(batch.TopicPartition);
+                var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
+                FailAndCleanupBatch(batch, new KafkaTimeoutException(
+                    TimeoutKind.Delivery,
+                    elapsed,
+                    configured,
+                    $"Delivery timeout exceeded for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition} during retry coalesce"));
+                return;
+            }
+
             // Check backoff — carry over if backoff hasn't elapsed
-            if (batch.RetryNotBefore > 0 && Stopwatch.GetTimestamp() < batch.RetryNotBefore)
+            if (batch.RetryNotBefore > 0 && now < batch.RetryNotBefore)
             {
                 carryOver.Add(batch);
                 return;

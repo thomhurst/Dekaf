@@ -56,6 +56,10 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             .WithStatisticsHandler(s => stats.Add(s))
             .BuildAsync();
 
+        // Warm up to ensure broker has initialized partition state
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
+
         for (var i = 0; i < messageCount; i++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -70,12 +74,12 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
 
         // Wait for a stats snapshot that reflects all produced and delivered messages
         var matchingStats = await WaitForStatsAsync(stats,
-            s => s.MessagesProduced >= messageCount && s.MessagesDelivered >= messageCount,
+            s => s.MessagesProduced >= messageCount + 1 && s.MessagesDelivered >= messageCount + 1,
             TimeSpan.FromSeconds(10));
 
         await Assert.That(matchingStats).IsNotNull();
-        await Assert.That(matchingStats!.MessagesProduced).IsGreaterThanOrEqualTo(messageCount);
-        await Assert.That(matchingStats.MessagesDelivered).IsGreaterThanOrEqualTo(messageCount);
+        await Assert.That(matchingStats!.MessagesProduced).IsGreaterThanOrEqualTo(messageCount + 1);
+        await Assert.That(matchingStats.MessagesDelivered).IsGreaterThanOrEqualTo(messageCount + 1);
         await Assert.That(matchingStats.MessagesFailed).IsEqualTo(0);
     }
 
@@ -91,6 +95,10 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .BuildAsync();
+
+        // Warm up to ensure broker has initialized partition state
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -163,6 +171,10 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .BuildAsync();
+
+        // Warm up to ensure broker has initialized partition state
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
 
         for (var i = 0; i < totalMessages; i++)
         {
@@ -329,6 +341,10 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             .WithStatisticsHandler(s => firstStats.Add(s))
             .BuildAsync())
         {
+            // Warm up to ensure broker has initialized partition state
+            await producer1.ProduceAsync(new ProducerMessage<string, string>
+                { Topic = topic, Key = "warmup", Value = "warmup" });
+
             for (var i = 0; i < 10; i++)
             {
                 await producer1.ProduceAsync(new ProducerMessage<string, string>
@@ -471,6 +487,10 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .BuildAsync();
+
+        // Warm up to ensure broker has initialized partition state
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
 
         for (var i = 0; i < expectedPartitions; i++)
         {
