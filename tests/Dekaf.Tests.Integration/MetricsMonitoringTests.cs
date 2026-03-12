@@ -400,6 +400,14 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             .WithStatisticsHandler(s => stats.Add(s))
             .BuildAsync();
 
+        // Warm up both topics to ensure broker has fully initialized partition state.
+        // Without this, the first produce to a newly-created topic may trigger
+        // NotLeaderOrFollower, causing an orphaned batch timeout on slow CI runners.
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+            { Topic = topic1, Key = "warmup", Value = "warmup" });
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+            { Topic = topic2, Key = "warmup", Value = "warmup" });
+
         // Produce to topic1
         for (var i = 0; i < messagesPerTopic; i++)
         {
@@ -424,7 +432,7 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
 
         await producer.FlushAsync();
 
-        var totalExpected = messagesPerTopic * 2;
+        var totalExpected = messagesPerTopic * 2 + 2; // +2 for warmup (one per topic)
 
         // Wait for a stats snapshot that has both topics and the expected message counts
         var matchingStats = await WaitForStatsAsync(stats,
