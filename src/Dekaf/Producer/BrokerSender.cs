@@ -103,8 +103,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Pending responses: send-loop owned (single-threaded). Entries are added when a pipelined
     // request is sent and removed by ProcessCompletedResponses when the response task completes.
-    // SweepPendingResponseTimeouts is a safety net for the edge case where response tasks hang
-    // past the delivery timeout.
+    // HandleTimedOutRequests (Java pattern) checks request timeout centrally and fails all
+    // pending responses on timeout, invalidating the connection.
     private readonly record struct PendingResponse(
         Task<ProduceResponse> ResponseTask,
         ReadyBatch[] Batches,
@@ -450,8 +450,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     _sendFailedRetries.Clear();
                 }
 
-                // ── 3. Sweep delivery timeouts ──
-                SweepPendingResponseTimeouts(carryOver, cancellationToken);
+                // ── 3. Handle timed-out requests (Java handleTimedOutRequests pattern) ──
+                HandleTimedOutRequests(carryOver, cancellationToken);
 
                 // ── 4. Epoch bump (Java-style client-side, KIP-360) ──
                 // Synchronous: no network call, just epoch+1 + per-partition sequence reset.
@@ -543,10 +543,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                         if (_pendingResponses.Count >= _maxInFlight)
                         {
-                            // Sweep delivery timeouts to free zombie entries (hung responses
-                            // whose batches have expired). Without this, the send loop blocks
-                            // forever when a response task never completes.
-                            SweepPendingResponseTimeouts(carryOver, cancellationToken);
+                            // Handle timed-out requests (Java pattern) to free zombie entries.
+                            // Without this, the send loop blocks forever when a response task
+                            // never completes.
+                            HandleTimedOutRequests(carryOver, cancellationToken);
                             if (_pendingResponses.Count < _maxInFlight)
                                 break;
 
@@ -1125,66 +1125,96 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Sweeps _pendingResponses for delivery timeouts. Entries normally get removed by
-    /// ProcessResponseEvent when the ContinueWith fires; this sweep is a safety net for
-    /// the edge case where response tasks hang past the delivery timeout.
+    /// Java-style request timeout handling (handleTimedOutRequests pattern).
+    /// On every send loop iteration, checks if ANY pending response has exceeded the
+    /// request timeout. If so, invalidates the connection and fails ALL pending responses
+    /// as retriable disconnections — exactly like Java's NetworkClient.handleTimedOutRequests()
+    /// which closes the connection and calls cancelInFlightRequests() for the node.
+    /// <para/>
+    /// This is more robust than per-request async CTS timeouts because it runs centrally
+    /// in the single-threaded send loop and cannot be silently lost. It also ensures that
+    /// batches whose delivery deadline has expired are permanently failed rather than retried.
     /// </summary>
-    private void SweepPendingResponseTimeouts(
+    private void HandleTimedOutRequests(
         PartitionCarryOver carryOver,
         CancellationToken cancellationToken)
     {
         if (_pendingResponses.Count == 0) return;
 
         var now = Stopwatch.GetTimestamp();
+        var requestTimeoutTicks = _options.RequestTimeoutTicks;
         var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
 
-        for (var i = _pendingResponses.Count - 1; i >= 0; i--)
+        // Check if ANY pending response has exceeded the request timeout.
+        // Java checks all in-flight requests on every poll and closes the connection
+        // if any request has timed out.
+        var hasTimedOut = false;
+        for (var i = 0; i < _pendingResponses.Count; i++)
+        {
+            if (now >= _pendingResponses[i].RequestStartTime + requestTimeoutTicks)
+            {
+                hasTimedOut = true;
+                break;
+            }
+        }
+
+        if (!hasTimedOut)
+            return;
+
+        // Request timeout detected — invalidate connection (like Java closing the selector).
+        // All pending responses are failed, just as Java's cancelInFlightRequests() does.
+        _pinnedConnection = null;
+        LogRequestTimeoutDisconnection(_brokerId, _pendingResponses.Count);
+
+        for (var i = 0; i < _pendingResponses.Count; i++)
         {
             var pending = _pendingResponses[i];
-
-            if (now < pending.RequestStartTime + deliveryTimeoutTicks)
-                continue;
-
-            var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
-            var anyBatchRemaining = false;
             for (var j = 0; j < pending.Count; j++)
             {
                 var batch = pending.Batches[j];
-                if (batch is not null)
+                if (batch is null) continue;
+
+                batch.AppendDiag('T'); // Timed-out request
+
+                // Check delivery deadline: if exceeded, permanently fail the batch.
+                // Otherwise, retry (like Java's handleProduceResponse for disconnected requests).
+                if (now >= batch.StopwatchCreatedTicks + deliveryTimeoutTicks)
                 {
-                    var deadline = batch.StopwatchCreatedTicks + deliveryTimeoutTicks;
-                    if (now >= deadline)
+                    UnmutePartition(batch.TopicPartition);
+                    var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                    var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
+                    try
                     {
-                        UnmutePartition(batch.TopicPartition);
-                        var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
-                        try
-                        {
-                            FailAndCleanupBatch(batch, new KafkaTimeoutException(
-                                TimeoutKind.Delivery, elapsed, configured,
-                                $"Delivery timeout exceeded while awaiting response for {batch.TopicPartition}"));
-                        }
-                        catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-                        pending.Batches[j] = null!;
+                        FailAndCleanupBatch(batch, new KafkaTimeoutException(
+                            TimeoutKind.Delivery, elapsed, configured,
+                            $"Delivery timeout exceeded while awaiting response for {batch.TopicPartition}"));
                     }
-                    else
+                    catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                }
+                else
+                {
+                    try
                     {
-                        anyBatchRemaining = true;
+                        HandleRetriableBatch(batch, ErrorCode.NetworkException,
+                            carryOver, cancellationToken);
+                    }
+                    catch (Exception batchEx)
+                    {
+                        try { FailAndCleanupBatch(batch, batchEx); }
+                        catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                     }
                 }
             }
 
-            if (!anyBatchRemaining)
-            {
-                ArrayPool<ReadyBatch>.Shared.Return(pending.Batches, clearArray: true);
-                _pendingResponses[i] = _pendingResponses[^1];
-                _pendingResponses.RemoveAt(_pendingResponses.Count - 1);
-            }
+            ArrayPool<ReadyBatch>.Shared.Return(pending.Batches, clearArray: true);
         }
+
+        _pendingResponses.Clear();
     }
 
     /// <summary>
     /// Computes the next poll timeout in milliseconds. Returns the minimum of:
-    /// - Earliest delivery deadline from _pendingResponses
+    /// - Earliest request timeout deadline from _pendingResponses
     /// - Earliest retry backoff from carry-over batches
     /// - Earliest delivery deadline from carry-over batches
     /// Returns 0 if a deadline has already passed (immediate re-loop).
@@ -1195,9 +1225,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var now = Stopwatch.GetTimestamp();
         var earliestTicks = long.MaxValue;
 
+        // Use request timeout for pending responses (Java handleTimedOutRequests pattern).
         for (var i = 0; i < _pendingResponses.Count; i++)
         {
-            var deadline = _pendingResponses[i].RequestStartTime + _options.DeliveryTimeoutTicks;
+            var deadline = _pendingResponses[i].RequestStartTime + _options.RequestTimeoutTicks;
             if (deadline < earliestTicks)
                 earliestTicks = deadline;
         }
@@ -1935,6 +1966,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] re-sequencing batch {Topic}-{Partition}: stale epoch {StaleEpoch} -> current {CurrentEpoch}")]
     private partial void LogStaleEpochResequencing(int brokerId, string topic, int partition, short staleEpoch, short currentEpoch);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] request timeout: disconnecting and failing {PendingCount} pending responses (Java handleTimedOutRequests pattern)")]
+    private partial void LogRequestTimeoutDisconnection(int brokerId, int pendingCount);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] pipelined send: {BatchCount} batches, {PendingResponseCount} pending responses")]
     private partial void LogPipelinedSend(int brokerId, int batchCount, int pendingResponseCount);

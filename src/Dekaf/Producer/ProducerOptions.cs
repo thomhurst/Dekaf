@@ -112,6 +112,15 @@ public sealed class ProducerOptions
         : (_deliveryTimeoutTicks = (long)(DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0)));
 
     /// <summary>
+    /// <see cref="RequestTimeoutMs"/> converted to <see cref="Stopwatch"/> ticks.
+    /// Cached on first access to avoid repeated floating-point multiply.
+    /// </summary>
+    private long _requestTimeoutTicks;
+    internal long RequestTimeoutTicks =>
+        _requestTimeoutTicks != 0 ? _requestTimeoutTicks
+        : (_requestTimeoutTicks = (long)(RequestTimeoutMs * (Stopwatch.Frequency / 1000.0)));
+
+    /// <summary>
     /// <see cref="RetryBackoffMs"/> converted to <see cref="Stopwatch"/> ticks.
     /// Cached on first access to avoid repeated floating-point multiply.
     /// </summary>

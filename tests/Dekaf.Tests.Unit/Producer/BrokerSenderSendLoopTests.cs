@@ -25,7 +25,7 @@ public sealed class BrokerSenderSendLoopTests
 {
     private static ProducerOptions CreateOptions(Acks acks = Acks.All, int maxInFlight = 1,
         int retryBackoffMs = 100, int retryBackoffMaxMs = 1000,
-        int deliveryTimeoutMs = 30_000) => new()
+        int deliveryTimeoutMs = 30_000, int requestTimeoutMs = 30_000) => new()
     {
         BootstrapServers = ["localhost:9092"],
         MaxInFlightRequestsPerConnection = maxInFlight,
@@ -33,7 +33,7 @@ public sealed class BrokerSenderSendLoopTests
         DeliveryTimeoutMs = deliveryTimeoutMs,
         RetryBackoffMs = retryBackoffMs,
         RetryBackoffMaxMs = retryBackoffMaxMs,
-        RequestTimeoutMs = 30_000,
+        RequestTimeoutMs = requestTimeoutMs,
         LingerMs = 0
     };
 
@@ -698,8 +698,10 @@ public sealed class BrokerSenderSendLoopTests
                 sendSignals[idx].TrySetResult();
         });
 
-        // Short delivery timeout (1s) so the test doesn't wait 120s for expiry.
-        var options = CreateOptions(maxInFlight: 1, deliveryTimeoutMs: 1_000);
+        // Short request timeout (1s) so the test doesn't wait 30s for the
+        // HandleTimedOutRequests sweep (Java pattern). Delivery timeout also 1s
+        // so the batch is permanently failed rather than retried.
+        var options = CreateOptions(maxInFlight: 1, deliveryTimeoutMs: 1_000, requestTimeoutMs: 1_000);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
 
