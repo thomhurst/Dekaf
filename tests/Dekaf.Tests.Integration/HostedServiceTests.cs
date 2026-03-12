@@ -53,6 +53,10 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .BuildAsync();
 
+        // Warm up to ensure broker has initialized partition state
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
+
         for (var i = 0; i < messageCount; i++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>

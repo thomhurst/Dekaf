@@ -25,6 +25,10 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
             .WithStatisticsHandler(s => stats.Add(s))
             .BuildAsync();
 
+        // Warm up to ensure broker has initialized partition state
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
+
         for (var i = 0; i < messageCount; i++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -42,7 +46,7 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
             .Eventually(c => c.IsGreaterThanOrEqualTo(1), timeout: TimeSpan.FromSeconds(10));
 
         var latestStats = stats.OrderByDescending(s => s.Timestamp).First();
-        await Assert.That(latestStats.MessagesProduced).IsGreaterThanOrEqualTo(messageCount);
+        await Assert.That(latestStats.MessagesProduced).IsGreaterThanOrEqualTo(messageCount + 1);
         await Assert.That(latestStats.BytesProduced).IsGreaterThan(0);
     }
 
@@ -57,6 +61,10 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
             .WithStatisticsHandler(s => stats.Add(s))
             .BuildAsync();
+
+        // Warm up to ensure broker has initialized partition state
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
 
         // Produce some messages to generate activity
         for (var i = 0; i < 5; i++)
@@ -85,6 +93,10 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .BuildAsync();
+
+        // Warm up to ensure broker has initialized partition state
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {

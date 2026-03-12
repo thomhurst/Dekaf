@@ -34,6 +34,10 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
 
         var producer = host.Services.GetRequiredService<IKafkaProducer<string, string>>();
 
+        // Warm up to ensure broker has initialized partition state
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
+
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
@@ -57,6 +61,10 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .BuildAsync();
+
+        // Warm up to ensure broker has initialized partition state
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -85,7 +93,15 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
         consumer.Subscribe(topic);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        ConsumeResult<string, string>? result = null;
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            if (msg.Key != "warmup")
+            {
+                result = msg;
+                break;
+            }
+        }
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Value).IsEqualTo("di-value");
@@ -141,6 +157,10 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
         var producerFromDi = host.Services.GetRequiredService<IKafkaProducer<string, string>>();
         var consumer = host.Services.GetRequiredService<IKafkaConsumer<string, string>>();
 
+        // Warm up to ensure broker has initialized partition state
+        await producerFromDi.ProduceAsync(new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
+
         // Produce
         await producerFromDi.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -153,11 +173,19 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
         consumer.Subscribe(topic);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        ConsumeResult<string, string>? result = null;
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            if (msg.Key != "warmup")
+            {
+                result = msg;
+                break;
+            }
+        }
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Key).IsEqualTo("roundtrip-key");
-        await Assert.That(result.Value.Value).IsEqualTo("roundtrip-value");
+        await Assert.That(result!.Value.Value).IsEqualTo("roundtrip-value");
 
         await host.StopAsync();
         host.Dispose();
