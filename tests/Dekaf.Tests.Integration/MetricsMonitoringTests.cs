@@ -242,6 +242,15 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             .WithStatisticsHandler(s => producerStats.Add(s))
             .BuildAsync();
 
+        // Warm up all partitions to ensure broker has initialized partition state.
+        // Without this, the first produce to a newly-created partition may get
+        // NotLeaderOrFollower, causing delivery timeouts on slow CI runners.
+        for (var p = 0; p < 3; p++)
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic, Key = "warmup", Value = "warmup", Partition = p
+            });
+
         for (var i = 0; i < messageCount; i++)
         {
             await producer.ProduceAsync(new ProducerMessage<string, string>
