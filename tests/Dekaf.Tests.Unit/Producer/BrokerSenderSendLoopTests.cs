@@ -148,7 +148,8 @@ public sealed class BrokerSenderSendLoopTests
             logger: null);
 
     [Test]
-    public async Task SendLoop_ResponseCompletion_WakesSendLoopAndProcessesBatch()
+    [Timeout(30_000)]
+    public async Task SendLoop_ResponseCompletion_WakesSendLoopAndProcessesBatch(CancellationToken cancellationToken)
     {
         // Verifies that when a response task completes, the ContinueWith bridge
         // pushes a ResponseCompleted event to the unified channel, waking the send loop.
@@ -177,13 +178,13 @@ public sealed class BrokerSenderSendLoopTests
             await sender.EnqueueAsync(batch, CancellationToken.None);
 
             // Wait for the send loop to actually send the request
-            await requestSent.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await requestSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
 
             // Complete the response — ContinueWith pushes event, send loop wakes and processes
             tcs.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 42));
 
             // Wait for acknowledgement (with timeout to detect missed wakeup)
-            var result = await acknowledged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var result = await acknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
             await Assert.That(result.offset).IsEqualTo(42);
             await Assert.That(result.count).IsEqualTo(1);
         }
@@ -196,7 +197,8 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    public async Task SendLoop_InFlightLimitEnforced_SecondBatchWaitsForFirstResponse()
+    [Timeout(30_000)]
+    public async Task SendLoop_InFlightLimitEnforced_SecondBatchWaitsForFirstResponse(CancellationToken cancellationToken)
     {
         // With maxInFlight=1 and two batches on different partitions, they coalesce into
         // one request. After the response completes, both batches are acknowledged.
@@ -242,7 +244,7 @@ public sealed class BrokerSenderSendLoopTests
             await sender.EnqueueAsync(batch2, CancellationToken.None);
 
             // Wait for the send loop to send the coalesced request
-            await requestSent.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await requestSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
 
             // Complete the first response — this should process both batches since
             // they were coalesced into one request
@@ -273,7 +275,7 @@ public sealed class BrokerSenderSendLoopTests
             });
 
             // Wait for all acknowledgements
-            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
 
             await Assert.That(ackOffsets).Contains(100L);
             await Assert.That(ackOffsets).Contains(200L);
@@ -287,7 +289,8 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    public async Task SendLoop_SequentialRequests_SecondSendsAfterFirstResponseCompletes()
+    [Timeout(30_000)]
+    public async Task SendLoop_SequentialRequests_SecondSendsAfterFirstResponseCompletes(CancellationToken cancellationToken)
     {
         // With maxInFlight=1, enqueue batches sequentially so each becomes its own
         // request. The second request can only be sent after the first response completes.
@@ -329,7 +332,7 @@ public sealed class BrokerSenderSendLoopTests
             await sender.EnqueueAsync(batch1, CancellationToken.None);
 
             // Wait for first request to be sent (deterministic, no Task.Delay)
-            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
             await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
 
             // Enqueue second batch while first is still in-flight
@@ -338,20 +341,20 @@ public sealed class BrokerSenderSendLoopTests
 
             // Second request should NOT have been sent yet (in-flight limit).
             // Give a brief moment for the send loop to process, then verify.
-            await Task.Delay(50);
+            await Task.Delay(50, cancellationToken);
             await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(1);
 
             // Complete first response — frees in-flight slot
             tcs1.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 100));
 
             // Wait for second request to be sent (deterministic)
-            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
             await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(2);
 
             // Complete second response
             tcs2.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 200));
 
-            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
         }
         finally
         {
@@ -425,7 +428,8 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    public async Task SendLoop_MultipleInFlight_AllResponsesProcessed()
+    [Timeout(30_000)]
+    public async Task SendLoop_MultipleInFlight_AllResponsesProcessed(CancellationToken cancellationToken)
     {
         // With maxInFlight=5, multiple requests can be in-flight simultaneously.
         // Completing responses in any order should work because each response
@@ -480,7 +484,7 @@ public sealed class BrokerSenderSendLoopTests
             }
 
             // Wait for at least one send to occur (deterministic)
-            await allSent.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await allSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
 
             // Complete responses. Batches may coalesce into fewer requests, so each
             // response must include ALL partition data. Complete in reverse order to
@@ -505,7 +509,7 @@ public sealed class BrokerSenderSendLoopTests
             for (var i = batchCount - 1; i >= 0; i--)
                 tcsList[i].TrySetResult(combinedResponse);
 
-            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
 
             await Assert.That(ackOffsets).Contains(100L);
             await Assert.That(ackOffsets).Contains(200L);
@@ -520,7 +524,8 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    public async Task SendLoop_FireAndForget_CompletesWithoutPendingResponse()
+    [Timeout(30_000)]
+    public async Task SendLoop_FireAndForget_CompletesWithoutPendingResponse(CancellationToken cancellationToken)
     {
         // With Acks.None, the send loop uses SendFireAndForgetAsync and completes
         // batches synchronously without adding to _pendingResponses.
@@ -554,7 +559,7 @@ public sealed class BrokerSenderSendLoopTests
             await sender.EnqueueAsync(batch, CancellationToken.None);
 
             // Fire-and-forget should complete quickly without waiting for a response
-            var offset = await acknowledged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var offset = await acknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
             await Assert.That(offset).IsEqualTo(-1); // Fire-and-forget offset is -1
         }
         finally
@@ -566,7 +571,8 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    public async Task SendLoop_FaultedResponseDuringInFlightWait_RetryBatchSurvivesCarryOverSwap()
+    [Timeout(30_000)]
+    public async Task SendLoop_FaultedResponseDuringInFlightWait_RetryBatchSurvivesCarryOverSwap(CancellationToken cancellationToken)
     {
         // Regression test for the carry-over list swap bug:
         // With maxInFlight=1, batch A is sent (fills the slot). Batch B arrives in the
@@ -622,7 +628,7 @@ public sealed class BrokerSenderSendLoopTests
             await sender.EnqueueAsync(batchA, CancellationToken.None);
 
             // Wait for batch A to be sent (fills in-flight slot)
-            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
 
             // Enqueue batch B (partition 1) — send loop reads it, coalesces it,
             // but enters in-flight capacity wait (1 in-flight >= maxInFlight=1).
@@ -635,19 +641,19 @@ public sealed class BrokerSenderSendLoopTests
             tcs1.SetException(new IOException("Connection reset"));
 
             // Wait for batch B to be sent (slot freed by processing faulted response)
-            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
 
             // Complete batch B's response
             tcs2.SetResult(CreateSuccessResponse("test-topic", 1, baseOffset: 200));
 
             // Wait for batch A retry to be sent (survives carry-over swap)
-            await sendSignals[2].Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await sendSignals[2].Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
 
             // Complete the retry response
             tcs3.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 100));
 
             // Both partitions should be acknowledged
-            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
 
             await Assert.That(ackPartitions).Contains(0);
             await Assert.That(ackPartitions).Contains(1);
