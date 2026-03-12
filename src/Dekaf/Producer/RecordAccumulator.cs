@@ -759,7 +759,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>Result of Ready() check — which brokers have sendable data.</summary>
     internal readonly record struct ReadyCheckResult(
         HashSet<int> ReadyNodes,
-        int NextCheckDelayMs);
+        int NextCheckDelayMs,
+        bool UnknownLeadersExist);
 
     /// <summary>
     /// Checks all partition deques for sendable data, matching Java's RecordAccumulator.ready().
@@ -771,6 +772,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var readyNodes = new HashSet<int>();
         var nextCheckDelayMs = int.MaxValue;
+        var unknownLeadersExist = false;
 
         foreach (var kvp in _partitionDeques)
         {
@@ -804,7 +806,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Find leader for this partition
             var leader = metadataManager.TryGetCachedPartitionLeader(tp.Topic, tp.Partition);
             if (leader is null)
+            {
+                // Sealed batch exists but leader is unknown (e.g., after partition expansion).
+                // Signal the sender to trigger a metadata refresh, matching Java's
+                // RecordAccumulator.ready() unknownLeadersExist behavior.
+                unknownLeadersExist = true;
                 continue;
+            }
 
             // Sealed batches in the deque are always sendable. The linger/micro-linger
             // timer already determined readiness when it sealed the batch, so re-checking
@@ -814,7 +822,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             readyNodes.Add(leader.NodeId);
         }
 
-        return new ReadyCheckResult(readyNodes, nextCheckDelayMs == int.MaxValue ? 100 : nextCheckDelayMs);
+        return new ReadyCheckResult(readyNodes, nextCheckDelayMs == int.MaxValue ? 100 : nextCheckDelayMs, unknownLeadersExist);
     }
 
     /// <summary>

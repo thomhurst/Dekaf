@@ -2193,14 +2193,30 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     }
                 }
 
-                // 4. Exit after close when all work is done.
+                // 4. If batches exist for partitions with unknown leaders, trigger metadata refresh.
+                // This handles partition expansion: producer cached 2-partition metadata but
+                // topic now has 4 partitions. Without refresh, those batches sit in deque forever.
+                // Matches Java's RecordAccumulator.ready() unknownLeadersExist behavior.
+                if (readyResult.UnknownLeadersExist)
+                {
+                    try
+                    {
+                        await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        // Metadata refresh failed — will retry on next iteration
+                    }
+                }
+
+                // 5. Exit after close when all work is done.
                 // Closed is set at the start of CloseAsync, but FlushAsync (called within
                 // CloseAsync) waits for _inFlightBatchCount == 0. We must keep the sender
                 // alive until FlushAsync completes by checking in-flight batches too.
                 if (_accumulator.Closed && readyResult.ReadyNodes.Count == 0 && !_accumulator.HasPendingWork())
                     break;
 
-                // 5. Wait for wakeup signal (new batch sealed, response complete, or timeout)
+                // 6. Wait for wakeup signal (new batch sealed, response complete, or timeout)
                 try
                 {
                     await _accumulator.WaitForWakeupAsync(
