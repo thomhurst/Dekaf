@@ -172,6 +172,15 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             .WithClientId("test-producer")
             .BuildAsync();
 
+        // Warm up all partitions to ensure broker has fully initialized partition state.
+        // Without this, the first produce to a newly-created partition may hit
+        // NotLeaderOrFollower, triggering a retry that mutes the partition.
+        for (var p = 0; p < 3; p++)
+            await producer.ProduceAsync(new ProducerMessage<string, string>
+            {
+                Topic = topic, Key = "warmup", Value = "warmup", Partition = p
+            });
+
         // Produce to all partitions
         for (var p = 0; p < 3; p++)
         {
@@ -200,12 +209,13 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break;
+            if (messages.Count >= 6) break; // 3 warmup + 3 actual
         }
 
-        // Assert - should get messages from all 3 partitions
-        await Assert.That(messages).Count().IsEqualTo(3);
-        var partitions = messages.Select(m => m.Partition).Distinct().OrderBy(p => p).ToList();
+        // Assert - should get messages from all 3 partitions (filter out warmup)
+        var actual = messages.Where(m => m.Key != "warmup").ToList();
+        await Assert.That(actual).Count().IsEqualTo(3);
+        var partitions = actual.Select(m => m.Partition).Distinct().OrderBy(p => p).ToList();
         int[] expectedPartitions = [0, 1, 2];
         await Assert.That(partitions).IsEquivalentTo(expectedPartitions);
     }

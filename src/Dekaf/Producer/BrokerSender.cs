@@ -741,6 +741,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (evt.Type == SendLoopEventType.NewBatch)
                     FailAndCleanupBatch(evt.Batch!, disposedException);
             }
+
+            // Unmute all partitions this BrokerSender had muted in the accumulator.
+            // Without this, partitions stay permanently muted after BrokerSender disposal,
+            // preventing Ready()/Drain() from ever picking up queued batches for those
+            // partitions. This causes orphaned batch timeouts on slow CI runners where
+            // transient connection errors kill the send loop while retries are pending.
+            foreach (var tp in _mutedPartitions)
+                _accumulator.UnmutePartition(tp);
+            _mutedPartitions.Clear();
         }
     }
 
