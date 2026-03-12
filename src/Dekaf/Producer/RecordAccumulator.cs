@@ -896,6 +896,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             if (batch is not null)
             {
+                batch.AppendDiag('D');
                 size += batch.DataSize;
                 ready.Add(batch);
             }
@@ -1801,6 +1802,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // counter not yet incremented → orphan sweep misses it → counter incremented after).
         Interlocked.Increment(ref _inFlightBatchCount);
         _inFlightBatches.TryAdd(batch, 0);
+        batch.AppendDiag('E');
 #if DEBUG
         batch.DebugLastTransition = (int)BatchTransition.EntersPipeline;
         Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} EntersPipeline inFlight={Volatile.Read(ref _inFlightBatchCount)}");
@@ -1825,6 +1827,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (!_inFlightBatches.TryRemove(batch, out _))
             return false;
 
+        batch.AppendDiag('X');
         var count = Interlocked.Decrement(ref _inFlightBatchCount);
         Debug.Assert(count >= 0, $"In-flight batch count went negative ({count}) — mismatched Enter/Exit calls");
         if (count <= 0)
@@ -1894,7 +1897,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 configured,
                 $"Delivery timeout exceeded for orphaned batch {batch.TopicPartition} " +
                 $"(elapsed: {elapsed.TotalSeconds:F1}s/{configured.TotalSeconds:F0}s, " +
-                $"muted={isMuted}, inDeque={inDeque}, dequeCount={dequeCount})"));
+                $"muted={isMuted}, inDeque={inDeque}, dequeCount={dequeCount}, " +
+                $"trace={batch.DiagTrace})"));
             // Do NOT return to pool here. BrokerSender may still reference this batch
             // in _pendingResponses. BrokerSender.CleanupBatch will return it when it
             // processes the response. For truly orphaned batches (no BrokerSender reference),
@@ -2998,6 +3002,31 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
 #endif
 
     /// <summary>
+    /// Lightweight lifecycle trace for diagnosing orphaned batches in Release builds.
+    /// Tracks the last few transitions as single-char codes to keep overhead minimal.
+    /// Codes: E=EntersPipeline, D=Drained, Q=EnqueuedToBrokerSender, C=Coalesced,
+    /// O=CarriedOver, S=Sent, R=ResponseReceived, X=ExitsPipeline, F=Failed
+    /// </summary>
+    internal string DiagTrace
+    {
+        get
+        {
+            var len = Volatile.Read(ref _diagTraceLen);
+            return len > 0 ? new string(_diagTrace, 0, Math.Min(len, _diagTrace.Length)) : "";
+        }
+    }
+    private readonly char[] _diagTrace = new char[32];
+    private int _diagTraceLen;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void AppendDiag(char code)
+    {
+        var idx = Interlocked.Increment(ref _diagTraceLen) - 1;
+        if (idx < _diagTrace.Length)
+            _diagTrace[idx] = code;
+    }
+
+    /// <summary>
     /// Replaces the record batch with a rewritten one (updated PID/epoch/sequence).
     /// Only called during epoch bump recovery — not in the hot path.
     /// </summary>
@@ -3149,6 +3178,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         MemoryReleased = false;
         IsRetry = false;
         RetryNotBefore = 0;
+        _diagTraceLen = 0;
 #if DEBUG
         DebugLastTransition = (int)BatchTransition.ReturnedToPool;
         DebugLastBrokerId = -1;

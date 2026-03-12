@@ -634,6 +634,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     FinalizeCoalescedRetries(coalescedBatches, coalescedCount);
 
                     LogSendingCoalesced(_brokerId, coalescedCount);
+                    for (var si = 0; si < coalescedCount; si++)
+                        coalescedBatches[si].AppendDiag('S');
                     var batchesToSend = coalescedBatches;
                     var countToSend = coalescedCount;
                     coalescedBatches = null;
@@ -812,6 +814,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 return;
             }
 
+            batch.AppendDiag('C');
             coalescedBatches[coalescedCount] = batch;
             coalescedCount++;
 #if DEBUG
@@ -826,6 +829,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (_mutedPartitions.Contains(batch.TopicPartition))
         {
             LogPartitionMuted(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
+            batch.AppendDiag('O');
             carryOver.Add(batch);
             return;
         }
@@ -833,10 +837,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Ensure at most one batch per partition per coalesced request
         if (!coalescedPartitions.Add(batch.TopicPartition))
         {
+            batch.AppendDiag('O');
             carryOver.Add(batch);
             return;
         }
 
+        batch.AppendDiag('C');
         coalescedBatches[coalescedCount] = batch;
         coalescedCount++;
 #if DEBUG
@@ -976,6 +982,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 #endif
             try
             {
+                batch.AppendDiag('R');
                 var expectedTopic = batch.TopicPartition.Topic;
                 var expectedPartition = batch.TopicPartition.Partition;
 
@@ -1727,6 +1734,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)
     {
+        batch.AppendDiag('F');
 #if DEBUG
         batch.DebugLastTransition = (int)BatchTransition.FailCalled;
         batch.DebugLastBrokerId = _brokerId;

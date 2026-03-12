@@ -2168,6 +2168,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                             // Task 6 will replace this with a batch-list channel
                             for (var i = 0; i < batchList.Count; i++)
                             {
+                                batchList[i].AppendDiag('Q');
 #if DEBUG
                                 batchList[i].DebugLastTransition = (int)BatchTransition.EnqueuedToBrokerSender;
                                 batchList[i].DebugLastBrokerId = brokerId;
