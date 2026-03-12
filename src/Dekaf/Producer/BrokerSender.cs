@@ -573,23 +573,65 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         }
                     }
 
+                    // If a response processed during the in-flight wait muted a partition
+                    // (retry scheduled), any coalesced batch for that partition must NOT be sent —
+                    // it would arrive after the retry batch, violating ordering. Move muted
+                    // batches back to carry-over so they're re-sent after the retry completes.
+                    if (coalescedCount > 0)
+                    {
+                        var dst = 0;
+                        for (var src = 0; src < coalescedCount; src++)
+                        {
+                            if (!coalescedBatches[src].IsRetry
+                                && _mutedPartitions.Contains(coalescedBatches[src].TopicPartition))
+                            {
+                                // Normal batch whose partition was muted during the in-flight
+                                // wait (a different batch for this partition triggered a retry).
+                                // Must not send — it would arrive after the retry, violating order.
+                                carryOver.AddAfterRetries(coalescedBatches[src]);
+                            }
+                            else
+                            {
+                                coalescedBatches[dst] = coalescedBatches[src];
+                                dst++;
+                            }
+                        }
+
+                        // Clear trailing slots so we don't hold stale references
+                        for (var i = dst; i < coalescedCount; i++)
+                            coalescedBatches[i] = null!;
+
+                        coalescedCount = dst;
+                    }
+
                     // If a response processed during the in-flight wait triggered an epoch
                     // bump request, we must NOT send the already-coalesced batches — they have
                     // stale epoch/sequences. Move them back to carry-over and loop back so the
                     // epoch bump (step 4) runs before re-coalescing.
                     if (Volatile.Read(ref _epochBumpRequestedForEpoch) >= 0)
                     {
-                        // Epoch bump pending — move coalesced batches back to carry-over front.
-                        // These are older batches that need re-sequencing after the bump.
-                        // AddFirst ensures they go before any newer carry-over batches
-                        // for the same partition (Java's Deque.addFirst for reenqueue).
+                        // Epoch bump pending — move coalesced batches back to carry-over.
+                        // Retry batches use AddFirst (they're older and must go before everything).
+                        // Normal batches use AddAfterRetries (they're newer and must go after
+                        // all retry batches to preserve per-partition ordering). Without this
+                        // distinction, AddFirst puts normal batches before retries, causing
+                        // newer data to be sent before older retry data after the partition unmutes.
                         for (var i = 0; i < coalescedCount; i++)
-                            carryOver.AddFirst(coalescedBatches[i]);
+                        {
+                            if (coalescedBatches[i].IsRetry)
+                                carryOver.AddFirst(coalescedBatches[i]);
+                            else
+                                carryOver.AddAfterRetries(coalescedBatches[i]);
+                        }
                         ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
                         coalescedBatches = null;
                         coalescedCount = 0;
                         continue;
                     }
+
+                    // Finalize retry batches now that we know they will actually be sent
+                    // (epoch bump check passed). Clear IsRetry and unmute partitions.
+                    FinalizeCoalescedRetries(coalescedBatches, coalescedCount);
 
                     LogSendingCoalesced(_brokerId, coalescedCount);
                     var batchesToSend = coalescedBatches;
@@ -746,11 +788,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            // Retry batch: unmute the partition and coalesce it ahead of newer batches.
-            batch.IsRetry = false;
+            // Retry batch: coalesce it ahead of newer batches.
+            // NOTE: Do NOT clear IsRetry or unmute here. These are deferred to
+            // FinalizeCoalescedRetries() after the epoch bump check passes.
+            // If an epoch bump is pending, coalesced batches are moved back to
+            // carry-over — they must retain their retry state and mute status.
             batch.RetryNotBefore = 0;
-            _mutedPartitions.Remove(batch.TopicPartition);
-            _accumulator.UnmutePartition(batch.TopicPartition);
 
             if (!coalescedPartitions.Add(batch.TopicPartition))
             {
@@ -792,6 +835,27 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         batch.DebugLastBrokerId = _brokerId;
         Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} Coalesced (normal) broker={_brokerId}");
 #endif
+    }
+
+    /// <summary>
+    /// Finalizes retry batches that have been coalesced and are about to be sent.
+    /// Called after the epoch bump check passes to ensure retry state is only cleared
+    /// when the batch will actually be sent. If called during CoalesceBatch instead,
+    /// an epoch bump check that moves batches back to carry-over would lose the retry
+    /// state — causing the batch to be treated as a normal batch and sent out of order.
+    /// </summary>
+    private void FinalizeCoalescedRetries(ReadyBatch[] batches, int count)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            var batch = batches[i];
+            if (batch.IsRetry)
+            {
+                batch.IsRetry = false;
+                _mutedPartitions.Remove(batch.TopicPartition);
+                _accumulator.UnmutePartition(batch.TopicPartition);
+            }
+        }
     }
 
     /// <summary>
