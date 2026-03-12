@@ -673,16 +673,16 @@ public sealed class BrokerSenderSendLoopTests
     [Timeout(30_000)]
     public async Task SendLoop_HungResponseWithExpiredBatches_FreesCapacitySlot(CancellationToken cancellationToken)
     {
-        // Regression test: when a response task never completes but all its batches expire
-        // via delivery timeout, the entry must be removed from _pendingResponses.
-        // Without removal, _pendingResponses.Count stays elevated and the send loop's
-        // capacity wait (while _pendingResponses.Count >= _maxInFlight) blocks forever.
+        // Regression test: when a response task never completes (hung connection),
+        // HandleTimedOutRequests closes the connection (Java pattern). This triggers
+        // FailAllPendingRequests on the real connection, faulting all response tasks.
+        // ProcessCompletedResponses then picks them up and retries or fails the batches.
         //
-        // Scenario: maxInFlight=1, batch A is sent, response hangs. Delivery timeout fires
-        // and fails batch A. Second batch B arrives — it should be sendable after the
-        // zombie entry is discarded. Without the fix, the send loop hangs.
+        // Scenario: maxInFlight=1, batch A is sent, response hangs. Request timeout
+        // fires (1s) and closes the connection. The mock simulates FailAllPendingRequests
+        // by faulting the hung TCS on DisposeAsync. Second batch B should then be sendable.
 
-        var tcs1 = new TaskCompletionSource<ProduceResponse>(); // Never completes — simulates hung connection
+        var tcs1 = new TaskCompletionSource<ProduceResponse>(); // Simulates hung connection
         var tcs2 = new TaskCompletionSource<ProduceResponse>();
         var responseQueue = new Queue<TaskCompletionSource<ProduceResponse>>();
         responseQueue.Enqueue(tcs1);
@@ -691,16 +691,35 @@ public sealed class BrokerSenderSendLoopTests
         var sendCount = 0;
         var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
 
-        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
+        var connection = Substitute.For<IKafkaConnection>();
+        connection.IsConnected.Returns(true);
+        connection.BrokerId.Returns(1);
+
+        connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
+                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var task = responseQueue.Dequeue().Task;
+                var idx = Interlocked.Increment(ref sendCount) - 1;
+                if (idx < sendSignals.Length)
+                    sendSignals[idx].TrySetResult();
+                return task;
+            });
+
+        // When the connection is disposed (by HandleTimedOutRequests), simulate
+        // FailAllPendingRequests by faulting the hung response task.
+        connection.DisposeAsync().Returns(_ =>
         {
-            var idx = Interlocked.Increment(ref sendCount) - 1;
-            if (idx < sendSignals.Length)
-                sendSignals[idx].TrySetResult();
+            tcs1.TrySetException(new IOException("Connection closed by timeout handler"));
+            return ValueTask.CompletedTask;
         });
 
-        // Short request timeout (1s) so the test doesn't wait 30s for the
-        // HandleTimedOutRequests sweep (Java pattern). Delivery timeout also 1s
-        // so the batch is permanently failed rather than retried.
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        // Short request timeout (1s) so HandleTimedOutRequests fires quickly.
+        // Delivery timeout also 1s so the batch is permanently failed rather than retried.
         var options = CreateOptions(maxInFlight: 1, deliveryTimeoutMs: 1_000, requestTimeoutMs: 1_000);
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
@@ -720,11 +739,12 @@ public sealed class BrokerSenderSendLoopTests
             await sender.EnqueueAsync(batch1, CancellationToken.None);
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
 
-            // Wait for delivery timeout to expire (1s + margin)
+            // Wait for request timeout to fire (1s + margin)
             await Task.Delay(2_000, cancellationToken);
 
             // Send second batch on different partition — should not hang
-            // (zombie entry from first request should be discarded)
+            // (HandleTimedOutRequests closed the connection, faulting the response task,
+            // ProcessCompletedResponses freed the capacity slot)
             var batch2 = CreateTestBatch(vtPool, "test-topic", 1);
             await sender.EnqueueAsync(batch2, CancellationToken.None);
 
@@ -738,7 +758,6 @@ public sealed class BrokerSenderSendLoopTests
         }
         finally
         {
-            // Complete the hung response to allow clean disposal
             tcs1.TrySetCanceled(CancellationToken.None);
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();
