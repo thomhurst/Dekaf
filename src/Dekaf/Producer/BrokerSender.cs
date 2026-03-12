@@ -1541,6 +1541,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var pendingResponse = new PendingResponse(responseTask, batches, count, requestStartTime);
             _pendingResponses.Add(pendingResponse);
 
+            // Diagnostic: mark batches as successfully pipelined to _pendingResponses.
+            // If an orphan trace shows 'S' but no 'W' (Wire), the batch never reached here.
+            for (var i = 0; i < count; i++)
+                batches[i].AppendDiag('W');
+
             // Signal the send loop to wake up and poll when the response arrives.
             // Only a lightweight signal — actual processing happens in ProcessCompletedResponses.
             _ = responseTask.ContinueWith(static (_, state) =>
@@ -1590,6 +1595,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             for (var i = 0; i < count; i++)
             {
+                batches[i].AppendDiag('Z'); // Diagnostic: send failed, entering retry/fail path
                 var batch = batches[i];
                 try
                 {
