@@ -608,7 +608,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // bump request, we must NOT send the already-coalesced batches — they have
                     // stale epoch/sequences. Move them back to carry-over and loop back so the
                     // epoch bump (step 4) runs before re-coalescing.
-                    if (Volatile.Read(ref _epochBumpRequestedForEpoch) >= 0)
+                    if (coalescedCount > 0 && Volatile.Read(ref _epochBumpRequestedForEpoch) >= 0)
                     {
                         // Epoch bump pending — move coalesced batches back to carry-over.
                         // Retry batches use AddFirst (they're older and must go before everything).
@@ -629,23 +629,35 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         continue;
                     }
 
-                    // Finalize retry batches now that we know they will actually be sent
-                    // (epoch bump check passed). Clear IsRetry and unmute partitions.
-                    FinalizeCoalescedRetries(coalescedBatches, coalescedCount);
+                    if (coalescedCount > 0)
+                    {
+                        // Finalize retry batches now that we know they will actually be sent
+                        // (epoch bump check passed). Clear IsRetry and unmute partitions.
+                        FinalizeCoalescedRetries(coalescedBatches, coalescedCount);
 
-                    LogSendingCoalesced(_brokerId, coalescedCount);
-                    for (var si = 0; si < coalescedCount; si++)
-                        coalescedBatches[si].AppendDiag('S');
-                    var batchesToSend = coalescedBatches;
-                    var countToSend = coalescedCount;
-                    coalescedBatches = null;
-                    coalescedCount = 0;
-                    await SendCoalescedAsync(batchesToSend, countToSend, cancellationToken)
-                        .ConfigureAwait(false);
-                    sentThisIteration = true;
+                        LogSendingCoalesced(_brokerId, coalescedCount);
+                        for (var si = 0; si < coalescedCount; si++)
+                            coalescedBatches[si].AppendDiag('S');
+                        var batchesToSend = coalescedBatches;
+                        var countToSend = coalescedCount;
+                        coalescedBatches = null;
+                        coalescedCount = 0;
+                        await SendCoalescedAsync(batchesToSend, countToSend, cancellationToken)
+                            .ConfigureAwait(false);
+                        sentThisIteration = true;
+                    }
+                    else
+                    {
+                        // coalescedCount dropped to 0 (all batches moved to carry-over for
+                        // muted partitions). Return the rented array; nothing to send.
+                        ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
+                        coalescedBatches = null;
+                        coalescedCount = 0;
+                    }
                 }
                 else
                 {
+                    // No batches were coalesced at all — return the rented array.
                     ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
                     coalescedBatches = null;
                     coalescedCount = 0;
@@ -914,6 +926,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     if (batches[j] is not null)
                     {
+                        batches[j].AppendDiag('P'); // Faulted/cancelled response processed
                         try
                         {
                             HandleRetriableBatch(batches[j], ErrorCode.NetworkException,
@@ -1283,6 +1296,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // in forward order, each response's retry must go AFTER earlier responses'
         // retries for the same partition to preserve FIFO ordering.
         batch.IsRetry = true;
+        batch.AppendDiag('H'); // HandleRetriableBatch → carry-over
         carryOver.AddAfterRetries(batch);
 #if DEBUG
         batch.DebugLastTransition = (int)BatchTransition.AddedToCarryOver;
