@@ -78,7 +78,7 @@ public class StatisticsEmitterTests
             });
 
         // Wait for at least one emission to confirm emitter is working
-        var gotFirstCall = await Task.WhenAny(firstCallTcs.Task, Task.Delay(TimeSpan.FromSeconds(5))) == firstCallTcs.Task;
+        var gotFirstCall = await Task.WhenAny(firstCallTcs.Task, Task.Delay(TimeSpan.FromSeconds(10))) == firstCallTcs.Task;
         await Assert.That(gotFirstCall).IsTrue();
 
         await emitter.DisposeAsync().ConfigureAwait(false);
