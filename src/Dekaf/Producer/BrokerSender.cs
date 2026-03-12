@@ -451,7 +451,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 3. Handle timed-out requests (Java handleTimedOutRequests pattern) ──
-                HandleTimedOutRequests();
+                await HandleTimedOutRequestsAsync().ConfigureAwait(false);
 
                 // ── 4. Epoch bump (Java-style client-side, KIP-360) ──
                 // Synchronous: no network call, just epoch+1 + per-partition sequence reset.
@@ -546,7 +546,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // Handle timed-out requests (Java pattern) to free zombie entries.
                             // Without this, the send loop blocks forever when a response task
                             // never completes.
-                            HandleTimedOutRequests();
+                            await HandleTimedOutRequestsAsync().ConfigureAwait(false);
                             if (_pendingResponses.Count < _maxInFlight)
                                 break;
 
@@ -1127,19 +1127,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// <summary>
     /// Java-style request timeout handling (handleTimedOutRequests pattern).
     /// On every send loop iteration, checks if ANY pending response has exceeded the
-    /// request timeout. If so, closes the connection — exactly like Java's
-    /// NetworkClient.handleTimedOutRequests() which closes the selector channel.
+    /// request timeout. If so, closes the connection and awaits disposal — exactly like
+    /// Java's NetworkClient.handleTimedOutRequests() which closes the selector channel.
     /// <para/>
-    /// Closing the connection causes the ReceiveLoop to exit with EOF, which triggers
-    /// FailAllPendingRequests on the KafkaConnection. All in-flight response tasks fault,
-    /// and ProcessCompletedResponses picks them up on the next iteration — naturally
-    /// routing each batch through HandleRetriableBatch for retry or permanent failure.
+    /// Closing the connection causes FailAllPendingRequests on the KafkaConnection,
+    /// faulting all in-flight response tasks. By awaiting the disposal, we guarantee
+    /// that response tasks are faulted before returning — ProcessCompletedResponses
+    /// will immediately pick them up on the next call.
     /// <para/>
     /// This avoids manually processing batches here (which can race with the per-request
     /// CTS timeout path) and ensures a single, consistent batch processing path through
     /// ProcessCompletedResponses.
     /// </summary>
-    private void HandleTimedOutRequests()
+    private async ValueTask HandleTimedOutRequestsAsync()
     {
         if (_pendingResponses.Count == 0) return;
 
@@ -1161,34 +1161,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
 
         // Request timeout detected — close the connection (like Java closing the selector).
-        // FailAllPendingRequests will fire on the connection, faulting all response tasks.
-        // ProcessCompletedResponses will handle them on the next send loop iteration.
+        // Await disposal to guarantee FailAllPendingRequests has run and all response tasks
+        // are faulted before we return. Without awaiting, the fire-and-forget disposal could
+        // be delayed by thread pool starvation, leaving response tasks un-faulted and causing
+        // batches to be orphaned until the 360s sweep.
         var conn = _pinnedConnection;
         _pinnedConnection = null;
         LogRequestTimeoutDisconnection(_brokerId, _pendingResponses.Count);
 
         if (conn is not null)
         {
-            // Fire-and-forget disposal. DisposeAsync cancels the ReceiveLoop CTS,
-            // which triggers FailAllPendingRequests → all response tasks fault.
-            // Observe the task to prevent UnobservedTaskException.
-            _ = DisposeConnectionOnTimeoutAsync(conn);
-        }
-    }
-
-    /// <summary>
-    /// Disposes a connection that was closed due to request timeout.
-    /// Runs asynchronously to avoid blocking the send loop.
-    /// </summary>
-    private async Task DisposeConnectionOnTimeoutAsync(IKafkaConnection connection)
-    {
-        try
-        {
-            await connection.DisposeAsync().ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            LogBatchCleanupStepFailed(ex, _brokerId);
+            try
+            {
+                await conn.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                LogBatchCleanupStepFailed(ex, _brokerId);
+            }
         }
     }
 
