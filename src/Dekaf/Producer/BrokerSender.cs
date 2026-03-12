@@ -726,15 +726,23 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var disposedException = new ObjectDisposedException(nameof(BrokerSender));
 
             for (var i = 0; i < _sendFailedRetries.Count; i++)
-                FailAndCleanupBatch(_sendFailedRetries[i], disposedException);
+            {
+                try { FailAndCleanupBatch(_sendFailedRetries[i], disposedException); }
+                catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+            }
             _sendFailedRetries.Clear();
 
             for (var i = 0; i < _pendingResponses.Count; i++)
             {
                 var pr = _pendingResponses[i];
                 for (var j = 0; j < pr.Count; j++)
+                {
                     if (pr.Batches[j] is not null)
-                        FailAndCleanupBatch(pr.Batches[j], disposedException);
+                    {
+                        try { FailAndCleanupBatch(pr.Batches[j], disposedException); }
+                        catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                    }
+                }
                 ArrayPool<ReadyBatch>.Shared.Return(pr.Batches, clearArray: true);
             }
             _pendingResponses.Clear();
@@ -744,7 +752,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (coalescedBatches is not null)
             {
                 for (var i = 0; i < coalescedCount; i++)
-                    FailAndCleanupBatch(coalescedBatches[i], disposedException);
+                {
+                    try { FailAndCleanupBatch(coalescedBatches[i], disposedException); }
+                    catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                }
                 ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
             }
 
@@ -753,7 +764,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             while (eventReader.TryRead(out var evt))
             {
                 if (evt.Type == SendLoopEventType.NewBatch)
-                    FailAndCleanupBatch(evt.Batch!, disposedException);
+                {
+                    try { FailAndCleanupBatch(evt.Batch!, disposedException); }
+                    catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                }
             }
 
             // Unmute all partitions this BrokerSender had muted in the accumulator.
