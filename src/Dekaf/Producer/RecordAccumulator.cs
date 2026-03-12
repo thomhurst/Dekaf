@@ -567,9 +567,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Muted partitions — skipped by Ready() and Drain().
-    /// Plain HashSet (only accessed from sender thread, matching Java).
+    /// ConcurrentDictionary for thread safety: BrokerSender threads call MutePartition/UnmutePartition
+    /// while the sender thread reads via Contains in Ready/Drain.
     /// </summary>
-    private readonly HashSet<TopicPartition> _mutedPartitions = new();
+    private readonly ConcurrentDictionary<TopicPartition, byte> _mutedPartitions = new();
 
     /// <summary>
     /// Per-broker drain index for fair round-robin partition ordering.
@@ -779,7 +780,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var tp = kvp.Key;
             var pd = kvp.Value;
 
-            if (_mutedPartitions.Contains(tp))
+            if (_mutedPartitions.ContainsKey(tp))
                 continue;
 
             ReadyBatch? head;
@@ -869,7 +870,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             _drainIndex[nodeId] = (startIndex + i + 1) % count;
 
-            if (_mutedPartitions.Contains(tp))
+            if (_mutedPartitions.ContainsKey(tp))
                 continue;
 
             var pd = _partitionDeques.GetValueOrDefault(tp);
@@ -946,14 +947,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         pd.Deque.Insert(insertIdx, batch);
     }
 
-    internal void MutePartition(TopicPartition tp) => _mutedPartitions.Add(tp);
+    internal void MutePartition(TopicPartition tp) => _mutedPartitions.TryAdd(tp, 0);
 
     internal void UnmutePartition(TopicPartition tp)
     {
-        _mutedPartitions.Remove(tp);
+        _mutedPartitions.TryRemove(tp, out _);
         SignalWakeup(); // Wake sender loop so it can drain the newly-unmuted partition
     }
-    internal bool IsMuted(TopicPartition tp) => _mutedPartitions.Contains(tp);
+    internal bool IsMuted(TopicPartition tp) => _mutedPartitions.ContainsKey(tp);
 
     internal void SignalWakeup()
     {
