@@ -771,8 +771,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var readyNodes = new HashSet<int>();
         var nextCheckDelayMs = int.MaxValue;
-        var lingerMs = _options.LingerMs;
-        var flushInProgress = Volatile.Read(ref _flushTcs) is not null;
 
         foreach (var kvp in _partitionDeques)
         {
@@ -808,26 +806,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (leader is null)
                 continue;
 
-            // A batch is sendable if: deque has >1 batch (head is complete),
-            // OR linger expired, OR flush in progress
-            bool sendable;
-            lock (pd.Lock)
-            {
-                var waitedMs = head.AgeMs;
-                var expired = waitedMs >= lingerMs;
-                var full = pd.Count > 1;
-                sendable = full || expired || flushInProgress || head.IsRetry;
-            }
-
-            if (sendable)
-            {
-                readyNodes.Add(leader.NodeId);
-            }
-            else
-            {
-                var timeLeftMs = Math.Max(0, lingerMs - head.AgeMs);
-                nextCheckDelayMs = Math.Min(nextCheckDelayMs, timeLeftMs);
-            }
+            // Sealed batches in the deque are always sendable. The linger/micro-linger
+            // timer already determined readiness when it sealed the batch, so re-checking
+            // linger here would double-count the wait (e.g., a batch sealed by micro-linger
+            // after 1ms would wait another 5000ms with lingerMs=5000).
+            // Only retry backoff (handled above) can delay a sealed batch.
+            readyNodes.Add(leader.NodeId);
         }
 
         return new ReadyCheckResult(readyNodes, nextCheckDelayMs == int.MaxValue ? 100 : nextCheckDelayMs);
