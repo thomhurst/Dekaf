@@ -730,6 +730,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             batch.IsRetry = false;
             batch.RetryNotBefore = 0;
             _mutedPartitions.Remove(batch.TopicPartition);
+            _accumulator.UnmutePartition(batch.TopicPartition);
 
             if (!coalescedPartitions.Add(batch.TopicPartition))
             {
@@ -1118,7 +1119,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         // Mute partition so no newer batches overtake the retry (ordering guarantee).
+        // Also mute in accumulator so Ready/Drain skips this partition — prevents the
+        // sender loop from draining newer batches that would jump the retry queue.
         _mutedPartitions.Add(batch.TopicPartition);
+        _accumulator.MutePartition(batch.TopicPartition);
 
         var isEpochBumpError = errorCode is ErrorCode.OutOfOrderSequenceNumber
             or ErrorCode.InvalidProducerEpoch or ErrorCode.UnknownProducerId;
@@ -1374,7 +1378,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (_muteOnSend)
             {
                 for (var i = 0; i < count; i++)
+                {
                     _mutedPartitions.Add(batches[i].TopicPartition);
+                    _accumulator.MutePartition(batches[i].TopicPartition);
+                }
             }
 
             LogPipelinedSend(_brokerId, count, _pendingResponses.Count);
@@ -1422,6 +1429,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     {
                         // Mute partition (ordering guarantee) and queue for retry.
                         _mutedPartitions.Add(batch.TopicPartition);
+                        _accumulator.MutePartition(batch.TopicPartition);
                         batch.IsRetry = true;
                         batch.RetryNotBefore = Stopwatch.GetTimestamp() +
                             _options.RetryBackoffTicks;
@@ -1577,6 +1585,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void UnmutePartition(TopicPartition tp)
     {
         _mutedPartitions.Remove(tp);
+        _accumulator.UnmutePartition(tp); // Also unmute in accumulator so Ready/Drain can pick up new batches
         _eventChannel.Writer.TryWrite(SendLoopEvent.Unmute());
     }
 

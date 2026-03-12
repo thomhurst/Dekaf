@@ -947,7 +947,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     internal void MutePartition(TopicPartition tp) => _mutedPartitions.Add(tp);
-    internal void UnmutePartition(TopicPartition tp) => _mutedPartitions.Remove(tp);
+
+    internal void UnmutePartition(TopicPartition tp)
+    {
+        _mutedPartitions.Remove(tp);
+        SignalWakeup(); // Wake sender loop so it can drain the newly-unmuted partition
+    }
     internal bool IsMuted(TopicPartition tp) => _mutedPartitions.Contains(tp);
 
     internal void SignalWakeup()
