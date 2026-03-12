@@ -674,13 +674,14 @@ public sealed class BrokerSenderSendLoopTests
     public async Task SendLoop_HungResponseWithExpiredBatches_FreesCapacitySlot(CancellationToken cancellationToken)
     {
         // Regression test: when a response task never completes (hung connection),
-        // HandleTimedOutRequests closes the connection (Java pattern). This triggers
-        // FailAllPendingRequests on the real connection, faulting all response tasks.
-        // ProcessCompletedResponses then picks them up and retries or fails the batches.
+        // HandleTimedOutRequests (v4) directly processes all batches from _pendingResponses
+        // and clears the list — freeing the capacity slot without relying on connection
+        // disposal. The response task is orphaned (nobody polls it).
         //
         // Scenario: maxInFlight=1, batch A is sent, response hangs. Request timeout
-        // fires (1s) and closes the connection. The mock simulates FailAllPendingRequests
-        // by faulting the hung TCS on DisposeAsync. Second batch B should then be sendable.
+        // fires (1s). HandleTimedOutRequests processes batch A directly (delivery timeout
+        // also exceeded → permanently failed), clears _pendingResponses. Second batch B
+        // should then be sendable.
 
         var tcs1 = new TaskCompletionSource<ProduceResponse>(); // Simulates hung connection
         var tcs2 = new TaskCompletionSource<ProduceResponse>();
@@ -691,32 +692,12 @@ public sealed class BrokerSenderSendLoopTests
         var sendCount = 0;
         var sendSignals = new[] { new TaskCompletionSource(), new TaskCompletionSource() };
 
-        var connection = Substitute.For<IKafkaConnection>();
-        connection.IsConnected.Returns(true);
-        connection.BrokerId.Returns(1);
-
-        connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
-                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
-            .Returns(_ =>
-            {
-                var task = responseQueue.Dequeue().Task;
-                var idx = Interlocked.Increment(ref sendCount) - 1;
-                if (idx < sendSignals.Length)
-                    sendSignals[idx].TrySetResult();
-                return task;
-            });
-
-        // When the connection is disposed (by HandleTimedOutRequests), simulate
-        // FailAllPendingRequests by faulting the hung response task.
-        connection.DisposeAsync().Returns(_ =>
+        var (pool, _) = CreateMockConnection(responseQueue, onSend: () =>
         {
-            tcs1.TrySetException(new IOException("Connection closed by timeout handler"));
-            return ValueTask.CompletedTask;
+            var idx = Interlocked.Increment(ref sendCount) - 1;
+            if (idx < sendSignals.Length)
+                sendSignals[idx].TrySetResult();
         });
-
-        var pool = Substitute.For<IConnectionPool>();
-        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
-            .Returns(connection);
 
         // Short request timeout (1s) so HandleTimedOutRequests fires quickly.
         // Delivery timeout also 1s so the batch is permanently failed rather than retried.
@@ -739,12 +720,13 @@ public sealed class BrokerSenderSendLoopTests
             await sender.EnqueueAsync(batch1, CancellationToken.None);
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
 
-            // Wait for request timeout to fire (1s + margin)
+            // Wait for request timeout to fire (1s + margin).
+            // HandleTimedOutRequests processes batch1 directly (delivery timeout exceeded
+            // → permanently fails it) and clears _pendingResponses, freeing the slot.
             await Task.Delay(2_000, cancellationToken);
 
             // Send second batch on different partition — should not hang
-            // (HandleTimedOutRequests closed the connection, faulting the response task,
-            // ProcessCompletedResponses freed the capacity slot)
+            // (HandleTimedOutRequests cleared _pendingResponses, freeing the capacity slot)
             var batch2 = CreateTestBatch(vtPool, "test-topic", 1);
             await sender.EnqueueAsync(batch2, CancellationToken.None);
 
@@ -758,6 +740,8 @@ public sealed class BrokerSenderSendLoopTests
         }
         finally
         {
+            // tcs1 is orphaned (HandleTimedOutRequests doesn't await it), cancel to avoid
+            // unobserved task exception during test cleanup.
             tcs1.TrySetCanceled(CancellationToken.None);
             await sender.DisposeAsync();
             await accumulator.DisposeAsync();

@@ -451,7 +451,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 3. Handle timed-out requests (Java handleTimedOutRequests pattern) ──
-                await HandleTimedOutRequestsAsync().ConfigureAwait(false);
+                HandleTimedOutRequests(carryOver, cancellationToken);
 
                 // ── 4. Epoch bump (Java-style client-side, KIP-360) ──
                 // Synchronous: no network call, just epoch+1 + per-partition sequence reset.
@@ -546,7 +546,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // Handle timed-out requests (Java pattern) to free zombie entries.
                             // Without this, the send loop blocks forever when a response task
                             // never completes.
-                            await HandleTimedOutRequestsAsync().ConfigureAwait(false);
+                            HandleTimedOutRequests(carryOver, cancellationToken);
                             if (_pendingResponses.Count < _maxInFlight)
                                 break;
 
@@ -1127,19 +1127,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// <summary>
     /// Java-style request timeout handling (handleTimedOutRequests pattern).
     /// On every send loop iteration, checks if ANY pending response has exceeded the
-    /// request timeout. If so, closes the connection and awaits disposal — exactly like
-    /// Java's NetworkClient.handleTimedOutRequests() which closes the selector channel.
+    /// request timeout. If so, removes ALL entries from _pendingResponses and processes
+    /// each batch — exactly like Java's NetworkClient.handleTimedOutRequests() which closes
+    /// the connection and calls cancelInFlightRequests() for the node.
     /// <para/>
-    /// Closing the connection causes FailAllPendingRequests on the KafkaConnection,
-    /// faulting all in-flight response tasks. By awaiting the disposal, we guarantee
-    /// that response tasks are faulted before returning — ProcessCompletedResponses
-    /// will immediately pick them up on the next call.
+    /// Processing happens synchronously in the single-threaded send loop. Entries are
+    /// removed from _pendingResponses BEFORE processing, so ProcessCompletedResponses
+    /// cannot also process the same batches (eliminating the race condition).
     /// <para/>
-    /// This avoids manually processing batches here (which can race with the per-request
-    /// CTS timeout path) and ensures a single, consistent batch processing path through
-    /// ProcessCompletedResponses.
+    /// The connection is also invalidated (_pinnedConnection = null) so the next send
+    /// establishes a fresh connection. Response tasks from the old connection are orphaned —
+    /// they may eventually complete, but nobody polls them since the entries were removed.
     /// </summary>
-    private async ValueTask HandleTimedOutRequestsAsync()
+    private void HandleTimedOutRequests(
+        PartitionCarryOver carryOver,
+        CancellationToken cancellationToken)
     {
         if (_pendingResponses.Count == 0) return;
 
@@ -1160,26 +1162,61 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (!hasTimedOut)
             return;
 
-        // Request timeout detected — close the connection (like Java closing the selector).
-        // Await disposal to guarantee FailAllPendingRequests has run and all response tasks
-        // are faulted before we return. Without awaiting, the fire-and-forget disposal could
-        // be delayed by thread pool starvation, leaving response tasks un-faulted and causing
-        // batches to be orphaned until the 360s sweep.
-        var conn = _pinnedConnection;
+        // Request timeout detected — invalidate connection and process ALL pending batches.
+        // Must process ALL entries (not just the timed-out one) because they share the same
+        // connection, which is now unreliable. This matches Java's behavior: when any request
+        // times out, ALL in-flight requests for that node are failed.
         _pinnedConnection = null;
         LogRequestTimeoutDisconnection(_brokerId, _pendingResponses.Count);
 
-        if (conn is not null)
+        var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
+
+        for (var i = 0; i < _pendingResponses.Count; i++)
         {
-            try
+            var pending = _pendingResponses[i];
+            for (var j = 0; j < pending.Count; j++)
             {
-                await conn.DisposeAsync().ConfigureAwait(false);
+                var batch = pending.Batches[j];
+                if (batch is null) continue;
+
+                batch.AppendDiag('T'); // Timed-out request
+
+                // Check delivery deadline: if exceeded, permanently fail the batch.
+                // Otherwise, retry (like Java's handleProduceResponse for disconnected requests).
+                if (now >= batch.StopwatchCreatedTicks + deliveryTimeoutTicks)
+                {
+                    UnmutePartition(batch.TopicPartition);
+                    var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                    var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
+                    try
+                    {
+                        FailAndCleanupBatch(batch, new KafkaTimeoutException(
+                            TimeoutKind.Delivery, elapsed, configured,
+                            $"Delivery timeout exceeded while awaiting response for {batch.TopicPartition}"));
+                    }
+                    catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                }
+                else
+                {
+                    try
+                    {
+                        HandleRetriableBatch(batch, ErrorCode.NetworkException,
+                            carryOver, cancellationToken);
+                    }
+                    catch (Exception batchEx)
+                    {
+                        try { FailAndCleanupBatch(batch, batchEx); }
+                        catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                    }
+                }
             }
-            catch (Exception ex)
-            {
-                LogBatchCleanupStepFailed(ex, _brokerId);
-            }
+
+            ArrayPool<ReadyBatch>.Shared.Return(pending.Batches, clearArray: true);
         }
+
+        // Remove all entries. Response tasks are orphaned — they'll eventually complete
+        // (via CTS timeout or connection disposal) but nobody polls them.
+        _pendingResponses.Clear();
     }
 
     /// <summary>
