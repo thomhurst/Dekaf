@@ -2193,10 +2193,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                     }
                 }
 
-                // 4. Exit after close when all work is drained.
-                // CloseAsync seals all batches, signals wakeup, and sets Closed.
-                // Once we've drained everything, there's nothing left to do.
-                if (_accumulator.Closed && readyResult.ReadyNodes.Count == 0 && !_accumulator.HasPendingBatches())
+                // 4. Exit after close when all work is done.
+                // Closed is set at the start of CloseAsync, but FlushAsync (called within
+                // CloseAsync) waits for _inFlightBatchCount == 0. We must keep the sender
+                // alive until FlushAsync completes by checking in-flight batches too.
+                if (_accumulator.Closed && readyResult.ReadyNodes.Count == 0 && !_accumulator.HasPendingWork())
                     break;
 
                 // 5. Wait for wakeup signal (new batch sealed, response complete, or timeout)

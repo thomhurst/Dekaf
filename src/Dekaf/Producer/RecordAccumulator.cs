@@ -1665,11 +1665,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Checks if any partition deque has pending work (unsealed or sealed batches).
+    /// Checks if any work remains: unsealed batches, sealed batches in deques, or
+    /// in-flight batches still being sent by BrokerSenders.
     /// Used by the sender loop to decide when to exit after close.
     /// </summary>
-    internal bool HasPendingBatches()
+    internal bool HasPendingWork()
     {
+        if (Volatile.Read(ref _inFlightBatchCount) > 0)
+            return true;
+
         foreach (var kvp in _partitionDeques)
         {
             var pd = kvp.Value;
