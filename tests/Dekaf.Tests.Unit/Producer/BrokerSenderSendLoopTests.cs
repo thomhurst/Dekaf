@@ -362,7 +362,8 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    public async Task SendLoop_FaultedResponse_WakesSendLoopAndRetries()
+    [Timeout(30_000)]
+    public async Task SendLoop_FaultedResponse_WakesSendLoopAndRetries(CancellationToken cancellationToken)
     {
         // When a response task faults (e.g., connection error), the ContinueWith bridge
         // pushes a ResponseCompleted event. The send loop processes it and retries the batch.
@@ -400,19 +401,19 @@ public sealed class BrokerSenderSendLoopTests
             await sender.EnqueueAsync(batch, CancellationToken.None);
 
             // Wait for first send (deterministic)
-            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
 
             // Fault the response — send loop should wake and retry
             tcs1.SetException(new IOException("Connection reset"));
 
             // Wait for retry send (deterministic — send loop retries after backoff)
-            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
 
             // Complete the retry response
             tcs2.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 99));
 
             // Batch should eventually be acknowledged
-            var offset = await acknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var offset = await acknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
             await Assert.That(offset).IsEqualTo(99);
         }
         finally
