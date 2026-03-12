@@ -182,6 +182,26 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         /// <summary>
+        /// Add after existing retry batches but before non-retry batches.
+        /// Used by HandleRetriableBatch where multiple responses may add retries
+        /// for the same partition — preserves FIFO among retries while keeping
+        /// them ahead of newer non-retry carry-over batches.
+        /// </summary>
+        public void AddAfterRetries(ReadyBatch batch)
+        {
+            if (!_partitions.TryGetValue(batch.TopicPartition, out var queue))
+            {
+                queue = new List<ReadyBatch>(4);
+                _partitions[batch.TopicPartition] = queue;
+            }
+            var insertIdx = 0;
+            while (insertIdx < queue.Count && queue[insertIdx].IsRetry)
+                insertIdx++;
+            queue.Insert(insertIdx, batch);
+            _count++;
+        }
+
+        /// <summary>
         /// Drains all batches to the destination in per-partition FIFO order, then clears.
         /// Used before coalescing to iterate in deterministic per-partition order.
         /// </summary>
@@ -1178,11 +1198,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Diagnostics.DekafMetrics.Retries.Add(1,
             new System.Diagnostics.TagList { { Diagnostics.DekafDiagnostics.MessagingDestinationName, batch.TopicPartition.Topic } });
 
-        // Add to FRONT of partition queue — retry batches are older and must be sent
-        // before any newer carry-over batches for the same partition.
-        // Matches Java's Deque.addFirst() for reenqueue (RecordAccumulator.reenqueue).
+        // Insert after existing retries but before non-retry carry-over batches.
+        // When ProcessCompletedResponses processes multiple responses (R1, R2, ...)
+        // in forward order, each response's retry must go AFTER earlier responses'
+        // retries for the same partition to preserve FIFO ordering.
         batch.IsRetry = true;
-        carryOver.AddFirst(batch);
+        carryOver.AddAfterRetries(batch);
 #if DEBUG
         batch.DebugLastTransition = (int)BatchTransition.AddedToCarryOver;
         batch.DebugLastBrokerId = _brokerId;
