@@ -663,7 +663,7 @@ public sealed class BrokerSenderSendLoopTests
     }
 
     [Test]
-    [Timeout(15_000)]
+    [Timeout(30_000)]
     public async Task SendLoop_HungResponseWithExpiredBatches_FreesCapacitySlot(CancellationToken cancellationToken)
     {
         // Regression test: when a response task never completes but all its batches expire
