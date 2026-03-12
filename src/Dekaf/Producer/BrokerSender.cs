@@ -1747,7 +1747,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (conn is not null && conn.IsConnected)
             return conn;
 
-        conn = await _connectionPool.GetConnectionAsync(_brokerId, cancellationToken)
+        // Apply request timeout to prevent indefinite blocking during connection creation.
+        // If GetConnectionAsync hangs (e.g., broker unreachable, TCP SYN drops), the entire
+        // send loop stalls — preventing HandleTimedOutRequests from running on batches already
+        // in _pendingResponses. The request timeout bounds this wait so the send loop can
+        // progress and handle timeouts for other pending batches.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(_options.RequestTimeoutMs));
+
+        conn = await _connectionPool.GetConnectionAsync(_brokerId, timeoutCts.Token)
             .ConfigureAwait(false);
         _pinnedConnection = conn;
         return conn;
