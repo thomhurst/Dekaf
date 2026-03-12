@@ -642,8 +642,26 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         var countToSend = coalescedCount;
                         coalescedBatches = null;
                         coalescedCount = 0;
-                        await SendCoalescedAsync(batchesToSend, countToSend, cancellationToken)
-                            .ConfigureAwait(false);
+                        // Apply request timeout to the send call to prevent the send loop from
+                        // blocking indefinitely. If SendCoalescedAsync hangs (e.g., connection
+                        // acquisition or write lock contention), the send loop must still progress
+                        // so that HandleTimedOutRequests can fire on batches already in _pendingResponses.
+                        // WaitAsync throws TimeoutException without cancelling the underlying task —
+                        // the hung SendCoalescedAsync continues in the background and will complete
+                        // normally (adding to _pendingResponses) or via exception handler (retry/fail)
+                        // when the underlying I/O eventually completes or the producer is disposed.
+                        try
+                        {
+                            await SendCoalescedAsync(batchesToSend, countToSend, cancellationToken)
+                                .AsTask()
+                                .WaitAsync(TimeSpan.FromMilliseconds(_options.RequestTimeoutMs),
+                                    cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        catch (TimeoutException)
+                        {
+                            LogSendCoalescedTimeout(_brokerId, countToSend);
+                        }
                         sentThisIteration = true;
                     }
                     else
@@ -1983,6 +2001,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] sending coalesced request: {CoalescedCount} batches")]
     private partial void LogSendingCoalesced(int brokerId, int coalescedCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] SendCoalescedAsync timed out for {BatchCount} batches — send loop continuing to process pending responses")]
+    private partial void LogSendCoalescedTimeout(int brokerId, int batchCount);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] waiting for in-flight capacity ({InFlightCount}/{MaxInFlight})")]
     private partial void LogWaitingForInFlightCapacity(int brokerId, int inFlightCount, int maxInFlight);
