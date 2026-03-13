@@ -721,7 +721,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private sealed class PartitionDeque
     {
         /// <summary>Sealed batches waiting to drain. Front = oldest (drain target).</summary>
-        public readonly List<ReadyBatch> Deque = new(4);
+        public readonly LinkedList<ReadyBatch> Deque = new();
 
         /// <summary>Per-partition lock for deque access (matches Java's synchronized(deque)).</summary>
         public readonly object Lock = new();
@@ -735,43 +735,36 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         /// <summary>Remove and return the first batch (oldest). Returns null if empty.</summary>
         public ReadyBatch? PollFirst()
         {
-            if (Deque.Count == 0) return null;
-            var batch = Deque[0];
-            Deque.RemoveAt(0);
-            return batch;
+            if (Deque.First is not { } first) return null;
+            Deque.RemoveFirst();
+            return first.Value;
         }
 
         /// <summary>Return the first batch without removing. Returns null if empty.</summary>
         public ReadyBatch? PeekFirst()
         {
-            return Deque.Count > 0 ? Deque[0] : null;
+            return Deque.First?.Value;
         }
 
         /// <summary>Add to back of deque (normal seal path).</summary>
-        public void AddLast(ReadyBatch batch) => Deque.Add(batch);
+        public void AddLast(ReadyBatch batch) => Deque.AddLast(batch);
 
         /// <summary>Add to front of deque (retry/reenqueue — Java's addFirst).</summary>
-        public void AddFirst(ReadyBatch batch) => Deque.Insert(0, batch);
+        public void AddFirst(ReadyBatch batch) => Deque.AddFirst(batch);
     }
 
     private PartitionDeque GetOrCreateDeque(TopicPartition tp)
         => _partitionDeques.GetOrAdd(tp, static _ => new PartitionDeque());
 
-    /// <summary>Result of Ready() check — which brokers have sendable data.</summary>
-    internal readonly record struct ReadyCheckResult(
-        HashSet<int> ReadyNodes,
-        int NextCheckDelayMs,
-        bool UnknownLeadersExist);
-
     /// <summary>
     /// Checks all partition deques for sendable data, matching Java's RecordAccumulator.ready().
-    /// Returns broker IDs with at least one partition whose head batch is sendable
-    /// (batch is complete, linger expired, or flush in progress).
+    /// Populates the caller-provided readyNodes set with broker IDs that have at least one
+    /// partition whose head batch is sendable (batch is complete, linger expired, or flush in progress).
     /// Only called from the sender thread.
     /// </summary>
-    internal ReadyCheckResult Ready(MetadataManager metadataManager, long nowMs)
+    internal (int NextCheckDelayMs, bool UnknownLeadersExist) Ready(
+        MetadataManager metadataManager, long nowMs, HashSet<int> readyNodes)
     {
-        var readyNodes = new HashSet<int>();
         var nextCheckDelayMs = int.MaxValue;
         var unknownLeadersExist = false;
 
@@ -823,39 +816,56 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             readyNodes.Add(leader.NodeId);
         }
 
-        return new ReadyCheckResult(readyNodes, nextCheckDelayMs == int.MaxValue ? 100 : nextCheckDelayMs, unknownLeadersExist);
+        return (nextCheckDelayMs == int.MaxValue ? 100 : nextCheckDelayMs, unknownLeadersExist);
     }
 
     /// <summary>
     /// Drains one batch per partition for each ready broker, matching Java's RecordAccumulator.drain().
     /// Returns per-broker batch lists. Only called from the sender thread.
     /// </summary>
-    internal Dictionary<int, List<ReadyBatch>> Drain(
+    internal void Drain(
         MetadataManager metadataManager,
         HashSet<int> readyNodes,
-        int maxRequestSize)
+        int maxRequestSize,
+        Dictionary<int, List<ReadyBatch>> result,
+        List<List<ReadyBatch>> batchListPool)
     {
-        var result = new Dictionary<int, List<ReadyBatch>>(readyNodes.Count);
-
         foreach (var nodeId in readyNodes)
         {
-            var batches = DrainBatchesForOneNode(metadataManager, nodeId, maxRequestSize);
-            if (batches.Count > 0)
-                result[nodeId] = batches;
-        }
+            // Get a list from the pool or create a new one
+            List<ReadyBatch> batches;
+            if (batchListPool.Count > 0)
+            {
+                batches = batchListPool[^1];
+                batchListPool.RemoveAt(batchListPool.Count - 1);
+            }
+            else
+            {
+                batches = new List<ReadyBatch>();
+            }
 
-        return result;
+            DrainBatchesForOneNode(metadataManager, nodeId, maxRequestSize, batches);
+            if (batches.Count > 0)
+            {
+                result[nodeId] = batches;
+            }
+            else
+            {
+                // Return unused list to pool
+                batchListPool.Add(batches);
+            }
+        }
     }
 
-    private List<ReadyBatch> DrainBatchesForOneNode(
+    private void DrainBatchesForOneNode(
         MetadataManager metadataManager,
         int nodeId,
-        int maxRequestSize)
+        int maxRequestSize,
+        List<ReadyBatch> ready)
     {
-        var ready = new List<ReadyBatch>();
         var partitions = metadataManager.GetPartitionsForNode(nodeId);
         if (partitions is null || partitions.Count == 0)
-            return ready;
+            return;
 
         if (!_drainIndex.TryGetValue(nodeId, out var startIndex))
             startIndex = 0;
@@ -902,7 +912,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        return ready;
     }
 
     /// <summary>
@@ -932,20 +941,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return;
         }
 
-        var insertIdx = 0;
-        for (var i = 0; i < pd.Deque.Count; i++)
+        var node = pd.Deque.First;
+        while (node != null
+            && node.Value.RecordBatch.BaseSequence >= 0
+            && node.Value.RecordBatch.BaseSequence < batch.RecordBatch.BaseSequence)
         {
-            if (pd.Deque[i].RecordBatch.BaseSequence >= 0
-                && pd.Deque[i].RecordBatch.BaseSequence < batch.RecordBatch.BaseSequence)
-            {
-                insertIdx = i + 1;
-            }
-            else
-            {
-                break;
-            }
+            node = node.Next;
         }
-        pd.Deque.Insert(insertIdx, batch);
+
+        if (node == null) pd.Deque.AddLast(batch);
+        else pd.Deque.AddBefore(node, batch);
     }
 
     internal void MutePartition(TopicPartition tp) => _mutedPartitions.TryAdd(tp, 0);

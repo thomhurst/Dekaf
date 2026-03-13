@@ -154,7 +154,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private sealed class PartitionCarryOver
     {
-        private readonly Dictionary<TopicPartition, List<ReadyBatch>> _partitions = new();
+        private readonly Dictionary<TopicPartition, LinkedList<ReadyBatch>> _partitions = new();
         private int _count;
 
         public int Count => _count;
@@ -164,10 +164,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             if (!_partitions.TryGetValue(batch.TopicPartition, out var queue))
             {
-                queue = new List<ReadyBatch>(4);
+                queue = new LinkedList<ReadyBatch>();
                 _partitions[batch.TopicPartition] = queue;
             }
-            queue.Add(batch);
+            queue.AddLast(batch);
             _count++;
         }
 
@@ -179,10 +179,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             if (!_partitions.TryGetValue(batch.TopicPartition, out var queue))
             {
-                queue = new List<ReadyBatch>(4);
+                queue = new LinkedList<ReadyBatch>();
                 _partitions[batch.TopicPartition] = queue;
             }
-            queue.Insert(0, batch);
+            queue.AddFirst(batch);
             _count++;
         }
 
@@ -196,13 +196,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             if (!_partitions.TryGetValue(batch.TopicPartition, out var queue))
             {
-                queue = new List<ReadyBatch>(4);
+                queue = new LinkedList<ReadyBatch>();
                 _partitions[batch.TopicPartition] = queue;
             }
-            var insertIdx = 0;
-            while (insertIdx < queue.Count && queue[insertIdx].IsRetry)
-                insertIdx++;
-            queue.Insert(insertIdx, batch);
+
+            var node = queue.First;
+            while (node is not null && node.Value.IsRetry)
+                node = node.Next;
+
+            if (node is not null)
+                queue.AddBefore(node, batch);
+            else
+                queue.AddLast(batch);
+
             _count++;
         }
 
@@ -214,10 +220,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             foreach (var kvp in _partitions)
             {
-                var queue = kvp.Value;
-                for (var i = 0; i < queue.Count; i++)
-                    destination.Add(queue[i]);
-                queue.Clear();
+                foreach (var batch in kvp.Value)
+                    destination.Add(batch);
+                kvp.Value.Clear();
             }
             _count = 0;
         }
@@ -233,8 +238,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public void ForEach(Action<ReadyBatch> action)
         {
             foreach (var kvp in _partitions)
-                for (var i = 0; i < kvp.Value.Count; i++)
-                    action(kvp.Value[i]);
+                foreach (var batch in kvp.Value)
+                    action(batch);
         }
 
         /// <summary>
@@ -246,14 +251,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             foreach (var kvp in _partitions)
             {
                 var queue = kvp.Value;
-                for (var i = queue.Count - 1; i >= 0; i--)
+                var node = queue.First;
+                while (node is not null)
                 {
-                    if (shouldRemove(queue[i]))
+                    var next = node.Next;
+                    if (shouldRemove(node.Value))
                     {
-                        onRemoved(queue[i]);
-                        queue.RemoveAt(i);
+                        onRemoved(node.Value);
+                        queue.Remove(node);
                         _count--;
                     }
+                    node = next;
                 }
             }
         }

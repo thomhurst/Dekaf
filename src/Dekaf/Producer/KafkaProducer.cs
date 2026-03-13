@@ -2132,21 +2132,31 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         try
         {
+            // Allocate collections once and reuse across iterations to avoid per-iteration allocations
+            var readyNodes = new HashSet<int>();
+            var drainResult = new Dictionary<int, List<ReadyBatch>>();
+            var batchListPool = new List<List<ReadyBatch>>();
+
             while (!cancellationToken.IsCancellationRequested)
             {
                 // 1. Check which brokers have sendable data
-                var readyResult = _accumulator.Ready(_metadataManager, Stopwatch.GetTimestamp());
+                readyNodes.Clear();
+                var (nextCheckDelayMs, unknownLeadersExist) = _accumulator.Ready(
+                    _metadataManager, Stopwatch.GetTimestamp(), readyNodes);
 
-                if (readyResult.ReadyNodes.Count > 0)
+                if (readyNodes.Count > 0)
                 {
                     // 2. Drain one batch per partition for each ready broker
-                    var batches = _accumulator.Drain(
+                    drainResult.Clear();
+                    _accumulator.Drain(
                         _metadataManager,
-                        readyResult.ReadyNodes,
-                        _options.MaxRequestSize > 0 ? _options.MaxRequestSize : 1048576);
+                        readyNodes,
+                        _options.MaxRequestSize > 0 ? _options.MaxRequestSize : 1048576,
+                        drainResult,
+                        batchListPool);
 
                     // 3. Distribute pre-drained batch lists to broker senders
-                    foreach (var (brokerId, batchList) in batches)
+                    foreach (var (brokerId, batchList) in drainResult)
                     {
                         if (batchList.Count == 0)
                             continue;
@@ -2192,13 +2202,20 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                                 FailAndCleanupBatch(batchList[i], ex);
                         }
                     }
+
+                    // Return batch lists to pool for reuse
+                    foreach (var (_, batchList) in drainResult)
+                    {
+                        batchList.Clear();
+                        batchListPool.Add(batchList);
+                    }
                 }
 
                 // 4. If batches exist for partitions with unknown leaders, trigger metadata refresh.
                 // This handles partition expansion: producer cached 2-partition metadata but
                 // topic now has 4 partitions. Without refresh, those batches sit in deque forever.
                 // Matches Java's RecordAccumulator.ready() unknownLeadersExist behavior.
-                if (readyResult.UnknownLeadersExist)
+                if (unknownLeadersExist)
                 {
                     try
                     {
@@ -2214,14 +2231,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 // Closed is set at the start of CloseAsync, but FlushAsync (called within
                 // CloseAsync) waits for _inFlightBatchCount == 0. We must keep the sender
                 // alive until FlushAsync completes by checking in-flight batches too.
-                if (_accumulator.Closed && readyResult.ReadyNodes.Count == 0 && !_accumulator.HasPendingWork())
+                if (_accumulator.Closed && readyNodes.Count == 0 && !_accumulator.HasPendingWork())
                     break;
 
                 // 6. Wait for wakeup signal (new batch sealed, response complete, or timeout)
                 try
                 {
                     await _accumulator.WaitForWakeupAsync(
-                        readyResult.ReadyNodes.Count > 0 ? 0 : readyResult.NextCheckDelayMs,
+                        readyNodes.Count > 0 ? 0 : nextCheckDelayMs,
                         cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
