@@ -2135,7 +2135,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // Allocate collections once and reuse across iterations to avoid per-iteration allocations
             var readyNodes = new HashSet<int>();
             var drainResult = new Dictionary<int, List<ReadyBatch>>();
-            var batchListPool = new List<List<ReadyBatch>>();
+            var batchListPool = new Stack<List<ReadyBatch>>();
 
             while (!cancellationToken.IsCancellationRequested)
             {
@@ -2147,7 +2147,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 if (readyNodes.Count > 0)
                 {
                     // 2. Drain one batch per partition for each ready broker
-                    drainResult.Clear();
                     _accumulator.Drain(
                         _metadataManager,
                         readyNodes,
@@ -2156,58 +2155,65 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                         batchListPool);
 
                     // 3. Distribute pre-drained batch lists to broker senders
-                    foreach (var (brokerId, batchList) in drainResult)
+                    try
                     {
-                        if (batchList.Count == 0)
-                            continue;
-
-                        // Complete delivery task for each batch
-                        for (var i = 0; i < batchList.Count; i++)
+                        foreach (var (brokerId, batchList) in drainResult)
                         {
-                            batchList[i].CompleteDelivery();
-#if DEBUG
-                            batchList[i].DebugLastTransition = (int)BatchTransition.CompleteDelivery;
-#endif
-                        }
+                            if (batchList.Count == 0)
+                                continue;
 
-                        try
-                        {
-                            var brokerSender = GetOrCreateBrokerSender(brokerId);
-
-                            // Bridge: enqueue each batch individually via existing BrokerSender path
-                            // Task 6 will replace this with a batch-list channel
+                            // Complete delivery task for each batch
                             for (var i = 0; i < batchList.Count; i++)
                             {
-                                batchList[i].AppendDiag('Q');
+                                batchList[i].CompleteDelivery();
 #if DEBUG
-                                batchList[i].DebugLastTransition = (int)BatchTransition.EnqueuedToBrokerSender;
-                                batchList[i].DebugLastBrokerId = brokerId;
+                                batchList[i].DebugLastTransition = (int)BatchTransition.CompleteDelivery;
 #endif
-                                await brokerSender.EnqueueAsync(batchList[i], cancellationToken)
-                                    .ConfigureAwait(false);
+                            }
+
+                            try
+                            {
+                                var brokerSender = GetOrCreateBrokerSender(brokerId);
+
+                                // Bridge: enqueue each batch individually via existing BrokerSender path
+                                // Task 6 will replace this with a batch-list channel
+                                for (var i = 0; i < batchList.Count; i++)
+                                {
+                                    batchList[i].AppendDiag('Q');
+#if DEBUG
+                                    batchList[i].DebugLastTransition = (int)BatchTransition.EnqueuedToBrokerSender;
+                                    batchList[i].DebugLastBrokerId = brokerId;
+#endif
+                                    await brokerSender.EnqueueAsync(batchList[i], cancellationToken)
+                                        .ConfigureAwait(false);
+                                }
+                            }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                            {
+                                // Fail remaining batches
+                                for (var i = 0; i < batchList.Count; i++)
+                                    FailAndCleanupBatch(batchList[i],
+                                        new OperationCanceledException(cancellationToken));
+                                throw;
+                            }
+                            catch (Exception ex)
+                            {
+                                // Fail all batches in this batch list
+                                for (var i = 0; i < batchList.Count; i++)
+                                    FailAndCleanupBatch(batchList[i], ex);
                             }
                         }
-                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                        {
-                            // Fail remaining batches
-                            for (var i = 0; i < batchList.Count; i++)
-                                FailAndCleanupBatch(batchList[i],
-                                    new OperationCanceledException(cancellationToken));
-                            throw;
-                        }
-                        catch (Exception ex)
-                        {
-                            // Fail all batches in this batch list
-                            for (var i = 0; i < batchList.Count; i++)
-                                FailAndCleanupBatch(batchList[i], ex);
-                        }
                     }
-
-                    // Return batch lists to pool for reuse
-                    foreach (var (_, batchList) in drainResult)
+                    finally
                     {
-                        batchList.Clear();
-                        batchListPool.Add(batchList);
+                        // Return batch lists to pool for reuse (including on cancellation paths)
+                        foreach (var (_, batchList) in drainResult)
+                        {
+                            batchList.Clear();
+                            batchListPool.Push(batchList);
+                        }
+
+                        drainResult.Clear();
                     }
                 }
 

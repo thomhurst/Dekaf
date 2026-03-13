@@ -821,28 +821,27 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Drains one batch per partition for each ready broker, matching Java's RecordAccumulator.drain().
-    /// Returns per-broker batch lists. Only called from the sender thread.
+    /// Populates caller-owned <paramref name="result"/> with per-broker batch lists.
+    /// Only called from the sender thread.
     /// </summary>
+    /// <param name="metadataManager">Metadata manager for partition-to-broker mapping.</param>
+    /// <param name="readyNodes">Broker IDs with sendable data (from <see cref="Ready"/>).</param>
+    /// <param name="maxRequestSize">Maximum request size in bytes.</param>
+    /// <param name="result">Caller-owned dictionary to populate. Must be empty on entry.</param>
+    /// <param name="batchListPool">LIFO pool of reusable batch lists to avoid per-call allocations.</param>
     internal void Drain(
         MetadataManager metadataManager,
         HashSet<int> readyNodes,
         int maxRequestSize,
         Dictionary<int, List<ReadyBatch>> result,
-        List<List<ReadyBatch>> batchListPool)
+        Stack<List<ReadyBatch>> batchListPool)
     {
         foreach (var nodeId in readyNodes)
         {
             // Get a list from the pool or create a new one
-            List<ReadyBatch> batches;
-            if (batchListPool.Count > 0)
-            {
-                batches = batchListPool[^1];
-                batchListPool.RemoveAt(batchListPool.Count - 1);
-            }
-            else
-            {
-                batches = new List<ReadyBatch>();
-            }
+            var batches = batchListPool.Count > 0
+                ? batchListPool.Pop()
+                : new List<ReadyBatch>();
 
             DrainBatchesForOneNode(metadataManager, nodeId, maxRequestSize, batches);
             if (batches.Count > 0)
@@ -852,7 +851,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             else
             {
                 // Return unused list to pool
-                batchListPool.Add(batches);
+                batchListPool.Push(batches);
             }
         }
     }
@@ -941,6 +940,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return;
         }
 
+        // Walk to the first node that is unsequenced (< 0) or >= batch's sequence,
+        // then insert before it to maintain ascending sequence order.
         var node = pd.Deque.First;
         while (node != null
             && node.Value.RecordBatch.BaseSequence >= 0
