@@ -55,6 +55,12 @@ public abstract class KafkaIntegrationTest(KafkaTestContainer kafkaTestContainer
                 // the message may still be delivered in the background.
                 await Task.Delay(500);
             }
+            catch (ObjectDisposedException) when (attempt < maxAttempts - 1)
+            {
+                // BrokerSender disposed during an in-flight produce (EDQCSGX pattern).
+                // The producer may recover with a new connection on the next attempt.
+                await Task.Delay(500);
+            }
         }
 
         // Final attempt without retry catch
