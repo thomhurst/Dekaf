@@ -14,13 +14,15 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     /// Produces a warmup message to each partition to ensure the broker has fully initialized
     /// the partition and its producer state tracking.
     /// </summary>
-    private static async Task WarmUpAllPartitions(IKafkaProducer<string, string> producer, string topic, int partitions)
+    private static async Task WarmUpAllPartitions(
+        IKafkaProducer<string, string> producer, string topic, int partitions,
+        CancellationToken cancellationToken = default)
     {
         for (var p = 0; p < partitions; p++)
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic, Key = "warmup", Value = "warmup", Partition = p
-            });
+            }, cancellationToken);
     }
 
     [Test]
@@ -28,13 +30,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     {
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 5);
+        using var produceCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 5);
+        await WarmUpAllPartitions(producer, topic, 5, produceCts.Token);
 
         // Act - produce multiple messages with same key
         var results = new List<RecordMetadata>();
@@ -45,7 +48,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Topic = topic,
                 Key = "consistent-key",
                 Value = $"value-{i}"
-            });
+            }, produceCts.Token);
             results.Add(metadata);
         }
 
@@ -59,13 +62,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     {
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 5);
+        using var produceCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 5);
+        await WarmUpAllPartitions(producer, topic, 5, produceCts.Token);
 
         // Act - produce messages with different keys
         var results = new List<RecordMetadata>();
@@ -76,7 +80,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Topic = topic,
                 Key = $"different-key-{i}",
                 Value = $"value-{i}"
-            });
+            }, produceCts.Token);
             results.Add(metadata);
         }
 
@@ -90,13 +94,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     {
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
+        using var produceCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 3);
+        await WarmUpAllPartitions(producer, topic, 3, produceCts.Token);
 
         // Produce to all partitions
         for (var p = 0; p < 3; p++)
@@ -107,7 +112,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Key = $"key-{p}",
                 Value = $"value-partition-{p}",
                 Partition = p
-            });
+            }, produceCts.Token);
         }
 
         // Act - manually assign only partition 1
@@ -141,13 +146,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     {
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
+        using var produceCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 4);
+        await WarmUpAllPartitions(producer, topic, 4, produceCts.Token);
 
         // Produce to partitions 0, 1, and 2
         for (var p = 0; p < 3; p++)
@@ -158,7 +164,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Key = $"key-{p}",
                 Value = $"value-p{p}",
                 Partition = p
-            });
+            }, produceCts.Token);
         }
 
         // Act - assign partitions 0 and 2 only
@@ -195,20 +201,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
         var groupId = $"test-group-{Guid.NewGuid():N}";
+        using var produceCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .BuildAsync();
 
-        // Warm up all partitions to ensure broker has fully initialized partition state.
-        // Without this, the first produce to a newly-created partition may hit
-        // NotLeaderOrFollower, triggering a retry that mutes the partition.
-        for (var p = 0; p < 3; p++)
-            await producer.ProduceAsync(new ProducerMessage<string, string>
-            {
-                Topic = topic, Key = "warmup", Value = "warmup", Partition = p
-            });
+        await WarmUpAllPartitions(producer, topic, 3, produceCts.Token);
 
         // Produce to all partitions
         for (var p = 0; p < 3; p++)
@@ -219,7 +219,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, produceCts.Token);
         }
 
         // Act - subscribe (not manual assign)
@@ -254,13 +254,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     {
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        using var produceCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 2);
+        await WarmUpAllPartitions(producer, topic, 2, produceCts.Token);
 
         // Produce ordered messages to partition 0
         for (var i = 0; i < 10; i++)
@@ -271,7 +272,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Key = $"key-{i}",
                 Value = $"value-{i:D2}",
                 Partition = 0
-            });
+            }, produceCts.Token);
         }
 
         // Act
@@ -306,13 +307,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     {
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 2);
+        using var produceCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 2);
+        await WarmUpAllPartitions(producer, topic, 2, produceCts.Token);
 
         // Produce to both partitions
         for (var i = 0; i < 5; i++)
@@ -323,14 +325,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Key = $"key-p0-{i}",
                 Value = $"p0-value-{i}",
                 Partition = 0
-            });
+            }, produceCts.Token);
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-p1-{i}",
                 Value = $"p1-value-{i}",
                 Partition = 1
-            });
+            }, produceCts.Token);
         }
 
         // Act - assign both but seek partition 0 to offset 3
@@ -369,13 +371,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 10);
         var groupId = $"test-group-{Guid.NewGuid():N}";
+        using var produceCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 10);
+        await WarmUpAllPartitions(producer, topic, 10, produceCts.Token);
 
         // Produce to all 10 partitions
         for (var p = 0; p < 10; p++)
@@ -386,7 +389,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Key = $"key-{p}",
                 Value = $"value-{p}",
                 Partition = p
-            });
+            }, produceCts.Token);
         }
 
         // Act
@@ -421,13 +424,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 5);
         var groupId = $"test-group-{Guid.NewGuid():N}";
+        using var produceCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
             .BuildAsync();
 
-        await WarmUpAllPartitions(producer, topic, 5);
+        await WarmUpAllPartitions(producer, topic, 5, produceCts.Token);
 
         // Produce same key multiple times
         var expectedPartition = -1;
@@ -438,7 +442,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
                 Topic = topic,
                 Key = "consistent-key",
                 Value = $"value-{i}"
-            });
+            }, produceCts.Token);
 
             if (expectedPartition < 0)
             {

@@ -18,6 +18,11 @@ internal sealed class GlobalTestSetup
     [Before(TestSession)]
     public static void RegisterCompressionCodecs()
     {
+        // Ensure the thread pool has enough threads for timer callbacks (CancelAfter, etc.)
+        // to fire promptly on CI runners with limited CPUs. Without this, thread pool
+        // starvation can delay CancellationTokenSource timers by hundreds of seconds,
+        // causing tests to hang until the orphan sweep (360s) fires.
+        ThreadPool.SetMinThreads(32, 32);
         CompressionCodecRegistry.Default.AddLz4();
         CompressionCodecRegistry.Default.AddSnappy();
         CompressionCodecRegistry.Default.AddZstd();
