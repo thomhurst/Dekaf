@@ -40,31 +40,34 @@ public abstract class KafkaIntegrationTest(KafkaTestContainer kafkaTestContainer
         IKafkaProducer<TKey, TValue> producer,
         ProducerMessage<TKey, TValue> message,
         int maxAttempts = 3,
-        int timeoutSeconds = 15)
+        int timeoutSeconds = 15,
+        CancellationToken cancellationToken = default)
     {
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             try
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
                 return await producer.ProduceAsync(message, cts.Token);
             }
-            catch (OperationCanceledException) when (attempt < maxAttempts - 1)
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < maxAttempts - 1)
             {
                 // Timeout — retry. The cancellation only stops the caller's await;
                 // the message may still be delivered in the background.
-                await Task.Delay(500);
+                await Task.Delay(500, cancellationToken);
             }
             catch (ObjectDisposedException) when (attempt < maxAttempts - 1)
             {
                 // BrokerSender disposed during an in-flight produce (EDQCSGX pattern).
                 // The producer may recover with a new connection on the next attempt.
-                await Task.Delay(500);
+                await Task.Delay(500, cancellationToken);
             }
         }
 
         // Final attempt without retry catch
-        using var finalCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        using var finalCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        finalCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
         return await producer.ProduceAsync(message, finalCts.Token);
     }
 }

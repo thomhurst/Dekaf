@@ -236,12 +236,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns all TopicPartitions currently led by the given broker node.
+    /// Populates <paramref name="result"/> with all TopicPartitions currently led by the given broker node.
+    /// The caller owns the list and should clear/reuse it across iterations to avoid per-call allocations.
     /// Used by the sender loop's drain algorithm for per-broker batch selection.
     /// </summary>
-    internal IReadOnlyList<TopicPartition>? GetPartitionsForNode(int nodeId)
+    internal void GetPartitionsForNode(int nodeId, List<TopicPartition> result)
     {
-        var result = new List<TopicPartition>();
+        result.Clear();
         foreach (var topic in _metadata.GetTopics())
         {
             foreach (var partition in topic.Partitions)
@@ -250,7 +251,6 @@ public sealed partial class MetadataManager : IAsyncDisposable
                     result.Add(new TopicPartition(topic.Name, partition.PartitionIndex));
             }
         }
-        return result.Count > 0 ? result : null;
     }
 
     /// <summary>

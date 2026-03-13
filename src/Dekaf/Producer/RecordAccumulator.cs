@@ -579,6 +579,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly Dictionary<int, int> _drainIndex = new();
 
     /// <summary>
+    /// Reusable list for <see cref="MetadataManager.GetPartitionsForNode"/> to avoid per-call allocations
+    /// in the drain loop. Single-threaded: only accessed by the sender loop.
+    /// </summary>
+    private readonly List<TopicPartition> _reusablePartitionList = new();
+
+    /// <summary>
     /// Signaled when new data is available for the sender loop to drain.
     /// Set by seal paths and reenqueue. Sender loop resets after wake.
     /// </summary>
@@ -890,9 +896,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int maxRequestSize,
         List<ReadyBatch> ready)
     {
-        var partitions = metadataManager.GetPartitionsForNode(nodeId);
-        if (partitions is null || partitions.Count == 0)
+        metadataManager.GetPartitionsForNode(nodeId, _reusablePartitionList);
+        if (_reusablePartitionList.Count == 0)
             return;
+
+        var partitions = _reusablePartitionList;
 
         if (!_drainIndex.TryGetValue(nodeId, out var startIndex))
             startIndex = 0;
@@ -1814,10 +1822,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Interlocked.Increment(ref _inFlightBatchCount);
         _inFlightBatches.TryAdd(batch, 0);
         batch.AppendDiag('E');
-#if DEBUG
-        batch.DebugLastTransition = (int)BatchTransition.EntersPipeline;
-        Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} EntersPipeline inFlight={Volatile.Read(ref _inFlightBatchCount)}");
-#endif
     }
 
     /// <summary>
@@ -1828,10 +1832,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <returns>true if the batch was successfully removed from tracking; false if it was already removed by another thread.</returns>
     internal bool OnBatchExitsPipeline(ReadyBatch batch)
     {
-#if DEBUG
-        batch.DebugLastTransition = (int)BatchTransition.ExitsPipeline;
-        Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} ExitsPipeline (was transition={(BatchTransition)batch.DebugLastTransition} broker={batch.DebugLastBrokerId})");
-#endif
         // TryRemove acts as a natural atomic guard: only the first thread to remove the batch
         // proceeds with the decrement. This prevents double-decrement from concurrent cleanup
         // paths (e.g., DisposeAsync racing with SendLoopAsync's finally block).
@@ -2918,34 +2918,6 @@ internal sealed class ReadyBatchPool
 /// Returns pooled arrays to ArrayPool when complete.
 /// PooledValueTaskSource instances auto-return to their pool when GetResult() is called.
 /// </summary>
-#if DEBUG
-/// <summary>
-/// Tracks the last known location of a ReadyBatch in the BrokerSender pipeline.
-/// Survives process kills — inspectable via hangdump's dumpobj command.
-/// </summary>
-internal enum BatchTransition : int
-{
-    None = 0,
-    EntersPipeline = 1,
-    CompleteDelivery = 2,
-    EnqueuedToBrokerSender = 3,
-    Coalesced = 4,
-    InflightRegistered = 5,
-    MemoryReleased = 6,
-    AddedToPendingResponses = 7,
-    ProcessingResponse = 8,
-    CompleteSendCalled = 9,
-    FailCalled = 10,
-    CleanupBatchCalled = 11,
-    ExitsPipeline = 12,
-    ReturnedToPool = 13,
-    AddedToSendFailedRetries = 14,
-    AddedToCarryOver = 15,
-    Rerouted = 16,
-    FailEnqueuedBatch = 17,
-}
-#endif
-
 internal sealed class ReadyBatch : IValueTaskSource<bool>
 {
     private TopicPartition _topicPartition;
@@ -2997,20 +2969,6 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     // In-flight tracker entry for coordinated retry with multiple in-flight batches per partition.
     // Set by KafkaProducer when registering with PartitionInflightTracker, cleared in Reset().
     internal InflightEntry? InflightEntry { get; set; }
-
-#if DEBUG
-    /// <summary>
-    /// Last transition this batch went through in the pipeline. Inspectable in hangdumps
-    /// via dumpobj to trace where a batch was "lost" when it fails to exit the pipeline.
-    /// </summary>
-    internal volatile int DebugLastTransition;
-
-    /// <summary>
-    /// Broker ID of the BrokerSender that last handled this batch. Helps correlate
-    /// batch state with specific BrokerSender instances in hangdump analysis.
-    /// </summary>
-    internal volatile int DebugLastBrokerId;
-#endif
 
     /// <summary>
     /// Lightweight lifecycle trace for diagnosing orphaned batches in Release builds.
@@ -3190,10 +3148,6 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         IsRetry = false;
         RetryNotBefore = 0;
         _diagTraceLen = 0;
-#if DEBUG
-        DebugLastTransition = (int)BatchTransition.ReturnedToPool;
-        DebugLastBrokerId = -1;
-#endif
 
         // NOTE: _cleanedUp, _completed, and _sendCompleted are NOT reset here. They stay
         // at 1 (armed) while the batch is in the pool, so that stale references from a
