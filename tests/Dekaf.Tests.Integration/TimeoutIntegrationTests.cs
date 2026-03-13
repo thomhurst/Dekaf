@@ -248,6 +248,13 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithLinger(TimeSpan.FromMilliseconds(5000)) // Doesn't matter - awaited produces flush immediately
             .BuildAsync();
 
+        // Warm up: establish connection and metadata cache so the timed produce below
+        // isn't delayed by first-time metadata fetch + connection establishment.
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic, Key = "warmup", Value = "warmup"
+        });
+
         // Act - Start produce, then cancel after message is already appended
         using var cts = new CancellationTokenSource();
 
