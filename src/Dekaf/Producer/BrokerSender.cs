@@ -643,29 +643,38 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         coalescedBatches = null;
                         coalescedCount = 0;
                         // Two-layer timeout to prevent send loop stalls:
-                        // 1. Linked CTS (RequestTimeoutMs): cancels cooperating async operations
-                        //    (ConnectAsync, WaitAsync on locks) — triggers Z path for retry/fail.
-                        // 2. WaitAsync backup (5s): ensures the send loop iterates frequently
-                        //    enough for HandleTimedOutRequests to catch stuck batches. Without
-                        //    this, a hung SendCoalescedAsync stalls the entire loop, preventing
-                        //    timeout processing of batches already in _pendingResponses.
+                        // 1. WaitAsync (5s): unblocks the send loop quickly so HandleTimedOutRequests
+                        //    can process batches already in _pendingResponses.
+                        // 2. Linked CTS cancellation (immediate on timeout): cancels the background
+                        //    SendCoalescedAsync, triggering the Z path for retry/fail.
+                        // CRITICAL: The linked CTS must NOT be disposed until the background task
+                        // completes — otherwise the CancelAfter timer is killed before it fires,
+                        // leaving the background task hanging forever with a dead token.
                         {
-                            using var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                            var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                             sendTimeoutCts.CancelAfter(_options.RequestTimeoutMs);
+                            var sendTask = SendCoalescedAsync(batchesToSend, countToSend, sendTimeoutCts.Token)
+                                .AsTask();
                             try
                             {
-                                await SendCoalescedAsync(batchesToSend, countToSend, sendTimeoutCts.Token)
-                                    .AsTask()
+                                await sendTask
                                     .WaitAsync(TimeSpan.FromMilliseconds(5000),
                                         cancellationToken)
                                     .ConfigureAwait(false);
+                                sendTimeoutCts.Dispose();
                             }
                             catch (TimeoutException)
                             {
-                                // WaitAsync backup fired — SendCoalescedAsync didn't complete
-                                // within 5s (probably hung at connection creation or write).
-                                // Invalidate connection to force reconnect on next iteration.
+                                // WaitAsync fired — cancel the background operation immediately
+                                // (don't wait for CancelAfter at 30s). Dispose when task completes.
                                 _pinnedConnection = null;
+                                sendTimeoutCts.Cancel();
+                                _ = sendTask.ContinueWith(
+                                    static (_, state) => ((CancellationTokenSource)state!).Dispose(),
+                                    sendTimeoutCts,
+                                    CancellationToken.None,
+                                    TaskContinuationOptions.ExecuteSynchronously,
+                                    TaskScheduler.Default);
                             }
                         }
                         sentThisIteration = true;
