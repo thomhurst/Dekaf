@@ -718,16 +718,21 @@ public sealed partial class KafkaConnection : IKafkaConnection
             // While loop exited normally (no exception thrown, so no catch block runs).
             // Two cases: cancellation between iterations, or EOF break (already handled above).
             if (cancellationToken.IsCancellationRequested)
+            {
+                _disposed = true;
                 FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // Expected during shutdown — fail any pending requests so callers don't hang
+            _disposed = true;
             FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
         }
         catch (Exception ex)
         {
             LogReceiveLoopError(ex);
+            _disposed = true; // Prevent new requests from being queued on a dead connection
             FailAllPendingRequests(ex);
         }
     }
