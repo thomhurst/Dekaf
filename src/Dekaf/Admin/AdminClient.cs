@@ -164,6 +164,9 @@ public sealed class AdminClient : IAdminClient
 
             await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
         }
+
+        throw new KafkaException(Protocol.ErrorCode.LeaderNotAvailable,
+            $"Topic(s) {string.Join(", ", topicNames)} did not have all partition leaders elected after {maxRetries * retryDelayMs}ms");
     }
 
     public async ValueTask DeleteTopicsAsync(

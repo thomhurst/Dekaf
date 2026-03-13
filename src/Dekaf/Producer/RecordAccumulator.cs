@@ -3214,7 +3214,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // Check _cleanedUp AFTER winning the CAS to avoid TOCTOU race.
         // If Cleanup() ran between our CAS and this check, _doneCore may be reset.
         // In that case, skip SetResult to avoid calling it on a reset core.
-        if (Interlocked.CompareExchange(ref _cleanedUp, 0, 0) != 0)
+        if (Volatile.Read(ref _cleanedUp) != 0)
             return;
 
         // Signal batch is done (ready for fire-and-forget semantic)

@@ -256,10 +256,13 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
 
         await WarmUpAllPartitions(producer, topic, 2);
 
-        // Produce ordered messages to partition 0
+        // Produce ordered messages to partition 0.
+        // IMPORTANT: Do NOT use ProduceWithRetryAsync here. Cancellation after append
+        // doesn't prevent delivery (by design), so a retry would produce a duplicate,
+        // shifting indices and causing a false ordering failure.
         for (var i = 0; i < 10; i++)
         {
-            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
