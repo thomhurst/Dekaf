@@ -278,10 +278,12 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         await producer.FlushAsync(flushCts.Token);
 
-        // Wait for producer stats reflecting all messages
+        // Wait for producer stats reflecting all messages.
+        // The stats handler fires every 1s; after FlushAsync completes, it may take
+        // several more ticks before a snapshot captures all delivered messages.
         var matchingProducerStats = await WaitForStatsAsync(producerStats,
             s => s.MessagesProduced >= messageCount && s.MessagesDelivered >= messageCount,
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(30));
 
         await Assert.That(matchingProducerStats).IsNotNull();
         await Assert.That(matchingProducerStats!.MessagesProduced).IsGreaterThanOrEqualTo(messageCount);
