@@ -2146,17 +2146,17 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
                 if (readyNodes.Count > 0)
                 {
-                    // 2. Drain one batch per partition for each ready broker
-                    _accumulator.Drain(
-                        _metadataManager,
-                        readyNodes,
-                        _options.MaxRequestSize > 0 ? _options.MaxRequestSize : 1048576,
-                        drainResult,
-                        batchListPool);
-
-                    // 3. Distribute pre-drained batch lists to broker senders
                     try
                     {
+                        // 2. Drain one batch per partition for each ready broker
+                        _accumulator.Drain(
+                            _metadataManager,
+                            readyNodes,
+                            _options.MaxRequestSize > 0 ? _options.MaxRequestSize : 1048576,
+                            drainResult,
+                            batchListPool);
+
+                        // 3. Distribute pre-drained batch lists to broker senders
                         foreach (var (brokerId, batchList) in drainResult)
                         {
                             if (batchList.Count == 0)

@@ -769,14 +769,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
 
             var node = _deque.First;
-            while (node != null
+            while (node is not null
                 && node.Value.RecordBatch.BaseSequence >= 0
                 && node.Value.RecordBatch.BaseSequence < batch.RecordBatch.BaseSequence)
             {
                 node = node.Next;
             }
 
-            if (node == null) _deque.AddLast(batch);
+            if (node is null) _deque.AddLast(batch);
             else _deque.AddBefore(node, batch);
         }
     }
