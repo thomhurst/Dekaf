@@ -283,6 +283,7 @@ jobs:
 
     permissions:
       contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout
@@ -433,14 +434,12 @@ jobs:
           print(f"Generated benchmarks.md with {len(output)} lines")
           EOF
 
-      - name: Commit and Push Benchmark Results
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/docs/benchmarks.md
-          if git diff --staged --quiet; then
-            echo "No changes to commit"
-          else
-            git commit -m "docs: Update benchmark results"
-            git push
-          fi
+      - name: Create Pull Request for Benchmark Results
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "docs: Update benchmark results"
+          branch: docs/benchmark-results
+          title: "docs: Update benchmark results"
+          body: "Automated update of benchmark results documentation."
+          labels: documentation
+          delete-branch: true
