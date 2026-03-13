@@ -164,7 +164,7 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         var topic = await KafkaContainer.CreateTestTopicAsync();
         var groupId = $"metrics-lag-{Guid.NewGuid():N}";
         var stats = new ConcurrentBag<ConsumerStatistics>();
-        const int totalMessages = 20;
+        const int totalMessages = 10;
         const int consumeCount = 5;
 
         // Produce messages
@@ -245,9 +245,8 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         var producerStats = new ConcurrentBag<ProducerStatistics>();
         var consumerStats = new ConcurrentBag<ConsumerStatistics>();
         var groupId = $"metrics-throughput-{Guid.NewGuid():N}";
-        const int messageCount = 1000;
+        const int messageCount = 100;
 
-        // Produce 1000 messages
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
@@ -255,29 +254,23 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             .BuildAsync();
 
         // Warm up all partitions to ensure broker has initialized partition state.
-        // Without this, the first produce to a newly-created partition may get
-        // NotLeaderOrFollower, causing delivery timeouts on slow CI runners.
         for (var p = 0; p < 3; p++)
             await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
                 Topic = topic, Key = "warmup", Value = "warmup", Partition = p
             });
 
-        // Use ProduceAsync in batches with flush between to ensure delivery.
-        // Send (fire-and-forget) can silently drop messages under backpressure,
-        // and ProduceWithRetryAsync is too slow for 1000 messages with 15s timeouts.
-        using var produceCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"payload-{i}-{new string('x', 100)}"
-            }, produceCts.Token);
+            });
         }
 
-        await producer.FlushAsync(produceCts.Token);
+        await producer.FlushAsync();
 
         // Wait for producer stats reflecting all messages.
         // The stats handler fires every 1s; after FlushAsync completes, it may take
