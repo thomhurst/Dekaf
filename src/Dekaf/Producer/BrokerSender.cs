@@ -642,26 +642,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         var countToSend = coalescedCount;
                         coalescedBatches = null;
                         coalescedCount = 0;
-                        // Apply request timeout to the send call to prevent the send loop from
-                        // blocking indefinitely. If SendCoalescedAsync hangs (e.g., connection
-                        // acquisition or write lock contention), the send loop must still progress
-                        // so that HandleTimedOutRequests can fire on batches already in _pendingResponses.
-                        // WaitAsync throws TimeoutException without cancelling the underlying task —
-                        // the hung SendCoalescedAsync continues in the background and will complete
-                        // normally (adding to _pendingResponses) or via exception handler (retry/fail)
-                        // when the underlying I/O eventually completes or the producer is disposed.
-                        try
-                        {
-                            await SendCoalescedAsync(batchesToSend, countToSend, cancellationToken)
-                                .AsTask()
-                                .WaitAsync(TimeSpan.FromMilliseconds(_options.RequestTimeoutMs),
-                                    cancellationToken)
-                                .ConfigureAwait(false);
-                        }
-                        catch (TimeoutException)
-                        {
-                            LogSendCoalescedTimeout(_brokerId, countToSend);
-                        }
+                        // Apply request timeout via linked CancellationToken. Unlike WaitAsync
+                        // (which merely stops waiting, leaving the background task hanging with
+                        // orphaned batches), a linked CTS actually cancels the operation —
+                        // the OperationCanceledException propagates into SendCoalescedAsync's
+                        // exception handler which retries or fails the batches properly (Z path).
+                        using var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                        sendTimeoutCts.CancelAfter(_options.RequestTimeoutMs);
+                        await SendCoalescedAsync(batchesToSend, countToSend, sendTimeoutCts.Token)
+                            .ConfigureAwait(false);
                         sentThisIteration = true;
                     }
                     else
@@ -1596,9 +1585,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             LogPipelinedSend(_brokerId, count, _pendingResponses.Count);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested)
         {
-            // Shutdown — fail batches permanently (no point retrying)
+            // Shutdown — fail batches permanently (no point retrying).
+            // Check _cts (BrokerSender lifetime token) instead of cancellationToken because
+            // the parameter may be a linked timeout CTS. On timeout, we want retry (Z path),
+            // not permanent failure — only true shutdown should permanently fail batches.
             for (var i = 0; i < count; i++)
                 FailAndCleanupBatch(batches[i], new ObjectDisposedException(nameof(BrokerSender)));
 
@@ -1606,7 +1598,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            // Send failed (connection error, etc.) — retry batches instead of permanently failing.
+            // Send failed (connection error, timeout, etc.) — retry batches instead of permanently failing.
             // Aligned with Java Kafka's Sender: transient failures cause reenqueue for retry.
             _pinnedConnection = null; // Invalidate broken connection
             LogResponseFailed(ex, _brokerId);
@@ -2001,9 +1993,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] sending coalesced request: {CoalescedCount} batches")]
     private partial void LogSendingCoalesced(int brokerId, int coalescedCount);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] SendCoalescedAsync timed out for {BatchCount} batches — send loop continuing to process pending responses")]
-    private partial void LogSendCoalescedTimeout(int brokerId, int batchCount);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "BrokerSender[{BrokerId}] waiting for in-flight capacity ({InFlightCount}/{MaxInFlight})")]
     private partial void LogWaitingForInFlightCapacity(int brokerId, int inFlightCount, int maxInFlight);
