@@ -2132,65 +2132,88 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         try
         {
+            // Allocate collections once and reuse across iterations to avoid per-iteration allocations
+            var readyNodes = new HashSet<int>();
+            var drainResult = new Dictionary<int, List<ReadyBatch>>();
+            var batchListPool = new Stack<List<ReadyBatch>>();
+
             while (!cancellationToken.IsCancellationRequested)
             {
                 // 1. Check which brokers have sendable data
-                var readyResult = _accumulator.Ready(_metadataManager, Stopwatch.GetTimestamp());
+                readyNodes.Clear();
+                var (nextCheckDelayMs, unknownLeadersExist) = _accumulator.Ready(
+                    _metadataManager, Stopwatch.GetTimestamp(), readyNodes);
 
-                if (readyResult.ReadyNodes.Count > 0)
+                if (readyNodes.Count > 0)
                 {
-                    // 2. Drain one batch per partition for each ready broker
-                    var batches = _accumulator.Drain(
-                        _metadataManager,
-                        readyResult.ReadyNodes,
-                        _options.MaxRequestSize > 0 ? _options.MaxRequestSize : 1048576);
-
-                    // 3. Distribute pre-drained batch lists to broker senders
-                    foreach (var (brokerId, batchList) in batches)
+                    try
                     {
-                        if (batchList.Count == 0)
-                            continue;
+                        // 2. Drain one batch per partition for each ready broker
+                        _accumulator.Drain(
+                            _metadataManager,
+                            readyNodes,
+                            _options.MaxRequestSize > 0 ? _options.MaxRequestSize : 1048576,
+                            drainResult,
+                            batchListPool);
 
-                        // Complete delivery task for each batch
-                        for (var i = 0; i < batchList.Count; i++)
+                        // 3. Distribute pre-drained batch lists to broker senders
+                        foreach (var (brokerId, batchList) in drainResult)
                         {
-                            batchList[i].CompleteDelivery();
-#if DEBUG
-                            batchList[i].DebugLastTransition = (int)BatchTransition.CompleteDelivery;
-#endif
-                        }
+                            if (batchList.Count == 0)
+                                continue;
 
-                        try
-                        {
-                            var brokerSender = GetOrCreateBrokerSender(brokerId);
-
-                            // Bridge: enqueue each batch individually via existing BrokerSender path
-                            // Task 6 will replace this with a batch-list channel
+                            // Complete delivery task for each batch
                             for (var i = 0; i < batchList.Count; i++)
                             {
-                                batchList[i].AppendDiag('Q');
+                                batchList[i].CompleteDelivery();
 #if DEBUG
-                                batchList[i].DebugLastTransition = (int)BatchTransition.EnqueuedToBrokerSender;
-                                batchList[i].DebugLastBrokerId = brokerId;
+                                batchList[i].DebugLastTransition = (int)BatchTransition.CompleteDelivery;
 #endif
-                                await brokerSender.EnqueueAsync(batchList[i], cancellationToken)
-                                    .ConfigureAwait(false);
+                            }
+
+                            try
+                            {
+                                var brokerSender = GetOrCreateBrokerSender(brokerId);
+
+                                // Bridge: enqueue each batch individually via existing BrokerSender path
+                                // Task 6 will replace this with a batch-list channel
+                                for (var i = 0; i < batchList.Count; i++)
+                                {
+                                    batchList[i].AppendDiag('Q');
+#if DEBUG
+                                    batchList[i].DebugLastTransition = (int)BatchTransition.EnqueuedToBrokerSender;
+                                    batchList[i].DebugLastBrokerId = brokerId;
+#endif
+                                    await brokerSender.EnqueueAsync(batchList[i], cancellationToken)
+                                        .ConfigureAwait(false);
+                                }
+                            }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                            {
+                                // Fail remaining batches
+                                for (var i = 0; i < batchList.Count; i++)
+                                    FailAndCleanupBatch(batchList[i],
+                                        new OperationCanceledException(cancellationToken));
+                                throw;
+                            }
+                            catch (Exception ex)
+                            {
+                                // Fail all batches in this batch list
+                                for (var i = 0; i < batchList.Count; i++)
+                                    FailAndCleanupBatch(batchList[i], ex);
                             }
                         }
-                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    }
+                    finally
+                    {
+                        // Return batch lists to pool for reuse (including on cancellation paths)
+                        foreach (var (_, batchList) in drainResult)
                         {
-                            // Fail remaining batches
-                            for (var i = 0; i < batchList.Count; i++)
-                                FailAndCleanupBatch(batchList[i],
-                                    new OperationCanceledException(cancellationToken));
-                            throw;
+                            batchList.Clear();
+                            batchListPool.Push(batchList);
                         }
-                        catch (Exception ex)
-                        {
-                            // Fail all batches in this batch list
-                            for (var i = 0; i < batchList.Count; i++)
-                                FailAndCleanupBatch(batchList[i], ex);
-                        }
+
+                        drainResult.Clear();
                     }
                 }
 
@@ -2198,7 +2221,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 // This handles partition expansion: producer cached 2-partition metadata but
                 // topic now has 4 partitions. Without refresh, those batches sit in deque forever.
                 // Matches Java's RecordAccumulator.ready() unknownLeadersExist behavior.
-                if (readyResult.UnknownLeadersExist)
+                if (unknownLeadersExist)
                 {
                     try
                     {
@@ -2214,14 +2237,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 // Closed is set at the start of CloseAsync, but FlushAsync (called within
                 // CloseAsync) waits for _inFlightBatchCount == 0. We must keep the sender
                 // alive until FlushAsync completes by checking in-flight batches too.
-                if (_accumulator.Closed && readyResult.ReadyNodes.Count == 0 && !_accumulator.HasPendingWork())
+                if (_accumulator.Closed && readyNodes.Count == 0 && !_accumulator.HasPendingWork())
                     break;
 
                 // 6. Wait for wakeup signal (new batch sealed, response complete, or timeout)
                 try
                 {
                     await _accumulator.WaitForWakeupAsync(
-                        readyResult.ReadyNodes.Count > 0 ? 0 : readyResult.NextCheckDelayMs,
+                        readyNodes.Count > 0 ? 0 : nextCheckDelayMs,
                         cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
