@@ -721,7 +721,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private sealed class PartitionDeque
     {
         /// <summary>Sealed batches waiting to drain. Front = oldest (drain target).</summary>
-        public readonly LinkedList<ReadyBatch> Deque = new();
+        private readonly LinkedList<ReadyBatch> _deque = new();
 
         /// <summary>Per-partition lock for deque access (matches Java's synchronized(deque)).</summary>
         public readonly object Lock = new();
@@ -730,27 +730,55 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         public PartitionBatch? CurrentBatch;
 
         /// <summary>Number of batches in the deque.</summary>
-        public int Count => Deque.Count;
+        public int Count => _deque.Count;
 
         /// <summary>Remove and return the first batch (oldest). Returns null if empty.</summary>
         public ReadyBatch? PollFirst()
         {
-            if (Deque.First is not { } first) return null;
-            Deque.RemoveFirst();
+            if (_deque.First is not { } first) return null;
+            _deque.RemoveFirst();
             return first.Value;
         }
 
         /// <summary>Return the first batch without removing. Returns null if empty.</summary>
         public ReadyBatch? PeekFirst()
         {
-            return Deque.First?.Value;
+            return _deque.First?.Value;
         }
 
         /// <summary>Add to back of deque (normal seal path).</summary>
-        public void AddLast(ReadyBatch batch) => Deque.AddLast(batch);
+        public void AddLast(ReadyBatch batch) => _deque.AddLast(batch);
 
         /// <summary>Add to front of deque (retry/reenqueue — Java's addFirst).</summary>
-        public void AddFirst(ReadyBatch batch) => Deque.AddFirst(batch);
+        public void AddFirst(ReadyBatch batch) => _deque.AddFirst(batch);
+
+        /// <summary>Whether the deque contains the specified batch (diagnostic path only).</summary>
+        public bool Contains(ReadyBatch batch) => _deque.Contains(batch);
+
+        /// <summary>
+        /// Insert a batch in ascending sequence order for idempotent reenqueue.
+        /// Walks to the first node that is unsequenced (&lt; 0) or &gt;= batch's sequence,
+        /// then inserts before it to maintain ascending sequence order.
+        /// </summary>
+        public void InsertInSequenceOrder(ReadyBatch batch)
+        {
+            if (batch.RecordBatch.BaseSequence < 0)
+            {
+                _deque.AddFirst(batch);
+                return;
+            }
+
+            var node = _deque.First;
+            while (node != null
+                && node.Value.RecordBatch.BaseSequence >= 0
+                && node.Value.RecordBatch.BaseSequence < batch.RecordBatch.BaseSequence)
+            {
+                node = node.Next;
+            }
+
+            if (node == null) _deque.AddLast(batch);
+            else _deque.AddBefore(node, batch);
+        }
     }
 
     private PartitionDeque GetOrCreateDeque(TopicPartition tp)
@@ -910,7 +938,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ready.Add(batch);
             }
         }
-
     }
 
     /// <summary>
@@ -925,33 +952,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         lock (pd.Lock)
         {
             if (ProducerId >= 0)
-                InsertInSequenceOrder(pd, batch);
+                pd.InsertInSequenceOrder(batch);
             else
                 pd.AddFirst(batch);
         }
         SignalWakeup();
-    }
-
-    private static void InsertInSequenceOrder(PartitionDeque pd, ReadyBatch batch)
-    {
-        if (batch.RecordBatch.BaseSequence < 0)
-        {
-            pd.AddFirst(batch);
-            return;
-        }
-
-        // Walk to the first node that is unsequenced (< 0) or >= batch's sequence,
-        // then insert before it to maintain ascending sequence order.
-        var node = pd.Deque.First;
-        while (node != null
-            && node.Value.RecordBatch.BaseSequence >= 0
-            && node.Value.RecordBatch.BaseSequence < batch.RecordBatch.BaseSequence)
-        {
-            node = node.Next;
-        }
-
-        if (node == null) pd.Deque.AddLast(batch);
-        else pd.Deque.AddBefore(node, batch);
     }
 
     internal void MutePartition(TopicPartition tp) => _mutedPartitions.TryAdd(tp, 0);
@@ -1893,7 +1898,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 lock (pd.Lock)
                 {
                     dequeCount = pd.Count;
-                    inDeque = pd.Deque.Contains(batch);
+                    inDeque = pd.Contains(batch);
                 }
             }
 
@@ -2366,7 +2371,7 @@ internal sealed class PartitionBatchPool
 /// Tracks pooled arrays that are returned when the batch completes.
 /// Uses ArrayPool-backed arrays instead of List to eliminate allocations.
 ///
-/// Thread-safety: All access is serialized by the per-partition deque lock (PartitionDeque.Lock).
+/// Thread-safety: All access is serialized by the per-partition deque lock (Partition_deque.Lock).
 /// No internal synchronization is needed.
 /// </summary>
 internal sealed class PartitionBatch

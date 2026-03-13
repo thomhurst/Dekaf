@@ -159,15 +159,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         public int Count => _count;
 
+        private LinkedList<ReadyBatch> GetOrCreateQueue(TopicPartition tp)
+        {
+            if (!_partitions.TryGetValue(tp, out var queue))
+            {
+                queue = new LinkedList<ReadyBatch>();
+                _partitions[tp] = queue;
+            }
+            return queue;
+        }
+
         /// <summary>Add to back of partition queue (normal carry-over, new batches).</summary>
         public void Add(ReadyBatch batch)
         {
-            if (!_partitions.TryGetValue(batch.TopicPartition, out var queue))
-            {
-                queue = new LinkedList<ReadyBatch>();
-                _partitions[batch.TopicPartition] = queue;
-            }
-            queue.AddLast(batch);
+            GetOrCreateQueue(batch.TopicPartition).AddLast(batch);
             _count++;
         }
 
@@ -177,12 +182,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// </summary>
         public void AddFirst(ReadyBatch batch)
         {
-            if (!_partitions.TryGetValue(batch.TopicPartition, out var queue))
-            {
-                queue = new LinkedList<ReadyBatch>();
-                _partitions[batch.TopicPartition] = queue;
-            }
-            queue.AddFirst(batch);
+            GetOrCreateQueue(batch.TopicPartition).AddFirst(batch);
             _count++;
         }
 
@@ -194,11 +194,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// </summary>
         public void AddAfterRetries(ReadyBatch batch)
         {
-            if (!_partitions.TryGetValue(batch.TopicPartition, out var queue))
-            {
-                queue = new LinkedList<ReadyBatch>();
-                _partitions[batch.TopicPartition] = queue;
-            }
+            var queue = GetOrCreateQueue(batch.TopicPartition);
 
             var node = queue.First;
             while (node is not null && node.Value.IsRetry)
