@@ -124,26 +124,22 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     [StructLayout(LayoutKind.Auto)]
-    private struct SendLoopEvent
+    private readonly struct SendLoopEvent
     {
-        public SendLoopEventType Type;
-        public ReadyBatch? Batch;
+        public readonly SendLoopEventType Type;
+        public readonly ReadyBatch? Batch;
 
-        public static SendLoopEvent NewBatch(ReadyBatch batch) => new()
+        private SendLoopEvent(SendLoopEventType type, ReadyBatch? batch = null)
         {
-            Type = SendLoopEventType.NewBatch,
-            Batch = batch
-        };
+            Type = type;
+            Batch = batch;
+        }
 
-        public static SendLoopEvent ResponseReady() => new()
-        {
-            Type = SendLoopEventType.ResponseReady
-        };
+        public static SendLoopEvent NewBatch(ReadyBatch batch) => new(SendLoopEventType.NewBatch, batch);
 
-        public static SendLoopEvent Unmute() => new()
-        {
-            Type = SendLoopEventType.Unmute
-        };
+        public static SendLoopEvent ResponseReady() => new(SendLoopEventType.ResponseReady);
+
+        public static SendLoopEvent Unmute() => new(SendLoopEventType.Unmute);
     }
 
     /// <summary>
@@ -400,11 +396,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     private void FailEnqueuedBatch(ReadyBatch batch)
     {
-#if DEBUG
-        batch.DebugLastTransition = (int)BatchTransition.FailEnqueuedBatch;
-        batch.DebugLastBrokerId = _brokerId;
-        Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} FailEnqueuedBatch broker={_brokerId}");
-#endif
         if (batch.IsRetry)
         {
             batch.IsRetry = false;
@@ -476,7 +467,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             _bumpEpoch((short)staleEpoch, _partitionsNeedingSequenceReset);
                         }
 
-                        _partitionsNeedingSequenceReset.Clear();
                         Interlocked.CompareExchange(ref _epochBumpRequestedForEpoch, -1, staleEpoch);
                     }
                     catch (OperationCanceledException)
@@ -486,6 +476,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     catch (Exception ex)
                     {
                         LogEpochBumpFailed(ex, staleEpoch);
+                    }
+                    finally
+                    {
+                        _partitionsNeedingSequenceReset.Clear();
                     }
                 }
 
@@ -854,11 +848,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     batch.IsRetry = false;
                     batch.RetryNotBefore = 0;
                     UnmutePartition(batch.TopicPartition);
-#if DEBUG
-                    batch.DebugLastTransition = (int)BatchTransition.Rerouted;
-                    batch.DebugLastBrokerId = _brokerId;
-                    Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} Rerouted from broker={_brokerId} to broker={leader.NodeId}");
-#endif
                     _rerouteBatch(batch);
                     return;
                 }
@@ -882,11 +871,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             batch.AppendDiag('C');
             coalescedBatches[coalescedCount] = batch;
             coalescedCount++;
-#if DEBUG
-            batch.DebugLastTransition = (int)BatchTransition.Coalesced;
-            batch.DebugLastBrokerId = _brokerId;
-            Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} Coalesced (retry) broker={_brokerId}");
-#endif
             return;
         }
 
@@ -910,11 +894,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         batch.AppendDiag('C');
         coalescedBatches[coalescedCount] = batch;
         coalescedCount++;
-#if DEBUG
-        batch.DebugLastTransition = (int)BatchTransition.Coalesced;
-        batch.DebugLastBrokerId = _brokerId;
-        Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} Coalesced (normal) broker={_brokerId}");
-#endif
     }
 
     /// <summary>
@@ -1042,10 +1021,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var batch = batches[j];
             if (batch is null)
                 continue;
-#if DEBUG
-            batch.DebugLastTransition = (int)BatchTransition.ProcessingResponse;
-            Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} ProcessingResponse broker={_brokerId}");
-#endif
             try
             {
                 batch.AppendDiag('R');
@@ -1096,10 +1071,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     try
                     {
                         batch.Fail(failureException);
-#if DEBUG
-                        batch.DebugLastTransition = (int)BatchTransition.FailCalled;
-                        Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} FailCalled (non-retriable) broker={_brokerId} error={partitionResponse.ErrorCode}");
-#endif
                     }
                     catch (Exception failEx) { LogBatchCleanupStepFailed(failEx, _brokerId); }
                     try
@@ -1133,10 +1104,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 try { CompleteInflightEntry(batch); }
                 catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                 batch.CompleteSend(partitionResponse.BaseOffset, timestamp);
-#if DEBUG
-                batch.DebugLastTransition = (int)BatchTransition.CompleteSendCalled;
-                Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} CompleteSendCalled broker={_brokerId} offset={partitionResponse.BaseOffset}");
-#endif
                 try
                 {
                     _onAcknowledgement?.Invoke(batch.TopicPartition,
@@ -1389,11 +1356,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         batch.IsRetry = true;
         batch.AppendDiag('H'); // HandleRetriableBatch → carry-over
         carryOver.AddAfterRetries(batch);
-#if DEBUG
-        batch.DebugLastTransition = (int)BatchTransition.AddedToCarryOver;
-        batch.DebugLastBrokerId = _brokerId;
-        Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} AddedToCarryOver broker={_brokerId}");
-#endif
     }
 
     /// <summary>
@@ -1467,10 +1429,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         batch.TopicPartition,
                         batch.RecordBatch.BaseSequence,
                         batch.CompletionSourcesCount);
-#if DEBUG
-                    batch.DebugLastTransition = (int)BatchTransition.InflightRegistered;
-                    Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} InflightRegistered broker={_brokerId}");
-#endif
                 }
             }
 
@@ -1517,10 +1475,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         batch.CompletionSourcesCount);
                     CompleteInflightEntry(batch);
                     batch.CompleteSend(-1, fireAndForgetTimestamp);
-#if DEBUG
-                    batch.DebugLastTransition = (int)BatchTransition.CompleteSendCalled;
-                    Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} CompleteSendCalled (fire-and-forget) broker={_brokerId}");
-#endif
                     try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, fireAndForgetTimestamp, batch.CompletionSourcesCount, null); }
                     catch (Exception ackEx) { LogBatchCleanupStepFailed(ackEx, _brokerId); }
                 }
@@ -1556,10 +1510,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     _accumulator.ReleaseMemory(batches[i].DataSize);
                     batches[i].MemoryReleased = true;
-#if DEBUG
-                    batches[i].DebugLastTransition = (int)BatchTransition.MemoryReleased;
-                    Debug.WriteLine($"[BatchTrack] {batches[i].TopicPartition} MemoryReleased broker={_brokerId}");
-#endif
                 }
             }
 
@@ -1580,13 +1530,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
-#if DEBUG
-            for (var i = 0; i < count; i++)
-            {
-                batches[i].DebugLastTransition = (int)BatchTransition.AddedToPendingResponses;
-                Debug.WriteLine($"[BatchTrack] {batches[i].TopicPartition} AddedToPendingResponses broker={_brokerId}");
-            }
-#endif
 
             // Mute partitions at send time when limited to 1 in-flight request.
             // This ensures at most one batch per partition in-flight across all requests.
@@ -1655,11 +1598,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         batch.RetryNotBefore = Stopwatch.GetTimestamp() +
                             _options.RetryBackoffTicks;
                         _sendFailedRetries.Add(batch);
-#if DEBUG
-                        batch.DebugLastTransition = (int)BatchTransition.AddedToSendFailedRetries;
-                        batch.DebugLastBrokerId = _brokerId;
-                        Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} AddedToSendFailedRetries broker={_brokerId}");
-#endif
                         _statisticsCollector.RecordRetry();
                     }
                 }
@@ -1863,11 +1801,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)
     {
         batch.AppendDiag('F');
-#if DEBUG
-        batch.DebugLastTransition = (int)BatchTransition.FailCalled;
-        batch.DebugLastBrokerId = _brokerId;
-        Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} FailAndCleanupBatch broker={_brokerId} ex={ex.GetType().Name}");
-#endif
         // Every operation is wrapped in try/catch to guarantee we reach CleanupBatch.
         // If CompleteInflightEntry throws, batch.Fail must still run to resolve completion sources.
         // If batch.Fail throws, CleanupBatch must still run to release memory and return the batch.
@@ -1892,10 +1825,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void CleanupBatch(ReadyBatch batch)
     {
-#if DEBUG
-        batch.DebugLastTransition = (int)BatchTransition.CleanupBatchCalled;
-        Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} CleanupBatch broker={_brokerId}");
-#endif
         // Release buffer memory at batch completion (matching Java's RecordAccumulator.deallocate()).
         // This is the primary release path: memory is held throughout the entire pipeline
         // (append → drain → send → response) to provide accurate end-to-end backpressure.

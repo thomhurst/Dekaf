@@ -2166,9 +2166,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                             for (var i = 0; i < batchList.Count; i++)
                             {
                                 batchList[i].CompleteDelivery();
-#if DEBUG
-                                batchList[i].DebugLastTransition = (int)BatchTransition.CompleteDelivery;
-#endif
                             }
 
                             try
@@ -2180,10 +2177,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                                 for (var i = 0; i < batchList.Count; i++)
                                 {
                                     batchList[i].AppendDiag('Q');
-#if DEBUG
-                                    batchList[i].DebugLastTransition = (int)BatchTransition.EnqueuedToBrokerSender;
-                                    batchList[i].DebugLastBrokerId = brokerId;
-#endif
                                     await brokerSender.EnqueueAsync(batchList[i], cancellationToken)
                                         .ConfigureAwait(false);
                                 }

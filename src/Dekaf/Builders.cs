@@ -7,6 +7,7 @@ using Dekaf.Security;
 using Dekaf.Security.Sasl;
 using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
+using Microsoft.Extensions.Logging;
 
 namespace Dekaf;
 
@@ -598,9 +599,15 @@ public sealed class ProducerBuilder<TKey, TValue>
         // Java Kafka client enforces acks=all when enable.idempotence=true.
         // With acks=leader, the leader acknowledges before ISR replication completes,
         // which can cause OutOfOrderSequenceNumber on leader failover and makes the
-        // idempotent guarantee weaker. Override silently to match Java client behavior.
+        // idempotent guarantee weaker. Override to match Java client behavior.
         if (_enableIdempotence && _acks != Acks.All)
+        {
+            _loggerFactory?.CreateLogger<KafkaProducer<TKey, TValue>>()
+                .LogWarning("Idempotence is enabled but acks was set to {Acks}. " +
+                            "Overriding to Acks.All as required by the Kafka protocol for idempotent producers.",
+                            _acks);
             _acks = Acks.All;
+        }
 
         var keySerializer = _keySerializer ?? GetDefaultSerializer<TKey>();
         var valueSerializer = _valueSerializer ?? GetDefaultSerializer<TValue>();

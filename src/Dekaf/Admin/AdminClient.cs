@@ -126,10 +126,12 @@ public sealed class AdminClient : IAdminClient
         List<string> topicNames,
         CancellationToken cancellationToken)
     {
-        const int maxRetries = 5;
-        const int retryDelayMs = 500;
+        // Leader election is an async cluster operation that can take multiple metadata
+        // refresh cycles, especially with multi-partition topics. Use more retries than
+        // WithRetryAsync (which handles transient RPC errors) to give the cluster time.
+        const int leaderWaitRetries = 5;
 
-        for (var attempt = 0; attempt < maxRetries; attempt++)
+        for (var attempt = 0; attempt < leaderWaitRetries; attempt++)
         {
             await _metadataManager.RefreshMetadataAsync(topicNames, cancellationToken).ConfigureAwait(false);
 
@@ -162,11 +164,11 @@ public sealed class AdminClient : IAdminClient
             if (allReady)
                 return;
 
-            await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+            await Task.Delay(RetryDelayMs, cancellationToken).ConfigureAwait(false);
         }
 
         throw new KafkaException(Protocol.ErrorCode.LeaderNotAvailable,
-            $"Topic(s) {string.Join(", ", topicNames)} did not have all partition leaders elected after {maxRetries * retryDelayMs}ms");
+            $"Topic(s) {string.Join(", ", topicNames)} did not have all partition leaders elected after {leaderWaitRetries * RetryDelayMs}ms");
     }
 
     public async ValueTask DeleteTopicsAsync(
