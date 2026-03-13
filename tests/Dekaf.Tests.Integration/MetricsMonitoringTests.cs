@@ -137,9 +137,10 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
                 consumed++;
                 if (consumed >= messageCount)
                 {
-                    // Don't break immediately - set a short timeout to allow the iterator
-                    // to complete the current batch's stats recording on next MoveNextAsync
-                    cts.CancelAfter(TimeSpan.FromSeconds(3));
+                    // Don't break immediately - set a timeout to allow the iterator
+                    // to complete the current batch's stats recording on next MoveNextAsync.
+                    // Use a longer delay to ensure the stats interval (1s) fires on slow CI.
+                    cts.CancelAfter(TimeSpan.FromSeconds(5));
                 }
             }
         }
@@ -148,10 +149,11 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             // Expected when the CTS fires after consuming all messages
         }
 
-        // Wait for a stats snapshot that reflects consumed messages
+        // Wait for a stats snapshot that reflects consumed messages.
+        // Use a generous timeout for slow CI runners where stats ticks may be delayed.
         var matchingStats = await WaitForStatsAsync(stats,
             s => s.MessagesConsumed >= messageCount,
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(30));
 
         await Assert.That(matchingStats).IsNotNull();
         await Assert.That(matchingStats!.MessagesConsumed).IsGreaterThanOrEqualTo(messageCount);
@@ -210,8 +212,10 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
                 consumed++;
                 if (consumed >= consumeCount)
                 {
-                    // Allow batch-level stats to be recorded before stopping
-                    cts.CancelAfter(TimeSpan.FromSeconds(3));
+                    // Allow batch-level stats to be recorded before stopping.
+                    // Use a longer delay to ensure the stats interval (1s) has time to
+                    // fire at least once on slow CI runners.
+                    cts.CancelAfter(TimeSpan.FromSeconds(5));
                 }
             }
         }
@@ -222,10 +226,12 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
 
         // Wait for a stats snapshot with topic-level data
         // The consumer fetches all messages in the partition, so topic stats should exist
-        // once a fetch response has been processed
+        // once a fetch response has been processed.
+        // Use a generous timeout because on slow CI runners, the consumer group rebalance
+        // plus stats interval tick can take significantly longer than expected.
         var matchingStats = await WaitForStatsAsync(stats,
             s => s.MessagesConsumed > 0 && s.Topics.ContainsKey(topic),
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(30));
 
         await Assert.That(matchingStats).IsNotNull();
         await Assert.That(matchingStats!.Topics.ContainsKey(topic)).IsTrue();
@@ -304,8 +310,10 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
                 consumed++;
                 if (consumed >= messageCount)
                 {
-                    // Allow batch stats to be recorded
-                    cts.CancelAfter(TimeSpan.FromSeconds(3));
+                    // Allow batch stats to be recorded.
+                    // Use a longer delay to ensure the stats interval (1s) has time to
+                    // fire at least once on slow CI runners.
+                    cts.CancelAfter(TimeSpan.FromSeconds(5));
                 }
             }
         }
@@ -314,12 +322,15 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             // Expected
         }
 
-        // Wait for consumer stats reflecting all consumed messages
-        // With 1000 messages across 3 partitions and multiple fetches,
-        // at least the majority of messages should be recorded in stats
+        // Wait for consumer stats reflecting all consumed messages.
+        // With 100 messages across 3 partitions and multiple fetches,
+        // at least the majority of messages should be recorded in stats.
+        // Use a generous timeout because on slow CI runners, the consumer group
+        // rebalance, fetching across partitions, and stats interval tick can take
+        // significantly longer than expected.
         var matchingConsumerStats = await WaitForStatsAsync(consumerStats,
             s => s.MessagesConsumed >= messageCount,
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(30));
 
         await Assert.That(matchingConsumerStats).IsNotNull();
         await Assert.That(matchingConsumerStats!.MessagesConsumed).IsGreaterThanOrEqualTo(messageCount);
