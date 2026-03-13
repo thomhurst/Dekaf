@@ -87,7 +87,9 @@ public class ConsumerBenchmarks
             .WithClientId("dekaf-poll-benchmark")
             .WithGroupId($"dekaf-poll-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(DekafConsumer.AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync()
+            .GetAwaiter()
+            .GetResult();
         _dekafPollConsumer.Subscribe(_topic);
     }
 
@@ -149,12 +151,13 @@ public class ConsumerBenchmarks
     {
         var count = 0;
 
-        await using var consumer = Kafka.CreateConsumer<string, string>()
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(_kafka.BootstrapServers)
             .WithClientId("dekaf-consumer-benchmark")
             .WithGroupId($"dekaf-benchmark-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(DekafConsumer.AutoOffsetReset.Earliest)
-            .Build();
+            .BuildAsync()
+            .ConfigureAwait(false);
 
         consumer.Subscribe(_topic);
 

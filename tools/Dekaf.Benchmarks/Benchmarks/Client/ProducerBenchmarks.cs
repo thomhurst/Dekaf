@@ -37,13 +37,14 @@ public class ProducerBenchmarks
 
         _messageValue = new string('x', MessageSize);
 
-        _dekafProducer = Kafka.CreateProducer<string, string>()
+        _dekafProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(_kafka.BootstrapServers)
             .WithClientId("dekaf-benchmark")
             .WithAcks(DekafProducer.Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithBatchSize(16384)
-            .Build();
+            .BuildAsync()
+            .ConfigureAwait(false);
 
         var confluentConfig = new Confluent.Kafka.ProducerConfig
         {
