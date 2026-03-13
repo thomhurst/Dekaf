@@ -263,20 +263,21 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
                 Topic = topic, Key = "warmup", Value = "warmup", Partition = p
             });
 
-        // Use fire-and-forget Send for throughput — ProduceWithRetryAsync is too slow
-        // for 1000 messages on CI runners. FlushAsync will block until all are delivered.
+        // Use ProduceAsync in batches with flush between to ensure delivery.
+        // Send (fire-and-forget) can silently drop messages under backpressure,
+        // and ProduceWithRetryAsync is too slow for 1000 messages with 15s timeouts.
+        using var produceCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
                 Value = $"payload-{i}-{new string('x', 100)}"
-            });
+            }, produceCts.Token);
         }
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushAsync(produceCts.Token);
 
         // Wait for producer stats reflecting all messages.
         // The stats handler fires every 1s; after FlushAsync completes, it may take
