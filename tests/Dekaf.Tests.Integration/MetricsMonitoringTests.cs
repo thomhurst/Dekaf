@@ -57,12 +57,12 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             .BuildAsync();
 
         // Warm up to ensure broker has initialized partition state
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
@@ -97,12 +97,12 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             .BuildAsync();
 
         // Warm up to ensure broker has initialized partition state
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
@@ -173,12 +173,12 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             .BuildAsync();
 
         // Warm up to ensure broker has initialized partition state
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
         for (var i = 0; i < totalMessages; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
@@ -258,14 +258,14 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         // Without this, the first produce to a newly-created partition may get
         // NotLeaderOrFollower, causing delivery timeouts on slow CI runners.
         for (var p = 0; p < 3; p++)
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
                 Topic = topic, Key = "warmup", Value = "warmup", Partition = p
             });
 
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
@@ -342,12 +342,12 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             .BuildAsync())
         {
             // Warm up to ensure broker has initialized partition state
-            await producer1.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer1, new ProducerMessage<string, string>
                 { Topic = topic, Key = "warmup", Value = "warmup" });
 
             for (var i = 0; i < 10; i++)
             {
-                await producer1.ProduceAsync(new ProducerMessage<string, string>
+                await ProduceWithRetryAsync(producer1, new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"key-{i}",
@@ -376,7 +376,7 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         // Produce fewer messages with the new producer
         for (var i = 0; i < 3; i++)
         {
-            await producer2.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer2, new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"restart-key-{i}",
@@ -416,39 +416,37 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             .WithStatisticsHandler(s => stats.Add(s))
             .BuildAsync();
 
-        using var produceCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-
         // Warm up both topics to ensure broker has fully initialized partition state.
         // Without this, the first produce to a newly-created topic may trigger
         // NotLeaderOrFollower, causing an orphaned batch timeout on slow CI runners.
-        await producer.ProduceAsync(new ProducerMessage<string, string>
-            { Topic = topic1, Key = "warmup", Value = "warmup" }, produceCts.Token);
-        await producer.ProduceAsync(new ProducerMessage<string, string>
-            { Topic = topic2, Key = "warmup", Value = "warmup" }, produceCts.Token);
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            { Topic = topic1, Key = "warmup", Value = "warmup" });
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            { Topic = topic2, Key = "warmup", Value = "warmup" });
 
         // Produce to topic1
         for (var i = 0; i < messagesPerTopic; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
                 Topic = topic1,
                 Key = $"t1-key-{i}",
                 Value = $"t1-value-{i}"
-            }, produceCts.Token);
+            });
         }
 
         // Produce to topic2
         for (var i = 0; i < messagesPerTopic; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
                 Topic = topic2,
                 Key = $"t2-key-{i}",
                 Value = $"t2-value-{i}"
-            }, produceCts.Token);
+            });
         }
 
-        await producer.FlushAsync(produceCts.Token);
+        await producer.FlushAsync();
 
         var totalExpected = messagesPerTopic * 2 + 2; // +2 for warmup (one per topic)
 
@@ -491,12 +489,12 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             .BuildAsync();
 
         // Warm up to ensure broker has initialized partition state
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
         for (var i = 0; i < expectedPartitions; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",

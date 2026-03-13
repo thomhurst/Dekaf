@@ -26,12 +26,12 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
             .BuildAsync();
 
         // Warm up to ensure broker has initialized partition state
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"stats-key-{i}",
@@ -63,13 +63,13 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
             .BuildAsync();
 
         // Warm up to ensure broker has initialized partition state
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
         // Produce some messages to generate activity
         for (var i = 0; i < 5; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
@@ -95,10 +95,10 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
             .BuildAsync();
 
         // Warm up to ensure broker has initialized partition state
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "key",

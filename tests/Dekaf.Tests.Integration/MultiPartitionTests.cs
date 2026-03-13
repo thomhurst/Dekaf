@@ -14,7 +14,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     /// Produces a warmup message to each partition to ensure the broker has fully initialized
     /// the partition and its producer state tracking.
     /// </summary>
-    private async Task WarmUpAllPartitions(
+    private static async Task WarmUpAllPartitions(
         IKafkaProducer<string, string> producer, string topic, int partitions)
     {
         for (var p = 0; p < partitions; p++)
