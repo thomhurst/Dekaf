@@ -874,19 +874,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             recordHeaders = ConvertHeaders(headers, out pooledHeaderArray);
         }
 
-        // Step 5: FAST PATH - Try to append to cached batch with arena (no side effects)
-        // This succeeds when: same partition as recent message AND batch has space
-        if (TryAppendToArena(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, ref pooledHeaderArray))
-        {
-            if (_statisticsEnabled)
-            {
-                _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
-            }
-
-            return;
-        }
-
-        // Step 6: SLOW PATH - Handle all complexity
+        // Step 5: Append to accumulator (under deque lock for ordering safety)
         AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueLength, recordHeaders, pooledHeaderArray);
 
         if (_statisticsEnabled)
@@ -896,174 +884,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <summary>
-    /// Try to append to an existing batch's arena.
-    /// First attempts non-blocking reserve. If buffer is full, block-waits for space then retries.
-    /// Returns false only if arena append fails for non-backpressure reasons (cache miss, arena full).
-    /// May throw <see cref="KafkaTimeoutException"/> or <see cref="OperationCanceledException"/>.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryAppendToArena(
-        string topic,
-        int partition,
-        long timestampMs,
-        bool keyIsNull,
-        int keyLength,
-        bool valueIsNull,
-        int valueLength,
-        IReadOnlyList<Header>? recordHeaders,
-        ref Header[]? pooledHeaderArray)
-    {
-        // Calculate record size BEFORE any work
-        var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, recordHeaders);
-
-        // FAST: Non-blocking reserve + arena append
-        if (_accumulator.TryReserveMemory(recordSize))
-        {
-            if (TryAppendToArenaWithReservedMemory(
-                topic, partition, timestampMs,
-                keyIsNull, keyLength, valueIsNull, valueLength,
-                recordHeaders, ref pooledHeaderArray, recordSize))
-            {
-                return true;
-            }
-            // Arena failed (cache miss or arena full) - don't retry, fall through
-            // Memory already released by TryAppendToArenaWithReservedMemory
-            return false;
-        }
-
-        // MEDIUM: Buffer full - block-wait for space, then retry arena.
-        // This avoids falling to the slow path (ArrayPool allocations) when
-        // backpressure is the only reason the fast path failed.
-        // NOTE: If the arena append fails after blocking (e.g. stale cache), we return false
-        // and the caller falls to AppendWithSlowPath which will block on ReserveMemorySync again.
-        // This double-wait is rare (requires both backpressure AND cache miss simultaneously).
-        return TryAppendToArenaWithBackpressure(
-            topic, partition, timestampMs,
-            keyIsNull, keyLength, valueIsNull, valueLength,
-            recordHeaders, ref pooledHeaderArray, recordSize);
-    }
-
-    /// <summary>
-    /// Core arena-append logic assuming memory is already reserved.
-    /// On success: returns true, memory ownership transfers to batch.
-    /// On failure: releases memory and returns false.
-    /// On exception: releases memory and rethrows.
-    /// </summary>
-    private bool TryAppendToArenaWithReservedMemory(
-        string topic,
-        int partition,
-        long timestampMs,
-        bool keyIsNull,
-        int keyLength,
-        bool valueIsNull,
-        int valueLength,
-        IReadOnlyList<Header>? recordHeaders,
-        ref Header[]? pooledHeaderArray,
-        int recordSize)
-    {
-        try
-        {
-            var cachedBatch = GetCachedBatch(topic, partition);
-            if (cachedBatch is null)
-            {
-                _accumulator.ReleaseMemory(recordSize);
-                return false;
-            }
-
-            var arena = cachedBatch.Arena;
-            if (arena is null)
-            {
-                _accumulator.ReleaseMemory(recordSize);
-                return false;
-            }
-
-            var totalSize = keyLength + valueLength;
-
-            if (!arena.TryAllocate(totalSize, out var combinedSpan, out var combinedOffset))
-            {
-                _accumulator.ReleaseMemory(recordSize);
-                return false;
-            }
-
-            ArenaSlice keySlice = default;
-            ArenaSlice valueSlice = default;
-
-            if (!keyIsNull && keyLength > 0)
-            {
-                t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(combinedSpan.Slice(0, keyLength));
-                keySlice = new ArenaSlice(combinedOffset, keyLength);
-
-                if (!valueIsNull)
-                {
-                    t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan.Slice(keyLength, valueLength));
-                    valueSlice = new ArenaSlice(combinedOffset + keyLength, valueLength);
-                }
-            }
-            else if (!valueIsNull)
-            {
-                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan);
-                valueSlice = new ArenaSlice(combinedOffset, valueLength);
-            }
-
-            var result = cachedBatch.TryAppendFromArena(timestampMs, keySlice, keyIsNull, valueSlice, valueIsNull, recordHeaders, pooledHeaderArray);
-
-            if (!result.Success)
-            {
-                _accumulator.ReleaseMemory(recordSize);
-                return false;
-            }
-
-            pooledHeaderArray = null;
-            return true;
-        }
-        catch
-        {
-            _accumulator.ReleaseMemory(recordSize);
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// MEDIUM PATH: Block-wait for buffer space, then retry arena append.
-    /// Avoids ArrayPool allocations when backpressure is the only issue.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private bool TryAppendToArenaWithBackpressure(
-        string topic,
-        int partition,
-        long timestampMs,
-        bool keyIsNull,
-        int keyLength,
-        bool valueIsNull,
-        int valueLength,
-        IReadOnlyList<Header>? recordHeaders,
-        ref Header[]? pooledHeaderArray,
-        int recordSize)
-    {
-        _accumulator.ReserveMemorySync(recordSize);
-        return TryAppendToArenaWithReservedMemory(
-            topic, partition, timestampMs,
-            keyIsNull, keyLength, valueIsNull, valueLength,
-            recordHeaders, ref pooledHeaderArray, recordSize);
-    }
-
-    /// <summary>
-    /// Gets a cached batch for the given topic/partition from thread-local cache.
-    /// Returns null if no valid cached batch exists.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private PartitionBatch? GetCachedBatch(string topic, int partition)
-    {
-        // Use multi-partition cache from accumulator
-        if (!_accumulator.TryGetBatch(topic, partition, out var batch))
-        {
-            return null;
-        }
-        return batch;
-    }
-
-    /// <summary>
-    /// SLOW PATH: Handles all complexity - batch creation, rotation, dictionary operations.
+    /// Appends a fire-and-forget record via the accumulator (under deque lock).
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void AppendWithSlowPath(
@@ -1098,14 +919,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
 
             // Append to accumulator
-            if (!_accumulator.TryAppendFireAndForget(
+            if (!_accumulator.Append(
                 topic,
                 partition,
                 timestampMs,
                 key,
                 valueMemory,
                 recordHeaders,
-                pooledHeaderArray))
+                pooledHeaderArray,
+                null,
+                null))
             {
                 CleanupPooledResources(key, valueMemory, pooledHeaderArray);
                 throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -1223,7 +1046,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             // Append to accumulator synchronously (non-blocking memory reservation).
             // Returns false when buffer is full OR accumulator is disposed.
-            if (!_accumulator.TryAppendSync(
+            if (!_accumulator.TryAppendWithCompletion(
                 message.Topic,
                 partition,
                 timestampMs,
@@ -1410,7 +1233,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         catch (Exception ex)
         {
             // Deliver exception to callback - don't throw for fire-and-forget style
-            try { deliveryHandler(default, ex); } catch { /* Swallow callback exceptions */ }
+            try { deliveryHandler(default, ex); } catch (Exception cbEx) { LogBatchCleanupStepFailed(cbEx); }
         }
         return true;
     }
@@ -1475,18 +1298,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             recordHeaders = ConvertHeaders(headers, out pooledHeaderArray);
         }
 
-        // Step 5: FAST PATH - Try to append to cached batch with arena and callback
-        if (TryAppendToArenaWithCallback(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, ref pooledHeaderArray, callback))
-        {
-            if (_statisticsEnabled)
-            {
-                _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
-            }
-
-            return;
-        }
-
-        // Step 6: SLOW PATH - Handle all complexity
+        // Step 5: Append to accumulator with callback (under deque lock for ordering safety)
         AppendWithSlowPathWithCallback(topic, partition, timestampMs, keyIsNull, keyLength, valueLength, recordHeaders, pooledHeaderArray, callback);
 
         if (_statisticsEnabled)
@@ -1496,155 +1308,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <summary>
-    /// Try to append to an existing batch's arena with a delivery callback.
-    /// First attempts non-blocking reserve. If buffer is full, block-waits for space then retries.
-    /// Returns false only if arena append fails for non-backpressure reasons (cache miss, arena full).
-    /// May throw <see cref="KafkaTimeoutException"/> or <see cref="OperationCanceledException"/>.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool TryAppendToArenaWithCallback(
-        string topic,
-        int partition,
-        long timestampMs,
-        bool keyIsNull,
-        int keyLength,
-        bool valueIsNull,
-        int valueLength,
-        IReadOnlyList<Header>? recordHeaders,
-        ref Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback)
-    {
-        var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, recordHeaders);
-
-        // FAST: Non-blocking reserve + arena append
-        if (_accumulator.TryReserveMemory(recordSize))
-        {
-            if (TryAppendToArenaWithReservedMemoryAndCallback(
-                topic, partition, timestampMs,
-                keyIsNull, keyLength, valueIsNull, valueLength,
-                recordHeaders, ref pooledHeaderArray, callback, recordSize))
-            {
-                return true;
-            }
-            // Arena failed (cache miss or arena full) - don't retry, fall through
-            // Memory already released by TryAppendToArenaWithReservedMemoryAndCallback
-            return false;
-        }
-
-        // MEDIUM: Buffer full - block-wait for space, then retry arena
-        return TryAppendToArenaWithBackpressureAndCallback(
-            topic, partition, timestampMs,
-            keyIsNull, keyLength, valueIsNull, valueLength,
-            recordHeaders, ref pooledHeaderArray, callback, recordSize);
-    }
-
-    /// <summary>
-    /// Core arena-append logic with callback, assuming memory is already reserved.
-    /// On success: returns true, memory ownership transfers to batch.
-    /// On failure: releases memory and returns false.
-    /// On exception: releases memory and rethrows.
-    /// </summary>
-    private bool TryAppendToArenaWithReservedMemoryAndCallback(
-        string topic,
-        int partition,
-        long timestampMs,
-        bool keyIsNull,
-        int keyLength,
-        bool valueIsNull,
-        int valueLength,
-        IReadOnlyList<Header>? recordHeaders,
-        ref Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback,
-        int recordSize)
-    {
-        try
-        {
-            var cachedBatch = GetCachedBatch(topic, partition);
-            if (cachedBatch is null)
-            {
-                _accumulator.ReleaseMemory(recordSize);
-                return false;
-            }
-
-            var arena = cachedBatch.Arena;
-            if (arena is null)
-            {
-                _accumulator.ReleaseMemory(recordSize);
-                return false;
-            }
-
-            var totalSize = keyLength + valueLength;
-
-            if (!arena.TryAllocate(totalSize, out var combinedSpan, out var combinedOffset))
-            {
-                _accumulator.ReleaseMemory(recordSize);
-                return false;
-            }
-
-            ArenaSlice keySlice = default;
-            ArenaSlice valueSlice = default;
-
-            if (!keyIsNull && keyLength > 0)
-            {
-                t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(combinedSpan.Slice(0, keyLength));
-                keySlice = new ArenaSlice(combinedOffset, keyLength);
-
-                if (!valueIsNull)
-                {
-                    t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan.Slice(keyLength, valueLength));
-                    valueSlice = new ArenaSlice(combinedOffset + keyLength, valueLength);
-                }
-            }
-            else if (!valueIsNull)
-            {
-                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(combinedSpan);
-                valueSlice = new ArenaSlice(combinedOffset, valueLength);
-            }
-
-            var result = cachedBatch.TryAppendFromArenaWithCallback(timestampMs, keySlice, keyIsNull, valueSlice, valueIsNull, recordHeaders, pooledHeaderArray, callback);
-
-            if (!result.Success)
-            {
-                _accumulator.ReleaseMemory(recordSize);
-                return false;
-            }
-
-            pooledHeaderArray = null;
-            return true;
-        }
-        catch
-        {
-            _accumulator.ReleaseMemory(recordSize);
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// MEDIUM PATH with callback: Block-wait for buffer space, then retry arena append.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private bool TryAppendToArenaWithBackpressureAndCallback(
-        string topic,
-        int partition,
-        long timestampMs,
-        bool keyIsNull,
-        int keyLength,
-        bool valueIsNull,
-        int valueLength,
-        IReadOnlyList<Header>? recordHeaders,
-        ref Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback,
-        int recordSize)
-    {
-        _accumulator.ReserveMemorySync(recordSize);
-        return TryAppendToArenaWithReservedMemoryAndCallback(
-            topic, partition, timestampMs,
-            keyIsNull, keyLength, valueIsNull, valueLength,
-            recordHeaders, ref pooledHeaderArray, callback, recordSize);
-    }
-
-    /// <summary>
-    /// SLOW PATH with callback: Copy to pooled arrays and append via accumulator.
+    /// Appends a record with callback via the accumulator (under deque lock).
     /// </summary>
     private void AppendWithSlowPathWithCallback(
         string topic,
@@ -1679,7 +1343,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
 
             // Append to accumulator with callback
-            if (!_accumulator.TryAppendWithCallback(
+            if (!_accumulator.Append(
                 topic,
                 partition,
                 timestampMs,
@@ -1687,6 +1351,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 valueMemory,
                 recordHeaders,
                 pooledHeaderArray,
+                null,
                 callback))
             {
                 CleanupPooledResources(key, valueMemory, pooledHeaderArray);
@@ -2459,115 +2124,119 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // batches. The per-broker in-flight semaphore enables pipelining across different partitions.
         // Ordering across retries relies on broker idempotent producer support (sequence numbers + epoch).
         //
-        // SenderLoopAsync is now a simple router: drain batches, look up leader, enqueue to
-        // the appropriate BrokerSender. BrokerSender handles coalescing, retry, and in-flight
-        // limiting internally.
-
-        var channelReader = _accumulator.ReadyBatches;
+        // Ready → Drain → Distribute loop:
+        // 1. Ready() checks which brokers have sendable data (sealed batches in partition deques)
+        // 2. Drain() pulls one batch per partition for each ready broker
+        // 3. Distribute routes pre-drained batch lists to BrokerSenders
+        // 4. WaitForWakeupAsync() sleeps until a new batch is sealed or a response arrives
 
         try
         {
-            while (await channelReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+            while (!cancellationToken.IsCancellationRequested)
             {
-                while (channelReader.TryRead(out var batch))
+                // 1. Check which brokers have sendable data
+                var readyResult = _accumulator.Ready(_metadataManager, Stopwatch.GetTimestamp());
+
+                if (readyResult.ReadyNodes.Count > 0)
                 {
-                    // Complete delivery task (fire-and-forget semantic: batch is "ready")
-                    batch.CompleteDelivery();
+                    // 2. Drain one batch per partition for each ready broker
+                    var batches = _accumulator.Drain(
+                        _metadataManager,
+                        readyResult.ReadyNodes,
+                        _options.MaxRequestSize > 0 ? _options.MaxRequestSize : 1048576);
 
-                    // NOTE: Inflight tracker registration is deferred to BrokerSender.SendCoalescedAsync
-                    // (send time) rather than here (drain time). Registering at drain time caused a
-                    // deadlock: queued-but-not-sent batches appeared as predecessors of retry batches
-                    // in the inflight list but could never complete. Moving registration to send time
-                    // ensures only batches actually hitting the wire are tracked.
+                    // 3. Distribute pre-drained batch lists to broker senders
+                    foreach (var (brokerId, batchList) in batches)
+                    {
+                        if (batchList.Count == 0)
+                            continue;
 
-                    // Buffer memory is held until batch completion (success or permanent failure),
-                    // matching Java's RecordAccumulator.deallocate() behavior. This ensures
-                    // BufferMemory accurately reflects physical memory in use and provides
-                    // true end-to-end backpressure: producers block on ReserveMemory until
-                    // batches are acknowledged and cleaned up by BrokerSender.CleanupBatch().
+                        // Complete delivery task for each batch
+                        for (var i = 0; i < batchList.Count; i++)
+                        {
+                            batchList[i].CompleteDelivery();
+#if DEBUG
+                            batchList[i].DebugLastTransition = (int)BatchTransition.CompleteDelivery;
+#endif
+                        }
 
-                    // Look up leader and route to the appropriate broker sender
+                        try
+                        {
+                            var brokerSender = GetOrCreateBrokerSender(brokerId);
+
+                            // Bridge: enqueue each batch individually via existing BrokerSender path
+                            // Task 6 will replace this with a batch-list channel
+                            for (var i = 0; i < batchList.Count; i++)
+                            {
+                                batchList[i].AppendDiag('Q');
+#if DEBUG
+                                batchList[i].DebugLastTransition = (int)BatchTransition.EnqueuedToBrokerSender;
+                                batchList[i].DebugLastBrokerId = brokerId;
+#endif
+                                await brokerSender.EnqueueAsync(batchList[i], cancellationToken)
+                                    .ConfigureAwait(false);
+                            }
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            // Fail remaining batches
+                            for (var i = 0; i < batchList.Count; i++)
+                                FailAndCleanupBatch(batchList[i],
+                                    new OperationCanceledException(cancellationToken));
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            // Fail all batches in this batch list
+                            for (var i = 0; i < batchList.Count; i++)
+                                FailAndCleanupBatch(batchList[i], ex);
+                        }
+                    }
+                }
+
+                // 4. If batches exist for partitions with unknown leaders, trigger metadata refresh.
+                // This handles partition expansion: producer cached 2-partition metadata but
+                // topic now has 4 partitions. Without refresh, those batches sit in deque forever.
+                // Matches Java's RecordAccumulator.ready() unknownLeadersExist behavior.
+                if (readyResult.UnknownLeadersExist)
+                {
                     try
                     {
-                        var leader = _metadataManager.Metadata.GetPartitionLeader(
-                            batch.TopicPartition.Topic,
-                            batch.TopicPartition.Partition);
-
-                        if (leader is null)
-                        {
-                            // No leader cached — do async lookup with timeout to prevent
-                            // hanging the sender loop if metadata refresh is blocked
-                            LogNoLeaderCached(batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                            using var metadataCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                            metadataCts.CancelAfter(TimeSpan.FromSeconds(30));
-                            try
-                            {
-                                leader = await _metadataManager.GetPartitionLeaderAsync(
-                                    batch.TopicPartition.Topic,
-                                    batch.TopicPartition.Partition,
-                                    metadataCts.Token).ConfigureAwait(false);
-                            }
-                            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                            {
-                                // Metadata lookup timed out — fall through to fail the batch below
-                                leader = null;
-                            }
-                        }
-
-                        if (leader is null)
-                        {
-                            // Still no leader — fail the batch
-                            LogLeaderStillUnavailable(batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                            CompleteInflightEntry(batch);
-                            try { batch.Fail(new KafkaException(ErrorCode.LeaderNotAvailable, "No leader available")); }
-                            catch { /* Observe */ }
-                            if (!batch.MemoryReleased)
-                            {
-                                _accumulator.ReleaseMemory(batch.DataSize);
-                                batch.MemoryReleased = true;
-                            }
-                            _accumulator.ReturnReadyBatch(batch);
-                            _accumulator.OnBatchExitsPipeline();
-                            continue;
-                        }
-
-                        var brokerSender = GetOrCreateBrokerSender(leader.NodeId);
-                        LogBatchRouted(batch.TopicPartition.Topic, batch.TopicPartition.Partition, leader.NodeId);
-                        await brokerSender.EnqueueAsync(batch, cancellationToken).ConfigureAwait(false);
+                        await _metadataManager.RefreshMetadataAsync(cancellationToken).ConfigureAwait(false);
                     }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    catch (Exception) when (!cancellationToken.IsCancellationRequested)
                     {
-                        CompleteInflightEntry(batch);
-                        try { batch.Fail(new OperationCanceledException(cancellationToken)); }
-                        catch { /* Observe */ }
-                        if (!batch.MemoryReleased)
-                        {
-                            _accumulator.ReleaseMemory(batch.DataSize);
-                            batch.MemoryReleased = true;
-                        }
-                        _accumulator.ReturnReadyBatch(batch);
-                        _accumulator.OnBatchExitsPipeline();
-                        throw;
+                        // Metadata refresh failed — will retry on next iteration
                     }
-                    catch (Exception ex)
-                    {
-                        CompleteInflightEntry(batch);
-                        try { batch.Fail(ex); }
-                        catch { /* Observe */ }
-                        if (!batch.MemoryReleased)
-                        {
-                            _accumulator.ReleaseMemory(batch.DataSize);
-                            batch.MemoryReleased = true;
-                        }
-                        _accumulator.ReturnReadyBatch(batch);
-                        _accumulator.OnBatchExitsPipeline();
-                    }
+                }
+
+                // 5. Exit after close when all work is done.
+                // Closed is set at the start of CloseAsync, but FlushAsync (called within
+                // CloseAsync) waits for _inFlightBatchCount == 0. We must keep the sender
+                // alive until FlushAsync completes by checking in-flight batches too.
+                if (_accumulator.Closed && readyResult.ReadyNodes.Count == 0 && !_accumulator.HasPendingWork())
+                    break;
+
+                // 6. Wait for wakeup signal (new batch sealed, response complete, or timeout)
+                try
+                {
+                    await _accumulator.WaitForWakeupAsync(
+                        readyResult.ReadyNodes.Count > 0 ? 0 : readyResult.NextCheckDelayMs,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
                 }
             }
         }
-        finally
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Sender loop exiting — broker senders will be disposed in DisposeAsync
+            // Normal shutdown
+        }
+        catch (Exception ex)
+        {
+            LogSenderLoopFailed(ex);
         }
     }
 
@@ -2583,6 +2252,37 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             _inflightTracker.Complete(entry);
             batch.InflightEntry = null;
         }
+    }
+
+    /// <summary>
+    /// Fails a batch and cleans up all associated resources (inflight entry, memory, pool).
+    /// Every operation is wrapped in try/catch to guarantee cleanup completes even if
+    /// earlier steps throw — preventing orphaned completion sources that cause producer hangs.
+    /// Unlike BrokerSender.FailAndCleanupBatch, this handles pre-send failures (e.g., metadata
+    /// lookup timeout) where the batch never reached a BrokerSender — so no statistics recording
+    /// or acknowledgement callback is needed (those are BrokerSender responsibilities).
+    /// </summary>
+    private void FailAndCleanupBatch(ReadyBatch batch, Exception ex)
+    {
+        try { CompleteInflightEntry(batch); }
+        catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx); }
+        try { batch.Fail(ex); }
+        catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
+        try
+        {
+            if (!batch.MemoryReleased)
+            {
+                _accumulator.ReleaseMemory(batch.DataSize);
+                batch.MemoryReleased = true;
+            }
+        }
+        catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
+        // Remove from tracking BEFORE returning to pool. ReturnReadyBatch is idempotent
+        // (atomic _returnedToPool flag), so this is safe even if another path races.
+        try { _accumulator.OnBatchExitsPipeline(batch); }
+        catch (Exception exitEx) { LogBatchCleanupStepFailed(exitEx); }
+        try { _accumulator.ReturnReadyBatch(batch); }
+        catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
     }
 
     /// <summary>
@@ -2637,7 +2337,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             version => Interlocked.CompareExchange(ref _produceApiVersion, version, -1),
             () => _accumulator.IsTransactional,
             EnsurePartitionInTransactionAsync,
-            bumpEpoch: useEpochRecovery ? BumpEpochAsync : null,
+            bumpEpoch: useEpochRecovery ? BumpEpochLocally : null,
             getCurrentEpoch: useEpochRecovery ? () => _producerEpoch : null,
             RerouteBatchToCurrentLeader,
             _interceptors is not null ? InvokeOnAcknowledgementForBatch : null,
@@ -2659,16 +2359,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             if (_disposed)
             {
                 LogRerouteBlockedByDisposal(batch.TopicPartition.Topic, batch.TopicPartition.Partition);
-                CompleteInflightEntry(batch);
-                try { batch.Fail(new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>))); }
-                catch { /* Observe */ }
-                if (!batch.MemoryReleased)
-                {
-                    _accumulator.ReleaseMemory(batch.DataSize);
-                    batch.MemoryReleased = true;
-                }
-                _accumulator.ReturnReadyBatch(batch);
-                _accumulator.OnBatchExitsPipeline();
+                FailAndCleanupBatch(batch, new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>)));
                 return;
             }
 
@@ -2677,16 +2368,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             if (leader is null)
             {
-                CompleteInflightEntry(batch);
-                try { batch.Fail(new KafkaException(ErrorCode.LeaderNotAvailable, $"No leader available for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}")); }
-                catch { /* Observe */ }
-                if (!batch.MemoryReleased)
-                {
-                    _accumulator.ReleaseMemory(batch.DataSize);
-                    batch.MemoryReleased = true;
-                }
-                _accumulator.ReturnReadyBatch(batch);
-                _accumulator.OnBatchExitsPipeline();
+                FailAndCleanupBatch(batch, new KafkaException(ErrorCode.LeaderNotAvailable,
+                    $"No leader available for {batch.TopicPartition.Topic}-{batch.TopicPartition.Partition}"));
                 return;
             }
 
@@ -2695,16 +2378,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         catch (Exception ex)
         {
-            CompleteInflightEntry(batch);
-            try { batch.Fail(ex); }
-            catch { /* Observe */ }
-            if (!batch.MemoryReleased)
-            {
-                _accumulator.ReleaseMemory(batch.DataSize);
-                batch.MemoryReleased = true;
-            }
-            _accumulator.ReturnReadyBatch(batch);
-            _accumulator.OnBatchExitsPipeline();
+            FailAndCleanupBatch(batch, ex);
         }
     }
 
@@ -2732,6 +2406,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         // Use PeriodicTimer instead of Task.Delay to avoid allocations on each tick.
         // PeriodicTimer.WaitForNextTickAsync is allocation-free after the timer is constructed.
+
+        // Orphan sweep interval: check for expired in-flight batches every ~5 seconds.
+        // This catches batches whose references were lost from BrokerSender data structures
+        // (root cause under investigation) — without this sweep, ProduceAsync hangs indefinitely.
+        var orphanSweepIntervalTicks = (long)(5.0 * Stopwatch.Frequency);
+        var lastOrphanSweepTicks = Stopwatch.GetTimestamp();
+
         try
         {
             while (await _lingerTimer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
@@ -2739,6 +2420,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 try
                 {
                     await _accumulator.ExpireLingerAsync(cancellationToken).ConfigureAwait(false);
+
+                    // Periodic orphan sweep: fail in-flight batches that exceeded delivery timeout.
+                    var now = Stopwatch.GetTimestamp();
+                    if (now - lastOrphanSweepTicks >= orphanSweepIntervalTicks)
+                    {
+                        lastOrphanSweepTicks = now;
+                        _accumulator.SweepExpiredInFlightBatches();
+                    }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -2941,12 +2630,49 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <summary>
-    /// Bumps the producer epoch by calling InitProducerId with the current PID/epoch.
+    /// Client-side epoch bump for idempotent (non-transactional) producers (Java-style, KIP-360).
+    /// Increments the epoch locally without sending InitProducerIdRequest. The broker accepts
+    /// epoch+1 with sequence=0 as a valid fresh start for the affected partition.
+    /// Only resets sequences for partitions that triggered the error (OOSN, InvalidProducerEpoch).
+    /// Unaffected partitions keep their sequence counters — the broker carries forward
+    /// per-partition sequence state across epoch bumps.
+    /// </summary>
+    internal (long ProducerId, short ProducerEpoch) BumpEpochLocally(
+        short expectedEpoch, IReadOnlyCollection<TopicPartition> partitionsToReset)
+    {
+        // Already bumped by another BrokerSender — return current state
+        if (_producerEpoch != expectedEpoch)
+        {
+            LogEpochAlreadyBumped(expectedEpoch, _producerEpoch);
+            return (_producerId, _producerEpoch);
+        }
+
+        if (_producerEpoch == short.MaxValue)
+        {
+            // Epoch overflow — extremely rare (32767 bumps). Reset via InitProducerIdRequest
+            // would be needed here, but for simplicity just throw and let the batches fail.
+            // In practice, a producer that bumps epoch 32767 times has bigger problems.
+            throw new KafkaException(ErrorCode.UnknownServerError,
+                "Producer epoch overflow — requires producer restart");
+        }
+
+        _producerEpoch = (short)(_producerEpoch + 1);
+        _accumulator.ProducerEpoch = _producerEpoch;
+
+        // Per-partition reset: only affected partitions restart at seq=0.
+        // Unaffected partitions continue with current sequences under new epoch.
+        _accumulator.ResetSequencesForPartitions(partitionsToReset);
+
+        LogProducerEpochBumped(_producerId, _producerEpoch);
+        return (_producerId, _producerEpoch);
+    }
+
+    /// <summary>
+    /// Server-side epoch bump via InitProducerIdRequest. Used for transactional producers
+    /// and as fallback when client-side bump is not possible (e.g., epoch overflow).
     /// The broker returns the same PID with an incremented epoch. Resets all partition
     /// sequence numbers to 0 so subsequent batches use the new epoch.
-    /// Serialized by _transactionLock. The expectedEpoch parameter prevents redundant bumps
-    /// when multiple partitions fail in the same produce response — if another thread already
-    /// bumped the epoch, this returns the current state immediately.
+    /// Serialized by _transactionLock. The expectedEpoch parameter prevents redundant bumps.
     /// </summary>
     internal async ValueTask<(long ProducerId, short ProducerEpoch)> BumpEpochAsync(
         short expectedEpoch, CancellationToken cancellationToken)
@@ -3146,7 +2872,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             // 2. Wait for sender to drain remaining batches
             // CRITICAL: Don't cancel _senderCts yet - sender needs to process flushed batches
-            // The sender will exit naturally when the ready batches channel completes (done in CloseAsync)
+            // The sender exits naturally when Closed is set and all deques are drained
             if (hasTimeout)
                 await _senderTask.WaitAsync(shutdownCts.Token).ConfigureAwait(false);
             else
@@ -3215,6 +2941,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
         } while (_brokerSenders.Count > previousCount);
         _brokerSenders.Clear();
+
+        // Orphan sweep: fail any batches still tracked as in-flight after all BrokerSenders
+        // have been disposed. These are batches that entered the pipeline but were never
+        // cleaned up by any BrokerSender — their references were dropped due to edge-case
+        // races between send loop death and batch enqueue. This prevents FlushAsync from
+        // hanging indefinitely during disposal.
+        _accumulator.ForceFailAllInFlightBatches();
 
         _senderCts.Dispose();
         _lingerTimer.Dispose();
@@ -3322,6 +3055,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Disposing {Count} broker senders")]
     private partial void LogDisposingBrokerSenders(int count);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Non-fatal exception during batch cleanup step (suppressed)")]
+    private partial void LogBatchCleanupStepFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Sender loop failed with unexpected exception")]
+    private partial void LogSenderLoopFailed(Exception ex);
 
     #endregion
 }

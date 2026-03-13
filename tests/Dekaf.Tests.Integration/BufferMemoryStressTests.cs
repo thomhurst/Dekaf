@@ -28,6 +28,7 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("memory-stress-test")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .WithBufferMemory(8388608) // 8 MB - small buffer makes leaks more obvious
             .BuildAsync();
@@ -131,6 +132,7 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("buffered-bytes-test")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(50)) // Short linger for faster batching
             .BuildAsync();

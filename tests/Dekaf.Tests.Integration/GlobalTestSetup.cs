@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dekaf.Compression;
 using Dekaf.Compression.Lz4;
 using Dekaf.Compression.Snappy;
@@ -17,8 +18,20 @@ internal sealed class GlobalTestSetup
     [Before(TestSession)]
     public static void RegisterCompressionCodecs()
     {
+        // Ensure the thread pool has enough threads for timer callbacks (CancelAfter, etc.)
+        // to fire promptly on CI runners with limited CPUs. Without this, thread pool
+        // starvation can delay CancellationTokenSource timers by hundreds of seconds,
+        // causing tests to hang until the orphan sweep (360s) fires.
+        ThreadPool.SetMinThreads(32, 32);
         CompressionCodecRegistry.Default.AddLz4();
         CompressionCodecRegistry.Default.AddSnappy();
         CompressionCodecRegistry.Default.AddZstd();
+
+#if DEBUG
+        // Enable Debug.WriteLine output on Linux (where no default trace listener writes to console).
+        // This makes [BatchTrack] diagnostic output from BrokerSender visible in CI logs.
+        if (!Trace.Listeners.OfType<ConsoleTraceListener>().Any())
+            Trace.Listeners.Add(new ConsoleTraceListener());
+#endif
     }
 }

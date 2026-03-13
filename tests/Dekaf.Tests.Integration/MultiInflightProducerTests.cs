@@ -83,6 +83,13 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithLinger(TimeSpan.FromMilliseconds(2))
             .BuildAsync();
 
+        // Warm up all partitions to ensure the broker has fully initialized partition state.
+        for (var p = 0; p < partitionCount; p++)
+            await producer.ProduceAsync(new ProducerMessage<int, string>
+            {
+                Topic = topic, Key = -1, Value = "warmup", Partition = p
+            });
+
         // Produce messages keyed by partition index
         for (var p = 0; p < partitionCount; p++)
         {
@@ -106,7 +113,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .BuildAsync();
 
-        var totalExpected = partitionCount * messagesPerPartition;
+        var totalExpected = partitionCount * messagesPerPartition + partitionCount; // +warmup
         var partitions = Enumerable.Range(0, partitionCount)
             .Select(p => new TopicPartition(topic, p))
             .ToList();
@@ -131,10 +138,11 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
         await Assert.That(totalConsumed).IsEqualTo(totalExpected);
 
-        // Verify per-partition ordering
+        // Verify per-partition ordering (filter out warmup messages)
         for (var p = 0; p < partitionCount; p++)
         {
-            var partitionMessages = byPartition[p];
+            var partitionMessages = byPartition[p]
+                .Where(m => m.Value != "warmup").ToList();
             await Assert.That(partitionMessages).Count().IsEqualTo(messagesPerPartition);
 
             for (var i = 0; i < messagesPerPartition; i++)
@@ -366,6 +374,16 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithLinger(TimeSpan.FromMilliseconds(5)) // Higher linger to trigger coalescing
             .BuildAsync();
 
+        // Warm up all partitions to ensure the broker has fully initialized partition
+        // state tracking. Without this, the first produce to a newly-created partition
+        // may get NotLeaderOrFollower, and with MaxInFlight > 1 later in-flight batches
+        // for the same partition can succeed out of order at the broker.
+        for (var p = 0; p < partitionCount; p++)
+            await producer.ProduceAsync(new ProducerMessage<int, string>
+            {
+                Topic = topic, Key = -1, Value = "warmup", Partition = p
+            });
+
         // Produce to all partitions to trigger coalescing
         for (var i = 0; i < messagesPerPartition; i++)
         {
@@ -393,7 +411,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .ToList();
         consumer.Assign(partitions.ToArray());
 
-        var totalExpected = partitionCount * messagesPerPartition;
+        var totalExpected = partitionCount * messagesPerPartition + partitionCount; // +warmup
         var byPartition = new Dictionary<int, List<ConsumeResult<int, string>>>();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var totalConsumed = 0;
@@ -413,10 +431,11 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
         await Assert.That(totalConsumed).IsEqualTo(totalExpected);
 
-        // Verify per-partition ordering
+        // Verify per-partition ordering (filter out warmup messages)
         for (var p = 0; p < partitionCount; p++)
         {
-            var partitionMessages = byPartition[p];
+            var partitionMessages = byPartition[p]
+                .Where(m => m.Value != "warmup").ToList();
             await Assert.That(partitionMessages).Count().IsEqualTo(messagesPerPartition);
 
             for (var i = 0; i < messagesPerPartition; i++)

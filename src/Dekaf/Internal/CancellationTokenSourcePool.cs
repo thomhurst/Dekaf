@@ -1,66 +1,73 @@
+// Based on dotnet/aspnetcore (MIT license)
+// https://github.com/dotnet/aspnetcore/blob/main/src/Shared/CancellationTokenSourcePool.cs
+
 using System.Collections.Concurrent;
 
 namespace Dekaf.Internal;
 
-/// <summary>
-/// Thread-safe pool for CancellationTokenSource instances to avoid allocations in hot paths.
-/// </summary>
 internal sealed class CancellationTokenSourcePool
 {
-    private readonly ConcurrentBag<CancellationTokenSource> _pool = new();
-    // Pool size must accommodate peak concurrent requests across all connections.
-    // At 250K msg/sec with batching and multiple partitions, concurrent in-flight
-    // requests can spike to 500+ during bursts or when broker responses are slow.
-    // 512 provides headroom for high-throughput scenarios while bounding memory usage.
-    private const int MaxPoolSize = 512;
+    private const int MaxQueueSize = 1024;
+
+    private readonly ConcurrentQueue<PooledCancellationTokenSource> _queue = new();
     private int _count;
 
-    public CancellationTokenSource Rent()
+    public PooledCancellationTokenSource Rent()
     {
-        if (_pool.TryTake(out var cts))
+        if (_queue.TryDequeue(out var cts))
         {
             Interlocked.Decrement(ref _count);
-            if (cts.TryReset())
-            {
-                return cts;
-            }
-            // Reset failed, dispose and create new
-            cts.Dispose();
+            return cts;
         }
-
-        return new CancellationTokenSource();
+        return new PooledCancellationTokenSource(this);
     }
 
-    public void Return(CancellationTokenSource cts)
+    private bool Return(PooledCancellationTokenSource cts)
     {
-        if (cts.IsCancellationRequested)
+        if (Interlocked.Increment(ref _count) > MaxQueueSize || !cts.TryReset())
         {
-            cts.Dispose();
-            return;
+            Interlocked.Decrement(ref _count);
+            return false;
         }
 
-        // Atomic check-and-increment to prevent race condition
-        var currentCount = Volatile.Read(ref _count);
-        while (currentCount < MaxPoolSize)
-        {
-            if (Interlocked.CompareExchange(ref _count, currentCount + 1, currentCount) == currentCount)
-            {
-                _pool.Add(cts);
-                return;
-            }
-            currentCount = Volatile.Read(ref _count);
-        }
-
-        // Pool is full, dispose
-        cts.Dispose();
+        _queue.Enqueue(cts);
+        return true;
     }
 
     public void Clear()
     {
-        while (_pool.TryTake(out var cts))
+        while (_queue.TryDequeue(out var cts))
         {
-            cts.Dispose();
+            Interlocked.Decrement(ref _count);
+            cts.DisposeBase();
         }
-        _count = 0;
+    }
+
+    /// <summary>
+    /// A <see cref="CancellationTokenSource"/> with a back pointer to the pool it came from.
+    /// Dispose will return it to the pool.
+    /// </summary>
+    public sealed class PooledCancellationTokenSource : CancellationTokenSource
+    {
+        private readonly CancellationTokenSourcePool _pool;
+
+        public PooledCancellationTokenSource(CancellationTokenSourcePool pool)
+        {
+            _pool = pool;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                // If we failed to return to the pool then dispose
+                if (!_pool.Return(this))
+                {
+                    base.Dispose(disposing);
+                }
+            }
+        }
+
+        internal void DisposeBase() => base.Dispose(true);
     }
 }

@@ -1337,4 +1337,125 @@ public sealed class EpochBumpRecoveryTests
     }
 
     #endregion
+
+    #region Per-Partition Sequence Reset Tests (KIP-360 Java-Style)
+
+    [Test]
+    public async Task ResetSequencesForPartitions_ResetsOnlySpecifiedPartitions()
+    {
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
+        var accumulator = new RecordAccumulator(options);
+
+        // Build up sequences for three partitions
+        accumulator.GetAndIncrementSequence(Tp0, 10); // Tp0 → seq 10
+        accumulator.GetAndIncrementSequence(Tp1, 20); // Tp1 → seq 20
+        accumulator.GetAndIncrementSequence(Tp2, 30); // Tp2 → seq 30
+
+        // Reset only Tp0 — simulates OOSN on partition 0 only
+        accumulator.ResetSequencesForPartitions([Tp0]);
+
+        // Tp0 should restart at 0
+        var seqTp0 = accumulator.GetAndIncrementSequence(Tp0, 1);
+        await Assert.That(seqTp0).IsEqualTo(0);
+
+        // Tp1 and Tp2 should continue where they left off
+        var seqTp1 = accumulator.GetAndIncrementSequence(Tp1, 1);
+        await Assert.That(seqTp1).IsEqualTo(20);
+
+        var seqTp2 = accumulator.GetAndIncrementSequence(Tp2, 1);
+        await Assert.That(seqTp2).IsEqualTo(30);
+
+        await accumulator.DisposeAsync();
+    }
+
+    [Test]
+    public async Task ResetSequencesForPartitions_MultiplePartitions_ResetsAll()
+    {
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
+        var accumulator = new RecordAccumulator(options);
+
+        accumulator.GetAndIncrementSequence(Tp0, 10);
+        accumulator.GetAndIncrementSequence(Tp1, 20);
+        accumulator.GetAndIncrementSequence(Tp2, 30);
+
+        // Reset Tp0 and Tp1 — simulates OOSN on both
+        accumulator.ResetSequencesForPartitions([Tp0, Tp1]);
+
+        var seqTp0 = accumulator.GetAndIncrementSequence(Tp0, 1);
+        await Assert.That(seqTp0).IsEqualTo(0);
+
+        var seqTp1 = accumulator.GetAndIncrementSequence(Tp1, 1);
+        await Assert.That(seqTp1).IsEqualTo(0);
+
+        // Tp2 untouched
+        var seqTp2 = accumulator.GetAndIncrementSequence(Tp2, 1);
+        await Assert.That(seqTp2).IsEqualTo(30);
+
+        await accumulator.DisposeAsync();
+    }
+
+    [Test]
+    public async Task ResetSequencesForPartitions_EmptyCollection_NoEffect()
+    {
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
+        var accumulator = new RecordAccumulator(options);
+
+        accumulator.GetAndIncrementSequence(Tp0, 10);
+        accumulator.GetAndIncrementSequence(Tp1, 20);
+
+        // Reset no partitions
+        accumulator.ResetSequencesForPartitions([]);
+
+        var seqTp0 = accumulator.GetAndIncrementSequence(Tp0, 1);
+        await Assert.That(seqTp0).IsEqualTo(10);
+
+        var seqTp1 = accumulator.GetAndIncrementSequence(Tp1, 1);
+        await Assert.That(seqTp1).IsEqualTo(20);
+
+        await accumulator.DisposeAsync();
+    }
+
+    [Test]
+    public async Task ResetSequencesForPartitions_UnknownPartition_NoError()
+    {
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
+        var accumulator = new RecordAccumulator(options);
+
+        accumulator.GetAndIncrementSequence(Tp0, 10);
+
+        // Reset a partition that was never used — should not throw
+        var unknownTp = new TopicPartition("nonexistent", 99);
+        accumulator.ResetSequencesForPartitions([unknownTp]);
+
+        // Tp0 unaffected
+        var seqTp0 = accumulator.GetAndIncrementSequence(Tp0, 1);
+        await Assert.That(seqTp0).IsEqualTo(10);
+
+        await accumulator.DisposeAsync();
+    }
+
+    [Test]
+    public async Task PerPartitionReset_SequenceCounterRestartsCorrectly()
+    {
+        // Verifies that after reset, the partition's sequence counter works normally
+        var options = new ProducerOptions { BootstrapServers = ["localhost:9092"] };
+        var accumulator = new RecordAccumulator(options);
+
+        accumulator.GetAndIncrementSequence(Tp0, 10); // seq=0, next=10
+        accumulator.GetAndIncrementSequence(Tp0, 5);  // seq=10, next=15
+
+        // Reset Tp0
+        accumulator.ResetSequencesForPartitions([Tp0]);
+
+        // Should restart from 0 and increment normally
+        var seq1 = accumulator.GetAndIncrementSequence(Tp0, 3); // seq=0, next=3
+        await Assert.That(seq1).IsEqualTo(0);
+
+        var seq2 = accumulator.GetAndIncrementSequence(Tp0, 7); // seq=3, next=10
+        await Assert.That(seq2).IsEqualTo(3);
+
+        await accumulator.DisposeAsync();
+    }
+
+    #endregion
 }

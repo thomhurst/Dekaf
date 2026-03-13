@@ -25,9 +25,13 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
             .WithStatisticsHandler(s => stats.Add(s))
             .BuildAsync();
 
+        // Warm up to ensure broker has initialized partition state
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
+
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"stats-key-{i}",
@@ -37,13 +41,12 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
 
         await producer.FlushAsync();
 
-        // Wait for at least one stats callback
-        await Task.Delay(2000).ConfigureAwait(false);
-
-        await Assert.That(stats.Count).IsGreaterThanOrEqualTo(1);
+        // Poll until at least one stats callback fires
+        await Assert.That(() => stats.Count)
+            .Eventually(c => c.IsGreaterThanOrEqualTo(1), timeout: TimeSpan.FromSeconds(10));
 
         var latestStats = stats.OrderByDescending(s => s.Timestamp).First();
-        await Assert.That(latestStats.MessagesProduced).IsGreaterThanOrEqualTo(messageCount);
+        await Assert.That(latestStats.MessagesProduced).IsGreaterThanOrEqualTo(messageCount + 1);
         await Assert.That(latestStats.BytesProduced).IsGreaterThan(0);
     }
 
@@ -59,10 +62,14 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
             .WithStatisticsHandler(s => stats.Add(s))
             .BuildAsync();
 
+        // Warm up to ensure broker has initialized partition state
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
+
         // Produce some messages to generate activity
         for (var i = 0; i < 5; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
@@ -70,10 +77,9 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
             });
         }
 
-        // Wait for multiple stats intervals
-        await Task.Delay(3500).ConfigureAwait(false);
-
-        await Assert.That(stats.Count).IsGreaterThanOrEqualTo(2);
+        // Poll until multiple stats callbacks fire
+        await Assert.That(() => stats.Count)
+            .Eventually(c => c.IsGreaterThanOrEqualTo(2), timeout: TimeSpan.FromSeconds(10));
     }
 
     [Test]
@@ -88,7 +94,11 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .BuildAsync();
 
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        // Warm up to ensure broker has initialized partition state
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
+
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "key",
@@ -109,10 +119,9 @@ public sealed class StatisticsTests(KafkaTestContainer kafka) : KafkaIntegration
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
 
-        // Wait for stats to include group info
-        await Task.Delay(2000).ConfigureAwait(false);
-
-        await Assert.That(stats.Count).IsGreaterThanOrEqualTo(1);
+        // Poll until stats callback fires with group info
+        await Assert.That(() => stats.Count)
+            .Eventually(c => c.IsGreaterThanOrEqualTo(1), timeout: TimeSpan.FromSeconds(10));
 
         var latestStats = stats.OrderByDescending(s => s.Timestamp).First();
         await Assert.That(latestStats.GroupId).IsEqualTo(groupId);

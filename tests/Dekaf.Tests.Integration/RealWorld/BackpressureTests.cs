@@ -19,6 +19,7 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-small-buffer")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .WithBufferMemory(1_048_576) // 1MB buffer
             .WithLinger(TimeSpan.FromMilliseconds(5))

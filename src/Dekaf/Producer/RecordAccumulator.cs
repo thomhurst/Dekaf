@@ -6,6 +6,8 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
 using Dekaf.Errors;
+using Dekaf.Metadata;
+using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
 using Dekaf.Serialization;
 using Microsoft.Extensions.Logging;
@@ -228,15 +230,10 @@ public readonly struct PooledMemory
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Ownership Semantics:</b> When passed to <see cref="RecordAccumulator.TryAppendFireAndForgetBatch"/>,
+/// <b>Ownership Semantics:</b> When passed to batch append methods,
 /// ownership of pooled resources (Key.Array, Value.Array, PooledHeaderArray) transfers to the accumulator
 /// for successfully appended records. The accumulator will return these arrays to their pools when the
 /// batch completes or fails.
-/// </para>
-/// <para>
-/// <b>Partial Failure:</b> If the batch operation fails partway through (e.g., accumulator disposed),
-/// the caller is responsible for returning pooled resources for records that were NOT appended.
-/// The return value indicates how many records were successfully appended.
 /// </para>
 /// </remarks>
 public readonly struct ProducerRecordData
@@ -560,14 +557,37 @@ internal ref struct ArenaBufferWriter : IBufferWriter<byte>
 public sealed partial class RecordAccumulator : IAsyncDisposable
 {
     private readonly ProducerOptions _options;
-    private readonly ConcurrentDictionary<TopicPartition, PartitionBatch> _batches = new();
-    private readonly ConcurrentDictionary<TopicPartition, object> _partitionSealLocks = new();
-    private readonly Channel<ReadyBatch> _readyBatches;
+
+    /// <summary>
+    /// Per-partition deques of sealed ReadyBatches, matching Java's
+    /// ConcurrentMap&lt;TopicPartition, Deque&lt;ProducerBatch&gt;&gt;.
+    /// Accessed by producer threads (AddLast under lock) and sender thread (drain).
+    /// </summary>
+    private readonly ConcurrentDictionary<TopicPartition, PartitionDeque> _partitionDeques = new();
+
+    /// <summary>
+    /// Muted partitions — skipped by Ready() and Drain().
+    /// ConcurrentDictionary for thread safety: BrokerSender threads call MutePartition/UnmutePartition
+    /// while the sender thread reads via Contains in Ready/Drain.
+    /// </summary>
+    private readonly ConcurrentDictionary<TopicPartition, byte> _mutedPartitions = new();
+
+    /// <summary>
+    /// Per-broker drain index for fair round-robin partition ordering.
+    /// Matches Java's nodesDrainIndex HashMap.
+    /// </summary>
+    private readonly Dictionary<int, int> _drainIndex = new();
+
+    /// <summary>
+    /// Signaled when new data is available for the sender loop to drain.
+    /// Set by seal paths and reenqueue. Sender loop resets after wake.
+    /// </summary>
+    private readonly SemaphoreSlim _wakeupSignal = new(0, 1);
 
     // Per-partition-affine append workers: each worker owns a channel and processes
-    // appends for a subset of partitions (partition % workerCount). This eliminates
-    // contention on CAS spin, ConcurrentDictionary lookups, and per-partition seal locks
-    // when many threads miss the fast path and fall through to the slow (async) append path.
+    // appends for a subset of partitions (partition % workerCount). This reduces
+    // contention on ConcurrentDictionary lookups when many threads fall through
+    // to the slow (async) append path.
     private readonly Channel<AppendWorkItem>[] _appendWorkerChannels;
     private readonly int _appendWorkerCount;
     private Task[]? _appendWorkerTasks;
@@ -575,13 +595,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly PartitionBatchPool _batchPool;
     private readonly ReadyBatchPool _readyBatchPool; // Pool for ReadyBatch objects to eliminate per-batch allocations
 
-    // Track in-flight batches for FlushAsync using O(1) counter instead of dictionary
-    // This eliminates dictionary resizing issues under high throughput
+    // O(1) counter for fast flush-check (is anything in-flight?).
+    // The separate _inFlightBatches dictionary provides reference-tracking for orphan sweep.
     private long _inFlightBatchCount;
     // TCS for async waiting - created on-demand, completed when counter reaches 0
     // Using TCS instead of ManualResetEventSlim avoids polling and ThreadPool starvation
     // Not volatile - use Volatile.Read/Interlocked for thread-safe access
     private TaskCompletionSource<bool>? _flushTcs;
+
+    // Reference-tracking for in-flight batches. Enables forceful cleanup of orphaned batches
+    // during disposal — catches batches whose references were lost from BrokerSender data structures.
+    // Per-batch cost (not per-message): one TryAdd/TryRemove per batch, amortized over ~1000 messages.
+    private readonly ConcurrentDictionary<ReadyBatch, byte> _inFlightBatches = new(concurrencyLevel: Environment.ProcessorCount, capacity: 16);
 
     // Optimization: Track the oldest batch creation time to skip unnecessary enumeration.
     // With LingerMs=5ms and 1ms timer, we'd enumerate 5x per batch without this optimization.
@@ -595,15 +620,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private int _pendingAwaitedProduceCount;
 
     // Coordination lock between FlushAsyncCore and ExpireLingerAsyncCore.
-    // Prevents a race where the linger timer removes batch-0 from _batches (TryRemove succeeds)
-    // but before it writes to _readyBatches, FlushAsync snapshots _batches (missing batch-0),
-    // seals batch-1, and writes it to _readyBatches first — reversing batch ordering.
+    // Ensures linger and flush don't both seal batches simultaneously,
+    // which could cause ordering or double-seal issues.
     private readonly SemaphoreSlim _flushLingerLock = new(1, 1);
 
     private readonly ILogger _logger;
 
     private volatile bool _disposed;
     private volatile bool _closed;
+
+    /// <summary>
+    /// True after CloseAsync has been called. Used by the sender loop to know
+    /// when to exit after draining remaining batches.
+    /// </summary>
+    internal bool Closed => _closed;
 
     // Transaction support: ProducerId, ProducerEpoch, and transactional flag
     // Set by KafkaProducer.InitTransactionsAsync after successful InitProducerId
@@ -640,6 +670,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _sequenceNumbers.Clear();
     }
 
+    /// <summary>
+    /// Resets sequence numbers for specific partitions only (Java-style per-partition reset).
+    /// Called during client-side epoch bump for idempotent producers — only the partitions
+    /// that triggered OOSN/InvalidProducerEpoch need their sequences reset to 0.
+    /// Unaffected partitions keep their current sequence counters; the broker carries
+    /// forward per-partition sequence state across epoch bumps (KIP-360).
+    /// </summary>
+    internal void ResetSequencesForPartitions(IReadOnlyCollection<TopicPartition> partitions)
+    {
+        foreach (var tp in partitions)
+            _sequenceNumbers.TryRemove(tp, out _);
+    }
+
     // Buffer memory tracking for backpressure
     private readonly ulong _maxBufferMemory;
     private long _bufferedBytes;
@@ -652,43 +695,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
     private readonly SemaphoreSlim _asyncBufferSpaceSignal = new(0, 1);
-
-    // Thread-local cache for fast path when consecutive messages go to the same partition.
-    // This eliminates ConcurrentDictionary lookups for the common case of sending multiple
-    // messages to the same topic-partition in sequence (e.g., keyed messages, batch processing).
-    // Each thread maintains its own cache, so there's no contention.
-    [ThreadStatic]
-    private static string? t_cachedTopic;
-    [ThreadStatic]
-    private static int t_cachedPartition;
-    [ThreadStatic]
-    private static TopicPartition t_cachedTopicPartition;
-    [ThreadStatic]
-    private static PartitionBatch? t_cachedBatch;
-    [ThreadStatic]
-    private static RecordAccumulator? t_cachedAccumulator;
-
-    // Multi-partition thread-local cache for scenarios where messages go to multiple partitions.
-    // Uses a small fixed-size array indexed by partition modulo cache size.
-    // This handles common scenarios (3-16 partitions) with near-100% cache hit rate.
-    // Cache size of 16 covers most production scenarios while keeping memory footprint small.
-    private const int MultiPartitionCacheSize = 16;
-
-    [ThreadStatic]
-    private static PartitionBatchCacheEntry[]? t_partitionBatchCache;
-    [ThreadStatic]
-    private static RecordAccumulator? t_partitionBatchCacheOwner;
-
-    /// <summary>
-    /// Entry in the multi-partition batch cache.
-    /// Stores the topic, partition, and batch reference for quick lookup.
-    /// </summary>
-    private struct PartitionBatchCacheEntry
-    {
-        public string? Topic;
-        public int Partition;
-        public PartitionBatch? Batch;
-    }
 
     // Cache for TopicPartition instances to avoid repeated allocations.
     // Using a nested ConcurrentDictionary: outer key is topic (string), inner key is partition (int).
@@ -706,6 +712,264 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // allocation elimination in the critical produce path.
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, TopicPartition>> _topicPartitionCache = new();
 
+    /// <summary>
+    /// Per-partition state matching Java's Deque&lt;ProducerBatch&gt; design.
+    /// The deque holds sealed ReadyBatches waiting to be drained by the sender loop.
+    /// CurrentBatch is the unsealed batch accepting new records.
+    /// Thread-safety: all access to Deque and CurrentBatch must be under Lock.
+    /// </summary>
+    private sealed class PartitionDeque
+    {
+        /// <summary>Sealed batches waiting to drain. Front = oldest (drain target).</summary>
+        public readonly List<ReadyBatch> Deque = new(4);
+
+        /// <summary>Per-partition lock for deque access (matches Java's synchronized(deque)).</summary>
+        public readonly object Lock = new();
+
+        /// <summary>Current unsealed batch accepting new records. Null if no active batch.</summary>
+        public PartitionBatch? CurrentBatch;
+
+        /// <summary>Number of batches in the deque.</summary>
+        public int Count => Deque.Count;
+
+        /// <summary>Remove and return the first batch (oldest). Returns null if empty.</summary>
+        public ReadyBatch? PollFirst()
+        {
+            if (Deque.Count == 0) return null;
+            var batch = Deque[0];
+            Deque.RemoveAt(0);
+            return batch;
+        }
+
+        /// <summary>Return the first batch without removing. Returns null if empty.</summary>
+        public ReadyBatch? PeekFirst()
+        {
+            return Deque.Count > 0 ? Deque[0] : null;
+        }
+
+        /// <summary>Add to back of deque (normal seal path).</summary>
+        public void AddLast(ReadyBatch batch) => Deque.Add(batch);
+
+        /// <summary>Add to front of deque (retry/reenqueue — Java's addFirst).</summary>
+        public void AddFirst(ReadyBatch batch) => Deque.Insert(0, batch);
+    }
+
+    private PartitionDeque GetOrCreateDeque(TopicPartition tp)
+        => _partitionDeques.GetOrAdd(tp, static _ => new PartitionDeque());
+
+    /// <summary>Result of Ready() check — which brokers have sendable data.</summary>
+    internal readonly record struct ReadyCheckResult(
+        HashSet<int> ReadyNodes,
+        int NextCheckDelayMs,
+        bool UnknownLeadersExist);
+
+    /// <summary>
+    /// Checks all partition deques for sendable data, matching Java's RecordAccumulator.ready().
+    /// Returns broker IDs with at least one partition whose head batch is sendable
+    /// (batch is complete, linger expired, or flush in progress).
+    /// Only called from the sender thread.
+    /// </summary>
+    internal ReadyCheckResult Ready(MetadataManager metadataManager, long nowMs)
+    {
+        var readyNodes = new HashSet<int>();
+        var nextCheckDelayMs = int.MaxValue;
+        var unknownLeadersExist = false;
+
+        foreach (var kvp in _partitionDeques)
+        {
+            var tp = kvp.Key;
+            var pd = kvp.Value;
+
+            if (_mutedPartitions.ContainsKey(tp))
+                continue;
+
+            ReadyBatch? head;
+            lock (pd.Lock)
+            {
+                head = pd.PeekFirst();
+            }
+
+            if (head is null)
+                continue;
+
+            // Check retry backoff
+            if (head.IsRetry && head.RetryNotBefore > 0)
+            {
+                var backoffRemaining = head.RetryNotBefore - Stopwatch.GetTimestamp();
+                if (backoffRemaining > 0)
+                {
+                    var backoffMs = (int)(backoffRemaining * 1000 / Stopwatch.Frequency);
+                    nextCheckDelayMs = Math.Min(nextCheckDelayMs, backoffMs);
+                    continue;
+                }
+            }
+
+            // Find leader for this partition
+            var leader = metadataManager.TryGetCachedPartitionLeader(tp.Topic, tp.Partition);
+            if (leader is null)
+            {
+                // Sealed batch exists but leader is unknown (e.g., after partition expansion).
+                // Signal the sender to trigger a metadata refresh, matching Java's
+                // RecordAccumulator.ready() unknownLeadersExist behavior.
+                unknownLeadersExist = true;
+                continue;
+            }
+
+            // Sealed batches in the deque are always sendable. The linger/micro-linger
+            // timer already determined readiness when it sealed the batch, so re-checking
+            // linger here would double-count the wait (e.g., a batch sealed by micro-linger
+            // after 1ms would wait another 5000ms with lingerMs=5000).
+            // Only retry backoff (handled above) can delay a sealed batch.
+            readyNodes.Add(leader.NodeId);
+        }
+
+        return new ReadyCheckResult(readyNodes, nextCheckDelayMs == int.MaxValue ? 100 : nextCheckDelayMs, unknownLeadersExist);
+    }
+
+    /// <summary>
+    /// Drains one batch per partition for each ready broker, matching Java's RecordAccumulator.drain().
+    /// Returns per-broker batch lists. Only called from the sender thread.
+    /// </summary>
+    internal Dictionary<int, List<ReadyBatch>> Drain(
+        MetadataManager metadataManager,
+        HashSet<int> readyNodes,
+        int maxRequestSize)
+    {
+        var result = new Dictionary<int, List<ReadyBatch>>(readyNodes.Count);
+
+        foreach (var nodeId in readyNodes)
+        {
+            var batches = DrainBatchesForOneNode(metadataManager, nodeId, maxRequestSize);
+            if (batches.Count > 0)
+                result[nodeId] = batches;
+        }
+
+        return result;
+    }
+
+    private List<ReadyBatch> DrainBatchesForOneNode(
+        MetadataManager metadataManager,
+        int nodeId,
+        int maxRequestSize)
+    {
+        var ready = new List<ReadyBatch>();
+        var partitions = metadataManager.GetPartitionsForNode(nodeId);
+        if (partitions is null || partitions.Count == 0)
+            return ready;
+
+        if (!_drainIndex.TryGetValue(nodeId, out var startIndex))
+            startIndex = 0;
+
+        var size = 0;
+        var count = partitions.Count;
+
+        for (var i = 0; i < count; i++)
+        {
+            var idx = (startIndex + i) % count;
+            var tp = partitions[idx];
+
+            _drainIndex[nodeId] = (startIndex + i + 1) % count;
+
+            if (_mutedPartitions.ContainsKey(tp))
+                continue;
+
+            var pd = _partitionDeques.GetValueOrDefault(tp);
+            if (pd is null)
+                continue;
+
+            ReadyBatch? batch;
+            lock (pd.Lock)
+            {
+                batch = pd.PeekFirst();
+                if (batch is null)
+                    continue;
+
+                if (batch.IsRetry && batch.RetryNotBefore > 0
+                    && Stopwatch.GetTimestamp() < batch.RetryNotBefore)
+                    continue;
+
+                if (ready.Count > 0 && size + batch.DataSize > maxRequestSize)
+                    break;
+
+                batch = pd.PollFirst();
+            }
+
+            if (batch is not null)
+            {
+                batch.AppendDiag('D');
+                size += batch.DataSize;
+                ready.Add(batch);
+            }
+        }
+
+        return ready;
+    }
+
+    /// <summary>
+    /// Puts a failed batch back at the front of its partition deque for retry.
+    /// Matches Java's RecordAccumulator.reenqueue() with addFirst.
+    /// For idempotent producers, uses insertInSequenceOrder to maintain sequence ordering.
+    /// </summary>
+    internal void Reenqueue(ReadyBatch batch, long nowMs)
+    {
+        batch.Reenqueued(nowMs);
+        var pd = GetOrCreateDeque(batch.TopicPartition);
+        lock (pd.Lock)
+        {
+            if (ProducerId >= 0)
+                InsertInSequenceOrder(pd, batch);
+            else
+                pd.AddFirst(batch);
+        }
+        SignalWakeup();
+    }
+
+    private static void InsertInSequenceOrder(PartitionDeque pd, ReadyBatch batch)
+    {
+        if (batch.RecordBatch.BaseSequence < 0)
+        {
+            pd.AddFirst(batch);
+            return;
+        }
+
+        var insertIdx = 0;
+        for (var i = 0; i < pd.Deque.Count; i++)
+        {
+            if (pd.Deque[i].RecordBatch.BaseSequence >= 0
+                && pd.Deque[i].RecordBatch.BaseSequence < batch.RecordBatch.BaseSequence)
+            {
+                insertIdx = i + 1;
+            }
+            else
+            {
+                break;
+            }
+        }
+        pd.Deque.Insert(insertIdx, batch);
+    }
+
+    internal void MutePartition(TopicPartition tp) => _mutedPartitions.TryAdd(tp, 0);
+
+    internal void UnmutePartition(TopicPartition tp)
+    {
+        _mutedPartitions.TryRemove(tp, out _);
+        SignalWakeup(); // Wake sender loop so it can drain the newly-unmuted partition
+    }
+    internal bool IsMuted(TopicPartition tp) => _mutedPartitions.ContainsKey(tp);
+
+    internal void SignalWakeup()
+    {
+        // Non-blocking signal — if already signaled, this is a no-op
+        // SemaphoreSlim.Release throws if count would exceed max, so use try-catch
+        try { _wakeupSignal.Release(); }
+        catch (SemaphoreFullException) { }
+    }
+
+    internal async ValueTask<bool> WaitForWakeupAsync(int timeoutMs, CancellationToken cancellationToken)
+    {
+        return await _wakeupSignal.WaitAsync(timeoutMs, cancellationToken).ConfigureAwait(false);
+    }
+
     public RecordAccumulator(ProducerOptions options, ILogger? logger = null)
     {
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
@@ -714,14 +978,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _batchPool = new PartitionBatchPool(options);
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = options.BufferMemory;
-
-        // Use unbounded channel for ready batches - backpressure is now handled by buffer memory tracking
-        // Single channel design: batches go directly to sender loop (no intermediate CompletionLoop)
-        _readyBatches = Channel.CreateUnbounded<ReadyBatch>(new UnboundedChannelOptions
-        {
-            SingleReader = true,
-            SingleWriter = false
-        });
 
         // Create per-partition-affine append worker channels.
         // Each channel is SingleReader (one worker) but allows multiple writers (caller threads).
@@ -735,10 +991,28 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Exposes the ready batches channel reader for KafkaProducer.SenderLoop.
-    /// Simplified architecture: batches go directly from append → ready channel → sender loop.
+    /// Drains one ReadyBatch from any non-empty partition deque.
+    /// Used by tests to simulate sender loop draining without MetadataManager.
     /// </summary>
-    internal ChannelReader<ReadyBatch> ReadyBatches => _readyBatches.Reader;
+    internal bool TryDrainBatch([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out ReadyBatch? batch)
+    {
+        foreach (var kvp in _partitionDeques)
+        {
+            var pd = kvp.Value;
+            lock (pd.Lock)
+            {
+                var b = pd.PollFirst();
+                if (b is not null)
+                {
+                    batch = b;
+                    return true;
+                }
+            }
+        }
+
+        batch = null;
+        return false;
+    }
 
     /// <summary>
     /// Returns a ReadyBatch to the pool for reuse.
@@ -747,6 +1021,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void ReturnReadyBatch(ReadyBatch batch)
     {
+        // Atomic guard: only the first caller returns the batch to the pool.
+        // Multiple paths may attempt to return the same batch (e.g., BrokerSender.CleanupBatch
+        // racing with ForceFailAllInFlightBatches during disposal). Double-return to the pool
+        // causes two renters to share the same object — silent data corruption.
+        if (Interlocked.Exchange(ref batch._returnedToPool, 1) != 0)
+            return;
+
         _readyBatchPool.Return(batch);
     }
 
@@ -779,7 +1060,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             try
             {
-                await AppendAsync(
+                workItem.CancellationToken.ThrowIfCancellationRequested();
+
+                if (!Append(
                     workItem.Topic,
                     workItem.Partition,
                     workItem.Timestamp,
@@ -788,7 +1071,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     workItem.Headers,
                     workItem.PooledHeaderArray,
                     workItem.Completion,
-                    workItem.CancellationToken).ConfigureAwait(false);
+                    null))
+                {
+                    CleanupWorkItemResources(in workItem);
+                    workItem.Completion.TrySetException(new ObjectDisposedException(nameof(RecordAccumulator)));
+                }
             }
             catch (OperationCanceledException) when (workItem.CancellationToken.IsCancellationRequested)
             {
@@ -854,6 +1141,223 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var batch = _batchPool.Rent(topicPartition);
         batch.SetTransactionState(ProducerId, ProducerEpoch, IsTransactional, ProducerId >= 0 ? this : null);
         return batch;
+    }
+
+    /// <summary>
+    /// Gets or creates a cached TopicPartition instance to avoid allocation on the hot path.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private TopicPartition GetOrCreateTopicPartition(string topic, int partition)
+    {
+        var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
+        return partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
+    }
+
+    /// <summary>
+    /// Unified append method matching Java's RecordAccumulator.append().
+    /// All produce paths (ProduceAsync, Send, Send+callback) go through this single method.
+    /// Synchronized on the per-partition deque lock to guarantee ordering.
+    /// </summary>
+    /// <returns>true if appended successfully, false if the accumulator is disposed.</returns>
+    internal bool Append(
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
+        PooledValueTaskSource<RecordMetadata>? completionSource,
+        Action<RecordMetadata, Exception?>? callback)
+    {
+        if (_disposed)
+            return false;
+
+        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
+        ReserveMemorySync(recordSize);
+
+        var topicPartition = GetOrCreateTopicPartition(topic, partition);
+
+        // Track pending awaited produce BEFORE append to prevent race condition:
+        // Without this, ExpireLingerAsync could see _pendingAwaitedProduceCount == 0
+        // after the message is in the batch but before the counter is incremented.
+        if (completionSource is not null)
+            Interlocked.Increment(ref _pendingAwaitedProduceCount);
+
+        var pd = GetOrCreateDeque(topicPartition);
+        bool batchSealed = false;
+
+        lock (pd.Lock)
+        {
+            // Check disposal under lock
+            if (_disposed)
+            {
+                if (completionSource is not null)
+                    Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+                ReleaseMemory(recordSize);
+                return false;
+            }
+
+            // Try append to current batch
+            if (pd.CurrentBatch is { } currentBatch)
+            {
+                if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, pooledHeaderArray,
+                    completionSource, callback, recordSize))
+                    return true;
+
+                // Current batch is full — seal it
+                SealCurrentBatchUnderLock(pd, currentBatch, ref batchSealed);
+            }
+
+            // Create new batch
+            var newBatch = RentBatch(topicPartition);
+            pd.CurrentBatch = newBatch;
+
+            // Append to new batch — must succeed since batch is empty
+            if (!TryAppendToBatch(newBatch, timestamp, key, value, headers, pooledHeaderArray,
+                completionSource, callback, recordSize))
+            {
+                // Record too large for a single batch
+                pd.CurrentBatch = null;
+                _batchPool.Return(newBatch);
+                if (completionSource is not null)
+                    Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+                ReleaseMemory(recordSize);
+                throw new KafkaException(ErrorCode.MessageTooLarge,
+                    $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
+            }
+        }
+
+        if (batchSealed)
+            SignalWakeup();
+
+        return true;
+    }
+
+    /// <summary>
+    /// Non-blocking variant of Append for the ProduceAsync fast path.
+    /// Returns false when buffer is full (caller falls back to async slow path)
+    /// OR when the accumulator is disposed.
+    /// </summary>
+    internal bool TryAppendWithCompletion(
+        string topic,
+        int partition,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
+        PooledValueTaskSource<RecordMetadata> completionSource)
+    {
+        if (_disposed)
+            return false;
+
+        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
+
+        // Try non-blocking memory reservation. If buffer is full, return false so the
+        // caller (ProduceAsync fast path) falls back to the async path.
+        if (!TryReserveMemory(recordSize))
+            return false;
+
+        var topicPartition = GetOrCreateTopicPartition(topic, partition);
+
+        // Track pending awaited produce BEFORE append
+        Interlocked.Increment(ref _pendingAwaitedProduceCount);
+
+        var pd = GetOrCreateDeque(topicPartition);
+        bool batchSealed = false;
+
+        lock (pd.Lock)
+        {
+            if (_disposed)
+            {
+                Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+                ReleaseMemory(recordSize);
+                return false;
+            }
+
+            // Try append to current batch
+            if (pd.CurrentBatch is { } currentBatch)
+            {
+                if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, pooledHeaderArray,
+                    completionSource, null, recordSize))
+                    return true;
+
+                // Current batch is full — seal it
+                SealCurrentBatchUnderLock(pd, currentBatch, ref batchSealed);
+            }
+
+            // Create new batch
+            var newBatch = RentBatch(topicPartition);
+            pd.CurrentBatch = newBatch;
+
+            // Append to new batch — must succeed since batch is empty
+            if (!TryAppendToBatch(newBatch, timestamp, key, value, headers, pooledHeaderArray,
+                completionSource, null, recordSize))
+            {
+                pd.CurrentBatch = null;
+                _batchPool.Return(newBatch);
+                Interlocked.Decrement(ref _pendingAwaitedProduceCount);
+                ReleaseMemory(recordSize);
+                throw new KafkaException(ErrorCode.MessageTooLarge,
+                    $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
+            }
+        }
+
+        if (batchSealed)
+            SignalWakeup();
+
+        return true;
+    }
+
+    /// <summary>
+    /// Helper: tries to append a record to the given batch.
+    /// Called under the deque lock.
+    /// </summary>
+    private bool TryAppendToBatch(
+        PartitionBatch batch,
+        long timestamp,
+        PooledMemory key,
+        PooledMemory value,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
+        PooledValueTaskSource<RecordMetadata>? completionSource,
+        Action<RecordMetadata, Exception?>? callback,
+        int estimatedSize)
+    {
+        var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completionSource, callback);
+
+        if (result.Success)
+        {
+            ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
+            var overestimate = estimatedSize - result.ActualSizeAdded;
+            if (overestimate > 0)
+                ReleaseMemory(overestimate);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Seals the current batch in a partition deque, enqueues the ready batch, and returns the shell to pool.
+    /// MUST be called under pd.Lock.
+    /// </summary>
+    private void SealCurrentBatchUnderLock(PartitionDeque pd, PartitionBatch currentBatch, ref bool batchSealed)
+    {
+        var readyBatch = currentBatch.Complete();
+        if (readyBatch is not null)
+        {
+            if (readyBatch.CompletionSourcesCount > 0)
+                Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
+            ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+            OnBatchEntersPipeline(readyBatch);
+            pd.AddLast(readyBatch);
+            batchSealed = true;
+            ProducerDebugCounters.RecordBatchQueuedToReady();
+        }
+        _batchPool.Return(currentBatch);
+        pd.CurrentBatch = null;
     }
 
     /// <summary>
@@ -1091,26 +1595,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     /// <param name="topicPartition">The topic-partition to look up.</param>
     /// <param name="batch">The batch if found, null otherwise.</param>
-    /// <returns>True if a batch exists, false otherwise.</returns>
-    internal bool TryGetBatch(TopicPartition topicPartition, out PartitionBatch? batch)
-    {
-        if (_disposed)
-        {
-            batch = null;
-            return false;
-        }
-
-        return _batches.TryGetValue(topicPartition, out batch);
-    }
-
     /// <summary>
-    /// Tries to get an existing batch by topic and partition using thread-local cache.
-    /// This is the fast path that avoids TopicPartition allocation.
+    /// Checks for batches that have exceeded linger time.
+    /// Uses conditional removal to avoid race conditions where a new batch might be created
+    /// between Complete() and TryRemove() calls.
     /// </summary>
-    /// <param name="topic">The topic name.</param>
-    /// <param name="partition">The partition number.</param>
-    /// <param name="batch">The batch if found, null otherwise.</param>
-    /// <returns>True if a batch exists, false otherwise.</returns>
+    /// <summary>
+    /// Tries to get an existing batch for the given topic-partition.
+    /// Used by tests for batch introspection.
+    /// </summary>
     internal bool TryGetBatch(string topic, int partition, out PartitionBatch? batch)
     {
         if (_disposed)
@@ -1119,937 +1612,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return false;
         }
 
-        // Use thread-local multi-partition cache for fast lookup
-        var cache = t_partitionBatchCache;
-        var cacheOwner = t_partitionBatchCacheOwner;
-
-        if (cache is not null && ReferenceEquals(cacheOwner, this))
+        var topicPartition = GetOrCreateTopicPartition(topic, partition);
+        if (_partitionDeques.TryGetValue(topicPartition, out var pd))
         {
-            var index = partition & (MultiPartitionCacheSize - 1);
-            ref var entry = ref cache[index];
-
-            if (entry.Topic == topic && entry.Partition == partition && entry.Batch is not null)
-            {
-                // Cache hit - verify batch is still valid (not completed) AND still belongs
-                // to the correct partition. The batch object may have been recycled via the pool
-                // and Reset() for a different partition while this thread-local cache entry is stale.
-                // The linger timer (different thread) can complete + pool a batch, then the produce
-                // thread can rent it for another partition, making the stale cache entry dangerous.
-                var cachedBatch = entry.Batch;
-                if (cachedBatch.Arena is not null && cachedBatch.TopicPartition.Partition == partition)
-                {
-                    batch = cachedBatch;
-                    return true;
-                }
-                // Batch was completed or recycled for a different partition, clear cache entry
-                entry.Batch = null;
-            }
+            batch = pd.CurrentBatch;
+            return batch is not null;
         }
 
-        // Cache miss - look up in dictionary
-        if (!_topicPartitionCache.TryGetValue(topic, out var partitionCache))
-        {
-            batch = null;
-            return false;
-        }
-
-        if (!partitionCache.TryGetValue(partition, out var topicPartition))
-        {
-            batch = null;
-            return false;
-        }
-
-        if (!_batches.TryGetValue(topicPartition, out batch))
-        {
-            return false;
-        }
-
-        // Update thread-local cache for next time
-        UpdatePartitionCache(topic, partition, batch);
-        return true;
-    }
-
-    /// <summary>
-    /// Updates the thread-local partition cache.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void UpdatePartitionCache(string topic, int partition, PartitionBatch? batch)
-    {
-        var cache = t_partitionBatchCache;
-        if (cache is null || !ReferenceEquals(t_partitionBatchCacheOwner, this))
-        {
-            cache = new PartitionBatchCacheEntry[MultiPartitionCacheSize];
-            t_partitionBatchCache = cache;
-            t_partitionBatchCacheOwner = this;
-        }
-
-        var index = partition & (MultiPartitionCacheSize - 1);
-        cache[index] = new PartitionBatchCacheEntry
-        {
-            Topic = topic,
-            Partition = partition,
-            Batch = batch
-        };
-    }
-
-
-    /// <summary>
-    /// Appends a record to the appropriate batch.
-    /// Key and value data are pooled - the batch will return them to the pool when complete.
-    /// Header array may also be pooled (if large) and will be returned to pool when batch completes.
-    /// The completion source will be completed when the batch is sent.
-    /// Backpressure is applied through channel capacity when batches are written.
-    /// Optimized to avoid TopicPartition allocation on the hot path by using a nested cache.
-    /// </summary>
-    public async ValueTask<RecordAppendResult> AppendAsync(
-        string topic,
-        int partition,
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        PooledValueTaskSource<RecordMetadata> completion,
-        CancellationToken cancellationToken)
-    {
-        if (_disposed)
-            throw new ObjectDisposedException(nameof(RecordAccumulator));
-
-        // Calculate record size for buffer memory tracking
-        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
-
-        // Reserve memory before appending - blocks if buffer is full
-        // This provides backpressure when producers are faster than the network can drain
-        await ReserveMemoryAsync(recordSize, cancellationToken).ConfigureAwait(false);
-
-        // OPTIMIZATION: Use a nested cache to get/create TopicPartition without allocating on hot path.
-        // First, get or create the partition cache for this topic.
-        var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
-
-        // Then, get or create the TopicPartition for this partition.
-        // This is cached, so subsequent calls with same topic/partition reuse the struct.
-        var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
-
-        // Loop until we successfully append the record.
-        // This handles the race condition where multiple threads try to replace a full batch:
-        // - GetOrAdd gets existing batch or creates a new one
-        // - If append fails (batch full), complete it and atomically remove it
-        // - TryRemove(KeyValuePair) only removes if value matches, preventing orphaned batches
-        // - Loop retries with the new batch (created by us or another thread)
-        while (true)
-        {
-            // Check disposal and cancellation at top of loop
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(RecordAccumulator));
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            // Hot path optimization: TryGetValue first to avoid factory invocation when batch exists.
-            // Most appends hit an existing batch, so this avoids GetOrAdd overhead.
-            if (!_batches.TryGetValue(topicPartition, out var batch))
-            {
-                // Cold path: Rent from pool
-                var newBatch = RentBatch(topicPartition);
-                if (!_batches.TryAdd(topicPartition, newBatch))
-                {
-                    // Another thread added a batch, return ours to pool
-                    _batchPool.Return(newBatch);
-                    // Use TryGetValue since the batch might have been removed already
-                    if (!_batches.TryGetValue(topicPartition, out batch))
-                    {
-                        continue; // Retry the loop
-                    }
-                }
-                else
-                {
-                    batch = newBatch;
-                    // Update oldest batch tracking for linger timer optimization
-                    UpdateOldestBatchTracking(newBatch);
-                }
-            }
-
-            // Should never be null at this point - defensive check
-            if (batch is null)
-            {
-                continue; // Retry the loop
-            }
-
-            // Track pending awaited produce BEFORE append to prevent race condition:
-            // Without this, ExpireLingerAsync could see _pendingAwaitedProduceCount == 0
-            // after the message is in the batch but before the counter is incremented.
-            Interlocked.Increment(ref _pendingAwaitedProduceCount);
-
-            var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
-
-            if (result.Success)
-            {
-                ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: true);
-                // Release the difference between estimated and actual size to prevent memory leak
-                // The actual batch memory will be released when the batch is sent via SendBatchAsync
-                var overestimate = recordSize - result.ActualSizeAdded;
-                if (overestimate > 0)
-                    ReleaseMemory(overestimate);
-                return result;
-            }
-
-            // Append failed (batch full) - decrement counter since message wasn't added.
-            // The loop will increment again before the next TryAppend attempt.
-            Interlocked.Decrement(ref _pendingAwaitedProduceCount);
-
-            // Batch is full - seal it under a per-partition lock to preserve ordering.
-            // The lock ensures that if the linger timer is concurrently sealing an older batch
-            // for this partition, the older batch is written to the channel first.
-            lock (GetPartitionSealLock(topicPartition))
-            {
-                if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
-                {
-                    // Reset oldest batch tracking if dictionary is now empty
-                    ResetOldestBatchTrackingIfEmpty();
-
-                    var readyBatch = batch.Complete();
-                    if (readyBatch is not null)
-                    {
-                        // Decrement pending awaited produce count by the number of completion sources in this batch
-                        if (readyBatch.CompletionSourcesCount > 0)
-                            Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
-                        ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
-                        // Track delivery task for FlushAsync
-                        OnBatchEntersPipeline();
-
-                        // Write to unbounded channel — TryWrite always succeeds unless writer is completed (disposal)
-                        if (!_readyBatches.Writer.TryWrite(readyBatch))
-                        {
-                            ProducerDebugCounters.RecordBatchFailedToQueue();
-                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            OnBatchExitsPipeline();
-                            ReleaseMemory(readyBatch.DataSize);
-                            _batchPool.Return(batch);
-                            throw new ObjectDisposedException(nameof(RecordAccumulator));
-                        }
-
-                        ProducerDebugCounters.RecordBatchQueuedToReady();
-                        // Return the completed batch shell to the pool for reuse
-                        _batchPool.Return(batch);
-                    }
-                }
-            }
-
-            // Loop will rent from pool again, which will either reuse a pooled batch or create new
-        }
-    }
-
-    /// <summary>
-    /// Synchronous version of Append for fire-and-forget produce operations.
-    /// Bypasses async overhead when no backpressure is needed.
-    /// Returns true if appended successfully, false if the accumulator is disposed.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool TryAppendSync(
-        string topic,
-        int partition,
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        PooledValueTaskSource<RecordMetadata> completion)
-    {
-        if (_disposed)
-            return false;
-
-        // Calculate record size for buffer memory tracking
-        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
-
-        // Try non-blocking memory reservation. If buffer is full, return false so the
-        // caller (ProduceAsync fast path) falls back to the async path which uses
-        // ReserveMemoryAsync and yields instead of blocking a thread. This prevents
-        // thread pool starvation when BufferMemory is held until batch completion.
-        if (!TryReserveMemory(recordSize))
-            return false;
-
-        // OPTIMIZATION: Use a nested cache to get/create TopicPartition without allocating on hot path.
-        var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
-        var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
-
-        // Loop until we successfully append the record.
-        while (true)
-        {
-            // Check disposal at top of loop
-            if (_disposed)
-            {
-                // Release memory before returning
-                ReleaseMemory(recordSize);
-                return false;
-            }
-
-            // Hot path optimization: TryGetValue first to avoid factory invocation when batch exists.
-            if (!_batches.TryGetValue(topicPartition, out var batch))
-            {
-                // Rent from pool
-                var newBatch = RentBatch(topicPartition);
-                if (!_batches.TryAdd(topicPartition, newBatch))
-                {
-                    // Another thread added a batch, return ours to pool
-                    _batchPool.Return(newBatch);
-                    // Use TryGetValue since the batch might have been removed already
-                    if (!_batches.TryGetValue(topicPartition, out batch))
-                    {
-                        continue; // Retry the loop
-                    }
-                }
-                else
-                {
-                    batch = newBatch;
-                    // Update oldest batch tracking for linger timer optimization
-                    UpdateOldestBatchTracking(newBatch);
-                }
-            }
-
-            // Track pending awaited produce BEFORE append to prevent race condition:
-            // Without this, ExpireLingerAsync could see _pendingAwaitedProduceCount == 0
-            // after the message is in the batch but before the counter is incremented.
-            Interlocked.Increment(ref _pendingAwaitedProduceCount);
-
-            var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completion);
-
-            if (result.Success)
-            {
-                ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: true);
-                // Release the difference between estimated and actual size to prevent memory leak
-                // The actual batch memory will be released when the batch is sent via SendBatchAsync
-                var overestimate = recordSize - result.ActualSizeAdded;
-                if (overestimate > 0)
-                    ReleaseMemory(overestimate);
-
-                return true;
-            }
-
-            // Append failed (batch full) - decrement counter since message wasn't added.
-            // The loop will increment again before the next TryAppend attempt.
-            Interlocked.Decrement(ref _pendingAwaitedProduceCount);
-
-            // Batch is full - atomically remove it from dictionary BEFORE completing.
-            // Only the thread that wins the TryRemove race will complete the batch.
-            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
-            {
-                // Reset oldest batch tracking if dictionary is now empty
-                ResetOldestBatchTrackingIfEmpty();
-
-                var readyBatch = batch.Complete();
-                if (readyBatch is not null)
-                {
-                    // Decrement pending awaited produce count by the number of completion sources in this batch
-                    if (readyBatch.CompletionSourcesCount > 0)
-                        Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
-                    ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
-                    // Track delivery task for FlushAsync
-                    OnBatchEntersPipeline();
-
-                    // Non-blocking write to unbounded channel - should always succeed
-                    // If it fails (channel completed), the producer is being disposed
-                    if (!_readyBatches.Writer.TryWrite(readyBatch))
-                    {
-                        ProducerDebugCounters.RecordBatchFailedToQueue();
-                        // Channel is closed, fail the batch and return false
-                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                        OnBatchExitsPipeline(); // Decrement counter on failure
-                        // Release the batch's buffer memory since it won't go through producer
-                        ReleaseMemory(readyBatch.DataSize);
-                        return false;
-                    }
-
-                    ProducerDebugCounters.RecordBatchQueuedToReady();
-                    // Return the completed batch shell to the pool for reuse
-                    _batchPool.Return(batch);
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// Fire-and-forget version of TryAppendSync that skips completion source tracking entirely.
-    /// This eliminates the overhead of renting and storing PooledValueTaskSource for fire-and-forget produces.
-    /// Returns true if appended successfully, false if the accumulator is disposed.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool TryAppendFireAndForget(
-        string topic,
-        int partition,
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray)
-    {
-        if (_disposed)
-            return false;
-
-        // Calculate record size for buffer memory tracking
-        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
-
-        // Reserve memory before appending - blocks synchronously if buffer is full
-        // This provides backpressure when producers are faster than the network can drain
-        ReserveMemorySync(recordSize);
-
-        // FAST PATH 1: Check single-partition cache for consecutive messages to same partition.
-        // This is the fastest path for single-partition or sticky-partitioner scenarios.
-        // CRITICAL: Also verify the batch still belongs to the correct partition.
-        // The batch object may have been recycled via the pool and Reset() for a different
-        // partition while this thread-local cache entry is stale (e.g., linger timer completed
-        // and pooled the batch on another thread, then it was rented for a different partition).
-        if (t_cachedAccumulator == this &&
-            t_cachedTopic == topic &&
-            t_cachedPartition == partition &&
-            t_cachedBatch is { } cachedBatch &&
-            cachedBatch.TopicPartition.Partition == partition)
-        {
-            var result = cachedBatch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
-            if (result.Success)
-            {
-                // Release the difference between estimated and actual size to prevent memory leak
-                var overestimate = recordSize - result.ActualSizeAdded;
-                if (overestimate > 0)
-                    ReleaseMemory(overestimate);
-
-                return true;
-            }
-
-            // Cached batch is full - try fast-path rotation using cached TopicPartition
-            if (t_cachedTopicPartition.Topic == topic && t_cachedTopicPartition.Partition == partition)
-            {
-                var rotated = TryRotateBatchFastPath(cachedBatch, t_cachedTopicPartition, topic, partition,
-                    timestamp, key, value, headers, pooledHeaderArray, recordSize);
-
-                // If rotation failed, release reserved memory before returning
-                if (!rotated)
-                    ReleaseMemory(recordSize);
-
-                return rotated;
-            }
-        }
-
-        // FAST PATH 2: Check multi-partition cache for scenarios with multiple partitions.
-        // This handles round-robin/default partitioning across multiple partitions efficiently.
-        if (t_partitionBatchCacheOwner == this && t_partitionBatchCache is { } cache)
-        {
-            var cacheIndex = partition & (MultiPartitionCacheSize - 1); // Fast modulo for power of 2
-            ref var entry = ref cache[cacheIndex];
-            // CRITICAL: Verify batch still belongs to the correct partition (same recycling concern).
-            if (entry.Topic == topic && entry.Partition == partition && entry.Batch is { } mpCachedBatch &&
-                mpCachedBatch.TopicPartition.Partition == partition)
-            {
-                var result = mpCachedBatch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
-                if (result.Success)
-                {
-                    // Release the difference between estimated and actual size to prevent memory leak
-                    var overestimate = recordSize - result.ActualSizeAdded;
-                    if (overestimate > 0)
-                        ReleaseMemory(overestimate);
-
-                    // Also update single-partition cache for potential consecutive hits
-                    t_cachedAccumulator = this;
-                    t_cachedTopic = topic;
-                    t_cachedPartition = partition;
-                    t_cachedBatch = mpCachedBatch;
-
-                    return true;
-                }
-                // Batch is full, invalidate this cache entry and fall through
-                entry.Batch = null;
-            }
-        }
-
-        // SLOW PATH: Dictionary lookups required
-        return TryAppendFireAndForgetSlow(topic, partition, timestamp, key, value, headers, pooledHeaderArray);
-    }
-
-    /// <summary>
-    /// Fast-path batch rotation when we have cached TopicPartition.
-    /// Avoids dictionary lookups for TopicPartition cache.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private bool TryRotateBatchFastPath(
-        PartitionBatch oldBatch,
-        TopicPartition topicPartition,
-        string topic,
-        int partition,
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        int recordSize)
-    {
-        // Seal under per-partition lock to preserve ordering across concurrent sealers.
-        lock (GetPartitionSealLock(topicPartition))
-        {
-            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, oldBatch)))
-            {
-                // Reset oldest batch tracking if dictionary is now empty
-                ResetOldestBatchTrackingIfEmpty();
-
-                var readyBatch = oldBatch.Complete();
-                if (readyBatch is not null)
-                {
-                    // Track delivery task for FlushAsync to wait on
-                    OnBatchEntersPipeline();
-
-                    if (!_readyBatches.Writer.TryWrite(readyBatch))
-                    {
-                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                        OnBatchExitsPipeline(); // Decrement counter on failure
-                        // Release the batch's buffer memory since it won't go through producer
-                        ReleaseMemory(readyBatch.DataSize);
-                        t_cachedBatch = null;
-                        return false;
-                    }
-
-                    // Return the completed batch shell to the pool for reuse
-                    _batchPool.Return(oldBatch);
-                }
-            }
-        }
-
-        // Rent a new batch from the pool
-        var newBatch = RentBatch(topicPartition);
-
-        // Try to add the new batch - another thread might have added one already
-        if (!_batches.TryAdd(topicPartition, newBatch))
-        {
-            // Another thread added a batch, return ours to pool
-            _batchPool.Return(newBatch);
-            // Use TryGetValue since the batch might have been removed already
-            if (!_batches.TryGetValue(topicPartition, out newBatch!))
-            {
-                // Batch was removed, retry by falling through to slow path
-                t_cachedBatch = null;
-                return TryAppendFireAndForgetSlow(topic, partition, timestamp, key, value, headers, pooledHeaderArray);
-            }
-        }
-        else
-        {
-            // Update oldest batch tracking for linger timer optimization
-            UpdateOldestBatchTracking(newBatch);
-        }
-
-        // Append to the new batch
-        var result = newBatch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
-
-        if (result.Success)
-        {
-            // Release the difference between estimated and actual size to prevent memory leak
-            var overestimate = recordSize - result.ActualSizeAdded;
-            if (overestimate > 0)
-                ReleaseMemory(overestimate);
-
-            // Update caches
-            t_cachedBatch = newBatch;
-
-            // Update multi-partition cache if initialized
-            if (t_partitionBatchCacheOwner == this && t_partitionBatchCache is { } mpCache)
-            {
-                var cacheIndex = partition & (MultiPartitionCacheSize - 1);
-                ref var entry = ref mpCache[cacheIndex];
-                entry.Topic = topic;
-                entry.Partition = partition;
-                entry.Batch = newBatch;
-            }
-
-            return true;
-        }
-
-        // Batch rejected the append (shouldn't happen for fresh batch)
-        t_cachedBatch = null;
+        batch = null;
         return false;
     }
 
-    /// <summary>
-    /// Slow path for TryAppendFireAndForget that handles dictionary lookups and batch rotation.
-    /// Separated from fast path to keep the inlined method small.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private bool TryAppendFireAndForgetSlow(
-        string topic,
-        int partition,
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray)
-    {
-        // OPTIMIZATION: Use a nested cache to get/create TopicPartition without allocating on hot path.
-        var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
-        var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
-
-        // Initialize multi-partition cache if needed (one-time allocation per thread)
-        var mpCache = t_partitionBatchCache;
-        if (mpCache is null || t_partitionBatchCacheOwner != this)
-        {
-            mpCache = t_partitionBatchCache ??= new PartitionBatchCacheEntry[MultiPartitionCacheSize];
-            t_partitionBatchCacheOwner = this;
-            // Clear cache entries when switching accumulators
-            Array.Clear(mpCache);
-        }
-        var cacheIndex = partition & (MultiPartitionCacheSize - 1);
-
-        // Calculate record size for memory release if needed
-        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
-
-        // Loop until we successfully append the record.
-        while (true)
-        {
-            // Check disposal at top of loop
-            if (_disposed)
-            {
-                // Release memory before returning
-                ReleaseMemory(recordSize);
-                return false;
-            }
-
-            // Hot path optimization: TryGetValue first to avoid factory invocation when batch exists.
-            if (!_batches.TryGetValue(topicPartition, out var batch))
-            {
-                // Rent from pool
-                var newBatch = RentBatch(topicPartition);
-                if (!_batches.TryAdd(topicPartition, newBatch))
-                {
-                    // Another thread added a batch, return ours to pool
-                    _batchPool.Return(newBatch);
-                    // Use TryGetValue since the batch might have been removed already
-                    if (!_batches.TryGetValue(topicPartition, out batch))
-                    {
-                        continue; // Retry the loop
-                    }
-                }
-                else
-                {
-                    batch = newBatch;
-                    // Update oldest batch tracking for linger timer optimization
-                    UpdateOldestBatchTracking(newBatch);
-                }
-            }
-
-            var result = batch.TryAppendFireAndForget(timestamp, key, value, headers, pooledHeaderArray);
-
-            if (result.Success)
-            {
-                // Release the difference between estimated and actual size to prevent memory leak
-                var overestimate = recordSize - result.ActualSizeAdded;
-                if (overestimate > 0)
-                    ReleaseMemory(overestimate);
-
-                // Update single-partition cache for consecutive hits
-                t_cachedAccumulator = this;
-                t_cachedTopic = topic;
-                t_cachedPartition = partition;
-                t_cachedTopicPartition = topicPartition;
-                t_cachedBatch = batch;
-
-                // Update multi-partition cache for round-robin scenarios
-                ref var entry = ref mpCache[cacheIndex];
-                entry.Topic = topic;
-                entry.Partition = partition;
-                entry.Batch = batch;
-
-                return true;
-            }
-
-            // Seal under per-partition lock to preserve ordering across concurrent sealers.
-            lock (GetPartitionSealLock(topicPartition))
-            {
-                if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
-                {
-                    // Reset oldest batch tracking if dictionary is now empty
-                    ResetOldestBatchTrackingIfEmpty();
-
-                    var readyBatch = batch.Complete();
-                    if (readyBatch is not null)
-                    {
-                        // Track delivery task for FlushAsync
-                        OnBatchEntersPipeline();
-
-                        if (!_readyBatches.Writer.TryWrite(readyBatch))
-                        {
-                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            OnBatchExitsPipeline();
-                            ReleaseMemory(readyBatch.DataSize);
-                            t_cachedBatch = null;
-                            mpCache[cacheIndex].Batch = null;
-                            _batchPool.Return(batch);
-                            return false;
-                        }
-
-                        // Return the completed batch shell to the pool for reuse
-                        _batchPool.Return(batch);
-                    }
-                }
-            }
-
-            // Invalidate caches since we removed the batch
-            if (t_cachedBatch == batch)
-            {
-                t_cachedBatch = null;
-            }
-            if (mpCache[cacheIndex].Batch == batch)
-            {
-                mpCache[cacheIndex].Batch = null;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Appends a record with a delivery callback stored directly in the batch.
-    /// This is the slow-path equivalent of TryAppendFireAndForget but with callbacks.
-    /// Returns true if appended successfully, false if the accumulator is disposed.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool TryAppendWithCallback(
-        string topic,
-        int partition,
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback)
-    {
-        if (_disposed)
-            return false;
-
-        // Calculate record size for buffer memory tracking
-        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
-
-        // Reserve memory before appending - blocks synchronously if buffer is full
-        ReserveMemorySync(recordSize);
-
-        // Get or create TopicPartition (cached for performance)
-        var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
-        var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
-
-        // Loop until we successfully append the record
-        while (true)
-        {
-            if (_disposed)
-            {
-                ReleaseMemory(recordSize);
-                return false;
-            }
-
-            if (!_batches.TryGetValue(topicPartition, out var batch))
-            {
-                var newBatch = RentBatch(topicPartition);
-                if (!_batches.TryAdd(topicPartition, newBatch))
-                {
-                    _batchPool.Return(newBatch);
-                    if (!_batches.TryGetValue(topicPartition, out batch))
-                    {
-                        continue; // Retry
-                    }
-                }
-                else
-                {
-                    batch = newBatch;
-                    // Update oldest batch tracking for linger timer optimization
-                    UpdateOldestBatchTracking(newBatch);
-                }
-            }
-
-            var result = batch.TryAppendWithCallback(timestamp, key, value, headers, pooledHeaderArray, callback);
-
-            if (result.Success)
-            {
-                var overestimate = recordSize - result.ActualSizeAdded;
-                if (overestimate > 0)
-                    ReleaseMemory(overestimate);
-
-                return true;
-            }
-
-            // Seal under per-partition lock to preserve ordering across concurrent sealers.
-            lock (GetPartitionSealLock(topicPartition))
-            {
-                if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
-                {
-                    // Reset oldest batch tracking if dictionary is now empty
-                    ResetOldestBatchTrackingIfEmpty();
-
-                    var readyBatch = batch.Complete();
-                    if (readyBatch is not null)
-                    {
-                        OnBatchEntersPipeline();
-
-                        if (!_readyBatches.Writer.TryWrite(readyBatch))
-                        {
-                            readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                            OnBatchExitsPipeline();
-                            ReleaseMemory(readyBatch.DataSize);
-                            _batchPool.Return(batch);
-                            return false;
-                        }
-
-                        _batchPool.Return(batch);
-                    }
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// Batch fire-and-forget append for records going to the same topic/partition.
-    /// Amortizes lock acquisition and dictionary lookups over N records.
-    /// Returns true if all records were appended, false if accumulator is disposed.
-    /// </summary>
-    public bool TryAppendFireAndForgetBatch(
-        string topic,
-        int partition,
-        ReadOnlySpan<ProducerRecordData> items)
-    {
-        // BUG FIX: Check empty BEFORE reservation to avoid unnecessary memory allocation
-        if (items.Length == 0)
-            return true;
-
-        // CRITICAL: Reserve BufferMemory for all records upfront
-        // Calculate total estimated size for all records in the batch
-        var totalEstimatedSize = 0;
-        for (var i = 0; i < items.Length; i++)
-        {
-            var item = items[i];
-            totalEstimatedSize += PartitionBatch.EstimateRecordSize(item.Key.Length, item.Value.Length, item.Headers);
-        }
-
-        // Reserve memory before appending any records
-        // This ensures we respect the BufferMemory limit and apply backpressure
-        ReserveMemorySync(totalEstimatedSize);
-
-        // BUG FIX: Check disposal AFTER reservation to ensure cleanup in finally block
-        // If disposed, release the reserved memory and return
-        if (_disposed)
-        {
-            ReleaseMemory(totalEstimatedSize);
-            return false;
-        }
-
-        var startIndex = 0;
-
-        try
-        {
-            // Get or create TopicPartition (cached)
-            var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
-            var topicPartition = partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
-
-            // Loop until all records are appended
-            while (startIndex < items.Length)
-            {
-                // Get or create batch
-                if (!_batches.TryGetValue(topicPartition, out var batch))
-                {
-                    // Rent from pool
-                    var newBatch = RentBatch(topicPartition);
-                    if (!_batches.TryAdd(topicPartition, newBatch))
-                    {
-                        // Another thread added a batch, return ours to pool
-                        _batchPool.Return(newBatch);
-                        // Use TryGetValue since the batch might have been removed already
-                        if (!_batches.TryGetValue(topicPartition, out batch))
-                        {
-                            continue; // Retry the loop
-                        }
-                    }
-                    else
-                    {
-                        batch = newBatch;
-                        // Update oldest batch tracking for linger timer optimization
-                        UpdateOldestBatchTracking(newBatch);
-                    }
-                }
-
-                // Try to append remaining records
-                var appended = batch.TryAppendFireAndForgetBatch(items, startIndex);
-
-                if (appended > 0)
-                {
-                    startIndex += appended;
-
-                    // Update thread-local cache
-                    t_cachedAccumulator = this;
-                    t_cachedTopic = topic;
-                    t_cachedPartition = partition;
-                    t_cachedTopicPartition = topicPartition;
-                    t_cachedBatch = batch;
-                }
-
-                // If we haven't appended all, batch is full
-                if (startIndex < items.Length)
-                {
-                    // Seal under per-partition lock to preserve ordering across concurrent sealers.
-                    lock (GetPartitionSealLock(topicPartition))
-                    {
-                        if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(topicPartition, batch)))
-                        {
-                            // Reset oldest batch tracking if dictionary is now empty
-                            ResetOldestBatchTrackingIfEmpty();
-
-                            var readyBatch = batch.Complete();
-                            if (readyBatch is not null)
-                            {
-                                // Track delivery task for FlushAsync
-                                OnBatchEntersPipeline();
-
-                                try
-                                {
-                                    if (!_readyBatches.Writer.TryWrite(readyBatch))
-                                    {
-                                        readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                                        OnBatchExitsPipeline();
-                                        ReleaseMemory(readyBatch.DataSize);
-                                        t_cachedBatch = null;
-                                        _batchPool.Return(batch);
-                                        return false;
-                                    }
-
-                                    // Return the completed batch shell to the pool for reuse
-                                    _batchPool.Return(batch);
-                                }
-                                catch
-                                {
-                                    readyBatch.Fail(new InvalidOperationException("Batch append failed"));
-                                    OnBatchExitsPipeline();
-                                    ReleaseMemory(readyBatch.DataSize);
-                                    throw;
-                                }
-                            }
-                        }
-                    }
-                    t_cachedBatch = null;
-                }
-            }
-
-            return true;
-        }
-        finally
-        {
-            // Release memory only for records that were NOT appended to any batch (error case).
-            // Memory for successfully appended records stays reserved in _bufferedBytes and will
-            // be released when their containing batch is completed by the sender or during disposal.
-            if (startIndex < items.Length)
-            {
-                var unappendedMemory = 0;
-                for (var i = startIndex; i < items.Length; i++)
-                {
-                    ref readonly var item = ref items[i];
-                    unappendedMemory += PartitionBatch.EstimateRecordSize(item.Key.Length, item.Value.Length, item.Headers);
-                }
-                if (unappendedMemory > 0)
-                    ReleaseMemory(unappendedMemory);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Checks for batches that have exceeded linger time.
-    /// Uses conditional removal to avoid race conditions where a new batch might be created
-    /// between Complete() and TryRemove() calls.
-    /// </summary>
     /// <remarks>
     /// Optimized with multiple fast paths:
     /// 1. Empty dictionary check - avoids enumeration overhead
@@ -2059,8 +1632,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </remarks>
     public ValueTask ExpireLingerAsync(CancellationToken cancellationToken)
     {
-        // Fast path 1: no batches to check - avoid enumeration and async overhead entirely
-        if (_batches.IsEmpty)
+        // Fast path 1: no unsealed batches to check - avoid enumeration and async overhead entirely
+        if (!HasUnsealedBatches())
         {
             // Reset oldest batch tracking since there are no batches
             Volatile.Write(ref _oldestBatchCreatedTicks, long.MaxValue);
@@ -2091,102 +1664,35 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Seals a single batch and writes it to the ready channel for delivery.
-    /// Handles Complete → decrement pending count → track delivery → channel write → error handling → pool return.
+    /// Checks if any work remains: unsealed batches, sealed batches in deques, or
+    /// in-flight batches still being sent by BrokerSenders.
+    /// Used by the sender loop to decide when to exit after close.
     /// </summary>
-    /// <returns>True if the batch was sealed and written; false if Complete() returned null.</returns>
-    private async ValueTask<bool> SealBatchToChannelAsync(
-        PartitionBatch batch,
-        CancellationToken cancellationToken)
+    internal bool HasPendingWork()
     {
-        var readyBatch = batch.Complete();
-        if (readyBatch is null)
-            return false;
+        if (Volatile.Read(ref _inFlightBatchCount) > 0)
+            return true;
 
-        LogBatchSealed(batch.TopicPartition.Topic, batch.TopicPartition.Partition, batch.RecordCount, readyBatch.DataSize);
-
-        // Decrement pending awaited produce count by the number of completion sources in this batch
-        if (readyBatch.CompletionSourcesCount > 0)
-            Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
-        ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
-        // Track delivery task for FlushAsync
-        OnBatchEntersPipeline();
-
-        // Try synchronous write first to avoid async state machine allocation
-        if (!_readyBatches.Writer.TryWrite(readyBatch))
+        foreach (var kvp in _partitionDeques)
         {
-            try
-            {
-                // Channel is bounded or busy, fall back to async
-                await _readyBatches.Writer.WriteAsync(readyBatch, cancellationToken).ConfigureAwait(false);
-                ProducerDebugCounters.RecordBatchQueuedToReady();
-            }
-            catch
-            {
-                ProducerDebugCounters.RecordBatchFailedToQueue();
-                // CRITICAL: Use nested try-finally to ensure memory is ALWAYS released
-                // even if readyBatch.Fail() itself throws an exception
-                try
-                {
-                    readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                    OnBatchExitsPipeline(); // Decrement counter on failure
-                }
-                finally
-                {
-                    // ALWAYS release memory to prevent permanent leak
-                    ReleaseMemory(readyBatch.DataSize);
-                }
-                throw;
-            }
+            var pd = kvp.Value;
+            if (pd.CurrentBatch is not null || pd.Count > 0)
+                return true;
         }
-#if DEBUG
-        else
-        {
-            ProducerDebugCounters.RecordBatchQueuedToReady();
-        }
-#endif
-
-        // Return the completed batch shell to the pool for reuse
-        _batchPool.Return(batch);
-        return true;
+        return false;
     }
 
     /// <summary>
-    /// Synchronous version of <see cref="SealBatchToChannelAsync"/> for use inside per-partition locks.
-    /// Since the ready channel is unbounded, TryWrite always succeeds unless the writer is completed (disposal).
-    /// This avoids the need for async WriteAsync inside a lock block.
+    /// Checks if any partition deque has an unsealed current batch.
     /// </summary>
-    private void SealBatchToChannelSync(PartitionBatch batch)
+    private bool HasUnsealedBatches()
     {
-        var readyBatch = batch.Complete();
-        if (readyBatch is null)
-            return;
-
-        LogBatchSealed(batch.TopicPartition.Topic, batch.TopicPartition.Partition, batch.RecordCount, readyBatch.DataSize);
-
-        if (readyBatch.CompletionSourcesCount > 0)
-            Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
-        ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
-        OnBatchEntersPipeline();
-
-        if (!_readyBatches.Writer.TryWrite(readyBatch))
+        foreach (var kvp in _partitionDeques)
         {
-            ProducerDebugCounters.RecordBatchFailedToQueue();
-            try
-            {
-                readyBatch.Fail(new ObjectDisposedException(nameof(RecordAccumulator)));
-                OnBatchExitsPipeline();
-            }
-            finally
-            {
-                ReleaseMemory(readyBatch.DataSize);
-            }
-            _batchPool.Return(batch);
-            return;
+            if (kvp.Value.CurrentBatch is not null)
+                return true;
         }
-
-        ProducerDebugCounters.RecordBatchQueuedToReady();
-        _batchPool.Return(batch);
+        return false;
     }
 
     /// <summary>
@@ -2214,66 +1720,49 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         try
         {
-            if (sealAll)
-            {
-                // Flush mode: snapshot keys to avoid infinite loop if messages are continuously added
-                var keysToFlush = _batches.Keys.ToArray();
+            var now = DateTimeOffset.UtcNow;
+            var newOldestTicks = long.MaxValue;
+            bool anySealed = false;
 
-                foreach (var key in keysToFlush)
-                {
-                    if (_batches.TryGetValue(key, out var batch))
-                    {
-                        // Seal under per-partition lock to preserve ordering across concurrent sealers.
-                        lock (GetPartitionSealLock(key))
-                        {
-                            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(key, batch)))
-                            {
-                                ResetOldestBatchTrackingIfEmpty();
-                                ProducerDebugCounters.RecordBatchFlushedFromDictionary();
-                                SealBatchToChannelSync(batch);
-                            }
-                        }
-                    }
-                }
-            }
-            else
+            foreach (var kvp in _partitionDeques)
             {
-                // Linger mode: enumerate and seal only expired batches, track oldest remaining
-                var now = DateTimeOffset.UtcNow;
-                var newOldestTicks = long.MaxValue;
+                var pd = kvp.Value;
 
-                foreach (var kvp in _batches)
+                lock (pd.Lock)
                 {
-                    var batch = kvp.Value;
-                    if (batch.ShouldFlush(now, _options.LingerMs))
+                    if (pd.CurrentBatch is null)
+                        continue;
+
+                    if (sealAll || pd.CurrentBatch.ShouldFlush(now, _options.LingerMs))
                     {
-                        // Seal under per-partition lock to preserve ordering across concurrent sealers.
-                        lock (GetPartitionSealLock(kvp.Key))
+                        ProducerDebugCounters.RecordBatchFlushedFromDictionary();
+                        var readyBatch = pd.CurrentBatch.Complete();
+                        if (readyBatch is not null)
                         {
-                            if (_batches.TryRemove(new KeyValuePair<TopicPartition, PartitionBatch>(kvp.Key, batch)))
-                            {
-                                // Note: We don't call ResetOldestBatchTrackingIfEmpty() here because
-                                // linger mode already recalculates _oldestBatchCreatedTicks
-                                // at the end of enumeration based on remaining batches.
-                                SealBatchToChannelSync(batch);
-                            }
+                            if (readyBatch.CompletionSourcesCount > 0)
+                                Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
+                            ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+                            OnBatchEntersPipeline(readyBatch);
+                            pd.AddLast(readyBatch);
+                            ProducerDebugCounters.RecordBatchQueuedToReady();
+                            anySealed = true;
                         }
+                        _batchPool.Return(pd.CurrentBatch);
+                        pd.CurrentBatch = null;
                     }
                     else
                     {
                         // Batch not ready for flush - track its creation time for oldest batch calculation
-                        var batchCreatedTicks = batch.CreatedAtTicks;
+                        var batchCreatedTicks = pd.CurrentBatch.CreatedAtTicks;
                         if (batchCreatedTicks < newOldestTicks)
-                        {
                             newOldestTicks = batchCreatedTicks;
-                        }
                     }
                 }
+            }
 
+            if (!sealAll)
+            {
                 // Update the oldest batch tracking for next check using CAS to prevent race condition.
-                // A concurrent batch addition via UpdateOldestBatchTracking() may have set a valid
-                // timestamp after we started enumeration. Only update if we found an older batch
-                // than currently tracked, preserving timestamps from concurrent additions.
                 var current = Volatile.Read(ref _oldestBatchCreatedTicks);
                 while (newOldestTicks < current)
                 {
@@ -2283,6 +1772,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     current = original;
                 }
             }
+            else
+            {
+                // After sealing all, reset oldest batch tracking
+                Volatile.Write(ref _oldestBatchCreatedTicks, long.MaxValue);
+            }
+
+            if (anySealed)
+                SignalWakeup();
         }
         finally
         {
@@ -2294,92 +1791,175 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         => SealBatchesAsync(sealAll: false, cancellationToken);
 
     /// <summary>
-    /// Increments the in-flight batch counter when a batch enters the pipeline.
-    /// Called when a batch is completed and queued to _readyBatches.
+    /// Tracks a batch entering the pipeline: increments counter and adds to reference-tracking dictionary.
+    /// Called when a batch is completed and enqueued to a partition deque.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void OnBatchEntersPipeline()
+    private void OnBatchEntersPipeline(ReadyBatch batch)
     {
+        // Counter first, dictionary second. If the orphan sweep runs between these two
+        // operations, the counter is already incremented so the sweep's Exchange(0) resets it.
+        // Reversed order could leave a permanently positive counter (dictionary swept but
+        // counter not yet incremented → orphan sweep misses it → counter incremented after).
         Interlocked.Increment(ref _inFlightBatchCount);
+        _inFlightBatches.TryAdd(batch, 0);
+        batch.AppendDiag('E');
+#if DEBUG
+        batch.DebugLastTransition = (int)BatchTransition.EntersPipeline;
+        Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} EntersPipeline inFlight={Volatile.Read(ref _inFlightBatchCount)}");
+#endif
     }
 
     /// <summary>
-    /// Decrements the in-flight batch counter when a batch exits the pipeline.
+    /// Removes a batch from the pipeline: decrements counter and removes from reference-tracking dictionary.
     /// Called after a batch is sent (CompleteSend) or failed (Fail).
     /// Must be called by KafkaProducer's SenderLoopAsync after processing each batch.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void OnBatchExitsPipeline()
+    /// <returns>true if the batch was successfully removed from tracking; false if it was already removed by another thread.</returns>
+    internal bool OnBatchExitsPipeline(ReadyBatch batch)
     {
-        if (Interlocked.Decrement(ref _inFlightBatchCount) == 0)
+#if DEBUG
+        batch.DebugLastTransition = (int)BatchTransition.ExitsPipeline;
+        Debug.WriteLine($"[BatchTrack] {batch.TopicPartition} ExitsPipeline (was transition={(BatchTransition)batch.DebugLastTransition} broker={batch.DebugLastBrokerId})");
+#endif
+        // TryRemove acts as a natural atomic guard: only the first thread to remove the batch
+        // proceeds with the decrement. This prevents double-decrement from concurrent cleanup
+        // paths (e.g., DisposeAsync racing with SendLoopAsync's finally block).
+        if (!_inFlightBatches.TryRemove(batch, out _))
+            return false;
+
+        batch.AppendDiag('X');
+        var count = Interlocked.Decrement(ref _inFlightBatchCount);
+        Debug.Assert(count >= 0, $"In-flight batch count went negative ({count}) — mismatched Enter/Exit calls");
+        if (count <= 0)
         {
             // All batches processed - complete any waiting flush and clear the TCS
             Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
         }
+
+        return true;
     }
 
     /// <summary>
-    /// Updates the oldest batch tracking when a new batch is added to the dictionary.
-    /// Uses lock-free CAS loop to atomically set to min(current, newBatchTicks).
-    /// This is called when TryAdd succeeds for a new batch.
+    /// Sweeps <see cref="_inFlightBatches"/> for batches whose delivery timeout has expired
+    /// and fails them. Called periodically from the linger loop as defense-in-depth against
+    /// batches whose references are lost from BrokerSender data structures (orphans).
+    /// Without this sweep, orphaned batches cause ProduceAsync to hang indefinitely because
+    /// their completion sources are never signaled.
+    /// Uses 3x delivery timeout to avoid interfering with normal delivery timeout handling
+    /// in BrokerSender.ProcessCompletedResponses (which runs at 1x). The sweep is only
+    /// for truly orphaned batches that fell out of all BrokerSender data structures.
     /// </summary>
-    /// <remarks>
-    /// Since new batches are always created with current time, they're newer than existing batches.
-    /// This only updates when the dictionary was empty (_oldestBatchCreatedTicks == MaxValue)
-    /// or in rare race conditions.
-    /// </remarks>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void UpdateOldestBatchTracking(PartitionBatch newBatch)
+    /// <returns>The number of expired batches that were failed.</returns>
+    internal int SweepExpiredInFlightBatches()
     {
-        var newBatchTicks = newBatch.CreatedAtTicks;
-        var current = Volatile.Read(ref _oldestBatchCreatedTicks);
+        if (_inFlightBatches.IsEmpty)
+            return 0;
 
-        // CAS loop to atomically set to min(current, newBatchTicks)
-        while (newBatchTicks < current)
+        var now = Stopwatch.GetTimestamp();
+        // Use 3x delivery timeout for the sweep. BrokerSender.ProcessCompletedResponses
+        // handles normal delivery timeout (1x) for batches still tracked in _pendingResponses.
+        // The sweep only catches truly orphaned batches — those not in any data structure.
+        var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks * 3;
+        var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs * 3);
+        var expiredCount = 0;
+
+        foreach (var (batch, _) in _inFlightBatches)
         {
-            var original = Interlocked.CompareExchange(ref _oldestBatchCreatedTicks, newBatchTicks, current);
-            if (original == current)
-                break;
-            current = original;
+            var deadlineTicks = batch.StopwatchCreatedTicks + deliveryTimeoutTicks;
+            if (now < deadlineTicks)
+                continue; // Not yet expired
+
+            // Use OnBatchExitsPipeline as the atomic guard: only the first thread to
+            // remove the batch proceeds. This uses the same cleanup path as BrokerSender,
+            // ensuring consistent counter decrement and flush signaling per-batch.
+            if (!OnBatchExitsPipeline(batch))
+                continue; // Another thread already handled this batch
+
+            expiredCount++;
+            var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+
+            // Diagnostic: capture partition state to help identify why batch was orphaned
+            var isMuted = _mutedPartitions.ContainsKey(batch.TopicPartition);
+            var inDeque = false;
+            var dequeCount = 0;
+            if (_partitionDeques.TryGetValue(batch.TopicPartition, out var pd))
+            {
+                lock (pd.Lock)
+                {
+                    dequeCount = pd.Count;
+                    inDeque = pd.Deque.Contains(batch);
+                }
+            }
+
+            FailAndRelease(batch, new KafkaTimeoutException(
+                TimeoutKind.Delivery,
+                elapsed,
+                configured,
+                $"Delivery timeout exceeded for orphaned batch {batch.TopicPartition} " +
+                $"(elapsed: {elapsed.TotalSeconds:F1}s/{configured.TotalSeconds:F0}s, " +
+                $"muted={isMuted}, inDeque={inDeque}, dequeCount={dequeCount}, " +
+                $"trace={batch.DiagTrace})"));
+            // Do NOT return to pool here. BrokerSender may still reference this batch
+            // in _pendingResponses. BrokerSender.CleanupBatch will return it when it
+            // processes the response. For truly orphaned batches (no BrokerSender reference),
+            // ForceFailAllInFlightBatches during disposal handles pool return.
+        }
+
+        if (expiredCount > 0)
+            LogOrphanedBatchesSweep(expiredCount);
+
+        return expiredCount;
+    }
+
+    /// <summary>
+    /// Fails all remaining in-flight batches tracked in <see cref="_inFlightBatches"/>.
+    /// Used as a defense-in-depth sweep after BrokerSender disposal to catch batches
+    /// whose references were lost from BrokerSender data structures.
+    /// Safe to call multiple times — idempotent due to dictionary removal and IsEmpty check.
+    /// </summary>
+    internal void ForceFailAllInFlightBatches()
+    {
+        if (_inFlightBatches.IsEmpty)
+            return;
+
+        LogOrphanedBatchesDuringDisposal(_inFlightBatches.Count);
+        var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
+
+        foreach (var (orphanedBatch, _) in _inFlightBatches)
+        {
+            // OnBatchExitsPipeline uses TryRemove as atomic guard and decrements counter.
+            if (!OnBatchExitsPipeline(orphanedBatch))
+                continue; // Another thread already handled this batch
+
+            FailAndRelease(orphanedBatch, disposedException);
+            // During disposal, BrokerSenders are already stopped — safe to return to pool.
+            try { ReturnReadyBatch(orphanedBatch); }
+            catch (Exception returnEx) { LogBatchCleanupStepFailed(returnEx); }
         }
     }
 
     /// <summary>
-    /// Resets the oldest batch tracking when a batch is removed from the dictionary.
-    /// This prevents stale timestamps from blocking the fast path optimization.
+    /// Fails a batch and releases its memory. Does NOT return the batch to the pool.
+    /// For sweep: BrokerSender still holds a reference in _pendingResponses — returning
+    /// to pool would cause use-after-free when the response arrives and BrokerSender
+    /// operates on a batch that has been reused for a different partition.
+    /// For disposal: caller adds explicit ReturnReadyBatch after this method.
+    /// Each step is individually guarded to ensure subsequent steps always run.
     /// </summary>
-    /// <remarks>
-    /// Called after TryRemove succeeds. If the dictionary is now empty, resets to MaxValue.
-    /// This fixes a race condition where:
-    /// 1. ExpireLingerAsyncCore reads batch X's timestamp during enumeration
-    /// 2. Another thread removes batch X
-    /// 3. ExpireLingerAsyncCore writes a stale oldest timestamp
-    /// 4. New batches fail to update oldest (CAS fails since new > stale)
-    ///
-    /// By resetting when empty, we ensure the next batch addition will correctly set oldest.
-    /// </remarks>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void ResetOldestBatchTrackingIfEmpty()
+    private void FailAndRelease(ReadyBatch batch, Exception exception)
     {
-        if (_batches.IsEmpty)
+        try { batch.Fail(exception); }
+        catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
+        try
         {
-            Volatile.Write(ref _oldestBatchCreatedTicks, long.MaxValue);
+            if (!batch.MemoryReleased)
+            {
+                ReleaseMemory(batch.DataSize);
+                batch.MemoryReleased = true;
+            }
         }
+        catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
     }
-
-    /// <summary>
-    /// Gets the per-partition seal lock. This lock ensures that when multiple threads
-    /// seal batches for the same partition concurrently (e.g., linger timer and produce thread),
-    /// batches are written to the ready channel in creation order.
-    /// Without this lock, the following race can cause ordering violations:
-    /// 1. Linger timer: TryRemove(B1) — B1 removed from dictionary
-    /// 2. Produce thread: creates B2, fills it, TryRemove(B2), Complete(B2), TryWrite(B2)
-    /// 3. Linger timer: Complete(B1), TryWrite(B1) — B1 arrives AFTER B2 in channel
-    /// The lock prevents step 2 from completing before step 3.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private object GetPartitionSealLock(TopicPartition topicPartition) =>
-        _partitionSealLocks.GetOrAdd(topicPartition, static _ => new object());
 
     /// <summary>
     /// Flushes all batches and waits for them to be delivered to Kafka.
@@ -2394,8 +1974,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Check cancellation upfront - must throw immediately if already cancelled
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Fast path: no batches to flush AND no in-flight batches - avoid async overhead entirely
-        if (_batches.IsEmpty && Volatile.Read(ref _inFlightBatchCount) == 0)
+        // Fast path: no unsealed batches AND no in-flight batches - avoid async overhead entirely
+        if (!HasUnsealedBatches() && Volatile.Read(ref _inFlightBatchCount) == 0)
         {
             return ValueTask.CompletedTask;
         }
@@ -2405,9 +1985,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     private async ValueTask FlushAsyncCore(CancellationToken cancellationToken)
     {
-        var pendingBatchCount = _batches.Count;
         var inFlightCount = Volatile.Read(ref _inFlightBatchCount);
-        LogFlushStarted(pendingBatchCount, inFlightCount);
+        LogFlushStarted(0, inFlightCount);
 
         ProducerDebugCounters.RecordFlushCall();
         await SealBatchesAsync(sealAll: true, cancellationToken).ConfigureAwait(false);
@@ -2471,7 +2050,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (_disposed || _closed)
             return;
 
-        LogCloseStarted(_batches.Count);
+        LogCloseStarted(_partitionDeques.Count);
         _closed = true;
 
         // Complete append worker channels so workers drain remaining items and exit.
@@ -2479,11 +2058,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // needs the disposal event (set later in DisposeAsync) to unblock.
         CompleteAppendWorkerChannels();
 
-        // Flush all pending batches to the ready channel
+        // Flush all pending batches to the partition deques
         await FlushAsync(cancellationToken).ConfigureAwait(false);
 
-        // Complete the channel - sender will drain remaining batches and exit
-        _readyBatches.Writer.Complete();
+        // Signal the sender loop to wake up and exit
+        SignalWakeup();
         LogClosedChannelCompleted();
     }
 
@@ -2492,26 +2071,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (_disposed)
             return;
 
-        var pendingBatches = _batches.Count;
         var inFlightBatches = Volatile.Read(ref _inFlightBatchCount);
-        LogDisposeStarted(pendingBatches, inFlightBatches);
+        LogDisposeStarted(_partitionDeques.Count, inFlightBatches);
         _disposed = true;
 
-        // Invalidate thread-local caches if they point to this accumulator
-        if (t_cachedAccumulator == this)
-        {
-            t_cachedAccumulator = null;
-            t_cachedTopic = null;
-            t_cachedBatch = null;
-        }
-        if (t_partitionBatchCacheOwner == this)
-        {
-            t_partitionBatchCacheOwner = null;
-            if (t_partitionBatchCache is { } cache)
-            {
-                Array.Clear(cache);
-            }
-        }
 
         // Clear the TopicPartition cache to release memory
         _topicPartitionCache.Clear();
@@ -2531,13 +2094,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 // Timeout or cancellation - proceed with immediate shutdown
                 CompleteAppendWorkerChannels();
-                _readyBatches.Writer.Complete();
             }
             catch
             {
                 // Other exceptions (e.g., no connection) - proceed with immediate shutdown
                 CompleteAppendWorkerChannels();
-                _readyBatches.Writer.Complete();
             }
         }
 
@@ -2573,11 +2134,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // NOW fail any remaining batches that couldn't be sent during graceful shutdown
-        var remainingBatches = _batches.Count;
-        if (remainingBatches > 0)
-            LogDisposalFailingRemainingBatches(remainingBatches);
-
         var disposedException = new ObjectDisposedException(nameof(RecordAccumulator));
 
         // Drain append worker channels and fail any unprocessed work items
@@ -2590,44 +2146,41 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Fail incomplete batches still in the dictionary (weren't flushed in time)
-        foreach (var kvp in _batches)
+        // Fail unsealed current batches and drain sealed batches from partition deques
+        foreach (var kvp in _partitionDeques)
         {
-            // Use TryRemove to ensure only one thread handles each batch during disposal.
-            // This prevents races where a batch is completed and recycled while we're disposing.
-            if (_batches.TryRemove(kvp))
+            var pd = kvp.Value;
+            lock (pd.Lock)
             {
-                // Reset oldest batch tracking (not strictly needed during disposal, but consistent)
-                ResetOldestBatchTrackingIfEmpty();
-
-                var readyBatch = kvp.Value.Complete();
-                if (readyBatch is not null)
+                // Fail current unsealed batch
+                if (pd.CurrentBatch is { } current)
                 {
-                    // Decrement pending awaited produce count by the number of completion sources in this batch
-                    if (readyBatch.CompletionSourcesCount > 0)
-                        Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
+                    var readyBatch = current.Complete();
+                    if (readyBatch is not null)
+                    {
+                        if (readyBatch.CompletionSourcesCount > 0)
+                            Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
 
+                        readyBatch.Fail(disposedException);
+                        ReleaseMemory(readyBatch.DataSize);
+                    }
+                    _batchPool.Return(current);
+                    pd.CurrentBatch = null;
+                }
+
+                // Drain sealed batches
+                while (pd.Count > 0)
+                {
+                    var readyBatch = pd.PollFirst()!;
                     readyBatch.Fail(disposedException);
-                    // Release the batch's buffer memory
-                    ReleaseMemory(readyBatch.DataSize);
+                    if (!readyBatch.MemoryReleased)
+                    {
+                        ReleaseMemory(readyBatch.DataSize);
+                        readyBatch.MemoryReleased = true;
+                    }
+                    OnBatchExitsPipeline(readyBatch);
                 }
             }
-        }
-
-        // Drain and fail any remaining batches still in the ready channel
-        // After graceful close above, this handles:
-        // - Unit tests with no sender loop
-        // - Timeout scenarios where batches didn't send in time
-        // - Batches that were added after close but before disposal completed
-        while (_readyBatches.Reader.TryRead(out var readyBatch))
-        {
-            readyBatch.Fail(disposedException);
-            if (!readyBatch.MemoryReleased)
-            {
-                ReleaseMemory(readyBatch.DataSize);
-                readyBatch.MemoryReleased = true;
-            }
-            OnBatchExitsPipeline(); // Decrement counter for batches drained during disposal
         }
 
         // Wait for all in-flight batches to complete with a timeout using counter-based tracking
@@ -2651,19 +2204,32 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Final drain: catch any batches that may have been added during our cleanup
-        while (_readyBatches.Reader.TryRead(out var batch))
+        foreach (var kvp in _partitionDeques)
         {
-            if (batch is not null)
+            var pd = kvp.Value;
+            lock (pd.Lock)
             {
-                batch.Fail(disposedException);
-                if (!batch.MemoryReleased)
+                while (pd.Count > 0)
                 {
-                    ReleaseMemory(batch.DataSize);
-                    batch.MemoryReleased = true;
+                    var batch = pd.PollFirst()!;
+                    batch.Fail(disposedException);
+                    if (!batch.MemoryReleased)
+                    {
+                        ReleaseMemory(batch.DataSize);
+                        batch.MemoryReleased = true;
+                    }
+                    OnBatchExitsPipeline(batch); // Decrement counter
                 }
-                OnBatchExitsPipeline(); // Decrement counter
             }
         }
+
+        // Signal wakeup so the sender loop can exit if still waiting
+        SignalWakeup();
+
+        // Sweep for orphaned batches whose references were lost from BrokerSender data structures.
+        // This is the last line of defense: if a batch was tracked via OnBatchEntersPipeline but
+        // never cleaned up via OnBatchExitsPipeline (due to a dropped reference), fail it here.
+        ForceFailAllInFlightBatches();
 
         // Clear the batch pool
         _batchPool.Clear();
@@ -2693,6 +2259,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "Flush completed: all batches delivered")]
     private partial void LogFlushCompleted();
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Disposal sweep found {Count} orphaned in-flight batches — failing them to prevent hangs")]
+    private partial void LogOrphanedBatchesDuringDisposal(int count);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Periodic sweep found {Count} orphaned in-flight batches past delivery timeout — failing them to prevent hangs")]
+    private partial void LogOrphanedBatchesSweep(int count);
+
     [LoggerMessage(Level = LogLevel.Debug, Message = "Closing accumulator: {PendingBatchCount} pending batches")]
     private partial void LogCloseStarted(int pendingBatchCount);
 
@@ -2704,6 +2276,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failing {RemainingBatchCount} batches during disposal")]
     private partial void LogDisposalFailingRemainingBatches(int remainingBatchCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Non-fatal exception during batch cleanup step (suppressed)")]
+    private partial void LogBatchCleanupStepFailed(Exception exception);
 
     #endregion
 }
@@ -2785,12 +2360,8 @@ internal sealed class PartitionBatchPool
 /// Tracks pooled arrays that are returned when the batch completes.
 /// Uses ArrayPool-backed arrays instead of List to eliminate allocations.
 ///
-/// Thread-safety: Multiple threads can call TryAppend concurrently (via ConcurrentDictionary.AddOrUpdate),
-/// so we use CAS-based exclusive access to protect array mutations and field updates. This is ideal because:
-/// - Critical sections are very short (<100ns)
-/// - Lock is per-partition, so no cross-partition contention
-/// - CAS is faster than SpinLock/Monitor for the common single-producer case
-/// Complete() coordinates with TryAppend via the same _exclusiveAccess flag.
+/// Thread-safety: All access is serialized by the per-partition deque lock (PartitionDeque.Lock).
+/// No internal synchronization is needed.
 /// </summary>
 internal sealed class PartitionBatch
 {
@@ -2819,22 +2390,6 @@ internal sealed class PartitionBatch
 
     private Header[][] _pooledHeaderArrays;
     private int _pooledHeaderArrayCount;
-
-    // Exclusive access flag for CAS-based synchronization.
-    // Uses Interlocked.CompareExchange for atomic claim/release:
-    // - 0 = no one is currently appending (available)
-    // - 1 = a thread is currently appending (busy)
-    //
-    // All append methods and Complete() coordinate via this flag:
-    // 1. CAS(0 -> 1): If success, we have exclusive access
-    // 2. CAS fails: Someone else has access, spin wait until available
-    // 3. After work completes, set back to 0 to release
-    //
-    // This is correct because:
-    // - Only one thread can win the CAS at a time
-    // - The winner has exclusive access until it releases
-    // - Losers spin until the winner releases
-    private int _exclusiveAccess;
 
     private long _baseTimestamp;
     private int _estimatedSize;
@@ -2911,10 +2466,10 @@ internal sealed class PartitionBatch
     /// Called when renting from the pool.
     /// </summary>
     /// <remarks>
-    /// IMPORTANT: _isCompleted and _exclusiveAccess must ONLY be reset here, NOT in PrepareForPooling().
-    /// Resetting them in PrepareForPooling() creates a race condition where a stale reference from
+    /// IMPORTANT: _isCompleted must ONLY be reset here, NOT in PrepareForPooling().
+    /// Resetting it in PrepareForPooling() creates a race condition where a stale reference from
     /// another thread could successfully append to the pooled batch (since _isCompleted would be 0),
-    /// and those messages would be lost when Reset() is later called. By only resetting these flags
+    /// and those messages would be lost when Reset() is later called. By only resetting this flag
     /// at rent time, we ensure that any stale references fail the _isCompleted check in TryAppend().
     /// </remarks>
     internal void Reset(TopicPartition topicPartition)
@@ -2930,7 +2485,6 @@ internal sealed class PartitionBatch
         _estimatedSize = 0;
         _isCompleted = 0;  // Only reset here - see remarks
         _completedBatch = null;
-        _exclusiveAccess = 0;  // Only reset here - see remarks
     }
 
     /// <summary>
@@ -2958,8 +2512,8 @@ internal sealed class PartitionBatch
         _pooledHeaderArrays = ArrayPool<Header[]>.Shared.Rent(8);
 
         // Reset counters and state for reuse.
-        // IMPORTANT: Do NOT reset _isCompleted or _exclusiveAccess here!
-        // These must only be reset in Reset() when the batch is actually rented.
+        // IMPORTANT: Do NOT reset _isCompleted here!
+        // It must only be reset in Reset() when the batch is actually rented.
         // If we reset _isCompleted here, a stale reference from another thread could
         // successfully append to this pooled batch (since _isCompleted would be 0),
         // and those messages would be lost when Reset() is later called.
@@ -2971,7 +2525,6 @@ internal sealed class PartitionBatch
         _estimatedSize = 0;
         // _isCompleted stays at 1 - batch is "completed" while in pool
         _completedBatch = null;
-        // _exclusiveAccess stays at 0 (should already be 0 from Complete())
     }
 
     /// <summary>
@@ -2991,64 +2544,29 @@ internal sealed class PartitionBatch
     public long CreatedAtTicks => _createdAt.Ticks;
 
     /// <summary>
-    /// Appends a record to the batch with completion tracking.
-    /// Uses lock-free CAS-based synchronization for the common single-producer case,
-    /// falling back to spin-wait under contention.
+    /// Appends a record to the batch. Handles all three record types:
+    /// completion-tracked (ProduceAsync), callback (Send with handler), and fire-and-forget (Send).
+    /// Caller must hold the per-partition deque lock.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public RecordAppendResult TryAppend(
         long timestamp,
         PooledMemory key,
         PooledMemory value,
         IReadOnlyList<Header>? headers,
         Header[]? pooledHeaderArray,
-        PooledValueTaskSource<RecordMetadata> completion)
+        PooledValueTaskSource<RecordMetadata>? completionSource,
+        Action<RecordMetadata, Exception?>? callback)
     {
-        // Pre-compute record size outside the lock - depends only on input parameters
         var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
 
-        // FAST PATH: Try to atomically claim exclusive access via CAS.
-        // If we win (exchange 0 -> 1), we have exclusive access and can proceed without spinning.
-        // This is the common case for single-producer patterns.
-        if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-        {
-            try
-            {
-                return TryAppendCore(timestamp, key, value, headers, pooledHeaderArray, completion, recordSize);
-            }
-            finally
-            {
-                // Release exclusive access
-                Volatile.Write(ref _exclusiveAccess, 0);
-            }
-        }
-
-        // SLOW PATH: CAS failed - another thread is appending. Spin until we can claim access.
-        return TryAppendWithSpinWait(timestamp, key, value, headers, pooledHeaderArray, completion, recordSize);
-    }
-
-    /// <summary>
-    /// Core append logic with completion tracking. Called when we have exclusive access.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private RecordAppendResult TryAppendCore(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        PooledValueTaskSource<RecordMetadata> completion,
-        int recordSize)
-    {
-        // Check if batch was completed - Complete() nulls out arrays without synchronization,
-        // so we must check this before accessing any arrays.
+        // Check if batch was completed
         if (Volatile.Read(ref _isCompleted) != 0)
         {
             return new RecordAppendResult(false);
         }
 
         // Defensive check: if arrays are null, batch is in inconsistent state (being pooled)
-        if (_records is null || _completionSources is null || _pooledArrays is null)
+        if (_records is null || _pooledArrays is null)
         {
             return new RecordAppendResult(false);
         }
@@ -3069,7 +2587,7 @@ internal sealed class PartitionBatch
         {
             GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
         }
-        if (_completionSourceCount >= _completionSources.Length)
+        if (completionSource is not null && _completionSourceCount >= _completionSources.Length)
         {
             GrowArray(ref _completionSources, ref _completionSourceCount, ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared);
         }
@@ -3081,336 +2599,13 @@ internal sealed class PartitionBatch
         {
             GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
         }
-
-        // Track pooled arrays for returning to pool later
-        if (key.Array is not null)
+        if (callback is not null)
         {
-            _pooledArrays[_pooledArrayCount++] = key.Array;
-        }
-        if (value.Array is not null)
-        {
-            _pooledArrays[_pooledArrayCount++] = value.Array;
-        }
-        if (pooledHeaderArray is not null)
-        {
-            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
-        }
-
-        var timestampDelta = timestamp - _baseTimestamp;
-        var record = new Record
-        {
-            TimestampDelta = timestampDelta,
-            OffsetDelta = _recordCount,
-            Key = key.Memory,
-            IsKeyNull = key.IsNull,
-            Value = value.Memory,
-            IsValueNull = value.IsNull,
-            Headers = headers
-        };
-
-        _records[_recordCount++] = record;
-        _estimatedSize += recordSize;
-
-        // Use the passed-in completion source - no allocation here
-        _completionSources[_completionSourceCount++] = completion;
-        // Track inside exclusive lock - this MUST match batch completion count
-        ProducerDebugCounters.RecordCompletionSourceStoredInBatch();
-
-        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
-    }
-
-    /// <summary>
-    /// Slow path for TryAppend when CAS fails due to contention.
-    /// Spins until exclusive access is available.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private RecordAppendResult TryAppendWithSpinWait(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        PooledValueTaskSource<RecordMetadata> completion,
-        int recordSize)
-    {
-        var spinner = new SpinWait();
-        while (true)
-        {
-            // Early exit if already completed
-            if (_isCompleted != 0)
-                return new RecordAppendResult(false);
-
-            spinner.SpinOnce();
-
-            if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
+            _callbacks ??= ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Rent(_initialRecordCapacity);
+            if (_callbackCount >= _callbacks.Length)
             {
-                try
-                {
-                    return TryAppendCore(timestamp, key, value, headers, pooledHeaderArray, completion, recordSize);
-                }
-                finally
-                {
-                    Volatile.Write(ref _exclusiveAccess, 0);
-                }
+                GrowArray(ref _callbacks!, ref _callbackCount, ArrayPool<Action<RecordMetadata, Exception?>?>.Shared);
             }
-        }
-    }
-
-    /// <summary>
-    /// Fire-and-forget version of TryAppend that skips completion source tracking.
-    /// This is significantly faster for fire-and-forget produces since it avoids:
-    /// 1. Renting a PooledValueTaskSource
-    /// 2. Storing the completion source in the batch
-    /// 3. Setting the result when the batch completes
-    ///
-    /// Uses lock-free CAS-based synchronization for exclusive access, which is faster
-    /// than SpinLock for the common single-producer case while remaining correct under
-    /// multi-producer contention.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public RecordAppendResult TryAppendFireAndForget(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray)
-    {
-        // Pre-compute record size outside the lock - depends only on input parameters
-        var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
-
-        // FAST PATH: Try to atomically claim exclusive access via CAS.
-        // If we win (exchange 0 -> 1), we have exclusive access and can proceed without spinning.
-        // This is the common case for single-producer patterns.
-        if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-        {
-            try
-            {
-                return TryAppendFireAndForgetCore(timestamp, key, value, headers, pooledHeaderArray, recordSize);
-            }
-            finally
-            {
-                // Release exclusive access
-                Volatile.Write(ref _exclusiveAccess, 0);
-            }
-        }
-
-        // SLOW PATH: CAS failed - another thread is appending. Spin until we can claim access.
-        return TryAppendFireAndForgetWithSpinWait(timestamp, key, value, headers, pooledHeaderArray, recordSize);
-    }
-
-    /// <summary>
-    /// Appends a record with a delivery callback stored directly in the batch.
-    /// This is the zero-allocation path for Send(message, callback) - no PooledValueTaskSource needed.
-    /// Callbacks are invoked inline on the sender thread when the batch completes.
-    ///
-    /// Uses lock-free CAS-based synchronization for exclusive access.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public RecordAppendResult TryAppendWithCallback(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback)
-    {
-        // Pre-compute record size outside the lock
-        var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
-
-        // FAST PATH: Try to atomically claim exclusive access via CAS.
-        if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-        {
-            try
-            {
-                return TryAppendWithCallbackCore(timestamp, key, value, headers, pooledHeaderArray, callback, recordSize);
-            }
-            finally
-            {
-                Volatile.Write(ref _exclusiveAccess, 0);
-            }
-        }
-
-        // SLOW PATH: Spin until we can claim access.
-        return TryAppendWithCallbackSpinWait(timestamp, key, value, headers, pooledHeaderArray, callback, recordSize);
-    }
-
-    /// <summary>
-    /// Core append logic with callback storage. Called when we hold exclusive access.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private RecordAppendResult TryAppendWithCallbackCore(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback,
-        int recordSize)
-    {
-        // Check if batch was completed
-        if (Volatile.Read(ref _isCompleted) != 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        // Defensive check: if arrays are null, batch is in inconsistent state
-        if (_records is null || _pooledArrays is null)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        if (_recordCount == 0)
-        {
-            _baseTimestamp = timestamp;
-        }
-
-        // Check size limit
-        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        // Grow arrays if needed
-        if (_recordCount >= _records.Length)
-        {
-            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
-        }
-        if (_pooledArrayCount + 2 >= _pooledArrays.Length)
-        {
-            GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
-        }
-        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
-        {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
-        }
-
-        // Ensure callback array exists and has space
-        _callbacks ??= ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Rent(_initialRecordCapacity);
-        if (_callbackCount >= _callbacks.Length)
-        {
-            GrowArray(ref _callbacks!, ref _callbackCount, ArrayPool<Action<RecordMetadata, Exception?>?>.Shared);
-        }
-
-        // Track pooled arrays
-        if (key.Array is not null)
-        {
-            _pooledArrays[_pooledArrayCount++] = key.Array;
-        }
-        if (value.Array is not null)
-        {
-            _pooledArrays[_pooledArrayCount++] = value.Array;
-        }
-        if (pooledHeaderArray is not null)
-        {
-            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
-        }
-
-        var timestampDelta = timestamp - _baseTimestamp;
-        var record = new Record
-        {
-            TimestampDelta = timestampDelta,
-            OffsetDelta = _recordCount,
-            Key = key.Memory,
-            IsKeyNull = key.IsNull,
-            Value = value.Memory,
-            IsValueNull = value.IsNull,
-            Headers = headers
-        };
-
-        _records[_recordCount] = record;
-        _callbacks[_callbackCount++] = callback;
-        _recordCount++;
-        _estimatedSize += recordSize;
-
-        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
-    }
-
-    /// <summary>
-    /// Slow path for TryAppendWithCallback - spins until exclusive access is available.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private RecordAppendResult TryAppendWithCallbackSpinWait(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback,
-        int recordSize)
-    {
-        var spin = new SpinWait();
-
-        while (true)
-        {
-            if (_isCompleted != 0)
-                return new RecordAppendResult(false);
-
-            if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-            {
-                try
-                {
-                    return TryAppendWithCallbackCore(timestamp, key, value, headers, pooledHeaderArray, callback, recordSize);
-                }
-                finally
-                {
-                    Volatile.Write(ref _exclusiveAccess, 0);
-                }
-            }
-
-            spin.SpinOnce();
-        }
-    }
-
-    /// <summary>
-    /// Core append logic without locking. Called when we've verified single-producer pattern
-    /// or when we already hold the lock.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private RecordAppendResult TryAppendFireAndForgetCore(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        int recordSize)
-    {
-        // Check if batch was completed - Complete() nulls out arrays without synchronization,
-        // so we must check this before accessing any arrays.
-        if (Volatile.Read(ref _isCompleted) != 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        // Defensive check: if arrays are null, batch is in inconsistent state (being pooled)
-        if (_records is null || _pooledArrays is null)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        if (_recordCount == 0)
-        {
-            _baseTimestamp = timestamp;
-        }
-
-        // Check size limit
-        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        // Grow arrays if needed (rare - only happens if batch fills beyond initial capacity)
-        if (_recordCount >= _records.Length)
-        {
-            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
-        }
-        // Note: No need to grow _completionSources for fire-and-forget
-        if (_pooledArrayCount + 2 >= _pooledArrays.Length) // +2 for key and value
-        {
-            GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
-        }
-        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
-        {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
         }
 
         // Track pooled arrays for returning to pool later
@@ -3428,7 +2623,7 @@ internal sealed class PartitionBatch
         }
 
         var timestampDelta = timestamp - _baseTimestamp;
-        var record = new Record
+        _records[_recordCount] = new Record
         {
             TimestampDelta = timestampDelta,
             OffsetDelta = _recordCount,
@@ -3439,430 +2634,21 @@ internal sealed class PartitionBatch
             Headers = headers
         };
 
-        _records[_recordCount++] = record;
-        _estimatedSize += recordSize;
-
-        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
-    }
-
-    /// <summary>
-    /// Arena-based fire-and-forget append. Key/value data is already in the batch's arena.
-    /// This is the zero-allocation path - no per-message ArrayPool rentals.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public RecordAppendResult TryAppendFromArena(
-        long timestamp,
-        ArenaSlice keySlice,
-        bool isKeyNull,
-        ArenaSlice valueSlice,
-        bool isValueNull,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray)
-    {
-        var recordSize = EstimateRecordSize(keySlice.Length, valueSlice.Length, headers);
-
-        // FAST PATH: Try to atomically claim exclusive access via CAS.
-        if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
+        if (completionSource is not null)
         {
-            try
-            {
-                return TryAppendFromArenaCore(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, recordSize);
-            }
-            finally
-            {
-                Volatile.Write(ref _exclusiveAccess, 0);
-            }
+            _completionSources[_completionSourceCount++] = completionSource;
+            ProducerDebugCounters.RecordCompletionSourceStoredInBatch();
         }
 
-        // SLOW PATH: Spin until we can claim access.
-        return TryAppendFromArenaWithSpinWait(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, recordSize);
-    }
-
-    /// <summary>
-    /// Core append logic for arena-based data. No per-message array tracking needed.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private RecordAppendResult TryAppendFromArenaCore(
-        long timestamp,
-        ArenaSlice keySlice,
-        bool isKeyNull,
-        ArenaSlice valueSlice,
-        bool isValueNull,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        int recordSize)
-    {
-        if (Volatile.Read(ref _isCompleted) != 0)
+        if (callback is not null)
         {
-            return new RecordAppendResult(false);
+            _callbacks![_callbackCount++] = callback;
         }
 
-        if (_recordCount == 0)
-        {
-            _baseTimestamp = timestamp;
-        }
-
-        // Check size limit
-        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        // Grow records array if needed
-        if (_recordCount >= _records.Length)
-        {
-            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
-        }
-        // Track pooled header arrays (rare)
-        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
-        {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
-        }
-        if (pooledHeaderArray is not null)
-        {
-            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
-        }
-
-        // Create record with Memory referencing the arena buffer
-        // Key and value data is already in the arena, we just store the slice info
-        var arena = _arena!;
-        var timestampDelta = timestamp - _baseTimestamp;
-        var record = new Record
-        {
-            TimestampDelta = timestampDelta,
-            OffsetDelta = _recordCount,
-            Key = isKeyNull ? ReadOnlyMemory<byte>.Empty : arena.Buffer.AsMemory(keySlice.Offset, keySlice.Length),
-            IsKeyNull = isKeyNull,
-            Value = isValueNull ? ReadOnlyMemory<byte>.Empty : arena.Buffer.AsMemory(valueSlice.Offset, valueSlice.Length),
-            IsValueNull = isValueNull,
-            Headers = headers
-        };
-
-        _records[_recordCount++] = record;
-        _estimatedSize += recordSize;
-
-        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private RecordAppendResult TryAppendFromArenaWithSpinWait(
-        long timestamp,
-        ArenaSlice keySlice,
-        bool isKeyNull,
-        ArenaSlice valueSlice,
-        bool isValueNull,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        int recordSize)
-    {
-        var spin = new SpinWait();
-        while (true)
-        {
-            // Early exit if already completed
-            if (_isCompleted != 0)
-                return new RecordAppendResult(false);
-
-            if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-            {
-                try
-                {
-                    return TryAppendFromArenaCore(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, recordSize);
-                }
-                finally
-                {
-                    Volatile.Write(ref _exclusiveAccess, 0);
-                }
-            }
-            spin.SpinOnce();
-        }
-    }
-
-    /// <summary>
-    /// Arena-based append with delivery callback stored directly in the batch.
-    /// This is the zero-allocation path for Send(message, callback) with arena serialization.
-    /// Callbacks are invoked inline on the sender thread when the batch completes.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public RecordAppendResult TryAppendFromArenaWithCallback(
-        long timestamp,
-        ArenaSlice keySlice,
-        bool isKeyNull,
-        ArenaSlice valueSlice,
-        bool isValueNull,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback)
-    {
-        var recordSize = EstimateRecordSize(keySlice.Length, valueSlice.Length, headers);
-
-        // FAST PATH: Try to atomically claim exclusive access via CAS.
-        if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-        {
-            try
-            {
-                return TryAppendFromArenaWithCallbackCore(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, callback, recordSize);
-            }
-            finally
-            {
-                Volatile.Write(ref _exclusiveAccess, 0);
-            }
-        }
-
-        // SLOW PATH: Spin until we can claim access.
-        return TryAppendFromArenaWithCallbackSpinWait(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, callback, recordSize);
-    }
-
-    /// <summary>
-    /// Core append logic for arena-based data with callback.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private RecordAppendResult TryAppendFromArenaWithCallbackCore(
-        long timestamp,
-        ArenaSlice keySlice,
-        bool isKeyNull,
-        ArenaSlice valueSlice,
-        bool isValueNull,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback,
-        int recordSize)
-    {
-        if (Volatile.Read(ref _isCompleted) != 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        if (_recordCount == 0)
-        {
-            _baseTimestamp = timestamp;
-        }
-
-        // Check size limit
-        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
-        {
-            return new RecordAppendResult(false);
-        }
-
-        // Grow records array if needed
-        if (_recordCount >= _records.Length)
-        {
-            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
-        }
-        // Track pooled header arrays (rare)
-        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
-        {
-            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
-        }
-        if (pooledHeaderArray is not null)
-        {
-            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
-        }
-
-        // Ensure callback array exists and has space
-        _callbacks ??= ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Rent(_initialRecordCapacity);
-        if (_callbackCount >= _callbacks.Length)
-        {
-            GrowArray(ref _callbacks!, ref _callbackCount, ArrayPool<Action<RecordMetadata, Exception?>?>.Shared);
-        }
-
-        // Create record with Memory referencing the arena buffer
-        var arena = _arena!;
-        var timestampDelta = timestamp - _baseTimestamp;
-        var record = new Record
-        {
-            TimestampDelta = timestampDelta,
-            OffsetDelta = _recordCount,
-            Key = isKeyNull ? ReadOnlyMemory<byte>.Empty : arena.Buffer.AsMemory(keySlice.Offset, keySlice.Length),
-            IsKeyNull = isKeyNull,
-            Value = isValueNull ? ReadOnlyMemory<byte>.Empty : arena.Buffer.AsMemory(valueSlice.Offset, valueSlice.Length),
-            IsValueNull = isValueNull,
-            Headers = headers
-        };
-
-        _records[_recordCount] = record;
-        _callbacks[_callbackCount++] = callback;
         _recordCount++;
         _estimatedSize += recordSize;
 
         return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private RecordAppendResult TryAppendFromArenaWithCallbackSpinWait(
-        long timestamp,
-        ArenaSlice keySlice,
-        bool isKeyNull,
-        ArenaSlice valueSlice,
-        bool isValueNull,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback,
-        int recordSize)
-    {
-        var spin = new SpinWait();
-        while (true)
-        {
-            if (_isCompleted != 0)
-                return new RecordAppendResult(false);
-
-            if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-            {
-                try
-                {
-                    return TryAppendFromArenaWithCallbackCore(timestamp, keySlice, isKeyNull, valueSlice, isValueNull, headers, pooledHeaderArray, callback, recordSize);
-                }
-                finally
-                {
-                    Volatile.Write(ref _exclusiveAccess, 0);
-                }
-            }
-            spin.SpinOnce();
-        }
-    }
-
-    /// <summary>
-    /// Slow path: spins until exclusive access is available, then appends.
-    /// Called when CAS failed because another thread is currently appending.
-    /// Uses SpinWait for efficient spinning that adapts to contention level.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private RecordAppendResult TryAppendFireAndForgetWithSpinWait(
-        long timestamp,
-        PooledMemory key,
-        PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
-        int recordSize)
-    {
-        var spin = new SpinWait();
-
-        while (true)
-        {
-            // Early exit if already completed
-            if (_isCompleted != 0)
-                return new RecordAppendResult(false);
-
-            // Try to claim exclusive access
-            if (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) == 0)
-            {
-                try
-                {
-                    return TryAppendFireAndForgetCore(timestamp, key, value, headers, pooledHeaderArray, recordSize);
-                }
-                finally
-                {
-                    // Release exclusive access
-                    Volatile.Write(ref _exclusiveAccess, 0);
-                }
-            }
-
-            // Someone else has access, spin and retry
-            spin.SpinOnce();
-        }
-    }
-
-    /// <summary>
-    /// Batch append for fire-and-forget produces. Appends multiple records with a single lock acquisition.
-    /// Returns the number of records successfully appended before the batch became full.
-    /// This amortizes lock overhead over N messages, providing significant throughput improvement.
-    /// </summary>
-    public int TryAppendFireAndForgetBatch(
-        ReadOnlySpan<ProducerRecordData> items,
-        int startIndex = 0)
-    {
-        if (items.Length == 0 || startIndex >= items.Length)
-            return 0;
-
-        // Use CAS-based locking to coordinate with Complete() which also uses _exclusiveAccess
-        var spinner = new SpinWait();
-        while (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) != 0)
-        {
-            // Early exit if already completed
-            if (_isCompleted != 0)
-                return 0;
-
-            spinner.SpinOnce();
-        }
-
-        try
-        {
-            // Check if batch was completed while we were waiting for the lock.
-            if (Volatile.Read(ref _isCompleted) != 0)
-            {
-                return 0;
-            }
-
-            var appended = 0;
-
-            for (var i = startIndex; i < items.Length; i++)
-            {
-                ref readonly var item = ref items[i];
-                var recordSize = EstimateRecordSize(item.Key.Length, item.Value.Length, item.Headers);
-
-                // Set base timestamp from first record
-                if (_recordCount == 0)
-                {
-                    _baseTimestamp = item.Timestamp;
-                }
-
-                // Check size limit
-                if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
-                {
-                    // Batch is full, return count of appended records
-                    return appended;
-                }
-
-                // Grow arrays if needed
-                if (_recordCount >= _records.Length)
-                {
-                    GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
-                }
-                if (_pooledArrayCount + 2 >= _pooledArrays.Length)
-                {
-                    GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
-                }
-                if (item.PooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
-                {
-                    GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
-                }
-
-                // Track pooled arrays
-                if (item.Key.Array is not null)
-                {
-                    _pooledArrays[_pooledArrayCount++] = item.Key.Array;
-                }
-                if (item.Value.Array is not null)
-                {
-                    _pooledArrays[_pooledArrayCount++] = item.Value.Array;
-                }
-                if (item.PooledHeaderArray is not null)
-                {
-                    _pooledHeaderArrays[_pooledHeaderArrayCount++] = item.PooledHeaderArray;
-                }
-
-                var timestampDelta = item.Timestamp - _baseTimestamp;
-                _records[_recordCount] = new Record
-                {
-                    TimestampDelta = timestampDelta,
-                    OffsetDelta = _recordCount,
-                    Key = item.Key.Memory,
-                    IsKeyNull = item.Key.IsNull,
-                    Value = item.Value.Memory,
-                    IsValueNull = false,
-                    Headers = item.Headers
-                };
-
-                _recordCount++;
-                _estimatedSize += recordSize;
-                appended++;
-            }
-
-            return appended;
-        }
-        finally
-        {
-            Volatile.Write(ref _exclusiveAccess, 0);
-        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -3919,97 +2705,76 @@ internal sealed class PartitionBatch
             return _completedBatch;
         }
 
-        // Wait for any in-progress appends to complete before modifying arrays.
-        // This coordinates with the CAS-based exclusive access used by TryAppend/TryAppendFireAndForget.
-        // NOTE: We MUST spin until we get exclusive access. The Interlocked.Exchange above ensures
-        // only one thread proceeds past this point, so there's no need for an early exit check.
-        // A previous buggy early exit check (`if (_isCompleted != 0)`) would always trigger since
-        // WE just set _isCompleted = 1, causing premature return with null and orphaning completion sources.
-        var spinner = new SpinWait();
-        while (Interlocked.CompareExchange(ref _exclusiveAccess, 1, 0) != 0)
+        // Called under deque lock - no concurrent access is possible.
+
+        if (_recordCount == 0)
         {
-            spinner.SpinOnce();
+            // Empty batch - return arrays to pool immediately
+            ReturnBatchArraysToPool();
+            return null;
         }
 
-        // Now we hold exclusive access - safe to modify arrays.
-        // Use try/finally to ensure lock is always released, even if an exception occurs
-        // (e.g., OutOfMemoryException during ReadyBatch allocation).
-        try
+        // Use pooled records array directly with wrapper to avoid allocation
+        // ReadyBatch will return the array to pool in Cleanup()
+        var pooledRecordsArray = _records;
+        var attributes = RecordBatchAttributes.None;
+        if (_isTransactional)
         {
-            if (_recordCount == 0)
-            {
-                // Empty batch - return arrays to pool immediately
-                ReturnBatchArraysToPool();
-                return null;
-            }
-
-            // Use pooled records array directly with wrapper to avoid allocation
-            // ReadyBatch will return the array to pool in Cleanup()
-            var pooledRecordsArray = _records;
-            var attributes = RecordBatchAttributes.None;
-            if (_isTransactional)
-            {
-                attributes |= RecordBatchAttributes.IsTransactional;
-            }
-
-            // Sequences are assigned by BrokerSender.SendCoalescedAsync at send time.
-            // This eliminates a race between the accumulator's seal thread and the
-            // send loop's epoch bump recovery (ResetSequenceNumbers) that caused
-            // OutOfOrderSequenceNumber errors when both threads called
-            // GetAndIncrementSequence on the same shared counter.
-            var baseSequence = -1;
-
-            var batch = new RecordBatch
-            {
-                BaseOffset = 0,
-                BaseTimestamp = _baseTimestamp,
-                MaxTimestamp = _baseTimestamp + (_recordCount > 0 ? pooledRecordsArray[_recordCount - 1].TimestampDelta : 0),
-                LastOffsetDelta = _recordCount - 1,
-                ProducerId = _producerId,
-                ProducerEpoch = _producerEpoch,
-                BaseSequence = baseSequence,
-                Attributes = attributes,
-                Records = new RecordListWrapper(pooledRecordsArray, _recordCount)
-            };
-            _records = null!;
-
-            // Rent ReadyBatch from pool or create new if no pool available
-            // This eliminates per-batch class allocations at high throughput
-            var readyBatch = _readyBatchPool?.Rent() ?? new ReadyBatch();
-
-            // Initialize with batch data - ownership of arrays transfers to ReadyBatch
-            // PooledValueTaskSource auto-returns to its pool when GetResult() is called
-            readyBatch.Initialize(
-                _topicPartition,
-                batch,
-                _completionSources,
-                _completionSourceCount,
-                _pooledArrays,
-                _pooledArrayCount,
-                _pooledHeaderArrays,
-                _pooledHeaderArrayCount,
-                _estimatedSize,
-                pooledRecordsArray,
-                _arena,
-                _callbacks,
-                _callbackCount);
-
-            _completedBatch = readyBatch;
-
-            // Null out references - ownership transferred to ReadyBatch
-            _completionSources = null!;
-            _pooledArrays = null!;
-            _pooledHeaderArrays = null!;
-            _arena = null;
-            _callbacks = null;
-
-            return _completedBatch;
+            attributes |= RecordBatchAttributes.IsTransactional;
         }
-        finally
+
+        // Sequences are assigned by BrokerSender.SendCoalescedAsync at send time.
+        // This eliminates a race between the accumulator's seal thread and the
+        // send loop's epoch bump recovery (ResetSequenceNumbers) that caused
+        // OutOfOrderSequenceNumber errors when both threads called
+        // GetAndIncrementSequence on the same shared counter.
+        var baseSequence = -1;
+
+        var batch = new RecordBatch
         {
-            // Release exclusive access - always release even if exception occurred
-            Volatile.Write(ref _exclusiveAccess, 0);
-        }
+            BaseOffset = 0,
+            BaseTimestamp = _baseTimestamp,
+            MaxTimestamp = _baseTimestamp + (_recordCount > 0 ? pooledRecordsArray[_recordCount - 1].TimestampDelta : 0),
+            LastOffsetDelta = _recordCount - 1,
+            ProducerId = _producerId,
+            ProducerEpoch = _producerEpoch,
+            BaseSequence = baseSequence,
+            Attributes = attributes,
+            Records = new RecordListWrapper(pooledRecordsArray, _recordCount)
+        };
+        _records = null!;
+
+        // Rent ReadyBatch from pool or create new if no pool available
+        // This eliminates per-batch class allocations at high throughput
+        var readyBatch = _readyBatchPool?.Rent() ?? new ReadyBatch();
+
+        // Initialize with batch data - ownership of arrays transfers to ReadyBatch
+        // PooledValueTaskSource auto-returns to its pool when GetResult() is called
+        readyBatch.Initialize(
+            _topicPartition,
+            batch,
+            _completionSources,
+            _completionSourceCount,
+            _pooledArrays,
+            _pooledArrayCount,
+            _pooledHeaderArrays,
+            _pooledHeaderArrayCount,
+            _estimatedSize,
+            pooledRecordsArray,
+            _arena,
+            _callbacks,
+            _callbackCount);
+
+        _completedBatch = readyBatch;
+
+        // Null out references - ownership transferred to ReadyBatch
+        _completionSources = null!;
+        _pooledArrays = null!;
+        _pooledHeaderArrays = null!;
+        _arena = null;
+        _callbacks = null;
+
+        return _completedBatch;
     }
 
     private void ReturnBatchArraysToPool()
@@ -4142,6 +2907,34 @@ internal sealed class ReadyBatchPool
 /// Returns pooled arrays to ArrayPool when complete.
 /// PooledValueTaskSource instances auto-return to their pool when GetResult() is called.
 /// </summary>
+#if DEBUG
+/// <summary>
+/// Tracks the last known location of a ReadyBatch in the BrokerSender pipeline.
+/// Survives process kills — inspectable via hangdump's dumpobj command.
+/// </summary>
+internal enum BatchTransition : int
+{
+    None = 0,
+    EntersPipeline = 1,
+    CompleteDelivery = 2,
+    EnqueuedToBrokerSender = 3,
+    Coalesced = 4,
+    InflightRegistered = 5,
+    MemoryReleased = 6,
+    AddedToPendingResponses = 7,
+    ProcessingResponse = 8,
+    CompleteSendCalled = 9,
+    FailCalled = 10,
+    CleanupBatchCalled = 11,
+    ExitsPipeline = 12,
+    ReturnedToPool = 13,
+    AddedToSendFailedRetries = 14,
+    AddedToCarryOver = 15,
+    Rerouted = 16,
+    FailEnqueuedBatch = 17,
+}
+#endif
+
 internal sealed class ReadyBatch : IValueTaskSource<bool>
 {
     private TopicPartition _topicPartition;
@@ -4194,6 +2987,45 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     // Set by KafkaProducer when registering with PartitionInflightTracker, cleared in Reset().
     internal InflightEntry? InflightEntry { get; set; }
 
+#if DEBUG
+    /// <summary>
+    /// Last transition this batch went through in the pipeline. Inspectable in hangdumps
+    /// via dumpobj to trace where a batch was "lost" when it fails to exit the pipeline.
+    /// </summary>
+    internal volatile int DebugLastTransition;
+
+    /// <summary>
+    /// Broker ID of the BrokerSender that last handled this batch. Helps correlate
+    /// batch state with specific BrokerSender instances in hangdump analysis.
+    /// </summary>
+    internal volatile int DebugLastBrokerId;
+#endif
+
+    /// <summary>
+    /// Lightweight lifecycle trace for diagnosing orphaned batches in Release builds.
+    /// Tracks the last few transitions as single-char codes to keep overhead minimal.
+    /// Codes: E=EntersPipeline, D=Drained, Q=EnqueuedToBrokerSender, C=Coalesced,
+    /// O=CarriedOver, S=Sent, R=ResponseReceived, X=ExitsPipeline, F=Failed
+    /// </summary>
+    internal string DiagTrace
+    {
+        get
+        {
+            var len = Volatile.Read(ref _diagTraceLen);
+            return len > 0 ? new string(_diagTrace, 0, Math.Min(len, _diagTrace.Length)) : "";
+        }
+    }
+    private readonly char[] _diagTrace = new char[32];
+    private int _diagTraceLen;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void AppendDiag(char code)
+    {
+        var idx = Interlocked.Increment(ref _diagTraceLen) - 1;
+        if (idx < _diagTrace.Length)
+            _diagTrace[idx] = code;
+    }
+
     /// <summary>
     /// Replaces the record batch with a rewritten one (updated PID/epoch/sequence).
     /// Only called during epoch bump recovery — not in the hot path.
@@ -4227,12 +3059,31 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// </summary>
     internal long StopwatchCreatedTicks { get; private set; }
 
+    /// <summary>
+    /// Age of this batch in milliseconds since creation (or since last reenqueue).
+    /// Used by Ready() to determine if linger time has expired.
+    /// </summary>
+    internal int AgeMs => (int)((Stopwatch.GetTimestamp() - _createdTimestamp) * 1000 / Stopwatch.Frequency);
+    private long _createdTimestamp;
+
+    /// <summary>
+    /// Called when this batch is reenqueued for retry. Resets the age timer
+    /// and marks the batch as a retry so Ready() knows to apply backoff.
+    /// </summary>
+    internal void Reenqueued(long nowMs)
+    {
+        _createdTimestamp = Stopwatch.GetTimestamp();
+        IsRetry = true;
+    }
+
     // Batch-level completion tracking using resettable ManualResetValueTaskSourceCore
     // Never faults - uses SetResult(true) for success, SetResult(false) for failure
     private ManualResetValueTaskSourceCore<bool> _doneCore;
 
-    private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup)
-    private int _completed; // 0 = not completed, 1 = completed (prevents double-completion)
+    private int _cleanedUp; // 0 = not cleaned, 1 = cleaned (prevents double-cleanup in Cleanup())
+    private int _completed; // 0 = not completed, 1 = completed (prevents double-signal of _doneCore)
+    private int _sendCompleted; // 0 = not done, 1 = done (prevents concurrent CompleteSend/Fail)
+    internal int _returnedToPool; // 0 = not returned, 1 = returned (prevents double pool return)
 
     /// <summary>
     /// Creates an uninitialized ReadyBatch. Call Initialize() before use.
@@ -4260,6 +3111,14 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         Action<RecordMetadata, Exception?>?[]? callbacks = null,
         int callbackCount = 0)
     {
+        // Reset lifecycle flags at the START of a new lifecycle (not in Reset()).
+        // This ensures stale references from a previous lifecycle see _cleanedUp=1
+        // and return early from CompleteSend/Fail, preventing pool corruption.
+        Interlocked.Exchange(ref _cleanedUp, 0);
+        Interlocked.Exchange(ref _completed, 0);
+        Interlocked.Exchange(ref _sendCompleted, 0);
+        Interlocked.Exchange(ref _returnedToPool, 0);
+
         _topicPartition = topicPartition;
         _recordBatch = recordBatch;
         _completionSourcesArray = completionSourcesArray;
@@ -4274,6 +3133,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _callbacks = callbacks;
         _callbackCount = callbackCount;
         StopwatchCreatedTicks = Stopwatch.GetTimestamp();
+        _createdTimestamp = StopwatchCreatedTicks;
     }
 
     /// <summary>
@@ -4281,11 +3141,22 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// </summary>
     public void Reset()
     {
-        // Defensive cleanup: ensure pooled arrays are returned even if Cleanup() wasn't called.
-        // This handles edge cases like exceptions between CompleteSend and ReturnReadyBatch.
-        // Cleanup() is idempotent (uses Interlocked.Exchange), so double-call is safe.
+        // SAFETY NET: If CompleteSend/Fail wasn't called (_cleanedUp still 0), resolve
+        // orphaned completion sources and return pooled arrays before the batch goes back
+        // to the pool. Without this, ProduceAsync callers hang forever on unresolved sources.
+        // Single read: _cleanedUp cannot change during Reset (pool return is single-threaded per batch).
         if (Volatile.Read(ref _cleanedUp) == 0)
         {
+            if (_completionSourcesArray is not null)
+            {
+                var orphanedException = new InvalidOperationException("Batch recycled without completing delivery — this indicates a bug in the producer pipeline");
+                for (var i = 0; i < _completionSourcesCount; i++)
+                {
+                    _completionSourcesArray[i]?.TrySetException(orphanedException);
+                }
+            }
+
+            // Cleanup() is idempotent (uses Interlocked.Exchange), so double-call is safe.
             Cleanup();
         }
 
@@ -4307,10 +3178,16 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         MemoryReleased = false;
         IsRetry = false;
         RetryNotBefore = 0;
+        _diagTraceLen = 0;
+#if DEBUG
+        DebugLastTransition = (int)BatchTransition.ReturnedToPool;
+        DebugLastBrokerId = -1;
+#endif
 
-        // Reset state flags
-        Volatile.Write(ref _cleanedUp, 0);
-        Volatile.Write(ref _completed, 0);
+        // NOTE: _cleanedUp, _completed, and _sendCompleted are NOT reset here. They stay
+        // at 1 (armed) while the batch is in the pool, so that stale references from a
+        // previous lifecycle calling CompleteSend/Fail will hit the guard and return early.
+        // These flags are reset in Initialize() when the batch starts a new lifecycle.
 
         // Reset the ValueTaskSourceCore for reuse
         _doneCore.Reset();
@@ -4337,7 +3214,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // Check _cleanedUp AFTER winning the CAS to avoid TOCTOU race.
         // If Cleanup() ran between our CAS and this check, _doneCore may be reset.
         // In that case, skip SetResult to avoid calling it on a reset core.
-        if (Volatile.Read(ref _cleanedUp) != 0)
+        if (Interlocked.CompareExchange(ref _cleanedUp, 0, 0) != 0)
             return;
 
         // Signal batch is done (ready for fire-and-forget semantic)
@@ -4352,8 +3229,9 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// </summary>
     public void CompleteSend(long baseOffset, DateTimeOffset timestamp)
     {
-        // Guard against calling after Cleanup
-        if (Volatile.Read(ref _cleanedUp) != 0)
+        // Atomic entry guard: only one thread can execute CompleteSend/Fail.
+        // Separate from _cleanedUp so Cleanup() in the finally block still runs.
+        if (Interlocked.Exchange(ref _sendCompleted, 1) != 0)
             return;
 
         try
@@ -4416,11 +3294,9 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
                 }
             }
 
-            // Signal batch is done (successfully) if not already completed
+            // Signal batch is done (successfully) if not already signaled by CompleteDelivery
             if (Interlocked.CompareExchange(ref _completed, 1, 0) == 0)
-            {
                 _doneCore.SetResult(true);
-            }
         }
         finally
         {
@@ -4437,8 +3313,9 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// </summary>
     public void Fail(Exception exception)
     {
-        // Guard against calling Fail after Cleanup has been performed
-        if (Volatile.Read(ref _cleanedUp) != 0)
+        // Atomic entry guard: only one thread can execute Fail/CompleteSend.
+        // Separate from _cleanedUp so Cleanup() in the finally block still runs.
+        if (Interlocked.Exchange(ref _sendCompleted, 1) != 0)
             return;
 
         try
@@ -4491,9 +3368,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             // For fire-and-forget, no one awaits this, so exception would go unobserved
             // For FlushAsync, it just needs to know "done", not success/failure details
             if (Interlocked.CompareExchange(ref _completed, 1, 0) == 0)
-            {
                 _doneCore.SetResult(false);
-            }
         }
         finally
         {

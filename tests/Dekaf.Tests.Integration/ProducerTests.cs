@@ -45,6 +45,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-acks-one")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .BuildAsync();
 
@@ -92,16 +93,16 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await Assert.That(metadata.Offset).IsEqualTo(-1); // Unknown for acks=0
 
         // Verify the message was actually produced by consuming it
+        // Use Assign (not Subscribe) to skip consumer group join — avoids slow rebalance on CI
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-verify")
-            .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .BuildAsync();
 
-        consumer.Subscribe(topic);
+        consumer.Assign(new TopicPartition(topic, metadata.Partition));
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             await Assert.That(msg.Key).IsEqualTo("key1");
@@ -543,6 +544,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-high-throughput")
+            .WithIdempotence(false) // Disable idempotence for Acks.Leader throughput
             .WithAcks(Acks.Leader) // Faster acks for throughput test
             .WithLinger(TimeSpan.FromMilliseconds(5)) // Small linger for batching
             .WithBatchSize(65536) // Larger batches
@@ -789,6 +791,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-sync")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .BuildAsync();
 
@@ -832,6 +835,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-callback")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .BuildAsync();
 
@@ -867,6 +871,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-sync-batch")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .BuildAsync();
@@ -919,6 +924,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-sync-concurrent")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .BuildAsync();
 

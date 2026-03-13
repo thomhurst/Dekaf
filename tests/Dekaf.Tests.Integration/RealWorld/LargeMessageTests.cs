@@ -125,6 +125,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-10k")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(10))
             .BuildAsync();

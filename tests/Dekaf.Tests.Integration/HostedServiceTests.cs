@@ -45,17 +45,21 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         using var cts = new CancellationTokenSource();
         var hostTask = host.RunAsync(cts.Token);
 
-        // Give the consumer a moment to start
-        await Task.Delay(3000).ConfigureAwait(false);
+        // Give the consumer a moment to start and join the group
+        await Task.Delay(1000).ConfigureAwait(false);
 
         // Produce messages
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .BuildAsync();
 
+        // Warm up to ensure broker has initialized partition state
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
+
         for (var i = 0; i < messageCount; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"hosted-key-{i}",
@@ -120,7 +124,7 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         var hostTask = host.RunAsync(cts.Token);
 
         // Let it start
-        await Task.Delay(2000).ConfigureAwait(false);
+        await Task.Delay(1000).ConfigureAwait(false);
 
         // Stop
         cts.Cancel();

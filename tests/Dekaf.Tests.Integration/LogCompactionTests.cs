@@ -33,8 +33,8 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
             }
         ]);
 
-        // Wait for topic creation
-        await Task.Delay(2000).ConfigureAwait(false);
+        // Wait for topic to appear in metadata
+        await KafkaContainer.WaitForTopicReadyAsync(topicName).ConfigureAwait(false);
 
         // Verify the topic config
         var configs = await adminClient.DescribeConfigsAsync([
@@ -55,15 +55,19 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .BuildAsync();
 
+        // Warm up to ensure broker has initialized partition state
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
+
         // Produce two messages with the same key
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "duplicate-key",
             Value = "first-value"
         });
 
-        await producer.ProduceAsync(new ProducerMessage<string, string>
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "duplicate-key",
@@ -85,15 +89,16 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 2) break;
+            if (messages.Count >= 3) break; // warmup + 2 actual messages
         }
 
-        await Assert.That(messages).Count().IsEqualTo(2);
-        await Assert.That(messages[0].Value).IsEqualTo("first-value");
-        await Assert.That(messages[1].Value).IsEqualTo("second-value");
+        var actual = messages.Where(m => m.Key != "warmup").ToList();
+        await Assert.That(actual).Count().IsEqualTo(2);
+        await Assert.That(actual[0].Value).IsEqualTo("first-value");
+        await Assert.That(actual[1].Value).IsEqualTo("second-value");
 
         // The latest value for the key
-        var latestValue = messages.Last(m => m.Key == "duplicate-key").Value;
+        var latestValue = actual.Last(m => m.Key == "duplicate-key").Value;
         await Assert.That(latestValue).IsEqualTo("second-value");
     }
 }

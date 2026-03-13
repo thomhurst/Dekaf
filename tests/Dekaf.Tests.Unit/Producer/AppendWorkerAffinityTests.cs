@@ -23,11 +23,31 @@ public class AppendWorkerAffinityTests
         };
     }
 
-    private static ConcurrentDictionary<TopicPartition, PartitionBatch> GetBatches(RecordAccumulator accumulator)
+    /// <summary>
+    /// Returns the _partitionDeques dictionary. To check for a batch, callers should
+    /// verify the deque contains the key and CurrentBatch is non-null.
+    /// </summary>
+    private static object GetPartitionDeques(RecordAccumulator accumulator)
     {
-        var batchesField = typeof(RecordAccumulator).GetField("_batches",
+        var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        return (ConcurrentDictionary<TopicPartition, PartitionBatch>)batchesField!.GetValue(accumulator)!;
+        return dequesField!.GetValue(accumulator)!;
+    }
+
+    private static bool HasBatchForPartition(object deques, TopicPartition tp)
+    {
+        var tryGetValueMethod = deques.GetType().GetMethod("TryGetValue");
+        var parameters = new object[] { tp, null! };
+        var found = (bool)tryGetValueMethod!.Invoke(deques, parameters)!;
+        if (!found) return false;
+        var pd = parameters[1]!;
+        var currentBatch = pd.GetType().GetField("CurrentBatch")!.GetValue(pd);
+        return currentBatch != null;
+    }
+
+    private static int GetDequeCount(object deques)
+    {
+        return (int)deques.GetType().GetProperty("Count")!.GetValue(deques)!;
     }
 
     [Test]
@@ -59,15 +79,15 @@ public class AppendWorkerAffinityTests
                 cancellationToken: CancellationToken.None);
         }
 
-        var batches = GetBatches(accumulator);
+        var deques = GetPartitionDeques(accumulator);
         var tp = new TopicPartition("test-topic", 0);
 
         // Poll until workers have processed and created the batch
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (!batches.ContainsKey(tp) && sw.ElapsedMilliseconds < 5000)
+        while (!HasBatchForPartition(deques, tp) && sw.ElapsedMilliseconds < 5000)
             await Task.Delay(10);
 
-        await Assert.That(batches.ContainsKey(tp)).IsTrue();
+        await Assert.That(HasBatchForPartition(deques, tp)).IsTrue();
 
         // Cancel workers before disposal to avoid waiting for sender drain timeout
         cts.Cancel();
@@ -107,17 +127,17 @@ public class AppendWorkerAffinityTests
             }
         }
 
-        var batches = GetBatches(accumulator);
+        var deques = GetPartitionDeques(accumulator);
 
         // Poll until workers have processed all partitions
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (batches.Count < partitionCount && sw.ElapsedMilliseconds < 5000)
+        while (GetDequeCount(deques) < partitionCount && sw.ElapsedMilliseconds < 5000)
             await Task.Delay(10);
 
         for (var p = 0; p < partitionCount; p++)
         {
             var tp = new TopicPartition("test-topic", p);
-            await Assert.That(batches.ContainsKey(tp)).IsTrue();
+            await Assert.That(HasBatchForPartition(deques, tp)).IsTrue();
         }
 
         cts.Cancel();

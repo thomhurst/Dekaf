@@ -53,8 +53,7 @@ public abstract class TestBaseModule : Module<IReadOnlyList<CommandResult>>
                         "--",
                             "--hangdump",
                             "--hangdump-timeout", "15m",
-                            "--log-level", "Trace",
-                            "--output", "Detailed"
+                            "--log-level", "Debug"
                     ]
                 },
                 new CommandExecutionOptions

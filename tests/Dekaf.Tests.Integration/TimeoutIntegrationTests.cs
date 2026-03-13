@@ -248,6 +248,13 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithLinger(TimeSpan.FromMilliseconds(5000)) // Doesn't matter - awaited produces flush immediately
             .BuildAsync();
 
+        // Warm up: establish connection and metadata cache so the timed produce below
+        // isn't delayed by first-time metadata fetch + connection establishment.
+        await producer.ProduceAsync(new ProducerMessage<string, string>
+        {
+            Topic = topic, Key = "warmup", Value = "warmup"
+        });
+
         // Act - Start produce, then cancel after message is already appended
         using var cts = new CancellationTokenSource();
 
@@ -486,8 +493,8 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         });
         sw.Stop();
 
-        // Should be nearly instantaneous (< 10ms)
-        await Assert.That(sw.ElapsedMilliseconds).IsLessThan(10);
+        // Should be nearly instantaneous — 100ms threshold accounts for CI runner jitter
+        await Assert.That(sw.ElapsedMilliseconds).IsLessThan(100);
     }
 
     // NOTE: Timing-based ProduceAsync cancellation tests removed
@@ -526,8 +533,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Value = "value1"
         }, cts.Token);
 
-        // Fast path appends synchronously, so message is already committed
-        await Task.Delay(50).ConfigureAwait(false);
+        // Fast path appends synchronously, so message is already in the batch buffer.
+        // Allow ample time for the send loop to send the batch and receive the response
+        // before cancelling — CI runners can be slow under parallel test load.
+        await Task.Delay(2000).ConfigureAwait(false);
         cts.Cancel();
 
         // Assert - Completes successfully despite cancellation

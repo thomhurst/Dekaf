@@ -684,34 +684,26 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     else
                     {
                         // Wait for prefetch with timeout, then try direct fetch
-                        // Rent CTS from pool to avoid allocation
-                        var timeoutCts = _ctsPool.Rent();
+                        using var timeoutCts = _ctsPool.Rent();
+                        timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(_options.FetchMaxWaitMs));
+                        using var reg = cancellationToken.CanBeCanceled
+                            ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
+                            : default;
                         try
                         {
-                            timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(_options.FetchMaxWaitMs));
-                            using var reg = cancellationToken.CanBeCanceled
-                                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
-                                : default;
-                            try
-                            {
-                                var fetched = await _prefetchChannel.Reader.ReadAsync(timeoutCts.Token).ConfigureAwait(false);
-                                _pendingFetches.Enqueue(fetched);
-                                TrackPrefetchedBytes(fetched, release: true);
-                            }
-                            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-                            {
-                                // Prefetch not ready - check for EOF events before continuing
-                                // (EOF events are queued by prefetch loop when partition is caught up)
-                            }
-                            catch (ChannelClosedException ex) when (ex.InnerException is KafkaException kafkaEx)
-                            {
-                                // Rethrow the original KafkaException from the prefetch task
-                                throw kafkaEx;
-                            }
+                            var fetched = await _prefetchChannel.Reader.ReadAsync(timeoutCts.Token).ConfigureAwait(false);
+                            _pendingFetches.Enqueue(fetched);
+                            TrackPrefetchedBytes(fetched, release: true);
                         }
-                        finally
+                        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                         {
-                            _ctsPool.Return(timeoutCts);
+                            // Prefetch not ready - check for EOF events before continuing
+                            // (EOF events are queued by prefetch loop when partition is caught up)
+                        }
+                        catch (ChannelClosedException ex) when (ex.InnerException is KafkaException kafkaEx)
+                        {
+                            // Rethrow the original KafkaException from the prefetch task
+                            throw kafkaEx;
                         }
                     }
                 }
@@ -985,7 +977,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         finally
         {
             _wakeupCts = null;
-            _ctsPool.Return(wakeupCts);
+            wakeupCts.Dispose();
         }
     }
 
@@ -1237,50 +1229,42 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         TimeSpan timeout,
         CancellationToken cancellationToken = default)
     {
-        // Rent CTS from pool to avoid allocation
-        var timeoutCts = _ctsPool.Rent();
-        try
+        using var timeoutCts = _ctsPool.Rent();
+        timeoutCts.CancelAfter(timeout);
+
+        // Fast path: if no external cancellation, use timeout CTS directly (avoids allocation)
+        if (!cancellationToken.CanBeCanceled)
         {
-            timeoutCts.CancelAfter(timeout);
-
-            // Fast path: if no external cancellation, use timeout CTS directly (avoids allocation)
-            if (!cancellationToken.CanBeCanceled)
-            {
-                try
-                {
-                    await foreach (var result in ConsumeAsync(timeoutCts.Token).ConfigureAwait(false))
-                    {
-                        return result;
-                    }
-                }
-                catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
-                {
-                    // Timeout expired with no messages - return null instead of throwing
-                }
-                return null;
-            }
-
-            // Slow path: need to link external cancellation with timeout
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-
             try
             {
-                await foreach (var result in ConsumeAsync(linkedCts.Token).ConfigureAwait(false))
+                await foreach (var result in ConsumeAsync(timeoutCts.Token).ConfigureAwait(false))
                 {
                     return result;
                 }
             }
-            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
             {
-                // Our timeout expired (not user cancellation) with no messages - return null
+                // Timeout expired with no messages - return null instead of throwing
             }
-
             return null;
         }
-        finally
+
+        // Slow path: need to link external cancellation with timeout
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+
+        try
         {
-            _ctsPool.Return(timeoutCts);
+            await foreach (var result in ConsumeAsync(linkedCts.Token).ConfigureAwait(false))
+            {
+                return result;
+            }
         }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            // Our timeout expired (not user cancellation) with no messages - return null
+        }
+
+        return null;
     }
 
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
@@ -2110,7 +2094,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         finally
         {
             _wakeupCts = null;
-            _ctsPool.Return(wakeupCts);
+            wakeupCts.Dispose();
         }
     }
 

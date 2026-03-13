@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dekaf.Metadata;
 using Dekaf.Protocol.Records;
 using Dekaf.Retry;
@@ -100,6 +101,33 @@ public sealed class ProducerOptions
     /// Delivery timeout in milliseconds.
     /// </summary>
     public int DeliveryTimeoutMs { get; init; } = 120000;
+
+    /// <summary>
+    /// <see cref="DeliveryTimeoutMs"/> converted to <see cref="Stopwatch"/> ticks.
+    /// Cached on first access to avoid repeated floating-point multiply.
+    /// </summary>
+    private long _deliveryTimeoutTicks;
+    internal long DeliveryTimeoutTicks =>
+        _deliveryTimeoutTicks != 0 ? _deliveryTimeoutTicks
+        : (_deliveryTimeoutTicks = (long)(DeliveryTimeoutMs * (Stopwatch.Frequency / 1000.0)));
+
+    /// <summary>
+    /// <see cref="RequestTimeoutMs"/> converted to <see cref="Stopwatch"/> ticks.
+    /// Cached on first access to avoid repeated floating-point multiply.
+    /// </summary>
+    private long _requestTimeoutTicks;
+    internal long RequestTimeoutTicks =>
+        _requestTimeoutTicks != 0 ? _requestTimeoutTicks
+        : (_requestTimeoutTicks = (long)(RequestTimeoutMs * (Stopwatch.Frequency / 1000.0)));
+
+    /// <summary>
+    /// <see cref="RetryBackoffMs"/> converted to <see cref="Stopwatch"/> ticks.
+    /// Cached on first access to avoid repeated floating-point multiply.
+    /// </summary>
+    private long _retryBackoffTicks;
+    internal long RetryBackoffTicks =>
+        _retryBackoffTicks != 0 ? _retryBackoffTicks
+        : (_retryBackoffTicks = (long)(RetryBackoffMs * (Stopwatch.Frequency / 1000.0)));
 
     /// <summary>
     /// Enables idempotent producer mode, which ensures that messages are delivered exactly once

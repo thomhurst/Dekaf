@@ -173,6 +173,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-callback")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .BuildAsync();
 

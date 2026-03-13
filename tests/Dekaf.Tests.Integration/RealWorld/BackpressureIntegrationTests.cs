@@ -24,6 +24,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
             .WithClientId("test-producer-buffer-blocks")
             .WithBufferMemory(65536) // 64KB buffer
             .WithLinger(TimeSpan.FromMilliseconds(5))
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .BuildAsync();
 
@@ -68,6 +69,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
             .WithClientId("test-producer-no-loss")
             .WithBufferMemory(1_048_576) // 1MB
             .WithLinger(TimeSpan.FromMilliseconds(10))
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .BuildAsync();
 
@@ -226,6 +228,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
             .WithClientId("test-producer-no-deadlock")
             .WithBufferMemory(1_048_576) // 1MB
             .WithLinger(TimeSpan.FromMilliseconds(1))
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .BuildAsync();
 

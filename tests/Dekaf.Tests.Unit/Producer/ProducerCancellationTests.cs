@@ -62,20 +62,27 @@ public class ProducerCancellationTests
             // Add a message to create a batch
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
-            accumulator.TryAppendFireAndForget(
+            accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null);
+                pooledKey, pooledValue, null, null, null, null);
 
             // Start a background task to drain batches (simulates sender loop)
             using var cts = new CancellationTokenSource(15000);
             var drainTask = Task.Run(async () =>
             {
-                await foreach (var batch in accumulator.ReadyBatches.ReadAllAsync(cts.Token))
+                while (!cts.Token.IsCancellationRequested)
                 {
-                    // Complete delivery and decrement counter (simulates sender loop)
-                    batch.CompleteDelivery();
-                    accumulator.OnBatchExitsPipeline();
-                    accumulator.ReturnReadyBatch(batch);
+                    if (accumulator.TryDrainBatch(out var batch))
+                    {
+                        // Complete delivery and decrement counter (simulates sender loop)
+                        batch.CompleteDelivery();
+                        accumulator.OnBatchExitsPipeline(batch);
+                        accumulator.ReturnReadyBatch(batch);
+                    }
+                    else
+                    {
+                        await accumulator.WaitForWakeupAsync(100, cts.Token);
+                    }
                 }
             }, cts.Token);
 
@@ -192,9 +199,9 @@ public class ProducerCancellationTests
             var pooledValue = new PooledMemory(null, 0, isNull: true);
             for (int i = 0; i < 10; i++)
             {
-                accumulator.TryAppendFireAndForget(
+                accumulator.Append(
                     "test-topic", i % 3, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, null);
+                    pooledKey, pooledValue, null, null, null, null);
             }
 
             // Act - Start multiple flushes with pre-cancelled tokens
