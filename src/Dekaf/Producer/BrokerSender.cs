@@ -642,15 +642,32 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         var countToSend = coalescedCount;
                         coalescedBatches = null;
                         coalescedCount = 0;
-                        // Apply request timeout via linked CancellationToken. Unlike WaitAsync
-                        // (which merely stops waiting, leaving the background task hanging with
-                        // orphaned batches), a linked CTS actually cancels the operation —
-                        // the OperationCanceledException propagates into SendCoalescedAsync's
-                        // exception handler which retries or fails the batches properly (Z path).
-                        using var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                        sendTimeoutCts.CancelAfter(_options.RequestTimeoutMs);
-                        await SendCoalescedAsync(batchesToSend, countToSend, sendTimeoutCts.Token)
-                            .ConfigureAwait(false);
+                        // Two-layer timeout to prevent send loop stalls:
+                        // 1. Linked CTS (RequestTimeoutMs): cancels cooperating async operations
+                        //    (ConnectAsync, WaitAsync on locks) — triggers Z path for retry/fail.
+                        // 2. WaitAsync backup (2× RequestTimeoutMs): unblocks the send loop if
+                        //    the operation doesn't respect the CancellationToken. Orphaned batches
+                        //    are recovered by the in-flight sweep (3× delivery timeout).
+                        {
+                            using var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                            sendTimeoutCts.CancelAfter(_options.RequestTimeoutMs);
+                            try
+                            {
+                                await SendCoalescedAsync(batchesToSend, countToSend, sendTimeoutCts.Token)
+                                    .AsTask()
+                                    .WaitAsync(TimeSpan.FromMilliseconds(_options.RequestTimeoutMs * 2),
+                                        cancellationToken)
+                                    .ConfigureAwait(false);
+                            }
+                            catch (TimeoutException)
+                            {
+                                // WaitAsync backup fired — linked CTS didn't cancel the operation.
+                                // Invalidate connection to force reconnect on next iteration.
+                                _pinnedConnection = null;
+                                LogResponseFailed(new TimeoutException(
+                                    "SendCoalescedAsync did not complete within 2× request timeout"), _brokerId);
+                            }
+                        }
                         sentThisIteration = true;
                     }
                     else
@@ -1464,6 +1481,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             var connection = await GetPinnedConnectionAsync(cancellationToken)
                 .ConfigureAwait(false);
+
+            // Diagnostic: mark batches as having acquired a connection.
+            // If orphan trace shows 'S' but no 'G' (Got connection), the hang is at
+            // GetPinnedConnectionAsync (connection creation or write lock contention).
+            for (var i = 0; i < count; i++)
+                batches[i].AppendDiag('G');
 
             var apiVersion = EnsureApiVersion();
 
