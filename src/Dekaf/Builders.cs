@@ -427,7 +427,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <remarks>
     /// <para>Settings applied:</para>
     /// <list type="bullet">
-    /// <item><description>Acks: All replicas (required for idempotence)</description></item>
+    /// <item><description>Acks: Leader (Build() overrides to All when idempotence is enabled)</description></item>
     /// <item><description>LingerMs: 5ms (allows batching)</description></item>
     /// <item><description>BatchSize: 2MB (larger batches for maximum throughput)</description></item>
     /// <item><description>Compression: LZ4 (fast compression)</description></item>
@@ -437,7 +437,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <returns>The builder instance for method chaining.</returns>
     public ProducerBuilder<TKey, TValue> ForHighThroughput()
     {
-        _acks = Acks.All;
+        _acks = Acks.Leader;
         _lingerMs = 5;
         _batchSize = 2097152;
         _compressionType = Protocol.Records.CompressionType.Lz4;
@@ -450,7 +450,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <remarks>
     /// <para>Settings applied:</para>
     /// <list type="bullet">
-    /// <item><description>Acks: All replicas (required for idempotence)</description></item>
+    /// <item><description>Acks: Leader (Build() overrides to All when idempotence is enabled)</description></item>
     /// <item><description>LingerMs: 0ms (no batching delay)</description></item>
     /// <item><description>BatchSize: 256KB (smaller batches for lower latency)</description></item>
     /// </list>
@@ -459,7 +459,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <returns>The builder instance for method chaining.</returns>
     public ProducerBuilder<TKey, TValue> ForLowLatency()
     {
-        _acks = Acks.All;
+        _acks = Acks.Leader;
         _lingerMs = 0;
         _batchSize = 262144;
         return this;
