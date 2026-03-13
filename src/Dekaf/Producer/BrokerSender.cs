@@ -82,6 +82,12 @@ namespace Dekaf.Producer;
 /// </remarks>
 internal sealed partial class BrokerSender : IAsyncDisposable
 {
+    /// <summary>
+    /// Timeout for SendCoalescedAsync which only does TCP write + response task wiring.
+    /// Longer than this indicates a broken/stale connection.
+    /// </summary>
+    private const int SendCoalescedTimeoutMs = 5000;
+
     private readonly int _brokerId;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
@@ -97,7 +103,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly ILogger _logger;
 
     private readonly Channel<SendLoopEvent> _eventChannel;
-    private readonly CancellationTokenSourcePool _pollTimeoutCtsPool = new();
     private readonly Task _sendLoopTask;
     private readonly CancellationTokenSource _cts;
 
@@ -645,14 +650,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // Send timeout: if SendCoalescedAsync hangs (connection issues,
                         // stale sockets), the CTS cancellation triggers the Z path (retry/fail)
                         // so the send loop stays responsive for HandleTimedOutRequests.
-                        // Uses 5s timeout — SendCoalescedAsync only does TCP write + response
-                        // task creation, so >5s indicates a broken connection.
                         // IMPORTANT: must await (not fire-and-forget) to preserve thread safety —
                         // SendCoalescedAsync accesses _pendingResponses and _sendFailedRetries
                         // which are not thread-safe.
                         {
                             using var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                            sendTimeoutCts.CancelAfter(5000);
+                            sendTimeoutCts.CancelAfter(SendCoalescedTimeoutMs);
                             await SendCoalescedAsync(batchesToSend, countToSend, sendTimeoutCts.Token)
                                 .ConfigureAwait(false);
                         }
@@ -728,7 +731,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested) { }
         catch (ChannelClosedException) { }
         catch (Exception ex) { LogSendLoopFailed(ex, _brokerId); }
         finally
@@ -1955,7 +1958,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         _cts.Dispose();
-        _pollTimeoutCtsPool.Clear();
     }
 
     private async Task ObserveMetadataRefreshAsync(string topic, CancellationToken cancellationToken)
