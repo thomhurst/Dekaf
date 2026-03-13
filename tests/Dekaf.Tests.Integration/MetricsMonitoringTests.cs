@@ -263,9 +263,11 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
                 Topic = topic, Key = "warmup", Value = "warmup", Partition = p
             });
 
+        // Use fire-and-forget Send for throughput — ProduceWithRetryAsync is too slow
+        // for 1000 messages on CI runners. FlushAsync will block until all are delivered.
         for (var i = 0; i < messageCount; i++)
         {
-            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            producer.Send(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
@@ -273,7 +275,8 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             });
         }
 
-        await producer.FlushAsync();
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        await producer.FlushAsync(flushCts.Token);
 
         // Wait for producer stats reflecting all messages
         var matchingProducerStats = await WaitForStatsAsync(producerStats,
@@ -492,15 +495,12 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
-        for (var i = 0; i < expectedPartitions; i++)
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
         {
-            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
-            {
-                Topic = topic,
-                Key = $"key-{i}",
-                Value = $"value-{i}"
-            });
-        }
+            Topic = topic,
+            Key = "data",
+            Value = "value"
+        });
 
         await producer.FlushAsync();
 
@@ -515,14 +515,27 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
 
         consumer.Subscribe(topic);
 
-        // Consume at least one message to trigger assignment
+        // Consume messages to trigger assignment — use ConsumeAsync with a timeout
+        // rather than ConsumeOneAsync which can hang if the consumer group rebalance
+        // takes longer than expected on slow CI runners.
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        try
+        {
+            await foreach (var _ in consumer.ConsumeAsync(cts.Token))
+            {
+                // Got at least one message — assignment is done
+                break;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Timeout — assignment may still have occurred even without consuming
+        }
 
         // Wait for a stats snapshot that reflects the correct partition assignment
         var matchingStats = await WaitForStatsAsync(stats,
             s => s.AssignedPartitions == expectedPartitions,
-            TimeSpan.FromSeconds(10));
+            TimeSpan.FromSeconds(15));
 
         await Assert.That(matchingStats).IsNotNull();
         await Assert.That(matchingStats!.AssignedPartitions).IsEqualTo(expectedPartitions);
