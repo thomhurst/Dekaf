@@ -645,9 +645,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // Two-layer timeout to prevent send loop stalls:
                         // 1. Linked CTS (RequestTimeoutMs): cancels cooperating async operations
                         //    (ConnectAsync, WaitAsync on locks) — triggers Z path for retry/fail.
-                        // 2. WaitAsync backup (2× RequestTimeoutMs): unblocks the send loop if
-                        //    the operation doesn't respect the CancellationToken. Orphaned batches
-                        //    are recovered by the in-flight sweep (3× delivery timeout).
+                        // 2. WaitAsync backup (5s): ensures the send loop iterates frequently
+                        //    enough for HandleTimedOutRequests to catch stuck batches. Without
+                        //    this, a hung SendCoalescedAsync stalls the entire loop, preventing
+                        //    timeout processing of batches already in _pendingResponses.
                         {
                             using var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                             sendTimeoutCts.CancelAfter(_options.RequestTimeoutMs);
@@ -655,17 +656,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             {
                                 await SendCoalescedAsync(batchesToSend, countToSend, sendTimeoutCts.Token)
                                     .AsTask()
-                                    .WaitAsync(TimeSpan.FromMilliseconds(_options.RequestTimeoutMs * 2),
+                                    .WaitAsync(TimeSpan.FromMilliseconds(5000),
                                         cancellationToken)
                                     .ConfigureAwait(false);
                             }
                             catch (TimeoutException)
                             {
-                                // WaitAsync backup fired — linked CTS didn't cancel the operation.
+                                // WaitAsync backup fired — SendCoalescedAsync didn't complete
+                                // within 5s (probably hung at connection creation or write).
                                 // Invalidate connection to force reconnect on next iteration.
                                 _pinnedConnection = null;
-                                LogResponseFailed(new TimeoutException(
-                                    "SendCoalescedAsync did not complete within 2× request timeout"), _brokerId);
                             }
                         }
                         sentThisIteration = true;
