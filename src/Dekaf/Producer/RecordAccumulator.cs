@@ -1315,11 +1315,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Compress and enqueue OUTSIDE the SpinLock to avoid holding the lock during
-        // CPU-bound compression (which can stall all appenders for this partition).
         if (sealedBatch is not null)
         {
-            CompressAndEnqueueBatch(pd, sealedBatch);
             SignalWakeup();
         }
 
@@ -1397,10 +1394,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Compress and enqueue OUTSIDE the SpinLock
         if (sealedBatch is not null)
         {
-            CompressAndEnqueueBatch(pd, sealedBatch);
             SignalWakeup();
         }
 
@@ -1504,10 +1499,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Compress and enqueue OUTSIDE the SpinLock
         if (sealedBatch is not null)
         {
-            CompressAndEnqueueBatch(pd, sealedBatch);
             SignalWakeup();
         }
 
@@ -1547,7 +1540,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Seals the current batch in a partition deque and returns the ready batch.
-    /// The caller is responsible for compressing and enqueuing the batch AFTER releasing the lock.
+    /// Seals, pre-compresses, tracks, and enqueues the batch — all under the caller's lock.
+    ///
+    /// Compression is performed under the partition SpinLock to preserve per-partition FIFO ordering.
+    /// If two batches for the same partition are sealed in rapid succession (e.g., one by the append
+    /// worker and one by the linger timer), releasing the lock between seal and enqueue would allow
+    /// concurrent compression to complete out of order — Batch B could finish before Batch A and
+    /// get enqueued first, violating ordering guarantees.
+    ///
+    /// The SpinLock contention from compression is acceptable because:
+    /// 1. Partition-affine routing (partition % workerCount) means typically only one append thread
+    ///    per partition, so lock contention is minimal.
+    /// 2. The real performance win of pre-compression is moving it OFF the send loop thread —
+    ///    whether it runs under a partition lock or not doesn't change that benefit.
+    ///
     /// MUST be called under pd.Lock.
     /// </summary>
     private ReadyBatch? SealCurrentBatchUnderLock(PartitionDeque pd, PartitionBatch currentBatch)
@@ -1558,37 +1564,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (readyBatch.CompletionSourcesCount > 0)
                 Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
             ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+
+            // Pre-compress under the lock to preserve per-partition ordering.
+            if (_options.CompressionType != CompressionType.None)
+            {
+                readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
+            }
+
+            OnBatchEntersPipeline(readyBatch);
+            pd.AddLast(readyBatch);
+            ProducerDebugCounters.RecordBatchQueuedToReady();
         }
         _batchPool.Return(currentBatch);
         pd.CurrentBatch = null;
         Interlocked.Decrement(ref _unsealedBatchCount);
         return readyBatch;
-    }
-
-    /// <summary>
-    /// Pre-compresses (if configured), tracks, and enqueues a sealed batch into the partition deque.
-    /// MUST be called OUTSIDE the partition SpinLock to avoid holding the lock during CPU-bound compression.
-    /// </summary>
-    private void CompressAndEnqueueBatch(PartitionDeque pd, ReadyBatch readyBatch)
-    {
-        // Compress outside the lock — CPU-bound work must not hold SpinLock
-        if (_options.CompressionType != CompressionType.None)
-        {
-            readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
-        }
-
-        OnBatchEntersPipeline(readyBatch);
-
-        // Re-acquire lock only for the deque mutation (sub-microsecond).
-        // PartitionDeque uses a LinkedList<ReadyBatch> which is NOT thread-safe;
-        // the drain thread calls PeekFirst/PollFirst under pd.Lock, so AddLast
-        // must also be under pd.Lock to prevent linked-list corruption.
-        {
-            using var guard = new SpinLockGuard(ref pd.Lock);
-            pd.AddLast(readyBatch);
-        }
-
-        ProducerDebugCounters.RecordBatchQueuedToReady();
     }
 
     /// <summary>
@@ -1942,6 +1932,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             if (readyBatch.CompletionSourcesCount > 0)
                                 Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
                             ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+
+                            // Pre-compress under the lock to preserve per-partition ordering.
+                            if (_options.CompressionType != CompressionType.None)
+                            {
+                                readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
+                            }
+
+                            OnBatchEntersPipeline(readyBatch);
+                            pd.AddLast(readyBatch);
+                            ProducerDebugCounters.RecordBatchQueuedToReady();
                             sealedBatch = readyBatch;
                         }
                         _batchPool.Return(pd.CurrentBatch);
@@ -1957,10 +1957,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     }
                 }
 
-                // Compress and enqueue OUTSIDE the SpinLock
                 if (sealedBatch is not null)
                 {
-                    CompressAndEnqueueBatch(pd, sealedBatch);
                     anySealed = true;
                 }
             }
