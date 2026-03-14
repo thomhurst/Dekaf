@@ -206,11 +206,85 @@ public sealed class RecordBatch : IDisposable
     public required IReadOnlyList<Record> Records { get; init; }
 
     /// <summary>
+    /// Pre-compressed records data. When set, <see cref="Write"/> skips compression
+    /// and uses this data directly. The array is rented from <see cref="ArrayPool{T}"/>
+    /// and must be returned by the caller after Write() completes.
+    /// Set by <see cref="PreCompress"/> at batch seal time so compression happens on
+    /// partition-affine append workers instead of the single-threaded send loop.
+    /// </summary>
+    internal byte[]? PreCompressedRecords { get; private set; }
+
+    /// <summary>
+    /// The valid length within <see cref="PreCompressedRecords"/>.
+    /// </summary>
+    internal int PreCompressedLength { get; private set; }
+
+    /// <summary>
+    /// The compression type applied to <see cref="PreCompressedRecords"/>.
+    /// </summary>
+    internal CompressionType PreCompressedType { get; private set; }
+
+    /// <summary>
+    /// Pre-compresses the records in this batch. Called at seal time on partition-affine
+    /// append workers to move compression work off the single-threaded send loop.
+    /// The compressed data is stored in a pooled array and used by <see cref="Write"/>
+    /// to skip re-compression. This is a per-batch allocation (acceptable).
+    /// </summary>
+    /// <param name="compression">The compression type to apply.</param>
+    /// <param name="codecs">The codec registry to use.</param>
+    internal void PreCompress(CompressionType compression, CompressionCodecRegistry? codecs)
+    {
+        if (compression == CompressionType.None)
+            return;
+
+        // Serialize records to thread-local buffer
+        var recordsBuffer = GetRecordsBuffer();
+        var recordsWriter = new KafkaProtocolWriter(recordsBuffer);
+
+        for (var i = 0; i < Records.Count; i++)
+        {
+            Records[i].Write(ref recordsWriter);
+        }
+
+        // Compress to thread-local buffer
+        var registry = codecs ?? CompressionCodecRegistry.Default;
+        var codec = registry.GetCodec(compression);
+        var compressedBuffer = GetCompressedBuffer();
+        codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), compressedBuffer);
+
+        // Copy to a pooled array for storage (thread-local buffer will be reused)
+        var compressedLength = compressedBuffer.WrittenCount;
+        var pooledArray = ArrayPool<byte>.Shared.Rent(compressedLength);
+        compressedBuffer.WrittenSpan.CopyTo(pooledArray);
+
+        PreCompressedRecords = pooledArray;
+        PreCompressedLength = compressedLength;
+        PreCompressedType = compression;
+    }
+
+    /// <summary>
+    /// Returns the pre-compressed pooled array to ArrayPool.
+    /// Must be called after the batch has been written to the network.
+    /// </summary>
+    internal void ReturnPreCompressedBuffer()
+    {
+        var array = PreCompressedRecords;
+        if (array is not null)
+        {
+            PreCompressedRecords = null;
+            PreCompressedLength = 0;
+            ArrayPool<byte>.Shared.Return(array, clearArray: false);
+        }
+    }
+
+    /// <summary>
     /// Disposes any pooled memory associated with this batch's records.
     /// Call this after consuming all records from this batch.
     /// </summary>
     public void Dispose()
     {
+        ReturnPreCompressedBuffer();
+
         if (Records is IDisposable disposable)
         {
             disposable.Dispose();
@@ -225,7 +299,7 @@ public sealed class RecordBatch : IDisposable
     /// </summary>
     internal RecordBatch WithProducerState(long producerId, short producerEpoch, int baseSequence)
     {
-        return new RecordBatch
+        var batch = new RecordBatch
         {
             BaseOffset = BaseOffset,
             BatchLength = BatchLength,
@@ -241,6 +315,21 @@ public sealed class RecordBatch : IDisposable
             BaseSequence = baseSequence,
             Records = Records
         };
+
+        // Transfer pre-compressed data — records content is unchanged,
+        // only header fields differ (CRC is recomputed in Write()).
+        if (PreCompressedRecords is not null)
+        {
+            batch.PreCompressedRecords = PreCompressedRecords;
+            batch.PreCompressedLength = PreCompressedLength;
+            batch.PreCompressedType = PreCompressedType;
+
+            // Clear from old batch to prevent double-return to ArrayPool
+            PreCompressedRecords = null;
+            PreCompressedLength = 0;
+        }
+
+        return batch;
     }
 
     /// <summary>
@@ -250,36 +339,44 @@ public sealed class RecordBatch : IDisposable
     {
         var writer = new KafkaProtocolWriter(output);
 
-        // First, serialize records to calculate length and CRC
-        // Use thread-local buffer to avoid per-batch allocation
-        var recordsBuffer = GetRecordsBuffer();
-        var recordsWriter = new KafkaProtocolWriter(recordsBuffer);
-
-        // Use index-based iteration to avoid enumerator boxing when Records is a wrapper struct
-        for (var i = 0; i < Records.Count; i++)
-        {
-            Records[i].Write(ref recordsWriter);
-        }
-
-        var recordsData = recordsBuffer.WrittenSpan;
-
-        // Apply compression if needed
+        // Determine the effective compression and records data to write.
+        // If pre-compressed at seal time, use that data directly (skip CPU-bound compression
+        // on the send loop thread). Otherwise, serialize and compress inline (legacy path).
         ReadOnlySpan<byte> compressedRecords;
-        PooledReusableBufferWriter? compressedBuffer = null;
+        CompressionType effectiveCompression;
 
-        if (compression != CompressionType.None)
+        if (PreCompressedRecords is not null)
         {
-            var registry = codecs ?? CompressionCodecRegistry.Default;
-            var codec = registry.GetCodec(compression);
-            // Use thread-local buffer to avoid per-batch allocation
-            compressedBuffer = GetCompressedBuffer();
-            // Use WrittenMemory instead of ToArray() to avoid heap allocation
-            codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), compressedBuffer);
-            compressedRecords = compressedBuffer.WrittenSpan;
+            // Pre-compressed at seal time — use the stored data directly
+            compressedRecords = PreCompressedRecords.AsSpan(0, PreCompressedLength);
+            effectiveCompression = PreCompressedType;
         }
         else
         {
-            compressedRecords = recordsData;
+            // Serialize records to thread-local buffer
+            var recordsBuffer = GetRecordsBuffer();
+            var recordsWriter = new KafkaProtocolWriter(recordsBuffer);
+
+            for (var i = 0; i < Records.Count; i++)
+            {
+                Records[i].Write(ref recordsWriter);
+            }
+
+            // Apply compression if needed
+            if (compression != CompressionType.None)
+            {
+                var registry = codecs ?? CompressionCodecRegistry.Default;
+                var codec = registry.GetCodec(compression);
+                var compressedBuffer = GetCompressedBuffer();
+                codec.Compress(new ReadOnlySequence<byte>(recordsBuffer.WrittenMemory), compressedBuffer);
+                compressedRecords = compressedBuffer.WrittenSpan;
+                effectiveCompression = compression;
+            }
+            else
+            {
+                compressedRecords = recordsBuffer.WrittenSpan;
+                effectiveCompression = CompressionType.None;
+            }
         }
 
         // Calculate batch length: from partition leader epoch to end
@@ -310,9 +407,9 @@ public sealed class RecordBatch : IDisposable
         var contentSpan = crcAndContentSpan.Slice(4); // Content starts after CRC
 
         var attributes = (short)Attributes;
-        if (compression != CompressionType.None)
+        if (effectiveCompression != CompressionType.None)
         {
-            attributes = (short)((attributes & ~0x07) | (int)compression);
+            attributes = (short)((attributes & ~0x07) | (int)effectiveCompression);
         }
 
         // Write content directly using BinaryPrimitives

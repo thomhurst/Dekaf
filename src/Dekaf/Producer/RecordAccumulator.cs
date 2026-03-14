@@ -5,6 +5,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
+using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Protocol;
@@ -581,6 +582,7 @@ internal ref struct ArenaBufferWriter : IBufferWriter<byte>
 public sealed partial class RecordAccumulator : IAsyncDisposable
 {
     private readonly ProducerOptions _options;
+    private readonly CompressionCodecRegistry? _compressionCodecs;
 
     /// <summary>
     /// Per-partition deques of sealed ReadyBatches, matching Java's
@@ -1019,10 +1021,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return await _wakeupSignal.WaitAsync(timeoutMs, cancellationToken).ConfigureAwait(false);
     }
 
-    public RecordAccumulator(ProducerOptions options, ILogger? logger = null)
+    public RecordAccumulator(ProducerOptions options, CompressionCodecRegistry? compressionCodecs = null, ILogger? logger = null)
     {
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
         _options = options;
+        _compressionCodecs = compressionCodecs;
         _readyBatchPool = new ReadyBatchPool();
         _batchPool = new PartitionBatchPool(options);
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
@@ -1538,6 +1541,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var readyBatch = currentBatch.Complete();
         if (readyBatch is not null)
         {
+            // Pre-compress at seal time so compression happens on partition-affine
+            // append workers instead of the single-threaded BrokerSender send loop.
+            // This is a per-batch operation (acceptable allocation cost).
+            if (_options.CompressionType != CompressionType.None)
+            {
+                readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
+            }
+
             if (readyBatch.CompletionSourcesCount > 0)
                 Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
             ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
@@ -3678,6 +3689,9 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         {
             ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Return(_callbacks, clearArray: true);
         }
+
+        // Return pre-compressed buffer to pool if present
+        _recordBatch?.ReturnPreCompressedBuffer();
     }
 }
 

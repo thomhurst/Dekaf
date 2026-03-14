@@ -198,8 +198,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             options: metadataOptions,
             logger: loggerFactory?.CreateLogger<MetadataManager>());
 
-        _accumulator = new RecordAccumulator(options, loggerFactory?.CreateLogger<RecordAccumulator>());
         _compressionCodecs = CreateCompressionCodecRegistry(options);
+        _accumulator = new RecordAccumulator(options, _compressionCodecs, loggerFactory?.CreateLogger<RecordAccumulator>());
 
         // Initialize inflight tracker for coordinated retry with multiple in-flight batches
         // per partition. The broker uses sequence numbers to guarantee ordering, so multiple
