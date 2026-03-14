@@ -875,7 +875,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         // Step 5: Append to accumulator (under deque lock for ordering safety)
-        AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueLength, recordHeaders, pooledHeaderArray);
+        AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, pooledHeaderArray);
 
         if (_statisticsEnabled)
         {
@@ -885,6 +885,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     /// <summary>
     /// Appends a fire-and-forget record via the accumulator (under deque lock).
+    /// Uses arena-based zero-copy when possible, falling back to ArrayPool rentals.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void AppendWithSlowPath(
@@ -893,55 +894,37 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         long timestampMs,
         bool keyIsNull,
         int keyLength,
+        bool valueIsNull,
         int valueLength,
         IReadOnlyList<Header>? recordHeaders,
-        Header[]? pooledHeaderArray)
+        Header[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?>? callback = null)
     {
-        var key = PooledMemory.Null;
-        var valueMemory = PooledMemory.Null;
+        // Pass raw spans from thread-local buffers directly to the accumulator.
+        // The accumulator will try arena allocation first, falling back to ArrayPool.
+        var keySpan = !keyIsNull && keyLength > 0
+            ? t_keySerializationBuffer.AsSpan(0, keyLength)
+            : ReadOnlySpan<byte>.Empty;
 
-        try
+        var valueSpan = !valueIsNull && valueLength > 0
+            ? t_valueSerializationBuffer.AsSpan(0, valueLength)
+            : ReadOnlySpan<byte>.Empty;
+
+        if (!_accumulator.AppendFromSpans(
+            topic,
+            partition,
+            timestampMs,
+            keySpan,
+            keyIsNull,
+            valueSpan,
+            valueIsNull,
+            recordHeaders,
+            pooledHeaderArray,
+            callback))
         {
-            // Copy key from thread-local to pooled array
-            if (!keyIsNull && keyLength > 0)
-            {
-                var keyArray = ArrayPool<byte>.Shared.Rent(keyLength);
-                t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(keyArray);
-                key = new PooledMemory(keyArray, keyLength);
-            }
-
-            // Copy value from thread-local to pooled array
-            if (valueLength > 0)
-            {
-                var valueArray = ArrayPool<byte>.Shared.Rent(valueLength);
-                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(valueArray);
-                valueMemory = new PooledMemory(valueArray, valueLength);
-            }
-
-            // Append to accumulator
-            if (!_accumulator.Append(
-                topic,
-                partition,
-                timestampMs,
-                key,
-                valueMemory,
-                recordHeaders,
-                pooledHeaderArray,
-                null,
-                null))
-            {
-                CleanupPooledResources(key, valueMemory, pooledHeaderArray);
-                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-            }
-
-            // Success - ownership transferred, clear local refs
-            key = PooledMemory.Null;
-            valueMemory = PooledMemory.Null;
-        }
-        catch
-        {
-            CleanupPooledResources(key, valueMemory, pooledHeaderArray);
-            throw;
+            if (pooledHeaderArray is not null)
+                ArrayPool<Header>.Shared.Return(pooledHeaderArray, clearArray: false);
+            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
         }
     }
 
@@ -1299,73 +1282,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         // Step 5: Append to accumulator with callback (under deque lock for ordering safety)
-        AppendWithSlowPathWithCallback(topic, partition, timestampMs, keyIsNull, keyLength, valueLength, recordHeaders, pooledHeaderArray, callback);
+        AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, pooledHeaderArray, callback);
 
         if (_statisticsEnabled)
         {
             _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
-        }
-    }
-
-    /// <summary>
-    /// Appends a record with callback via the accumulator (under deque lock).
-    /// </summary>
-    private void AppendWithSlowPathWithCallback(
-        string topic,
-        int partition,
-        long timestampMs,
-        bool keyIsNull,
-        int keyLength,
-        int valueLength,
-        IReadOnlyList<Header>? recordHeaders,
-        Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback)
-    {
-        var key = PooledMemory.Null;
-        var valueMemory = PooledMemory.Null;
-
-        try
-        {
-            // Copy key from thread-local to pooled array
-            if (!keyIsNull && keyLength > 0)
-            {
-                var keyArray = ArrayPool<byte>.Shared.Rent(keyLength);
-                t_keySerializationBuffer.AsSpan(0, keyLength).CopyTo(keyArray);
-                key = new PooledMemory(keyArray, keyLength);
-            }
-
-            // Copy value from thread-local to pooled array
-            if (valueLength > 0)
-            {
-                var valueArray = ArrayPool<byte>.Shared.Rent(valueLength);
-                t_valueSerializationBuffer.AsSpan(0, valueLength).CopyTo(valueArray);
-                valueMemory = new PooledMemory(valueArray, valueLength);
-            }
-
-            // Append to accumulator with callback
-            if (!_accumulator.Append(
-                topic,
-                partition,
-                timestampMs,
-                key,
-                valueMemory,
-                recordHeaders,
-                pooledHeaderArray,
-                null,
-                callback))
-            {
-                CleanupPooledResources(key, valueMemory, pooledHeaderArray);
-                throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
-            }
-
-            // Success - ownership transferred, clear local refs
-            key = PooledMemory.Null;
-            valueMemory = PooledMemory.Null;
-        }
-        catch
-        {
-            CleanupPooledResources(key, valueMemory, pooledHeaderArray);
-            throw;
         }
     }
 

@@ -15,6 +15,30 @@ using Microsoft.Extensions.Logging;
 namespace Dekaf.Producer;
 
 /// <summary>
+/// RAII guard for SpinLock that ensures Exit() is called on dispose.
+/// Must be used with <c>using var guard = new SpinLockGuard(ref spinLock);</c>.
+/// </summary>
+internal ref struct SpinLockGuard
+{
+    private ref SpinLock _lock;
+    private bool _taken;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public SpinLockGuard(ref SpinLock spinLock)
+    {
+        _lock = ref spinLock;
+        _taken = false;
+        _lock.Enter(ref _taken);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Dispose()
+    {
+        if (_taken) _lock.Exit();
+    }
+}
+
+/// <summary>
 /// Debug-only tracking for message flow through the producer pipeline.
 /// Tracks messages at each stage to identify where messages are lost.
 /// All recording methods use [Conditional("DEBUG")] so calls are stripped in Release builds.
@@ -692,12 +716,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Buffer memory tracking for backpressure
     private readonly ulong _maxBufferMemory;
     private long _bufferedBytes;
-    // Use ManualResetEventSlim instead of SemaphoreSlim for buffer space signaling.
-    // When memory is released, Set() wakes ALL waiting threads so they can race to reserve
-    // via lock-free TryReserveMemory(). This eliminates the serialized wakeup bottleneck
-    // that occurred with SemaphoreSlim(1,1) which only woke one thread per Release().
-    private readonly ManualResetEventSlim _bufferSpaceAvailable = new(true); // Initially signaled (space available)
+    // Use AutoResetEvent for sync buffer space signaling.
+    // AutoResetEvent wakes only ONE waiting thread per Set() call, avoiding the thundering herd
+    // problem where ManualResetEventSlim.Set() wakes ALL waiters but only one succeeds the CAS
+    // in TryReserveMemory(). This reduces contention under heavy backpressure.
+    private readonly AutoResetEvent _bufferSpaceAvailable = new(true); // Initially signaled (space available)
     private readonly CancellationTokenSource _disposalCts = new();
+    // Cached WaitHandle array for WaitAny in ReserveMemorySync — initialized in constructor.
+    private readonly WaitHandle[] _syncWaitHandles;
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
     private readonly SemaphoreSlim _asyncBufferSpaceSignal = new(0, 1);
@@ -729,8 +755,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         /// <summary>Sealed batches waiting to drain. Front = oldest (drain target).</summary>
         private readonly LinkedList<ReadyBatch> _deque = new();
 
-        /// <summary>Per-partition lock for deque access (matches Java's synchronized(deque)).</summary>
-        public readonly object Lock = new();
+        /// <summary>Per-partition lock for deque access (matches Java's synchronized(deque)).
+        /// SpinLock avoids kernel transitions for the brief critical sections in append/drain paths.</summary>
+        public SpinLock Lock = new(enableThreadOwnerTracking: false);
 
         /// <summary>Current unsealed batch accepting new records. Null if no active batch.</summary>
         public PartitionBatch? CurrentBatch;
@@ -811,8 +838,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 continue;
 
             ReadyBatch? head;
-            lock (pd.Lock)
             {
+                using var guard = new SpinLockGuard(ref pd.Lock);
                 head = pd.PeekFirst();
             }
 
@@ -923,8 +950,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 continue;
 
             ReadyBatch? batch;
-            lock (pd.Lock)
             {
+                using var guard = new SpinLockGuard(ref pd.Lock);
                 batch = pd.PeekFirst();
                 if (batch is null)
                     continue;
@@ -957,8 +984,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         batch.Reenqueued(nowMs);
         var pd = GetOrCreateDeque(batch.TopicPartition);
-        lock (pd.Lock)
         {
+            using var guard = new SpinLockGuard(ref pd.Lock);
             if (ProducerId >= 0)
                 pd.InsertInSequenceOrder(batch);
             else
@@ -997,6 +1024,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _batchPool = new PartitionBatchPool(options);
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = options.BufferMemory;
+        _syncWaitHandles = [_bufferSpaceAvailable, _disposalCts.Token.WaitHandle];
 
         // Create per-partition-affine append worker channels.
         // Each channel is SingleReader (one worker) but allows multiple writers (caller threads).
@@ -1018,8 +1046,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         foreach (var kvp in _partitionDeques)
         {
             var pd = kvp.Value;
-            lock (pd.Lock)
             {
+                using var guard = new SpinLockGuard(ref pd.Lock);
                 var b = pd.PollFirst();
                 if (b is not null)
                 {
@@ -1206,8 +1234,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var pd = GetOrCreateDeque(topicPartition);
         bool batchSealed = false;
 
-        lock (pd.Lock)
         {
+            using var guard = new SpinLockGuard(ref pd.Lock);
+
             // Check disposal under lock
             if (_disposed)
             {
@@ -1286,8 +1315,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var pd = GetOrCreateDeque(topicPartition);
         bool batchSealed = false;
 
-        lock (pd.Lock)
         {
+            using var guard = new SpinLockGuard(ref pd.Lock);
+
             if (_disposed)
             {
                 Interlocked.Decrement(ref _pendingAwaitedProduceCount);
@@ -1349,6 +1379,111 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (result.Success)
         {
             ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: completionSource is not null);
+            var overestimate = estimatedSize - result.ActualSizeAdded;
+            if (overestimate > 0)
+                ReleaseMemory(overestimate);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Appends a record from raw span data, using arena-based zero-copy when possible.
+    /// This avoids per-message ArrayPool rentals on the fire-and-forget slow path.
+    /// </summary>
+    /// <returns>true if appended successfully, false if the accumulator is disposed.</returns>
+    internal bool AppendFromSpans(
+        string topic,
+        int partition,
+        long timestamp,
+        ReadOnlySpan<byte> keyData,
+        bool keyIsNull,
+        ReadOnlySpan<byte> valueData,
+        bool valueIsNull,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?>? callback)
+    {
+        if (_disposed)
+            return false;
+
+        var keyLength = keyIsNull ? 0 : keyData.Length;
+        var valueLength = valueIsNull ? 0 : valueData.Length;
+        var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, headers);
+        ReserveMemorySync(recordSize);
+
+        var topicPartition = GetOrCreateTopicPartition(topic, partition);
+
+        var pd = GetOrCreateDeque(topicPartition);
+        bool batchSealed = false;
+
+        {
+            using var guard = new SpinLockGuard(ref pd.Lock);
+
+            // Check disposal under lock
+            if (_disposed)
+            {
+                ReleaseMemory(recordSize);
+                return false;
+            }
+
+            // Try append to current batch
+            if (pd.CurrentBatch is { } currentBatch)
+            {
+                if (TryAppendFromSpansToBatch(currentBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
+                    headers, pooledHeaderArray, callback, recordSize))
+                    return true;
+
+                // Current batch is full — seal it
+                SealCurrentBatchUnderLock(pd, currentBatch, ref batchSealed);
+            }
+
+            // Create new batch
+            var newBatch = RentBatch(topicPartition);
+            pd.CurrentBatch = newBatch;
+
+            // Append to new batch — must succeed since batch is empty
+            if (!TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
+                headers, pooledHeaderArray, callback, recordSize))
+            {
+                // Record too large for a single batch
+                pd.CurrentBatch = null;
+                _batchPool.Return(newBatch);
+                ReleaseMemory(recordSize);
+                throw new KafkaException(ErrorCode.MessageTooLarge,
+                    $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
+            }
+        }
+
+        if (batchSealed)
+            SignalWakeup();
+
+        return true;
+    }
+
+    /// <summary>
+    /// Helper: tries to append a record from span data to the given batch using arena zero-copy.
+    /// Called under the deque lock.
+    /// </summary>
+    private bool TryAppendFromSpansToBatch(
+        PartitionBatch batch,
+        long timestamp,
+        ReadOnlySpan<byte> keyData,
+        bool keyIsNull,
+        ReadOnlySpan<byte> valueData,
+        bool valueIsNull,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?>? callback,
+        int estimatedSize)
+    {
+        var result = batch.TryAppendFromSpans(timestamp, keyData, keyIsNull, valueData, valueIsNull,
+            headers, pooledHeaderArray, callback);
+
+        if (result.Success)
+        {
+            ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: false);
             var overestimate = estimatedSize - result.ActualSizeAdded;
             if (overestimate > 0)
                 ReleaseMemory(overestimate);
@@ -1520,25 +1655,32 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (remainingMs <= 0)
                 ThrowBufferMemoryTimeout(recordSize, currentTicks);
 
-            // Reset event before waiting — ReleaseMemory will Set() it when space becomes available.
-            _bufferSpaceAvailable.Reset();
+            // AutoResetEvent auto-resets after waking one thread — no manual Reset() needed.
 
-            // Double-check disposal after reset but before wait
+            // Double-check disposal before wait
             if (_disposed)
             {
                 throw new OperationCanceledException(_disposalCts.Token);
             }
 
             // Wait for signal from ReleaseMemory, disposal cancellation, or timeout.
-            // MRES.Wait uses efficient spin-then-kernel-wait internally — no polling needed.
-            try
-            {
-                _bufferSpaceAvailable.Wait((int)Math.Min(remainingMs, int.MaxValue), _disposalCts.Token);
-            }
-            catch (OperationCanceledException) when (_disposed)
+            // AutoResetEvent.WaitOne doesn't accept CancellationToken, so use WaitAny
+            // with the disposal CTS WaitHandle for prompt cancellation detection.
+            var waitResult = WaitHandle.WaitAny(_syncWaitHandles, (int)Math.Min(remainingMs, int.MaxValue));
+
+            // waitResult == 1 means the disposal token was signaled
+            if (waitResult == 1 && _disposed)
             {
                 throw new OperationCanceledException(_disposalCts.Token);
             }
+        }
+
+        // Chain-wake: AutoResetEvent wakes only one waiter per Set(). If a large batch
+        // freed enough memory for multiple waiters, re-signal so the next waiter can try.
+        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+        {
+            try { _bufferSpaceAvailable.Set(); }
+            catch (ObjectDisposedException) { }
         }
     }
 
@@ -1582,7 +1724,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Signal that space is available.
-        // MRES.Set() wakes ALL sync waiters so they can race via lock-free TryReserveMemory().
+        // AutoResetEvent.Set() wakes ONE sync waiter, avoiding thundering herd contention.
         // SemaphoreSlim.Release() wakes ONE async waiter (who will retry and re-wait if CAS fails).
         try
         {
@@ -1747,8 +1889,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 var pd = kvp.Value;
 
-                lock (pd.Lock)
                 {
+                    using var guard = new SpinLockGuard(ref pd.Lock);
+
                     if (pd.CurrentBatch is null)
                         continue;
 
@@ -1895,11 +2038,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var dequeCount = 0;
             if (_partitionDeques.TryGetValue(batch.TopicPartition, out var pd))
             {
-                lock (pd.Lock)
-                {
-                    dequeCount = pd.Count;
-                    inDeque = pd.Contains(batch);
-                }
+                using var guard = new SpinLockGuard(ref pd.Lock);
+                dequeCount = pd.Count;
+                inDeque = pd.Contains(batch);
             }
 
             FailAndRelease(batch, new KafkaTimeoutException(
@@ -2161,8 +2302,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         foreach (var kvp in _partitionDeques)
         {
             var pd = kvp.Value;
-            lock (pd.Lock)
             {
+                using var guard = new SpinLockGuard(ref pd.Lock);
+
                 // Fail current unsealed batch
                 if (pd.CurrentBatch is { } current)
                 {
@@ -2218,8 +2360,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         foreach (var kvp in _partitionDeques)
         {
             var pd = kvp.Value;
-            lock (pd.Lock)
             {
+                using var guard = new SpinLockGuard(ref pd.Lock);
                 while (pd.Count > 0)
                 {
                     var batch = pd.PollFirst()!;
@@ -2650,6 +2792,143 @@ internal sealed class PartitionBatch
             _completionSources[_completionSourceCount++] = completionSource;
             ProducerDebugCounters.RecordCompletionSourceStoredInBatch();
         }
+
+        if (callback is not null)
+        {
+            _callbacks![_callbackCount++] = callback;
+        }
+
+        _recordCount++;
+        _estimatedSize += recordSize;
+
+        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
+    }
+
+    /// <summary>
+    /// Appends a record from raw span data, using the arena for zero-copy when possible.
+    /// Falls back to ArrayPool rental when the arena is full.
+    /// Caller must hold the per-partition deque lock.
+    /// </summary>
+    public RecordAppendResult TryAppendFromSpans(
+        long timestamp,
+        ReadOnlySpan<byte> keyData,
+        bool keyIsNull,
+        ReadOnlySpan<byte> valueData,
+        bool valueIsNull,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?>? callback)
+    {
+        var keyLength = keyIsNull ? 0 : keyData.Length;
+        var valueLength = valueIsNull ? 0 : valueData.Length;
+        var recordSize = EstimateRecordSize(keyLength, valueLength, headers);
+
+        // Check if batch was completed
+        if (Volatile.Read(ref _isCompleted) != 0)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        // Defensive check: if arrays are null, batch is in inconsistent state (being pooled)
+        if (_records is null || _pooledArrays is null)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        if (_recordCount == 0)
+        {
+            _baseTimestamp = timestamp;
+        }
+
+        // Check size limit
+        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        // Grow arrays if needed (rare - only happens if batch fills beyond initial capacity)
+        if (_recordCount >= _records.Length)
+        {
+            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
+        }
+        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
+        {
+            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
+        }
+        if (callback is not null)
+        {
+            _callbacks ??= ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Rent(_initialRecordCapacity);
+            if (_callbackCount >= _callbacks.Length)
+            {
+                GrowArray(ref _callbacks!, ref _callbackCount, ArrayPool<Action<RecordMetadata, Exception?>?>.Shared);
+            }
+        }
+
+        // Pre-grow _pooledArrays for worst case (key + value fallback to ArrayPool)
+        if (_pooledArrayCount + 2 >= _pooledArrays.Length)
+        {
+            GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
+        }
+
+        // Try to use arena for zero-copy serialization
+        ReadOnlyMemory<byte> keyMemory = ReadOnlyMemory<byte>.Empty;
+        ReadOnlyMemory<byte> valueMemory = ReadOnlyMemory<byte>.Empty;
+        bool usedArenaForKey = false;
+        bool usedArenaForValue = false;
+
+        if (!keyIsNull && keyLength > 0 && _arena is not null)
+        {
+            if (_arena.TryAllocate(keyLength, out var keySpan, out var keyOffset))
+            {
+                keyData.CopyTo(keySpan);
+                keyMemory = _arena.Buffer.AsMemory(keyOffset, keyLength);
+                usedArenaForKey = true;
+            }
+        }
+
+        if (!valueIsNull && valueLength > 0 && _arena is not null)
+        {
+            if (_arena.TryAllocate(valueLength, out var valueSpan, out var valueOffset))
+            {
+                valueData.CopyTo(valueSpan);
+                valueMemory = _arena.Buffer.AsMemory(valueOffset, valueLength);
+                usedArenaForValue = true;
+            }
+        }
+
+        // Fall back to ArrayPool for data that didn't fit in the arena
+        if (!keyIsNull && keyLength > 0 && !usedArenaForKey)
+        {
+            var keyArray = ArrayPool<byte>.Shared.Rent(keyLength);
+            keyData.CopyTo(keyArray);
+            keyMemory = keyArray.AsMemory(0, keyLength);
+            _pooledArrays[_pooledArrayCount++] = keyArray;
+        }
+
+        if (!valueIsNull && valueLength > 0 && !usedArenaForValue)
+        {
+            var valueArray = ArrayPool<byte>.Shared.Rent(valueLength);
+            valueData.CopyTo(valueArray);
+            valueMemory = valueArray.AsMemory(0, valueLength);
+            _pooledArrays[_pooledArrayCount++] = valueArray;
+        }
+
+        if (pooledHeaderArray is not null)
+        {
+            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
+        }
+
+        var timestampDelta = timestamp - _baseTimestamp;
+        _records[_recordCount] = new Record
+        {
+            TimestampDelta = timestampDelta,
+            OffsetDelta = _recordCount,
+            Key = keyMemory,
+            IsKeyNull = keyIsNull,
+            Value = valueMemory,
+            IsValueNull = valueIsNull,
+            Headers = headers
+        };
 
         if (callback is not null)
         {
@@ -3204,7 +3483,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             ProducerDebugCounters.RecordBatchSentSuccessfully();
 
             // Complete per-message completion sources with metadata
-            if (_completionSourcesArray is not null)
+            if (_completionSourcesCount > 0 && _completionSourcesArray is not null)
             {
 #if DEBUG
                 var completedCount = 0;
@@ -3232,7 +3511,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
 
             // Invoke callbacks inline - NO ThreadPool scheduling for zero-allocation
             // Callbacks are invoked on the sender thread, so they must be non-blocking
-            if (_callbacks is not null)
+            if (_callbackCount > 0 && _callbacks is not null)
             {
                 for (var i = 0; i < _callbackCount; i++)
                 {
@@ -3288,7 +3567,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             ProducerDebugCounters.RecordBatchFailed();
 
             // Fail per-message completion sources - these throw for ProduceAsync callers
-            if (_completionSourcesArray is not null)
+            if (_completionSourcesCount > 0 && _completionSourcesArray is not null)
             {
 #if DEBUG
                 var failedCount = 0;
@@ -3309,7 +3588,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             }
 
             // Invoke callbacks with exception - NO ThreadPool scheduling
-            if (_callbacks is not null)
+            if (_callbackCount > 0 && _callbacks is not null)
             {
                 for (var i = 0; i < _callbackCount; i++)
                 {
@@ -3354,7 +3633,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         {
             for (var i = 0; i < _pooledDataArraysCount; i++)
             {
-                ArrayPool<byte>.Shared.Return(_pooledDataArrays[i], clearArray: true);
+                ArrayPool<byte>.Shared.Return(_pooledDataArrays[i], clearArray: false);
             }
         }
 
