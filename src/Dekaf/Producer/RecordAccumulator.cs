@@ -1195,6 +1195,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Per-thread one-slot cache for GetOrCreateDeque to avoid ConcurrentDictionary hash+lookup
     // on every message. The cache stores (accumulator instance, TopicPartition, PartitionDeque).
     // Hit rate is high in partition-affine append workers and single-partition scenarios.
+    // Note: holds a strong reference to the accumulator until the thread reuses the cache slot.
+    // This is acceptable because producers are typically singleton-lifetime objects.
     [ThreadStatic]
     private static RecordAccumulator? t_cachedAccumulator;
     [ThreadStatic]
@@ -1212,8 +1214,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var tp = new TopicPartition(topic, partition);
 
-        // Fast path: check thread-local cache
-        if (t_cachedAccumulator == this && t_cachedTopicPartition == tp && t_cachedDeque is { } cached)
+        // Fast path: check thread-local cache (skip if disposed to avoid serving stale data)
+        if (t_cachedAccumulator == this && !_disposed && t_cachedTopicPartition == tp && t_cachedDeque is { } cached)
             return cached;
 
         var deque = _partitionDeques.GetOrAdd(tp, static _ => new PartitionDeque());
