@@ -2692,8 +2692,6 @@ internal sealed class PartitionBatch
         Action<RecordMetadata, Exception?>? callback,
         int estimatedRecordSize)
     {
-        var recordSize = estimatedRecordSize;
-
         // Check if batch was completed
         if (Volatile.Read(ref _isCompleted) != 0)
         {
@@ -2712,7 +2710,7 @@ internal sealed class PartitionBatch
         }
 
         // Check size limit
-        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
+        if (_estimatedSize + estimatedRecordSize > _options.BatchSize && _recordCount > 0)
         {
             return new RecordAppendResult(false);
         }
@@ -2782,9 +2780,9 @@ internal sealed class PartitionBatch
         }
 
         _recordCount++;
-        _estimatedSize += recordSize;
+        _estimatedSize += estimatedRecordSize;
 
-        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
+        return new RecordAppendResult(Success: true, ActualSizeAdded: estimatedRecordSize);
     }
 
     /// <summary>
@@ -2805,7 +2803,6 @@ internal sealed class PartitionBatch
     {
         var keyLength = keyIsNull ? 0 : keyData.Length;
         var valueLength = valueIsNull ? 0 : valueData.Length;
-        var recordSize = estimatedRecordSize;
 
         // Check if batch was completed
         if (Volatile.Read(ref _isCompleted) != 0)
@@ -2825,7 +2822,7 @@ internal sealed class PartitionBatch
         }
 
         // Check size limit
-        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
+        if (_estimatedSize + estimatedRecordSize > _options.BatchSize && _recordCount > 0)
         {
             return new RecordAppendResult(false);
         }
@@ -2921,9 +2918,9 @@ internal sealed class PartitionBatch
         }
 
         _recordCount++;
-        _estimatedSize += recordSize;
+        _estimatedSize += estimatedRecordSize;
 
-        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
+        return new RecordAppendResult(Success: true, ActualSizeAdded: estimatedRecordSize);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
