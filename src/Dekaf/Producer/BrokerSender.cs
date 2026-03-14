@@ -1745,17 +1745,41 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public ProduceRequest Build(ReadyBatch[] batches, int count)
         {
             // Sort batches by topic name so equal topics are contiguous.
+            // Fast-path: skip the O(n log n) sort when count <= 1 or already sorted.
             var batchesSpan = batches.AsSpan(0, count);
-            batchesSpan.Sort(static (a, b) =>
-                string.Compare(a.TopicPartition.Topic, b.TopicPartition.Topic, StringComparison.Ordinal));
-
-            // Single pass: count unique topics (runs of equal topic names)
+            var alreadySorted = true;
             var topicCount = count > 0 ? 1 : 0;
+
             for (var i = 1; i < count; i++)
             {
-                if (batchesSpan[i].TopicPartition.Topic != batchesSpan[i - 1].TopicPartition.Topic)
+                var cmp = string.Compare(batchesSpan[i - 1].TopicPartition.Topic,
+                    batchesSpan[i].TopicPartition.Topic, StringComparison.Ordinal);
+
+                if (cmp > 0)
+                {
+                    alreadySorted = false;
+                    break;
+                }
+
+                if (cmp != 0)
                 {
                     topicCount++;
+                }
+            }
+
+            if (!alreadySorted)
+            {
+                batchesSpan.Sort(static (a, b) =>
+                    string.Compare(a.TopicPartition.Topic, b.TopicPartition.Topic, StringComparison.Ordinal));
+
+                // Recount topics after sorting
+                topicCount = count > 0 ? 1 : 0;
+                for (var i = 1; i < count; i++)
+                {
+                    if (batchesSpan[i].TopicPartition.Topic != batchesSpan[i - 1].TopicPartition.Topic)
+                    {
+                        topicCount++;
+                    }
                 }
             }
 
