@@ -1009,16 +1009,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Attempts to release a semaphore, ignoring races and disposal.
-    /// Used for buffer-space and wakeup signals where lost signals are harmless.
+    /// Releases a semaphore unconditionally, ignoring disposal and max-count races.
     /// </summary>
     private static void TryReleaseSemaphore(SemaphoreSlim semaphore)
     {
-        try
-        {
-            if (semaphore.CurrentCount == 0)
-                semaphore.Release();
-        }
+        try { semaphore.Release(); }
         catch (ObjectDisposedException) { }
         catch (SemaphoreFullException) { }
     }
