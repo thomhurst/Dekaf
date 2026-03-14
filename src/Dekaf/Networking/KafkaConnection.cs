@@ -240,36 +240,20 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         LogConfiguringPipe(BrokerId, pauseThreshold, resumeThreshold);
 
-        // Both pipes use PipeScheduler.Inline for BOTH reader and writer schedulers
-        // to eliminate all thread pool dispatch overhead per operation.
-        //
-        // readerScheduler=Inline: when the writer flushes, the reader's ReadAsync
-        //   continuation runs inline on the flushing thread.
-        // writerScheduler=Inline: when the reader calls AdvanceTo (freeing buffer space),
-        //   the writer's FlushAsync continuation resumes inline — critical for the input
-        //   pipe where backpressure thresholds can pause the read pump's FlushAsync.
-        //
-        // Without writerScheduler=Inline on the input pipe, every AdvanceTo that
-        // resumes the read pump from backpressure dispatches to the thread pool,
-        // adding latency per response.
         var inputPipeOptions = new PipeOptions(
             pool: MemoryPool<byte>.Shared,
             minimumSegmentSize: _options.MinimumSegmentSize,
-            readerScheduler: PipeScheduler.Inline,
-            writerScheduler: PipeScheduler.Inline,
             pauseWriterThreshold: pauseThreshold,
             resumeWriterThreshold: resumeThreshold,
             useSynchronizationContext: false);
 
-        var outputPipeOptions = new PipeOptions(
+        var writerOptions = new StreamPipeWriterOptions(
             pool: MemoryPool<byte>.Shared,
-            minimumSegmentSize: _options.MinimumSegmentSize,
-            readerScheduler: PipeScheduler.Inline,
-            writerScheduler: PipeScheduler.Inline,
-            useSynchronizationContext: false);
+            minimumBufferSize: _options.SendBufferSize > 0 ? _options.SendBufferSize : 65536,
+            leaveOpen: true);
 
         var readBufferSize = _options.ReceiveBufferSize > 0 ? _options.ReceiveBufferSize : 65536;
-        _duplexPipe = new DuplexPipe(_stream, inputPipeOptions, outputPipeOptions, readBufferSize);
+        _duplexPipe = new DuplexPipe(_stream, inputPipeOptions, writerOptions, readBufferSize);
 
         _receiveCts = new CancellationTokenSource();
         _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
