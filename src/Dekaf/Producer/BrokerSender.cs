@@ -1645,54 +1645,45 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private ProduceRequest BuildProduceRequest(ReadyBatch[] batches, int count)
     {
-        // Group by topic (O(n²) for small n, avoids dictionary allocation)
-        var topicCount = 0;
-        for (var i = 0; i < count; i++)
+        // Sort batches by topic name so equal topics are contiguous.
+        // This is a private method and callers do not depend on input order.
+        var batchesSpan = batches.AsSpan(0, count);
+        batchesSpan.Sort(static (a, b) =>
+            string.Compare(a.TopicPartition.Topic, b.TopicPartition.Topic, StringComparison.Ordinal));
+
+        // Single pass: count unique topics (runs of equal topic names)
+        var topicCount = count > 0 ? 1 : 0;
+        for (var i = 1; i < count; i++)
         {
-            var isFirst = true;
-            for (var j = 0; j < i; j++)
+            if (batchesSpan[i].TopicPartition.Topic != batchesSpan[i - 1].TopicPartition.Topic)
             {
-                if (batches[j].TopicPartition.Topic == batches[i].TopicPartition.Topic)
-                {
-                    isFirst = false;
-                    break;
-                }
+                topicCount++;
             }
-            if (isFirst) topicCount++;
         }
 
         var topicDataArray = new ProduceRequestTopicData[topicCount];
         var topicIdx = 0;
+        var runStart = 0;
 
-        for (var i = 0; i < count; i++)
+        // Single pass: build topic and partition data from contiguous runs
+        while (runStart < count)
         {
-            var alreadyProcessed = false;
-            for (var j = 0; j < i; j++)
+            var topicName = batchesSpan[runStart].TopicPartition.Topic;
+            var runEnd = runStart + 1;
+            while (runEnd < count && batchesSpan[runEnd].TopicPartition.Topic == topicName)
             {
-                if (batches[j].TopicPartition.Topic == batches[i].TopicPartition.Topic)
-                {
-                    alreadyProcessed = true;
-                    break;
-                }
-            }
-            if (alreadyProcessed) continue;
-
-            var topicName = batches[i].TopicPartition.Topic;
-            var partCount = 0;
-            for (var j = i; j < count; j++)
-            {
-                if (batches[j].TopicPartition.Topic == topicName) partCount++;
+                runEnd++;
             }
 
+            var partCount = runEnd - runStart;
             var partitionDataArray = new ProduceRequestPartitionData[partCount];
-            var partIdx = 0;
-            for (var j = i; j < count; j++)
+            for (var p = 0; p < partCount; p++)
             {
-                if (batches[j].TopicPartition.Topic != topicName) continue;
-                partitionDataArray[partIdx++] = new ProduceRequestPartitionData
+                var batch = batchesSpan[runStart + p];
+                partitionDataArray[p] = new ProduceRequestPartitionData
                 {
-                    Index = batches[j].TopicPartition.Partition,
-                    Records = [batches[j].RecordBatch],
+                    Index = batch.TopicPartition.Partition,
+                    Records = [batch.RecordBatch],
                     Compression = _options.CompressionType,
                     CompressionCodecs = _compressionCodecs
                 };
@@ -1703,6 +1694,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 Name = topicName,
                 PartitionData = partitionDataArray
             };
+
+            runStart = runEnd;
         }
 
         return new ProduceRequest

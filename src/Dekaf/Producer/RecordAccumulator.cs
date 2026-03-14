@@ -716,11 +716,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Buffer memory tracking for backpressure
     private readonly ulong _maxBufferMemory;
     private long _bufferedBytes;
-    // Use AutoResetEvent for sync buffer space signaling.
-    // AutoResetEvent wakes only ONE waiting thread per Set() call, avoiding the thundering herd
-    // problem where ManualResetEventSlim.Set() wakes ALL waiters but only one succeeds the CAS
-    // in TryReserveMemory(). This reduces contention under heavy backpressure.
-    private readonly AutoResetEvent _bufferSpaceAvailable = new(true); // Initially signaled (space available)
+    // Use ManualResetEventSlim for sync buffer space signaling.
+    // ManualResetEventSlim spins in user-mode before kernel transition, reducing CPU overhead
+    // compared to AutoResetEvent's immediate kernel transition. After a successful wait,
+    // we manually Reset() and use chain-wake to re-signal if more space is available.
+    private readonly ManualResetEventSlim _bufferSpaceAvailable = new(true, 0); // Initially signaled; spinCount=0 because callers spin externally via SpinWait
     private readonly CancellationTokenSource _disposalCts = new();
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
@@ -932,13 +932,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var size = 0;
         var count = partitions.Count;
+        var now = Stopwatch.GetTimestamp();
+        var lastDrainIndex = startIndex;
 
         for (var i = 0; i < count; i++)
         {
             var idx = (startIndex + i) % count;
             var tp = partitions[idx];
 
-            _drainIndex[nodeId] = (startIndex + i + 1) % count;
+            lastDrainIndex = (startIndex + i + 1) % count;
 
             if (_mutedPartitions.ContainsKey(tp))
                 continue;
@@ -955,7 +957,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     continue;
 
                 if (batch.IsRetry && batch.RetryNotBefore > 0
-                    && Stopwatch.GetTimestamp() < batch.RetryNotBefore)
+                    && now < batch.RetryNotBefore)
                     continue;
 
                 if (ready.Count > 0 && size + batch.DataSize > maxRequestSize)
@@ -971,6 +973,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ready.Add(batch);
             }
         }
+
+        _drainIndex[nodeId] = lastDrainIndex;
     }
 
     /// <summary>
@@ -1626,6 +1630,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             : long.MaxValue;
 
         var spinWait = new SpinWait();
+        var waitCount = 0;
 
         while (!TryReserveMemory(recordSize))
         {
@@ -1652,18 +1657,29 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (remainingMs <= 0)
                 ThrowBufferMemoryTimeout(recordSize, currentTicks);
 
-            // AutoResetEvent auto-resets after waking one thread — no manual Reset() needed.
-
             // Double-check disposal before wait
             if (_disposed)
             {
                 throw new OperationCanceledException(_disposalCts.Token);
             }
 
-            // Wait for signal from ReleaseMemory or timeout, capping at 100ms to
-            // periodically recheck the disposal flag. This avoids WaitHandle.WaitAny
-            // overhead (which allocates internally and has higher kernel transition cost).
-            _bufferSpaceAvailable.WaitOne((int)Math.Min(remainingMs, 100));
+            // Wait for signal from ReleaseMemory or timeout, using exponential backoff
+            // to reduce kernel transitions under sustained backpressure.
+            // ManualResetEventSlim spins in user-mode before kernel transition.
+            var waitMs = (int)Math.Min(remainingMs, waitCount switch
+            {
+                < 2 => 1,
+                < 4 => 5,
+                < 6 => 25,
+                _ => 100,
+            });
+            var signaled = _bufferSpaceAvailable.Wait(waitMs);
+            // On timeout (buffer still full), reset unconditionally.
+            // On signal, only reset if buffer is still full; otherwise leave signaled for other waiters
+            // to avoid consuming a Set() from ReleaseMemory that fired between Wait and Reset.
+            if (!signaled || (ulong)Volatile.Read(ref _bufferedBytes) >= _maxBufferMemory)
+                _bufferSpaceAvailable.Reset();
+            waitCount++;
 
             if (_disposed)
             {
@@ -1671,8 +1687,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        // Chain-wake: AutoResetEvent wakes only one waiter per Set(). If a large batch
-        // freed enough memory for multiple waiters, re-signal so the next waiter can try.
+        // Chain-wake: ManualResetEventSlim wakes all waiters on Set(), but we Reset()
+        // after each wake. If a large batch freed enough memory for multiple waiters,
+        // re-signal so the next waiter can try.
         if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
         {
             try { _bufferSpaceAvailable.Set(); }
@@ -1720,7 +1737,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Signal that space is available.
-        // AutoResetEvent.Set() wakes ONE sync waiter, avoiding thundering herd contention.
+        // ManualResetEventSlim.Set() wakes sync waiters; chain-wake in ReserveMemorySync
+        // ensures only one succeeds and re-signals if more space remains.
         // SemaphoreSlim.Release() wakes ONE async waiter (who will retry and re-wait if CAS fails).
         try
         {
@@ -2254,8 +2272,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // (CloseAsync checks _disposed and returns immediately, so channels may not be completed)
         CompleteAppendWorkerChannels();
 
-        // Wake any threads blocked in ReserveMemorySync's WaitOne so they recheck
-        // _disposed promptly instead of waiting up to 100ms for the cap timeout.
+        // Wake any threads blocked in ReserveMemorySync's Wait so they recheck
+        // _disposed promptly instead of waiting for the backoff timeout.
         try { _bufferSpaceAvailable.Set(); } catch (ObjectDisposedException) { }
 
         // Cancel the disposal token to interrupt any blocked operations

@@ -7,6 +7,118 @@ using Dekaf.Compression;
 namespace Dekaf.Protocol.Records;
 
 /// <summary>
+/// A reusable buffer writer backed by ArrayPool to avoid zero-initialization overhead.
+/// Unlike ArrayBufferWriter&lt;byte&gt; which allocates via <c>new byte[]</c> (zero-initialized),
+/// this uses ArrayPool.Rent (not zero-initialized) and returns buffers with clearArray: false.
+/// Designed for thread-local reuse in serialization hot paths.
+/// </summary>
+internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposable
+{
+    private byte[] _buffer;
+    private int _written;
+
+    public PooledReusableBufferWriter(int initialCapacity)
+    {
+        _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
+        _written = 0;
+    }
+
+    public int WrittenCount => _written;
+
+    public ReadOnlySpan<byte> WrittenSpan => _buffer.AsSpan(0, _written);
+
+    public ReadOnlyMemory<byte> WrittenMemory => _buffer.AsMemory(0, _written);
+
+    public int Capacity => _buffer.Length;
+
+    /// <summary>
+    /// Resets the write position without zeroing the buffer.
+    /// The buffer is retained for reuse, avoiding both allocation and zero-initialization.
+    /// </summary>
+    public void Clear()
+    {
+        _written = 0;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void Advance(int count)
+    {
+        _written += count;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Memory<byte> GetMemory(int sizeHint = 0)
+    {
+        EnsureCapacity(sizeHint);
+        return _buffer.AsMemory(_written);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Span<byte> GetSpan(int sizeHint = 0)
+    {
+        EnsureCapacity(sizeHint);
+        return _buffer.AsSpan(_written);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void EnsureCapacity(int sizeHint)
+    {
+        if (sizeHint < 1)
+            sizeHint = 1;
+
+        if (_buffer.Length - _written < sizeHint)
+        {
+            Grow(sizeHint);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void Grow(int sizeHint)
+    {
+        var required = checked(_written + sizeHint);
+        var newSize = Math.Max(_buffer.Length * 2, required);
+
+        // Rent from pool - not zero-initialized, avoiding Buffer.ZeroMemoryInternal overhead.
+        var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
+        _buffer.AsSpan(0, _written).CopyTo(newBuffer);
+
+        // Return old buffer without clearing - avoids zero-fill overhead.
+        // No security requirement: buffer holds serialized Kafka protocol bytes, not credentials.
+        ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
+        _buffer = newBuffer;
+    }
+
+    /// <summary>
+    /// Resets the write position and ensures the buffer has at least the specified capacity.
+    /// Discards any existing written data. Used by GetDecompressedBuffer when the existing
+    /// buffer is too small for the next decompression operation.
+    /// </summary>
+    public void ResetAndEnsureCapacity(int minimumCapacity)
+    {
+        _written = 0;
+
+        if (_buffer.Length >= minimumCapacity)
+            return;
+
+        // Return the old buffer and rent a larger one
+        ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
+        _buffer = ArrayPool<byte>.Shared.Rent(minimumCapacity);
+    }
+
+    /// <summary>
+    /// Returns the pooled buffer. After disposal, the writer must not be used.
+    /// </summary>
+    public void Dispose()
+    {
+        var buf = _buffer;
+        _buffer = [];
+        _written = 0;
+        if (buf.Length > 0)
+            ArrayPool<byte>.Shared.Return(buf, clearArray: false);
+    }
+}
+
+/// <summary>
 /// Kafka RecordBatch v2 format (magic byte 2).
 /// This is the modern record format used since Kafka 0.11.
 /// Supports lazy record parsing - records are only parsed when enumerated.
@@ -18,20 +130,22 @@ namespace Dekaf.Protocol.Records;
 /// </remarks>
 public sealed class RecordBatch : IDisposable
 {
-    // Thread-local reusable buffers for serialization to avoid per-batch allocations
+    // Thread-local reusable buffers for serialization to avoid per-batch allocations.
+    // Uses PooledReusableBufferWriter (ArrayPool-backed) instead of ArrayBufferWriter
+    // to avoid Buffer.ZeroMemoryInternal overhead from new byte[] allocations on growth.
     [ThreadStatic]
-    private static ArrayBufferWriter<byte>? t_recordsBuffer;
+    private static PooledReusableBufferWriter? t_recordsBuffer;
     [ThreadStatic]
-    private static ArrayBufferWriter<byte>? t_compressedBuffer;
+    private static PooledReusableBufferWriter? t_compressedBuffer;
     [ThreadStatic]
-    private static ArrayBufferWriter<byte>? t_decompressedBuffer;
+    private static PooledReusableBufferWriter? t_decompressedBuffer;
 
-    private static ArrayBufferWriter<byte> GetRecordsBuffer()
+    private static PooledReusableBufferWriter GetRecordsBuffer()
     {
         var buffer = t_recordsBuffer;
         if (buffer is null)
         {
-            buffer = new ArrayBufferWriter<byte>(4096);
+            buffer = new PooledReusableBufferWriter(4096);
             t_recordsBuffer = buffer;
         }
         else
@@ -41,12 +155,12 @@ public sealed class RecordBatch : IDisposable
         return buffer;
     }
 
-    private static ArrayBufferWriter<byte> GetCompressedBuffer()
+    private static PooledReusableBufferWriter GetCompressedBuffer()
     {
         var buffer = t_compressedBuffer;
         if (buffer is null)
         {
-            buffer = new ArrayBufferWriter<byte>(4096);
+            buffer = new PooledReusableBufferWriter(4096);
             t_compressedBuffer = buffer;
         }
         else
@@ -56,24 +170,18 @@ public sealed class RecordBatch : IDisposable
         return buffer;
     }
 
-    private static ArrayBufferWriter<byte> GetDecompressedBuffer(int estimatedSize)
+    private static PooledReusableBufferWriter GetDecompressedBuffer(int estimatedSize)
     {
         var buffer = t_decompressedBuffer;
         if (buffer is null)
         {
-            buffer = new ArrayBufferWriter<byte>(Math.Max(4096, estimatedSize));
+            buffer = new PooledReusableBufferWriter(Math.Max(4096, estimatedSize));
             t_decompressedBuffer = buffer;
         }
         else
         {
-            buffer.Clear();
-            // Ensure capacity for decompressed data
-            if (buffer.Capacity < estimatedSize)
-            {
-                // Need a larger buffer - create a new one
-                buffer = new ArrayBufferWriter<byte>(estimatedSize);
-                t_decompressedBuffer = buffer;
-            }
+            // Reset write position and ensure capacity for decompressed data
+            buffer.ResetAndEnsureCapacity(estimatedSize);
         }
         return buffer;
     }
@@ -157,7 +265,7 @@ public sealed class RecordBatch : IDisposable
 
         // Apply compression if needed
         ReadOnlySpan<byte> compressedRecords;
-        ArrayBufferWriter<byte>? compressedBuffer = null;
+        PooledReusableBufferWriter? compressedBuffer = null;
 
         if (compression != CompressionType.None)
         {
