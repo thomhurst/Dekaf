@@ -321,6 +321,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// The <see cref="Action"/> is registered via <c>UnsafeOnCompleted</c> which has no return value
     /// (no Task allocation).
     /// </summary>
+    /// <remarks>
+    /// <c>UnsafeOnCompleted</c> is used instead of <c>OnCompleted</c> because it skips
+    /// <see cref="System.Threading.ExecutionContext"/> capture/restore. This is safe because the
+    /// callback only writes to a channel and rotates a <see cref="TaskCompletionSource"/> —
+    /// no ambient context (e.g. <c>AsyncLocal</c>, <c>SecurityContext</c>) needs to flow.
+    /// </remarks>
     private sealed class ResponseCallbackState(ChannelWriter<SendLoopEvent> writer, BrokerSender sender)
     {
         /// <summary>
@@ -1566,6 +1572,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
             else
             {
+                // Unlike ContinueWith(ExecuteSynchronously), UnsafeOnCompleted schedules the
+                // callback on the ThreadPool rather than running inline on the completing thread.
+                // This is intentional — it keeps the I/O completion thread free.
                 responseTask.ConfigureAwait(false).GetAwaiter()
                     .UnsafeOnCompleted(_responseCallbackState.Callback);
             }
