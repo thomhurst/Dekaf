@@ -110,7 +110,7 @@ internal static class Murmur2
 
         while (length >= 4)
         {
-            var k = (uint)BinaryPrimitives.ReadInt32LittleEndian(data.Slice(offset));
+            var k = (uint)BinaryPrimitives.ReadInt32LittleEndian(data[offset..]);
 
             k *= M;
             k ^= k >> R;
