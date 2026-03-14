@@ -818,7 +818,7 @@ public class RecordAccumulatorTests
             null,   // pooledHeaderArray
             null,   // completionSource
             null,   // callback
-            0       // estimatedRecordSize (0 = compute internally)
+            20      // estimatedRecordSize: base overhead for empty record (key=null, value=null, no headers)
         });
 
         // Verify append succeeded

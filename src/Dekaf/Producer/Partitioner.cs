@@ -18,6 +18,9 @@ public interface IPartitioner
 /// </summary>
 public sealed class DefaultPartitioner : IPartitioner
 {
+    // Shared per-thread, not per-instance — two DefaultPartitioner instances on the same thread
+    // share this counter. This is intentional: round-robin distribution is still even, and avoiding
+    // per-instance state eliminates Interlocked contention in the hot path.
     [ThreadStatic]
     private static uint t_counter;
 
@@ -82,6 +85,7 @@ public sealed class StickyPartitioner : IPartitioner
 /// </summary>
 public sealed class RoundRobinPartitioner : IPartitioner
 {
+    // Shared per-thread, not per-instance (see DefaultPartitioner comment).
     [ThreadStatic]
     private static uint t_counter;
 

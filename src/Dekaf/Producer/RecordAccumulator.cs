@@ -2690,9 +2690,9 @@ internal sealed class PartitionBatch
         Header[]? pooledHeaderArray,
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
-        int estimatedRecordSize = 0)
+        int estimatedRecordSize)
     {
-        var recordSize = estimatedRecordSize > 0 ? estimatedRecordSize : EstimateRecordSize(key.Length, value.Length, headers);
+        var recordSize = estimatedRecordSize;
 
         // Check if batch was completed
         if (Volatile.Read(ref _isCompleted) != 0)
@@ -2801,11 +2801,11 @@ internal sealed class PartitionBatch
         IReadOnlyList<Header>? headers,
         Header[]? pooledHeaderArray,
         Action<RecordMetadata, Exception?>? callback,
-        int estimatedRecordSize = 0)
+        int estimatedRecordSize)
     {
         var keyLength = keyIsNull ? 0 : keyData.Length;
         var valueLength = valueIsNull ? 0 : valueData.Length;
-        var recordSize = estimatedRecordSize > 0 ? estimatedRecordSize : EstimateRecordSize(keyLength, valueLength, headers);
+        var recordSize = estimatedRecordSize;
 
         // Check if batch was completed
         if (Volatile.Read(ref _isCompleted) != 0)
