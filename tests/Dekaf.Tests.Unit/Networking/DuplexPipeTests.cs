@@ -9,6 +9,7 @@ namespace Dekaf.Tests.Unit.Networking;
 public sealed class DuplexPipeTests
 {
     private static PipeOptions DefaultPipeOptions => new(useSynchronizationContext: false);
+    private static StreamPipeWriterOptions DefaultWriterOptions => new();
 
     /// <summary>
     /// Creates a pair of connected streams using TCP loopback for testing.
@@ -35,7 +36,7 @@ public sealed class DuplexPipeTests
     {
         var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
 
-        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultPipeOptions);
+        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultWriterOptions);
 
         var expected = "hello from broker"u8.ToArray();
         await serverStream.WriteAsync(expected);
@@ -55,7 +56,7 @@ public sealed class DuplexPipeTests
     {
         var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
 
-        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultPipeOptions);
+        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultWriterOptions);
 
         var expected = "hello from client"u8.ToArray();
         var memory = pipe.Output.GetMemory(expected.Length);
@@ -83,7 +84,7 @@ public sealed class DuplexPipeTests
     {
         var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
 
-        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultPipeOptions);
+        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultWriterOptions);
 
         // Close the server side to signal EOF
         await serverStream.DisposeAsync();
@@ -104,7 +105,7 @@ public sealed class DuplexPipeTests
         await serverStream.DisposeAsync();
         await clientStream.DisposeAsync();
 
-        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultPipeOptions);
+        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultWriterOptions);
 
         await Assert.That(async () =>
         {
@@ -118,7 +119,7 @@ public sealed class DuplexPipeTests
     {
         var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
 
-        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultPipeOptions);
+        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultWriterOptions);
 
         // Successfully exchange data first
         var data = "hello"u8.ToArray();
@@ -143,7 +144,7 @@ public sealed class DuplexPipeTests
     {
         var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
 
-        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultPipeOptions);
+        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultWriterOptions);
 
         // Successfully write data first
         var data = "hello"u8.ToArray();
@@ -160,9 +161,8 @@ public sealed class DuplexPipeTests
         // Now kill the server mid-operation — simulates broker crash
         await serverStream.DisposeAsync();
 
-        // Write more data — the write pump will fail when writing to the broken stream.
-        // The failure surfaces either as FlushAsync returning IsCompleted or throwing
-        // the IOException that the write pump completed the pipe with.
+        // Write more data — the direct PipeWriter will fail when flushing to the broken stream.
+        // The failure surfaces either as FlushAsync returning IsCompleted or throwing IOException.
         var errorDetected = false;
         var largeData = new byte[65536];
         for (var i = 0; i < 10 && !errorDetected; i++)
@@ -191,7 +191,7 @@ public sealed class DuplexPipeTests
     {
         var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
 
-        var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultPipeOptions);
+        var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultWriterOptions);
 
         await pipe.DisposeAsync();
 
@@ -209,7 +209,7 @@ public sealed class DuplexPipeTests
     {
         var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
 
-        var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultPipeOptions);
+        var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultWriterOptions);
 
         await pipe.DisposeAsync();
 
@@ -223,7 +223,7 @@ public sealed class DuplexPipeTests
     {
         var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
 
-        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultPipeOptions);
+        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultWriterOptions);
 
         var requestData = "request"u8.ToArray();
         var responseData = "response"u8.ToArray();

@@ -247,13 +247,13 @@ public sealed partial class KafkaConnection : IKafkaConnection
             resumeWriterThreshold: resumeThreshold,
             useSynchronizationContext: false);
 
-        var outputPipeOptions = new PipeOptions(
+        var writerOptions = new StreamPipeWriterOptions(
             pool: MemoryPool<byte>.Shared,
-            minimumSegmentSize: _options.MinimumSegmentSize,
-            useSynchronizationContext: false);
+            minimumBufferSize: _options.SendBufferSize > 0 ? _options.SendBufferSize : 65536,
+            leaveOpen: true);
 
         var readBufferSize = _options.ReceiveBufferSize > 0 ? _options.ReceiveBufferSize : 65536;
-        _duplexPipe = new DuplexPipe(_stream, inputPipeOptions, outputPipeOptions, readBufferSize);
+        _duplexPipe = new DuplexPipe(_stream, inputPipeOptions, writerOptions, readBufferSize);
 
         _receiveCts = new CancellationTokenSource();
         _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
