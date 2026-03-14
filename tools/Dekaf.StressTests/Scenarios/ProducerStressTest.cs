@@ -42,7 +42,11 @@ internal sealed class ProducerStressTest : IStressTestScenario
         var producer = await builder.BuildAsync(cancellationToken);
 
         Console.WriteLine($"  Warming up Dekaf producer...");
-        for (var i = 0; i < 1000; i++)
+        // First produce uses ProduceAsync to prime the topic metadata cache asynchronously.
+        // Send() would block the thread via FetchTopicMetadataSync (.GetAwaiter().GetResult())
+        // which hangs if the broker is slow to respond to new topic metadata requests.
+        await producer.ProduceAsync(options.Topic, "warmup", "warmup", cancellationToken).ConfigureAwait(false);
+        for (var i = 0; i < 999; i++)
         {
             producer.Send(options.Topic, "warmup", "warmup");
         }

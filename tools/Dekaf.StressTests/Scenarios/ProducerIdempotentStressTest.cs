@@ -42,7 +42,8 @@ internal sealed class ProducerIdempotentStressTest : IStressTestScenario
         var producer = await builder.BuildAsync(cancellationToken);
 
         Console.WriteLine($"  Warming up Dekaf idempotent producer...");
-        for (var i = 0; i < 1000; i++)
+        await producer.ProduceAsync(options.Topic, "warmup", "warmup", cancellationToken).ConfigureAwait(false);
+        for (var i = 0; i < 999; i++)
         {
             producer.Send(options.Topic, "warmup", "warmup");
         }
