@@ -1668,6 +1668,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 throw new OperationCanceledException(_disposalCts.Token);
             }
         }
+
+        // Chain-wake: if space still remains after this reservation, signal the next sync waiter.
+        // Safe with SemaphoreSlim(0,1) — max count prevents thundering herd.
+        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+            TryReleaseSemaphore(_syncBufferSpaceSignal);
     }
 
     private void ThrowBufferMemoryTimeout(int recordSize, long startTicks)
