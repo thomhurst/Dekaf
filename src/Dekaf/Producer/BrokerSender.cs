@@ -110,22 +110,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // request is sent and removed by ProcessCompletedResponses when the response task completes.
     // HandleTimedOutRequests (Java pattern) checks request timeout centrally and fails all
     // pending responses on timeout, invalidating the connection.
-    private record struct PendingResponse(
+    private readonly record struct PendingResponse(
         Task<ProduceResponse> ResponseTask,
         ReadyBatch[] Batches,
         int Count,
         long RequestStartTime)
     {
-        private bool _returned;
-
         /// <summary>
         /// Clears batch references and returns the pooled array to <see cref="ArrayPool{T}.Shared"/>.
-        /// Idempotent: safe to call multiple times (second call is a no-op).
+        /// Must be called exactly once per PendingResponse entry — not idempotent due to struct copy semantics.
         /// </summary>
         public void ReturnBatchesArray()
         {
-            if (_returned) return;
-            _returned = true;
             ArrayPool<ReadyBatch>.Shared.Return(Batches, clearArray: true);
         }
     }
@@ -138,13 +134,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private struct PooledRequestArrays
     {
         private ProduceRequestTopicData[]? _topicDataArray;
-        private ProduceRequestPartitionData[]?[]? _partitionDataArrays;
+        private ProduceRequestPartitionData[][]? _partitionDataArrays;
         private int _partitionArrayCount;
 
         public ProduceRequestTopicData[] RentTopicData(int topicCount)
         {
             _topicDataArray = ArrayPool<ProduceRequestTopicData>.Shared.Rent(topicCount);
-            _partitionDataArrays = ArrayPool<ProduceRequestPartitionData[]?>.Shared.Rent(topicCount);
+            _partitionDataArrays = ArrayPool<ProduceRequestPartitionData[]>.Shared.Rent(topicCount);
             _partitionArrayCount = 0;
             return _topicDataArray;
         }
@@ -168,12 +164,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 for (var i = 0; i < _partitionArrayCount; i++)
                 {
-                    ArrayPool<ProduceRequestPartitionData>.Shared.Return(_partitionDataArrays[i]!, clearArray: true);
+                    ArrayPool<ProduceRequestPartitionData>.Shared.Return(_partitionDataArrays[i], clearArray: true);
                 }
                 var partitionArrays = _partitionDataArrays;
                 _partitionDataArrays = null;
                 _partitionArrayCount = 0;
-                ArrayPool<ProduceRequestPartitionData[]?>.Shared.Return(partitionArrays, clearArray: true);
+                ArrayPool<ProduceRequestPartitionData[]>.Shared.Return(partitionArrays, clearArray: true);
             }
         }
     }
