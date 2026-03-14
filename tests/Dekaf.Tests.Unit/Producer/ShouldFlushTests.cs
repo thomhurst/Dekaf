@@ -7,7 +7,7 @@ namespace Dekaf.Tests.Unit.Producer;
 /// Tests for PartitionBatch.ShouldFlush() micro-linger behavior.
 /// When LingerMs > 0, awaited produces (with completion sources) use a micro-linger
 /// of min(1ms, LingerMs/10) instead of flushing immediately.
-/// When LingerMs == 0 (default), awaited produces flush immediately (backwards compatible).
+/// When LingerMs == 0, awaited produces flush immediately.
 /// </summary>
 public class ShouldFlushTests
 {

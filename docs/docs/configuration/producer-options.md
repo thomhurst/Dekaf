@@ -176,7 +176,7 @@ Enable periodic statistics:
 | `WithBootstrapServers` | (required) | Broker addresses |
 | `WithClientId` | "dekaf-producer" | Client identifier |
 | `WithAcks` | All | Acknowledgment mode |
-| `WithLingerMs` | 0 | Batch wait time (ms) |
+| `WithLingerMs` | 5 | Batch wait time (ms) |
 | `WithBatchSize` | 16384 | Max batch size (bytes) |
 | `EnableIdempotence` | false | Prevent duplicates |
 | `WithTransactionalId` | null | Transaction ID |
