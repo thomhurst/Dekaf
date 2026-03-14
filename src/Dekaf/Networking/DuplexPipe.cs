@@ -62,6 +62,7 @@ internal sealed class DuplexPipe : IAsyncDisposable
         finally
         {
             await _inputPipe.Writer.CompleteAsync(error).ConfigureAwait(false);
+            await _inputPipe.Reader.CompleteAsync().ConfigureAwait(false);
         }
     }
 

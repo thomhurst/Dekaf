@@ -1550,8 +1550,11 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         if (_duplexPipe is not null)
             await _duplexPipe.DisposeAsync().ConfigureAwait(false);
-        else
-            _stream?.Dispose();
+
+        // For plain TCP, _stream is a NetworkStream with ownsSocket: false — disposing it
+        // releases the managed stream object but not the socket (handled by _socket.Dispose below).
+        // For TLS, DuplexPipe.DisposeAsync already disposed the stream.
+        _stream?.Dispose();
 
         _socket?.Dispose();
 
