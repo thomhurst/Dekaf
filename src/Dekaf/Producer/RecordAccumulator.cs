@@ -1429,8 +1429,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var pd = GetOrCreateDeque(topicPartition);
         bool batchSealed = false;
 
-        lock (pd.Lock)
+        bool lockTaken = false;
+        try
         {
+            pd.Lock.Enter(ref lockTaken);
+
             // Check disposal under lock
             if (_disposed)
             {
@@ -1464,6 +1467,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 throw new KafkaException(ErrorCode.MessageTooLarge,
                     $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
             }
+        }
+        finally
+        {
+            if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
         }
 
         if (batchSealed)
