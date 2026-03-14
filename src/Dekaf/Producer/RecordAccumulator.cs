@@ -720,7 +720,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // ManualResetEventSlim spins in user-mode before kernel transition, reducing CPU overhead
     // compared to AutoResetEvent's immediate kernel transition. After a successful wait,
     // we manually Reset() and use chain-wake to re-signal if more space is available.
-    private readonly ManualResetEventSlim _bufferSpaceAvailable = new(true); // Initially signaled (space available)
+    private readonly ManualResetEventSlim _bufferSpaceAvailable = new(true, 0); // Initially signaled; spinCount=0 because callers spin externally via SpinWait
     private readonly CancellationTokenSource _disposalCts = new();
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
@@ -1673,11 +1673,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 < 6 => 25,
                 _ => 100,
             });
-            _bufferSpaceAvailable.Wait(waitMs);
-            // Only reset if buffer is still full; otherwise leave it signaled for other waiters.
-            // Without this guard, a Set() from ReleaseMemory between Wait returning and Reset
-            // executing would be silently consumed, delaying other waiters by up to one backoff interval.
-            if ((ulong)Volatile.Read(ref _bufferedBytes) >= _maxBufferMemory)
+            var signaled = _bufferSpaceAvailable.Wait(waitMs);
+            // On timeout (buffer still full), reset unconditionally.
+            // On signal, only reset if buffer is still full; otherwise leave signaled for other waiters
+            // to avoid consuming a Set() from ReleaseMemory that fired between Wait and Reset.
+            if (!signaled || (ulong)Volatile.Read(ref _bufferedBytes) >= _maxBufferMemory)
                 _bufferSpaceAvailable.Reset();
             waitCount++;
 
