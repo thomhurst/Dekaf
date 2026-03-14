@@ -1009,11 +1009,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Releases a semaphore unconditionally, ignoring disposal and max-count races.
+    /// Releases a semaphore if not already signaled, ignoring disposal and max-count races.
+    /// The CurrentCount check avoids throwing SemaphoreFullException on every call under
+    /// normal (no-waiter) operation. The rare TOCTOU race (another thread releases between
+    /// check and Release) is harmless — it just means a redundant signal, caught by SFE.
     /// </summary>
     private static void TryReleaseSemaphore(SemaphoreSlim semaphore)
     {
-        try { semaphore.Release(); }
+        try
+        {
+            if (semaphore.CurrentCount == 0)
+                semaphore.Release();
+        }
         catch (ObjectDisposedException) { }
         catch (SemaphoreFullException) { }
     }
@@ -1647,7 +1654,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Check for disposal before blocking
             if (_disposed)
             {
-                throw new OperationCanceledException(_disposalCts.Token);
+                throw new ObjectDisposedException(nameof(RecordAccumulator));
             }
 
             // Check timeout
@@ -1665,7 +1672,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             catch (OperationCanceledException) when (_disposed)
             {
-                throw new OperationCanceledException(_disposalCts.Token);
+                throw new ObjectDisposedException(nameof(RecordAccumulator));
             }
         }
 

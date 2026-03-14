@@ -40,7 +40,9 @@ public readonly record struct Record
     public void Write(ref KafkaProtocolWriter writer)
     {
         // First calculate the record body size
-        var bodySize = CachedBodySize > 0 ? CachedBodySize : CalculateBodySize();
+        var bodySize = CachedBodySize > 0
+            ? CachedBodySize
+            : ComputeBodySize(TimestampDelta, OffsetDelta, IsKeyNull, Key.Length, IsValueNull, Value.Length, Headers);
 
         // Write length as varint
         writer.WriteVarInt(bodySize);
@@ -133,11 +135,6 @@ public readonly record struct Record
             IsValueNull = isValueNull,
             Headers = headers
         };
-    }
-
-    private int CalculateBodySize()
-    {
-        return ComputeBodySize(TimestampDelta, OffsetDelta, IsKeyNull, Key.Length, IsValueNull, Value.Length, Headers);
     }
 
     internal static int ComputeBodySize(long timestampDelta, int offsetDelta, bool isKeyNull, int keyLength, bool isValueNull, int valueLength, IReadOnlyList<Header>? headers)
