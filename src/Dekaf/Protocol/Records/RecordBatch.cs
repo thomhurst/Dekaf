@@ -327,6 +327,7 @@ public sealed class RecordBatch : IDisposable
             // Clear from old batch to prevent double-return to ArrayPool
             PreCompressedRecords = null;
             PreCompressedLength = 0;
+            PreCompressedType = CompressionType.None;
         }
 
         return batch;
