@@ -729,8 +729,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         /// <summary>Sealed batches waiting to drain. Front = oldest (drain target).</summary>
         private readonly LinkedList<ReadyBatch> _deque = new();
 
-        /// <summary>Per-partition lock for deque access (matches Java's synchronized(deque)).</summary>
-        public readonly object Lock = new();
+        /// <summary>Per-partition lock for deque access (matches Java's synchronized(deque)).
+        /// SpinLock avoids kernel transitions for the brief critical sections in append/drain paths.</summary>
+        public SpinLock Lock = new(enableThreadOwnerTracking: false);
 
         /// <summary>Current unsealed batch accepting new records. Null if no active batch.</summary>
         public PartitionBatch? CurrentBatch;
@@ -811,9 +812,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 continue;
 
             ReadyBatch? head;
-            lock (pd.Lock)
+            bool lockTaken = false;
+            try
             {
+                pd.Lock.Enter(ref lockTaken);
                 head = pd.PeekFirst();
+            }
+            finally
+            {
+                if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
             }
 
             if (head is null)
@@ -923,8 +930,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 continue;
 
             ReadyBatch? batch;
-            lock (pd.Lock)
+            bool lockTaken = false;
+            try
             {
+                pd.Lock.Enter(ref lockTaken);
                 batch = pd.PeekFirst();
                 if (batch is null)
                     continue;
@@ -937,6 +946,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     break;
 
                 batch = pd.PollFirst();
+            }
+            finally
+            {
+                if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
             }
 
             if (batch is not null)
@@ -957,12 +970,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         batch.Reenqueued(nowMs);
         var pd = GetOrCreateDeque(batch.TopicPartition);
-        lock (pd.Lock)
+        bool lockTaken = false;
+        try
         {
+            pd.Lock.Enter(ref lockTaken);
             if (ProducerId >= 0)
                 pd.InsertInSequenceOrder(batch);
             else
                 pd.AddFirst(batch);
+        }
+        finally
+        {
+            if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
         }
         SignalWakeup();
     }
@@ -1018,14 +1037,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         foreach (var kvp in _partitionDeques)
         {
             var pd = kvp.Value;
-            lock (pd.Lock)
+            bool lockTaken = false;
+            try
             {
+                pd.Lock.Enter(ref lockTaken);
                 var b = pd.PollFirst();
                 if (b is not null)
                 {
                     batch = b;
                     return true;
                 }
+            }
+            finally
+            {
+                if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
             }
         }
 
@@ -1206,8 +1231,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var pd = GetOrCreateDeque(topicPartition);
         bool batchSealed = false;
 
-        lock (pd.Lock)
+        bool lockTaken = false;
+        try
         {
+            pd.Lock.Enter(ref lockTaken);
+
             // Check disposal under lock
             if (_disposed)
             {
@@ -1245,6 +1273,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 throw new KafkaException(ErrorCode.MessageTooLarge,
                     $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
             }
+        }
+        finally
+        {
+            if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
         }
 
         if (batchSealed)
@@ -1286,8 +1318,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var pd = GetOrCreateDeque(topicPartition);
         bool batchSealed = false;
 
-        lock (pd.Lock)
+        bool lockTaken = false;
+        try
         {
+            pd.Lock.Enter(ref lockTaken);
+
             if (_disposed)
             {
                 Interlocked.Decrement(ref _pendingAwaitedProduceCount);
@@ -1321,6 +1356,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 throw new KafkaException(ErrorCode.MessageTooLarge,
                     $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
             }
+        }
+        finally
+        {
+            if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
         }
 
         if (batchSealed)
@@ -1747,8 +1786,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 var pd = kvp.Value;
 
-                lock (pd.Lock)
+                bool lockTaken = false;
+                try
                 {
+                    pd.Lock.Enter(ref lockTaken);
+
                     if (pd.CurrentBatch is null)
                         continue;
 
@@ -1776,6 +1818,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         if (batchCreatedTicks < newOldestTicks)
                             newOldestTicks = batchCreatedTicks;
                     }
+                }
+                finally
+                {
+                    if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
                 }
             }
 
@@ -1895,10 +1941,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var dequeCount = 0;
             if (_partitionDeques.TryGetValue(batch.TopicPartition, out var pd))
             {
-                lock (pd.Lock)
+                bool lockTaken = false;
+                try
                 {
+                    pd.Lock.Enter(ref lockTaken);
                     dequeCount = pd.Count;
                     inDeque = pd.Contains(batch);
+                }
+                finally
+                {
+                    if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
                 }
             }
 
@@ -2161,8 +2213,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         foreach (var kvp in _partitionDeques)
         {
             var pd = kvp.Value;
-            lock (pd.Lock)
+            bool lockTaken = false;
+            try
             {
+                pd.Lock.Enter(ref lockTaken);
+
                 // Fail current unsealed batch
                 if (pd.CurrentBatch is { } current)
                 {
@@ -2192,6 +2247,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     OnBatchExitsPipeline(readyBatch);
                 }
             }
+            finally
+            {
+                if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
+            }
         }
 
         // Wait for all in-flight batches to complete with a timeout using counter-based tracking
@@ -2218,8 +2277,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         foreach (var kvp in _partitionDeques)
         {
             var pd = kvp.Value;
-            lock (pd.Lock)
+            bool lockTaken = false;
+            try
             {
+                pd.Lock.Enter(ref lockTaken);
                 while (pd.Count > 0)
                 {
                     var batch = pd.PollFirst()!;
@@ -2231,6 +2292,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     }
                     OnBatchExitsPipeline(batch); // Decrement counter
                 }
+            }
+            finally
+            {
+                if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
             }
         }
 
