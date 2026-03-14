@@ -2037,8 +2037,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // All batches processed - complete any waiting flush and clear the TCS
             Interlocked.Exchange(ref _flushTcs, null)?.TrySetResult(true);
 
-            // Wake the sender loop so it can check HasPendingWork() and exit promptly
-            // during shutdown, instead of sleeping up to 100ms in WaitForWakeupAsync.
+            // Wake the sender loop after the last in-flight batch exits, so it doesn't
+            // re-enter WaitForWakeupAsync and sleep up to 100ms before discovering all
+            // work is done.
             if (_closed)
                 SignalWakeup();
         }
