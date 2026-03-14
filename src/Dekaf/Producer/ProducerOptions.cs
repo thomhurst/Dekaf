@@ -84,10 +84,17 @@ public sealed class ProducerOptions
 
     /// <summary>
     /// Number of connections to maintain per broker for parallel request handling.
-    /// Higher values can improve throughput by reducing contention on the write lock.
-    /// Default is based on processor count (minimum 2).
+    /// When set greater than 1 for non-idempotent producers, connections are selected via round-robin
+    /// to distribute load across TCP streams, improving throughput by enabling parallel sends.
+    /// <para>
+    /// For idempotent producers (<see cref="EnableIdempotence"/> = true), this must be 1
+    /// because sequence number ordering requires all produce requests to be pipelined on
+    /// the same TCP connection. Setting this greater than 1 with idempotence enabled will
+    /// throw an <see cref="InvalidOperationException"/> at build time.
+    /// </para>
+    /// Default is 1.
     /// </summary>
-    public int ConnectionsPerBroker { get; init; } = Math.Max(2, Environment.ProcessorCount / 2);
+    public int ConnectionsPerBroker { get; init; } = 1;
 
     /// <summary>
     /// Number of retries.

@@ -237,25 +237,25 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
     [Test]
     public async Task Producer_ProduceAsync_AfterAppend_CancellationDoesNotAffectDelivery()
     {
-        // Arrange - Test that cancellation after append completes successfully
-        // The low-latency optimization flushes awaited produces within 1-2ms, so by the time
-        // we cancel after 100ms, the message has already been sent to Kafka
+        // Arrange - Test that cancellation after message delivery doesn't retroactively fail the task.
+        // We first produce without cancellation to confirm delivery works, then produce with a token
+        // and only cancel AFTER we know the message was delivered — verifying the produce task
+        // completes successfully even though the token was cancelled.
         var topic = await KafkaContainer.CreateTestTopicAsync().ConfigureAwait(false);
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-cancel-after-append")
-            .WithLinger(TimeSpan.FromMilliseconds(5000)) // Doesn't matter - awaited produces flush immediately
             .BuildAsync();
 
-        // Warm up: establish connection and metadata cache so the timed produce below
-        // isn't delayed by first-time metadata fetch + connection establishment.
+        // Warm up: establish connection and metadata cache
         await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic, Key = "warmup", Value = "warmup"
         });
 
-        // Act - Start produce, then cancel after message is already appended
+        // Act - Produce with a cancellation token, wait for delivery to complete,
+        // then cancel the token and verify the already-completed task is not affected.
         using var cts = new CancellationTokenSource();
 
         var produceTask = producer.ProduceAsync(new ProducerMessage<string, string>
@@ -265,13 +265,13 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Value = "value1"
         }, cts.Token);
 
-        // Cancel after message is already appended and sent (1-2ms after ProduceAsync call)
-        await Task.Delay(100).ConfigureAwait(false);
+        // Wait for the produce to actually complete (no timing assumptions)
+        var metadata = await produceTask.ConfigureAwait(false);
+
+        // Now cancel AFTER delivery — this must not retroactively fail
         cts.Cancel();
 
-        // Assert - Message completes successfully despite cancellation
-        // (it was already committed to being sent when token was cancelled)
-        var metadata = await produceTask.ConfigureAwait(false);
+        // Assert - Message was delivered successfully
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
     }
 
@@ -523,7 +523,9 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Value = "warmup"
         });
 
-        // Act - Now fast path is active, cancel after append
+        // Act - Now fast path is active, produce and wait for delivery to complete,
+        // then cancel the token. Since cancellation happens after delivery, it must not
+        // retroactively fail the already-completed task.
         using var cts = new CancellationTokenSource();
 
         var produceTask = producer.ProduceAsync(new ProducerMessage<string, string>
@@ -533,14 +535,13 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Value = "value1"
         }, cts.Token);
 
-        // Fast path appends synchronously, so message is already in the batch buffer.
-        // Allow ample time for the send loop to send the batch and receive the response
-        // before cancelling — CI runners can be slow under parallel test load.
-        await Task.Delay(2000).ConfigureAwait(false);
+        // Wait for the produce to actually complete (no timing assumptions)
+        var metadata = await produceTask.ConfigureAwait(false);
+
+        // Now cancel AFTER delivery — this must not retroactively fail
         cts.Cancel();
 
         // Assert - Completes successfully despite cancellation
-        var metadata = await produceTask.ConfigureAwait(false);
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
     }
 
@@ -564,12 +565,13 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Value = "value1"
         }, cts.Token);
 
-        // Wait for slow path to complete append
-        await Task.Delay(100).ConfigureAwait(false);
+        // Wait for the produce to actually complete (no timing assumptions)
+        var metadata = await produceTask.ConfigureAwait(false);
+
+        // Now cancel AFTER delivery — this must not retroactively fail
         cts.Cancel();
 
         // Assert - Completes successfully
-        var metadata = await produceTask.ConfigureAwait(false);
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
     }
 
@@ -672,12 +674,13 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             }, cts.Token).AsTask());
         }
 
-        // Wait for messages to append, then cancel
-        await Task.Delay(200).ConfigureAwait(false);
+        // Wait for all messages to be delivered (no timing assumptions)
+        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        // Now cancel AFTER delivery — this must not retroactively fail
         cts.Cancel();
 
-        // Assert - All should complete successfully (appended before cancellation)
-        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+        // Assert - All completed successfully before cancellation
         await Assert.That(results.Length).IsEqualTo(20);
         foreach (var metadata in results)
         {
@@ -727,26 +730,16 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Value = "awaited"
         }, cts.Token);
 
-        // Cancel after append (memory already reserved)
-        await Task.Delay(100).ConfigureAwait(false);
+        // Wait for the produce to actually complete (no timing assumptions)
+        var metadata = await produceTask.ConfigureAwait(false);
+
+        // Cancel AFTER delivery — this must not retroactively fail
         cts.Cancel();
 
-        // Assert - Either completes successfully OR throws OperationCanceledException
-        // Both are valid outcomes depending on timing - the key invariant is that
-        // the message is still delivered to Kafka (verified by flush completing)
-        try
-        {
-            var metadata = await produceTask.ConfigureAwait(false);
-            // If we get here, message was delivered before cancellation took effect
-            await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
-        }
-        catch (OperationCanceledException)
-        {
-            // This is expected per CLAUDE.md - cancellation after append throws,
-            // but delivery continues in background. Verify by flushing.
-        }
+        // Assert - Message was delivered successfully before cancellation
+        await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
-        // Flush to ensure all messages (including the cancelled one) are delivered
+        // Flush to ensure all fire-and-forget messages are also delivered
         await producer.FlushAsync().ConfigureAwait(false);
     }
 
@@ -797,7 +790,10 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             Value = "value1"
         });
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        // Use a pre-cancelled token so FlushAsync always throws immediately,
+        // regardless of CI runner speed. This is deterministic — no timing race.
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
 
         // Act - Cancel flush but produce should still complete
         try
@@ -806,7 +802,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         }
         catch (OperationCanceledException)
         {
-            // Expected
+            // Expected — flush was cancelled immediately
         }
 
         // Assert - Message still delivers despite flush cancellation

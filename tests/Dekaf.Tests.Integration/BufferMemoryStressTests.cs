@@ -1,3 +1,4 @@
+using Dekaf.Errors;
 using Dekaf.Producer;
 
 namespace Dekaf.Tests.Integration;
@@ -62,11 +63,12 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
                 // Fire-and-forget: Send returns immediately, delivery happens async
                 producer.Send(topic, "same-key", $"value-{messageCount}");
             }
-            catch (TimeoutException)
+            catch (Exception ex) when (ex is TimeoutException or KafkaTimeoutException)
             {
-                // TimeoutException from Send() means the buffer is full and max.block.ms expired.
-                // This actually proves backpressure is working correctly — memory IS bounded.
-                Console.WriteLine($"[BufferMemoryStressTest] Buffer full (TimeoutException) after {messageCount:N0} messages — backpressure working correctly");
+                // TimeoutException/KafkaTimeoutException from Send() means the buffer is full and
+                // max.block.ms expired. This actually proves backpressure is working correctly —
+                // memory IS bounded. On slow CI runners, Kafka may not drain fast enough.
+                Console.WriteLine($"[BufferMemoryStressTest] Buffer full ({ex.GetType().Name}) after {messageCount:N0} messages — backpressure working correctly");
                 break;
             }
 
