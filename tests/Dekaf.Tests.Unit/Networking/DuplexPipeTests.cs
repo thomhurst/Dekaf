@@ -114,6 +114,79 @@ public sealed class DuplexPipeTests
     }
 
     [Test]
+    public async Task StreamErrorDuringActiveRead_PropagatesFromInput()
+    {
+        var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
+
+        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultPipeOptions);
+
+        // Successfully exchange data first
+        var data = "hello"u8.ToArray();
+        await serverStream.WriteAsync(data);
+        await serverStream.FlushAsync();
+
+        var readResult = await pipe.Input.ReadAsync();
+        await Assert.That(readResult.Buffer.Length).IsGreaterThanOrEqualTo(data.Length);
+        pipe.Input.AdvanceTo(readResult.Buffer.End);
+
+        // Now kill the server mid-operation — simulates broker crash
+        await serverStream.DisposeAsync();
+
+        // Next read should see EOF (IsCompleted) or propagate an error
+        readResult = await pipe.Input.ReadAsync();
+        await Assert.That(readResult.IsCompleted).IsTrue();
+        pipe.Input.AdvanceTo(readResult.Buffer.End);
+    }
+
+    [Test]
+    public async Task StreamErrorDuringActiveWrite_PropagatesFromOutput()
+    {
+        var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
+
+        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions, DefaultPipeOptions);
+
+        // Successfully write data first
+        var data = "hello"u8.ToArray();
+        var memory = pipe.Output.GetMemory(data.Length);
+        data.CopyTo(memory);
+        pipe.Output.Advance(data.Length);
+        await pipe.Output.FlushAsync();
+
+        // Verify server received it
+        var buffer = new byte[data.Length];
+        var bytesRead = await serverStream.ReadAsync(buffer);
+        await Assert.That(bytesRead).IsEqualTo(data.Length);
+
+        // Now kill the server mid-operation — simulates broker crash
+        await serverStream.DisposeAsync();
+
+        // Write more data — the write pump will fail when writing to the broken stream.
+        // The failure surfaces either as FlushAsync returning IsCompleted or throwing
+        // the IOException that the write pump completed the pipe with.
+        var errorDetected = false;
+        var largeData = new byte[65536];
+        for (var i = 0; i < 10 && !errorDetected; i++)
+        {
+            try
+            {
+                memory = pipe.Output.GetMemory(largeData.Length);
+                largeData.CopyTo(memory);
+                pipe.Output.Advance(largeData.Length);
+
+                var flushResult = await pipe.Output.FlushAsync();
+                if (flushResult.IsCompleted)
+                    errorDetected = true;
+            }
+            catch (IOException)
+            {
+                errorDetected = true;
+            }
+        }
+
+        await Assert.That(errorDetected).IsTrue();
+    }
+
+    [Test]
     public async Task DisposeAsync_StopsPumpsAndDisposesStream()
     {
         var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
