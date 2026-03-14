@@ -4,9 +4,8 @@ namespace Dekaf.Networking;
 
 /// <summary>
 /// Decouples reading from a <see cref="Stream"/> by pumping data into an internal <see cref="Pipe"/>.
-/// This avoids a known .NET issue where concurrent <c>StreamPipeReader</c> + <c>StreamPipeWriter</c>
-/// on the same stream causes <c>PipeReader.ReadAsync</c> to block indefinitely.
-/// Used only for TLS connections where separate stream instances are not possible.
+/// This avoids a known .NET issue where <c>PipeReader.Create(Stream).ReadAsync</c> can block
+/// indefinitely when concurrent reads and writes target the same underlying socket.
 /// Writing is handled directly by <see cref="KafkaConnection"/> via <c>PipeWriter.Create(stream)</c>.
 /// </summary>
 internal sealed class DuplexPipe : IAsyncDisposable

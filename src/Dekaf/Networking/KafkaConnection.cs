@@ -118,10 +118,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
     private Socket? _socket;
     private Stream? _stream;
-    private Stream? _readStream; // Separate stream for reading to avoid concurrent StreamPipeReader+StreamPipeWriter bug
     private PipeReader? _reader;
     private PipeWriter? _writer;
-    private DuplexPipe? _duplexPipe; // Only used for TLS connections where separate streams aren't possible
+    private DuplexPipe? _duplexPipe;
 
     // IMPORTANT: Use global correlation ID counter to prevent TCP port reuse issues.
     // When connections are rapidly closed and reopened, the OS may reuse local TCP ports.
@@ -248,34 +247,21 @@ public sealed partial class KafkaConnection : IKafkaConnection
             minimumBufferSize: _options.SendBufferSize > 0 ? _options.SendBufferSize : 65536,
             leaveOpen: true));
 
-        if (_stream is NetworkStream)
-        {
-            // Create a separate NetworkStream for reading to avoid a known .NET issue where
-            // concurrent StreamPipeReader + StreamPipeWriter on the same stream instance causes
-            // PipeReader.ReadAsync to block indefinitely. Two NetworkStream instances on the same
-            // socket are fully independent — Socket natively supports concurrent Send + Receive.
-            _readStream = new NetworkStream(_socket!, ownsSocket: false);
-            _reader = PipeReader.Create(_readStream, new StreamPipeReaderOptions(
-                pool: MemoryPool<byte>.Shared,
-                bufferSize: _options.ReceiveBufferSize > 0 ? _options.ReceiveBufferSize : 65536,
-                minimumReadSize: _options.MinimumReadSize,
-                leaveOpen: true));
-        }
-        else
-        {
-            // For TLS (SslStream), we cannot create a second stream instance — the TLS state
-            // machine is bound to a single stream. Use a read pump to decouple the read path.
-            var inputPipeOptions = new PipeOptions(
-                pool: MemoryPool<byte>.Shared,
-                minimumSegmentSize: _options.MinimumSegmentSize,
-                pauseWriterThreshold: pauseThreshold,
-                resumeWriterThreshold: resumeThreshold,
-                useSynchronizationContext: false);
+        // Use a read pump for all connections to decouple stream reads from PipeReader signaling.
+        // PipeReader.Create(Stream) has a known issue where ReadAsync can block indefinitely
+        // when concurrent reads and writes happen on the same underlying socket, even with
+        // separate NetworkStream instances. The pump reads from the stream into an internal
+        // Pipe, ensuring PipeReader.ReadAsync always wakes promptly when data arrives.
+        var inputPipeOptions = new PipeOptions(
+            pool: MemoryPool<byte>.Shared,
+            minimumSegmentSize: _options.MinimumSegmentSize,
+            pauseWriterThreshold: pauseThreshold,
+            resumeWriterThreshold: resumeThreshold,
+            useSynchronizationContext: false);
 
-            var readBufferSize = _options.ReceiveBufferSize > 0 ? _options.ReceiveBufferSize : 65536;
-            _duplexPipe = new DuplexPipe(_stream, inputPipeOptions, readBufferSize);
-            _reader = _duplexPipe.Input;
-        }
+        var readBufferSize = _options.ReceiveBufferSize > 0 ? _options.ReceiveBufferSize : 65536;
+        _duplexPipe = new DuplexPipe(_stream, inputPipeOptions, readBufferSize);
+        _reader = _duplexPipe.Input;
 
         _receiveCts = new CancellationTokenSource();
         _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
@@ -1541,11 +1527,6 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         _receiveCts?.Dispose();
 
-        // For the plain TCP path, complete reader/writer explicitly.
-        // For TLS, DuplexPipe owns the reader and stream — skip reader completion here.
-        if (_reader is not null && _duplexPipe is null)
-            await _reader.CompleteAsync().ConfigureAwait(false);
-
         if (_writer is not null)
             await _writer.CompleteAsync().ConfigureAwait(false);
 
@@ -1554,7 +1535,6 @@ public sealed partial class KafkaConnection : IKafkaConnection
         else
             _stream?.Dispose();
 
-        _readStream?.Dispose();
         _socket?.Dispose();
 
         _reauthTimer?.Dispose();
