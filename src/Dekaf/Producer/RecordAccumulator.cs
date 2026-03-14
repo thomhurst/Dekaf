@@ -716,11 +716,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Buffer memory tracking for backpressure
     private readonly ulong _maxBufferMemory;
     private long _bufferedBytes;
-    // Use ManualResetEventSlim for sync buffer space signaling.
-    // ManualResetEventSlim spins in user-mode before kernel transition, reducing CPU overhead
-    // compared to AutoResetEvent's immediate kernel transition. After a successful wait,
-    // we manually Reset() and use chain-wake to re-signal if more space is available.
-    private readonly ManualResetEventSlim _bufferSpaceAvailable = new(true, 0); // Initially signaled; spinCount=0 because callers spin externally via SpinWait
+    // Sync signal for ReserveMemorySync — SemaphoreSlim(0,1) used as wake-one event.
+    // ReleaseMemory signals this so sync waiters wake one-at-a-time instead of thundering herd.
+    private readonly SemaphoreSlim _syncBufferSpaceSignal = new(0, 1);
     private readonly CancellationTokenSource _disposalCts = new();
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
@@ -1623,14 +1621,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Slow path: wait for space with timeout and cancellation support
-        // Use MaxBlockMs to limit how long we block waiting for buffer space (equivalent to Kafka's max.block.ms)
         var currentTicks = Environment.TickCount64;
         var deadline = (long.MaxValue - currentTicks > _options.MaxBlockMs)
             ? currentTicks + _options.MaxBlockMs
             : long.MaxValue;
 
         var spinWait = new SpinWait();
-        var waitCount = 0;
 
         while (!TryReserveMemory(recordSize))
         {
@@ -1638,11 +1634,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (spinWait.Count < 10)
             {
                 spinWait.SpinOnce();
-                // Check for disposal even during spin phase for prompt detection
-                if (_disposed)
-                {
-                    throw new OperationCanceledException(_disposalCts.Token);
-                }
                 continue;
             }
 
@@ -1657,43 +1648,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (remainingMs <= 0)
                 ThrowBufferMemoryTimeout(recordSize, currentTicks);
 
-            // Double-check disposal before wait
-            if (_disposed)
-            {
-                throw new OperationCanceledException(_disposalCts.Token);
-            }
-
-            // Wait for signal from ReleaseMemory or timeout, using exponential backoff
-            // to reduce kernel transitions under sustained backpressure.
-            // ManualResetEventSlim spins in user-mode before kernel transition.
-            var waitMs = (int)Math.Min(remainingMs, waitCount switch
-            {
-                < 2 => 1,
-                < 4 => 5,
-                < 6 => 25,
-                _ => 100,
-            });
-            var signaled = _bufferSpaceAvailable.Wait(waitMs);
-            // On timeout (buffer still full), reset unconditionally.
-            // On signal, only reset if buffer is still full; otherwise leave signaled for other waiters
-            // to avoid consuming a Set() from ReleaseMemory that fired between Wait and Reset.
-            if (!signaled || (ulong)Volatile.Read(ref _bufferedBytes) >= _maxBufferMemory)
-                _bufferSpaceAvailable.Reset();
-            waitCount++;
-
-            if (_disposed)
-            {
-                throw new OperationCanceledException(_disposalCts.Token);
-            }
-        }
-
-        // Chain-wake: ManualResetEventSlim wakes all waiters on Set(), but we Reset()
-        // after each wake. If a large batch freed enough memory for multiple waiters,
-        // re-signal so the next waiter can try.
-        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
-        {
-            try { _bufferSpaceAvailable.Set(); }
-            catch (ObjectDisposedException) { }
+            // Wait for signal from ReleaseMemory. SemaphoreSlim.Wait wakes ONE waiter (no thundering herd).
+            _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, int.MaxValue));
         }
     }
 
@@ -1737,16 +1693,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Signal that space is available.
-        // ManualResetEventSlim.Set() wakes sync waiters; chain-wake in ReserveMemorySync
-        // ensures only one succeeds and re-signals if more space remains.
-        // SemaphoreSlim.Release() wakes ONE async waiter (who will retry and re-wait if CAS fails).
+        // SemaphoreSlim.Release() wakes ONE sync/async waiter (no thundering herd).
         try
         {
-            _bufferSpaceAvailable.Set();
+            if (_syncBufferSpaceSignal.CurrentCount == 0)
+                _syncBufferSpaceSignal.Release();
         }
         catch (ObjectDisposedException)
         {
-            // Accumulator is disposed, event no longer valid — ignore
+            // Accumulator is disposed — ignore
+        }
+        catch (SemaphoreFullException)
+        {
+            // Race: count changed between check and Release — harmless
         }
 
         try
@@ -2274,7 +2233,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Wake any threads blocked in ReserveMemorySync's Wait so they recheck
         // _disposed promptly instead of waiting for the backoff timeout.
-        try { _bufferSpaceAvailable.Set(); } catch (ObjectDisposedException) { }
+        try { if (_syncBufferSpaceSignal.CurrentCount == 0) _syncBufferSpaceSignal.Release(); } catch (ObjectDisposedException) { } catch (SemaphoreFullException) { }
 
         // Cancel the disposal token to interrupt any blocked operations
         // (e.g., workers stuck in ReserveMemorySync/Async). Do this AFTER graceful shutdown attempt
@@ -2406,7 +2365,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _batchPool.Clear();
 
         // Dispose resources to prevent leaks
-        _bufferSpaceAvailable?.Dispose();
+        _syncBufferSpaceSignal?.Dispose();
         _disposalCts?.Dispose();
         _asyncBufferSpaceSignal?.Dispose();
         _flushLingerLock.Dispose();
@@ -2802,7 +2761,8 @@ internal sealed class PartitionBatch
             IsKeyNull = key.IsNull,
             Value = value.Memory,
             IsValueNull = value.IsNull,
-            Headers = headers
+            Headers = headers,
+            CachedBodySize = Record.ComputeBodySize(timestampDelta, _recordCount, key.IsNull, key.Length, value.IsNull, value.Length, headers)
         };
 
         if (completionSource is not null)
@@ -2945,7 +2905,8 @@ internal sealed class PartitionBatch
             IsKeyNull = keyIsNull,
             Value = valueMemory,
             IsValueNull = valueIsNull,
-            Headers = headers
+            Headers = headers,
+            CachedBodySize = Record.ComputeBodySize(timestampDelta, _recordCount, keyIsNull, keyLength, valueIsNull, valueLength, headers)
         };
 
         if (callback is not null)
