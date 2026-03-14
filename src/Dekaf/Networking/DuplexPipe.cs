@@ -104,6 +104,9 @@ internal sealed class DuplexPipe : IAsyncDisposable
                 }
                 finally
                 {
+                    // Safe even on partial write failure: any exception propagates to the
+                    // outer catch, which completes the pipe with the error and tears down
+                    // the connection. The partially-consumed data is never re-read.
                     _outputPipe.Reader.AdvanceTo(buffer.End);
                 }
 
@@ -126,19 +129,15 @@ internal sealed class DuplexPipe : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        // Signal pumps to stop via pipe completion:
-        // - Completing _inputPipe.Reader causes the read pump's FlushAsync to return IsCompleted=true
-        // - Completing _outputPipe.Writer causes the write pump's ReadAsync to return IsCompleted=true
-        // These provide clean shutdown signals, but the read pump may be blocked on _stream.ReadAsync
-        // and won't see the signal until the stream is disposed below.
-        // Note: KafkaConnection.DisposeAsync awaits ReceiveLoopAsync before calling this, so there
-        // is no race with concurrent Input.ReadAsync calls from the receive loop.
-        await _inputPipe.Reader.CompleteAsync().ConfigureAwait(false);
+        // Signal the write pump to stop: completing the writer causes the write pump's
+        // _outputPipe.Reader.ReadAsync to return IsCompleted=true. This is necessary because
+        // the write pump reads from the pipe (not the stream), so stream disposal alone
+        // won't unblock it if it's waiting for more data.
         await _outputPipe.Writer.CompleteAsync().ConfigureAwait(false);
 
         // Dispose the stream to abort any pending _stream.ReadAsync/_stream.WriteAsync calls
-        // that would otherwise block the pump tasks indefinitely.
-        // This must happen before awaiting the pump tasks.
+        // in the pump tasks. The read pump is blocked on _stream.ReadAsync, so this is what
+        // unblocks it (the read pump's finally block then calls _inputPipe.Writer.CompleteAsync).
         await _stream.DisposeAsync().ConfigureAwait(false);
 
         // Wait for pumps to finish (observe exceptions from stream abort)
