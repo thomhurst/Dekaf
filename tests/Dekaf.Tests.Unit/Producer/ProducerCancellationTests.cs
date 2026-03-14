@@ -94,8 +94,7 @@ public class ProducerCancellationTests
             // Assert - Should complete once batch is drained (using 10000ms to account for CI variability on macOS)
             await Assert.That(elapsed).IsLessThan(10000);
 
-            // Cancel to stop the drain task and wait for it to finish
-            // before the CTS is disposed (otherwise drainTask may access cts.Token after disposal)
+            // Cancel to stop the drain task and await it before CTS is disposed
             await cts.CancelAsync();
 
             try
@@ -104,7 +103,7 @@ public class ProducerCancellationTests
             }
             catch (OperationCanceledException)
             {
-                // Expected - Task.Run may throw when started with a cancelled token
+                // Expected — drain task observes the cancellation
             }
         }
         finally
