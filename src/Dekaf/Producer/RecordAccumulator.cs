@@ -3204,7 +3204,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             ProducerDebugCounters.RecordBatchSentSuccessfully();
 
             // Complete per-message completion sources with metadata
-            if (_completionSourcesArray is not null)
+            if (_completionSourcesCount > 0 && _completionSourcesArray is not null)
             {
 #if DEBUG
                 var completedCount = 0;
@@ -3232,7 +3232,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
 
             // Invoke callbacks inline - NO ThreadPool scheduling for zero-allocation
             // Callbacks are invoked on the sender thread, so they must be non-blocking
-            if (_callbacks is not null)
+            if (_callbackCount > 0 && _callbacks is not null)
             {
                 for (var i = 0; i < _callbackCount; i++)
                 {
@@ -3288,7 +3288,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             ProducerDebugCounters.RecordBatchFailed();
 
             // Fail per-message completion sources - these throw for ProduceAsync callers
-            if (_completionSourcesArray is not null)
+            if (_completionSourcesCount > 0 && _completionSourcesArray is not null)
             {
 #if DEBUG
                 var failedCount = 0;
@@ -3309,7 +3309,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             }
 
             // Invoke callbacks with exception - NO ThreadPool scheduling
-            if (_callbacks is not null)
+            if (_callbackCount > 0 && _callbacks is not null)
             {
                 for (var i = 0; i < _callbackCount; i++)
                 {
@@ -3354,7 +3354,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         {
             for (var i = 0; i < _pooledDataArraysCount; i++)
             {
-                ArrayPool<byte>.Shared.Return(_pooledDataArrays[i], clearArray: true);
+                ArrayPool<byte>.Shared.Return(_pooledDataArrays[i], clearArray: false);
             }
         }
 
