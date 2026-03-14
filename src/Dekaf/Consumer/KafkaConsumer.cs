@@ -772,6 +772,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     {
                         System.Diagnostics.Activity.Current = savedActivity;
                     }
+                    var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
+                                       (record.IsValueNull ? 0 : record.Value.Length);
+
                     if (activity is not null)
                     {
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
@@ -779,8 +782,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "receive");
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, pending.PartitionIndex);
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageOffset, offset);
-                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageBodySize,
-                            (record.IsKeyNull ? 0 : record.Key.Length) + (record.IsValueNull ? 0 : record.Value.Length));
+                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageBodySize, messageBytes);
                         if (_options.ClientId is not null)
                             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
                         if (_options.GroupId is not null)
@@ -807,9 +809,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     // Update consumed position per-message so GetPosition()/CommitAsync()
                     // reflect the latest yielded offset even when the enumerator is paused.
                     _positions[pending.TopicPartition] = offset + 1;
-
-                    var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
-                                       (record.IsValueNull ? 0 : record.Value.Length);
                     pending.TrackConsumed(offset, messageBytes);
 
                     // Record consumer metrics (~3ns no-op when no listener)

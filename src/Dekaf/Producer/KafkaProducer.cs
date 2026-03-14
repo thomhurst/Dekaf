@@ -462,14 +462,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         catch (Exception ex)
         {
-            activity.SetStatus(ActivityStatusCode.Error, ex.Message);
-            activity.AddEvent(new ActivityEvent("exception",
-                tags: new ActivityTagsCollection
-                {
-                    { "exception.type", ex.GetType().FullName },
-                    { "exception.message", ex.Message },
-                    { "exception.stacktrace", ex.ToString() }
-                }));
+            Diagnostics.DekafDiagnostics.RecordException(activity, ex);
 
             var tagList = new TagList { { Diagnostics.DekafDiagnostics.MessagingDestinationName, topic } };
             Diagnostics.DekafMetrics.ProduceErrors.Add(1, tagList);
@@ -662,14 +655,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         catch (Exception ex) when (activity is not null)
         {
-            activity.SetStatus(ActivityStatusCode.Error, ex.Message);
-            activity.AddEvent(new ActivityEvent("exception",
-                tags: new ActivityTagsCollection
-                {
-                    { "exception.type", ex.GetType().FullName },
-                    { "exception.message", ex.Message },
-                    { "exception.stacktrace", ex.ToString() }
-                }));
+            Diagnostics.DekafDiagnostics.RecordException(activity, ex);
             throw;
         }
         finally
