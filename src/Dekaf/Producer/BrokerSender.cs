@@ -327,20 +327,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// callback only writes to a channel and rotates a <see cref="TaskCompletionSource"/> —
     /// no ambient context (e.g. <c>AsyncLocal</c>, <c>SecurityContext</c>) needs to flow.
     /// </remarks>
-    private sealed class ResponseCallbackState(ChannelWriter<SendLoopEvent> writer, BrokerSender sender)
-    {
-        /// <summary>
-        /// Cached delegate allocated once and reused for every response task registration.
-        /// </summary>
-        public readonly Action Callback = () =>
-        {
-            writer.TryWrite(SendLoopEvent.ResponseReady());
-            Interlocked.Exchange(ref sender._anyResponseCompleted,
-                    new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously))
-                .TrySetResult();
-        };
-    }
-    private ResponseCallbackState _responseCallbackState = null!;
+    private Action _responseCompletionCallback;
 
     private volatile bool _disposed;
 
@@ -393,7 +380,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Idempotent producers with maxInFlight > 1 rely on sequence numbers for ordering.
         _muteOnSend = _maxInFlight <= 1;
 
-        _responseCallbackState = new ResponseCallbackState(_eventChannel.Writer, this);
+        _responseCompletionCallback = () =>
+        {
+            _eventChannel.Writer.TryWrite(SendLoopEvent.ResponseReady());
+            Interlocked.Exchange(ref _anyResponseCompleted,
+                    new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously))
+                .TrySetResult();
+        };
         _cts = new CancellationTokenSource();
         _sendLoopTask = SendLoopAsync(_cts.Token);
     }
@@ -1564,11 +1557,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             //
             // Uses UnsafeOnCompleted with a cached Action delegate instead of ContinueWith
             // to avoid allocating a continuation Task on every pipelined send. The callback
-            // is pre-allocated once in ResponseCallbackState and reused for all response tasks.
+            // is pre-allocated once in the constructor and reused for all response tasks.
             if (responseTask.IsCompleted)
             {
                 // Already completed — signal inline without registering a continuation.
-                _responseCallbackState.Callback();
+                _responseCompletionCallback();
             }
             else
             {
@@ -1576,7 +1569,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // callback on the ThreadPool rather than running inline on the completing thread.
                 // This is intentional — it keeps the I/O completion thread free.
                 responseTask.ConfigureAwait(false).GetAwaiter()
-                    .UnsafeOnCompleted(_responseCallbackState.Callback);
+                    .UnsafeOnCompleted(_responseCompletionCallback);
             }
 
             // Mute partitions at send time when limited to 1 in-flight request.

@@ -151,7 +151,7 @@ public sealed class BrokerSenderSendLoopTests
     [Timeout(30_000)]
     public async Task SendLoop_ResponseCompletion_WakesSendLoopAndProcessesBatch(CancellationToken cancellationToken)
     {
-        // Verifies that when a response task completes, the ContinueWith bridge
+        // Verifies that when a response task completes, the response completion callback
         // pushes a ResponseCompleted event to the unified channel, waking the send loop.
 
         var tcs = new TaskCompletionSource<ProduceResponse>();
@@ -180,7 +180,7 @@ public sealed class BrokerSenderSendLoopTests
             // Wait for the send loop to actually send the request
             await requestSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
 
-            // Complete the response — ContinueWith pushes event, send loop wakes and processes
+            // Complete the response — UnsafeOnCompleted callback pushes event, send loop wakes and processes
             tcs.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 42));
 
             // Wait for acknowledgement (with timeout to detect missed wakeup)
@@ -368,7 +368,7 @@ public sealed class BrokerSenderSendLoopTests
     [Timeout(30_000)]
     public async Task SendLoop_FaultedResponse_WakesSendLoopAndRetries(CancellationToken cancellationToken)
     {
-        // When a response task faults (e.g., connection error), the ContinueWith bridge
+        // When a response task faults (e.g., connection error), the response completion callback
         // pushes a ResponseCompleted event. The send loop processes it and retries the batch.
 
         var tcs1 = new TaskCompletionSource<ProduceResponse>();
@@ -529,7 +529,7 @@ public sealed class BrokerSenderSendLoopTests
     {
         // With Acks.None, the send loop uses SendFireAndForgetAsync and completes
         // batches synchronously without adding to _pendingResponses.
-        // Verifies fire-and-forget path works after ContinueWith removal.
+        // Verifies fire-and-forget path works with UnsafeOnCompleted response callbacks.
 
         var connection = Substitute.For<IKafkaConnection>();
         connection.IsConnected.Returns(true);
