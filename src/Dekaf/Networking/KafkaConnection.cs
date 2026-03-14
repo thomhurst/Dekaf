@@ -272,9 +272,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 resumeWriterThreshold: resumeThreshold,
                 useSynchronizationContext: false);
 
-            var writerOptions = new StreamPipeWriterOptions(leaveOpen: true);
             var readBufferSize = _options.ReceiveBufferSize > 0 ? _options.ReceiveBufferSize : 65536;
-            _duplexPipe = new DuplexPipe(_stream, inputPipeOptions, writerOptions, readBufferSize);
+            _duplexPipe = new DuplexPipe(_stream, inputPipeOptions, readBufferSize);
             _reader = _duplexPipe.Input;
         }
 
@@ -1542,7 +1541,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         _receiveCts?.Dispose();
 
-        if (_reader is not null)
+        // For the plain TCP path, complete reader/writer explicitly.
+        // For TLS, DuplexPipe owns the reader and stream — skip reader completion here.
+        if (_reader is not null && _duplexPipe is null)
             await _reader.CompleteAsync().ConfigureAwait(false);
 
         if (_writer is not null)
@@ -1551,7 +1552,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (_duplexPipe is not null)
             await _duplexPipe.DisposeAsync().ConfigureAwait(false);
         else
-            _stream?.Dispose(); // Only dispose here if DuplexPipe didn't own it
+            _stream?.Dispose();
 
         _readStream?.Dispose();
         _socket?.Dispose();
