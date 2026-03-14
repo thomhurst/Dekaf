@@ -356,8 +356,8 @@ jobs:
           branch: docs/stress-test-results
           delete-branch: true
 
-      - name: Merge Pull Request
+      - name: Enable Auto-Merge
         if: steps.create-pr.outputs.pull-request-number
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr merge ${{ steps.create-pr.outputs.pull-request-number }} --squash --delete-branch --admin
+        run: gh pr merge ${{ steps.create-pr.outputs.pull-request-number }} --squash --delete-branch --auto
