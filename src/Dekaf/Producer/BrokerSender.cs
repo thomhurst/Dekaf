@@ -159,18 +159,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Guarantees per-partition FIFO ordering during coalescing.
     /// Single-threaded: only accessed by the send loop.
     /// </summary>
+    /// <remarks>
+    /// Uses List&lt;ReadyBatch&gt; instead of LinkedList&lt;ReadyBatch&gt; to avoid per-operation
+    /// LinkedListNode heap allocations. Carry-over queues are typically small (1-3 items per
+    /// partition), so List.Insert(0, item) O(n) shifts are negligible compared to the GC
+    /// pressure from LinkedListNode allocations at high throughput.
+    /// </remarks>
     private sealed class PartitionCarryOver
     {
-        private readonly Dictionary<TopicPartition, LinkedList<ReadyBatch>> _partitions = new();
+        private readonly Dictionary<TopicPartition, List<ReadyBatch>> _partitions = new();
         private int _count;
 
         public int Count => _count;
 
-        private LinkedList<ReadyBatch> GetOrCreateQueue(TopicPartition tp)
+        private List<ReadyBatch> GetOrCreateQueue(TopicPartition tp)
         {
             if (!_partitions.TryGetValue(tp, out var queue))
             {
-                queue = new LinkedList<ReadyBatch>();
+                queue = new List<ReadyBatch>(4);
                 _partitions[tp] = queue;
             }
             return queue;
@@ -179,7 +185,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// <summary>Add to back of partition queue (normal carry-over, new batches).</summary>
         public void Add(ReadyBatch batch)
         {
-            GetOrCreateQueue(batch.TopicPartition).AddLast(batch);
+            GetOrCreateQueue(batch.TopicPartition).Add(batch);
             _count++;
         }
 
@@ -189,7 +195,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// </summary>
         public void AddFirst(ReadyBatch batch)
         {
-            GetOrCreateQueue(batch.TopicPartition).AddFirst(batch);
+            GetOrCreateQueue(batch.TopicPartition).Insert(0, batch);
             _count++;
         }
 
@@ -203,15 +209,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             var queue = GetOrCreateQueue(batch.TopicPartition);
 
-            var node = queue.First;
-            while (node is not null && node.Value.IsRetry)
-                node = node.Next;
+            var insertIdx = 0;
+            while (insertIdx < queue.Count && queue[insertIdx].IsRetry)
+                insertIdx++;
 
-            if (node is not null)
-                queue.AddBefore(node, batch);
-            else
-                queue.AddLast(batch);
-
+            queue.Insert(insertIdx, batch);
             _count++;
         }
 
@@ -223,9 +225,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             foreach (var kvp in _partitions)
             {
-                foreach (var batch in kvp.Value)
-                    destination.Add(batch);
-                kvp.Value.Clear();
+                var queue = kvp.Value;
+                for (var i = 0; i < queue.Count; i++)
+                    destination.Add(queue[i]);
+                queue.Clear();
             }
             _count = 0;
         }
@@ -241,8 +244,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public void ForEach(Action<ReadyBatch> action)
         {
             foreach (var kvp in _partitions)
-                foreach (var batch in kvp.Value)
-                    action(batch);
+            {
+                var queue = kvp.Value;
+                for (var i = 0; i < queue.Count; i++)
+                    action(queue[i]);
+            }
         }
 
         /// <summary>
@@ -254,17 +260,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             foreach (var kvp in _partitions)
             {
                 var queue = kvp.Value;
-                var node = queue.First;
-                while (node is not null)
+                for (var i = queue.Count - 1; i >= 0; i--)
                 {
-                    var next = node.Next;
-                    if (shouldRemove(node.Value))
+                    if (shouldRemove(queue[i]))
                     {
-                        onRemoved(node.Value);
-                        queue.Remove(node);
+                        onRemoved(queue[i]);
+                        queue.RemoveAt(i);
                         _count--;
                     }
-                    node = next;
                 }
             }
         }
@@ -325,11 +328,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly bool _useRoundRobinConnections;
 
     /// <summary>
-    /// Signal-based completion notification: rotated TCS that gets signaled when any
-    /// response task completes. Replaces Task.WhenAny polling to avoid per-wait
-    /// continuation allocations for every in-flight task.
+    /// Signal-based completion notification: SemaphoreSlim that gets released when any
+    /// response task completes. Replaces the previous rotated TCS pattern that allocated
+    /// a new TaskCompletionSource on every response (~64 bytes per batch), contributing
+    /// to Gen1 promotion at high throughput.
     /// </summary>
-    private TaskCompletionSource _anyResponseCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly SemaphoreSlim _anyResponseCompleted = new(0, 1);
 
     /// <summary>
     /// Pre-allocated callback for response completion signaling.
@@ -341,7 +345,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// <remarks>
     /// <c>UnsafeOnCompleted</c> is used instead of <c>OnCompleted</c> because it skips
     /// <see cref="System.Threading.ExecutionContext"/> capture/restore. This is safe because the
-    /// callback only writes to a channel and rotates a <see cref="TaskCompletionSource"/> —
+    /// callback only writes to a channel and releases a <see cref="SemaphoreSlim"/> —
     /// no ambient context (e.g. <c>AsyncLocal</c>, <c>SecurityContext</c>) needs to flow.
     /// </remarks>
     private readonly Action _responseCompletionCallback;
@@ -404,9 +408,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _responseCompletionCallback = () =>
         {
             _eventChannel.Writer.TryWrite(SendLoopEvent.ResponseReady());
-            Interlocked.Exchange(ref _anyResponseCompleted,
-                    new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously))
-                .TrySetResult();
+            // Release the semaphore if it's at 0 (not already signaled).
+            // CurrentCount check avoids SemaphoreFullException without try/catch overhead.
+            if (_anyResponseCompleted.CurrentCount == 0)
+            {
+                try { _anyResponseCompleted.Release(); }
+                catch (SemaphoreFullException) { /* Already signaled — benign race */ }
+            }
         };
         _cts = new CancellationTokenSource();
         _sendLoopTask = SendLoopAsync(_cts.Token);
@@ -474,6 +482,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var coalescedBatches = new ReadyBatch[maxCoalesce];
         var coalescedCount = 0;
 
+        // Pre-allocate reusable response lookup dictionary to avoid per-response allocation.
+        // Single-threaded: only accessed by the send loop, cleared after each use.
+        var responseLookup = new Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>();
+
         // Pre-allocate reusable ProduceRequest structures.
         // The send loop is single-threaded and awaits each send before reusing,
         // so these can be safely reused without synchronization.
@@ -493,7 +505,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // Signal events (ResponseReady, Unmute) may have woken us up — processing
                 // completed responses here handles them. Batch events stay in the channel
                 // and are read lazily during coalescing (step 5) to avoid O(n²) carry-over growth.
-                ProcessCompletedResponses(carryOver, cancellationToken);
+                ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
 
                 // ── 2. Pick up send-failed retries ──
                 // Use AddFirst: retries are older batches that must go before any newer
@@ -596,7 +608,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     while (_pendingResponses.Count >= _maxInFlight)
                     {
                         // Poll for completed responses to free in-flight slots.
-                        ProcessCompletedResponses(carryOver, cancellationToken);
+                        ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
 
                         if (_pendingResponses.Count >= _maxInFlight)
                         {
@@ -612,21 +624,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // contain unread NewBatch events that cause immediate (synchronous)
                             // return, creating a spin loop that starves the thread pool and
                             // prevents I/O completion callbacks from running.
-                            // Uses a signal-based TCS that gets signaled when any response
+                            // Uses a SemaphoreSlim signal that gets released when any response
                             // completes, with a 100ms periodic wake-up to re-sweep delivery
                             // timeouts for zombie entries that expire while we're waiting.
                             // Signal may be missed if multiple responses complete between
                             // iterations; 100ms fallback ensures we don't wait indefinitely.
-                            try
-                            {
-                                await Volatile.Read(ref _anyResponseCompleted).Task
-                                    .WaitAsync(TimeSpan.FromMilliseconds(100), cancellationToken)
-                                    .ConfigureAwait(false);
-                            }
-                            catch (TimeoutException)
-                            {
-                                // Periodic wake-up — loop back to re-check responses and timeouts
-                            }
+                            // SemaphoreSlim.WaitAsync returns false on timeout (no exception).
+                            await _anyResponseCompleted.WaitAsync(TimeSpan.FromMilliseconds(100), cancellationToken)
+                                .ConfigureAwait(false);
                         }
                     }
 
@@ -755,20 +760,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // any response to complete. Cannot use eventReader.WaitToReadAsync here
                     // because the channel may contain stale NewBatch events that cause
                     // immediate return, creating a spin loop when all carry-over is muted.
-                    // Signal-based TCS bypasses the channel and wakes exactly when a
+                    // Signal-based SemaphoreSlim bypasses the channel and wakes exactly when a
                     // response completes (which may unmute a partition).
                     // Signal may be missed if multiple responses complete between
                     // iterations; 100ms fallback ensures we don't wait indefinitely.
-                    try
-                    {
-                        await Volatile.Read(ref _anyResponseCompleted).Task
-                            .WaitAsync(TimeSpan.FromMilliseconds(100), cancellationToken)
-                            .ConfigureAwait(false);
-                    }
-                    catch (TimeoutException)
-                    {
-                        // Periodic wake-up — loop back to re-check responses and timeouts
-                    }
+                    // SemaphoreSlim.WaitAsync returns false on timeout (no exception).
+                    await _anyResponseCompleted.WaitAsync(TimeSpan.FromMilliseconds(100), cancellationToken)
+                        .ConfigureAwait(false);
                 }
                 else if (carryOver.Count > 0)
                 {
@@ -981,7 +979,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private void ProcessCompletedResponses(
         PartitionCarryOver carryOver,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? reusableResponseLookup = null)
     {
         // CRITICAL: Process responses in FORWARD order (oldest request first).
         // With multi-inflight, R1 and R2 may both complete with errors for the same partition.
@@ -1039,7 +1038,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var latencyMs = (long)(elapsedTicks * 1000.0 / Stopwatch.Frequency);
             _statisticsCollector.RecordResponseReceived(latencyMs);
 
-            Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? responseLookup = null;
+            // Reuse caller-provided dictionary to avoid per-response allocation.
+            // The dictionary is cleared after use in ProcessResponseBatches.
+            var responseLookup = reusableResponseLookup;
             foreach (var topicResp in response.Responses)
             {
                 foreach (var partResp in topicResp.PartitionResponses)
@@ -1051,6 +1052,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             ProcessResponseBatches(batches, count, responseLookup, requestStartTime,
                 carryOver, cancellationToken);
+
+            // Clear for reuse on next response (avoids per-response dictionary allocation)
+            responseLookup?.Clear();
 
             pending.ReturnBatchesArray();
         }
@@ -1594,7 +1598,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Signal the send loop to wake up and poll when the response arrives.
             // Only a lightweight signal — actual processing happens in ProcessCompletedResponses.
             // Two signal paths: (1) channel write for the main WaitToReadAsync path,
-            // (2) TCS rotation for the direct response-wait paths (replaces Task.WhenAny).
+            // (2) SemaphoreSlim release for the direct response-wait paths (replaces Task.WhenAny).
             //
             // Uses UnsafeOnCompleted with a cached Action delegate instead of ContinueWith
             // to avoid allocating a continuation Task on every pipelined send. The callback
@@ -2042,6 +2046,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         _cts.Dispose();
+        _anyResponseCompleted.Dispose();
     }
 
     private async Task ObserveMetadataRefreshAsync(string topic, CancellationToken cancellationToken)

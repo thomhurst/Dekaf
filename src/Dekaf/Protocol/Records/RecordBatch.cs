@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics.X86;
 using Dekaf.Compression;
@@ -186,15 +187,15 @@ public sealed class RecordBatch : IDisposable
         return buffer;
     }
 
-    public long BaseOffset { get; init; }
-    public int BatchLength { get; init; }
-    public int PartitionLeaderEpoch { get; init; } = -1;
-    public byte Magic { get; init; } = 2;
-    public uint Crc { get; init; }
-    public RecordBatchAttributes Attributes { get; init; }
-    public int LastOffsetDelta { get; init; }
-    public long BaseTimestamp { get; init; }
-    public long MaxTimestamp { get; init; }
+    public long BaseOffset { get; set; }
+    public int BatchLength { get; set; }
+    public int PartitionLeaderEpoch { get; set; } = -1;
+    public byte Magic { get; set; } = 2;
+    public uint Crc { get; set; }
+    public RecordBatchAttributes Attributes { get; set; }
+    public int LastOffsetDelta { get; set; }
+    public long BaseTimestamp { get; set; }
+    public long MaxTimestamp { get; set; }
     public long ProducerId { get; set; } = -1;
     public short ProducerEpoch { get; set; } = -1;
     public int BaseSequence { get; set; } = -1;
@@ -203,7 +204,7 @@ public sealed class RecordBatch : IDisposable
     /// The records in this batch. For batches created via Read(), records are parsed lazily
     /// on first enumeration to avoid allocations for unconsumed records.
     /// </summary>
-    public required IReadOnlyList<Record> Records { get; init; }
+    public IReadOnlyList<Record> Records { get; set; } = null!;
 
     /// <summary>
     /// Pre-compressed records data. When set, <see cref="Write"/> skips compression
@@ -291,6 +292,55 @@ public sealed class RecordBatch : IDisposable
         }
     }
 
+    // ── Pool for producer-path RecordBatch reuse ──
+    // Eliminates per-batch class allocation (~120 bytes) that survives Gen0 due to
+    // its lifetime spanning the send pipeline (1-10ms), contributing to high Gen1/Gen0 ratio.
+    private static readonly ConcurrentStack<RecordBatch> s_pool = new();
+    private const int MaxPoolSize = 128;
+
+    /// <summary>
+    /// Rents a RecordBatch from the pool or creates a new one.
+    /// Caller must call <see cref="ReturnToPool"/> after the batch is fully processed.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static RecordBatch RentFromPool()
+    {
+        if (s_pool.TryPop(out var batch))
+            return batch;
+        return new RecordBatch();
+    }
+
+    /// <summary>
+    /// Returns this RecordBatch to the pool for reuse. Clears all references to avoid
+    /// holding onto Records data. Caller must call <see cref="ReturnPreCompressedBuffer"/>
+    /// before this method to return any pooled compression buffers.
+    /// </summary>
+    internal void ReturnToPool()
+    {
+        // Clear references to avoid holding onto GC-tracked objects
+        Records = null!;
+        PreCompressedRecords = null;
+        PreCompressedLength = 0;
+        PreCompressedType = CompressionType.None;
+
+        // Reset mutable state to defaults
+        BaseOffset = 0;
+        BatchLength = 0;
+        PartitionLeaderEpoch = -1;
+        Magic = 2;
+        Crc = 0;
+        Attributes = RecordBatchAttributes.None;
+        LastOffsetDelta = 0;
+        BaseTimestamp = 0;
+        MaxTimestamp = 0;
+        ProducerId = -1;
+        ProducerEpoch = -1;
+        BaseSequence = -1;
+
+        if (s_pool.Count < MaxPoolSize)
+            s_pool.Push(this);
+    }
+
     /// <summary>
     /// Creates a new RecordBatch with updated producer state (PID, epoch, base sequence).
     /// All other fields are copied from this instance. Records reference is shared (immutable).
@@ -299,22 +349,20 @@ public sealed class RecordBatch : IDisposable
     /// </summary>
     internal RecordBatch WithProducerState(long producerId, short producerEpoch, int baseSequence)
     {
-        var batch = new RecordBatch
-        {
-            BaseOffset = BaseOffset,
-            BatchLength = BatchLength,
-            PartitionLeaderEpoch = PartitionLeaderEpoch,
-            Magic = Magic,
-            Crc = 0, // Will be recomputed during Write()
-            Attributes = Attributes,
-            LastOffsetDelta = LastOffsetDelta,
-            BaseTimestamp = BaseTimestamp,
-            MaxTimestamp = MaxTimestamp,
-            ProducerId = producerId,
-            ProducerEpoch = producerEpoch,
-            BaseSequence = baseSequence,
-            Records = Records
-        };
+        var batch = RentFromPool();
+        batch.BaseOffset = BaseOffset;
+        batch.BatchLength = BatchLength;
+        batch.PartitionLeaderEpoch = PartitionLeaderEpoch;
+        batch.Magic = Magic;
+        batch.Crc = 0; // Will be recomputed during Write()
+        batch.Attributes = Attributes;
+        batch.LastOffsetDelta = LastOffsetDelta;
+        batch.BaseTimestamp = BaseTimestamp;
+        batch.MaxTimestamp = MaxTimestamp;
+        batch.ProducerId = producerId;
+        batch.ProducerEpoch = producerEpoch;
+        batch.BaseSequence = baseSequence;
+        batch.Records = Records;
 
         // Transfer pre-compressed data — records content is unchanged,
         // only header fields differ (CRC is recomputed in Write()).
