@@ -160,11 +160,15 @@ public sealed class DuplexPipeTests
         // Now kill the server mid-operation — simulates broker crash
         await serverStream.DisposeAsync();
 
-        // Write more data — the direct PipeWriter will fail when flushing to the broken stream.
-        // The failure surfaces either as FlushAsync returning IsCompleted or throwing IOException.
+        // Write data until the write pump detects the broken stream. The error surfaces
+        // either as FlushAsync returning IsCompleted or throwing IOException. We write
+        // in a loop because the OS TCP send buffer may absorb several writes before the
+        // broken connection is detected. Use a timeout to avoid hanging if the buffer
+        // is unexpectedly large on some CI hosts.
         var errorDetected = false;
         var largeData = new byte[65536];
-        for (var i = 0; i < 10 && !errorDetected; i++)
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (!errorDetected && !cts.IsCancellationRequested)
         {
             try
             {
@@ -172,13 +176,17 @@ public sealed class DuplexPipeTests
                 largeData.CopyTo(memory);
                 pipe.Output.Advance(largeData.Length);
 
-                var flushResult = await pipe.Output.FlushAsync();
+                var flushResult = await pipe.Output.FlushAsync(cts.Token);
                 if (flushResult.IsCompleted)
                     errorDetected = true;
             }
             catch (IOException)
             {
                 errorDetected = true;
+            }
+            catch (OperationCanceledException)
+            {
+                break;
             }
         }
 

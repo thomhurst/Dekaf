@@ -108,9 +108,10 @@ internal sealed class DuplexPipe : IAsyncDisposable
                 }
                 finally
                 {
-                    // Safe even on partial write failure: any exception propagates to the
-                    // outer catch, which completes the pipe with the error and tears down
-                    // the connection. The partially-consumed data is never re-read.
+                    // Safe even on partial write failure (including multi-segment buffers
+                    // where only some segments were written before the stream threw): the
+                    // exception propagates to the outer catch, which completes the pipe with
+                    // the error and tears down the connection. Unwritten data is never re-read.
                     _outputPipe.Reader.AdvanceTo(buffer.End);
                 }
 
