@@ -48,7 +48,7 @@ def find_confluent_baseline(results):
             rate = r.get('throughput', {}).get('averageMessagesPerSecond', 0)
             if rate > 0:
                 return rate
-    return min(r.get('throughput', {}).get('averageMessagesPerSecond', 1) for r in results)
+    return min((r.get('throughput', {}).get('averageMessagesPerSecond', 1) for r in results), default=1)
 
 
 def format_throughput_table(results, title, include_ratio=False):
@@ -70,7 +70,7 @@ def format_throughput_table(results, title, include_ratio=False):
         lines.append("| Client | Messages/sec | MB/sec | Total | Errors |")
         lines.append("|--------|--------------|--------|-------|--------|")
 
-    baseline = find_confluent_baseline(results)
+    baseline = find_confluent_baseline(results) if include_ratio else 0
     sorted_results = sorted(results, key=lambda r: r.get('throughput', {}).get('averageMessagesPerSecond', 0), reverse=True)
 
     for r in sorted_results:
@@ -125,13 +125,13 @@ def format_comparison_callout(results, title):
     return lines
 
 
-def format_gc_table(results):
+def format_gc_table(results, title="GC Statistics"):
     """Generate a markdown GC statistics table."""
     if not results:
         return []
 
     lines = []
-    lines.append("## GC Statistics")
+    lines.append(f"## {title}")
     lines.append("")
     lines.append("| Client | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated |")
     lines.append("|--------|----------|------|------|------|-----------------|")
@@ -152,18 +152,12 @@ def generate_scenario_tables(results, include_ratio=False, include_callout=False
     producer_scenarios, consumer_scenarios = group_by_scenario(results)
     output = []
 
-    for scenario_key in sorted(producer_scenarios):
-        title = scenario_title(scenario_key, 'Producer ')
-        scenario_results = producer_scenarios[scenario_key]
-        output.extend(format_throughput_table(scenario_results, f"{title} Throughput", include_ratio=include_ratio))
-        if include_callout:
-            output.extend(format_comparison_callout(scenario_results, title))
-
-    for scenario_key in sorted(consumer_scenarios):
-        title = scenario_title(scenario_key, 'Consumer ')
-        scenario_results = consumer_scenarios[scenario_key]
-        output.extend(format_throughput_table(scenario_results, f"{title} Throughput", include_ratio=include_ratio))
-        if include_callout:
-            output.extend(format_comparison_callout(scenario_results, title))
+    for scenarios, fallback_prefix in [(producer_scenarios, 'Producer '), (consumer_scenarios, 'Consumer ')]:
+        for scenario_key in sorted(scenarios):
+            title = scenario_title(scenario_key, fallback_prefix)
+            scenario_results = scenarios[scenario_key]
+            output.extend(format_throughput_table(scenario_results, f"{title} Throughput", include_ratio=include_ratio))
+            if include_callout:
+                output.extend(format_comparison_callout(scenario_results, title))
 
     return output

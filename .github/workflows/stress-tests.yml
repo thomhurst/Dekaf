@@ -308,12 +308,7 @@ jobs:
                   results = data.get('results', [])
 
                   output.extend(generate_scenario_tables(results, include_callout=True))
-
-                  # GC Stats (with "Memory &" prefix for docs)
-                  gc_lines = format_gc_table(results)
-                  if gc_lines:
-                      gc_lines[0] = "## Memory & GC Statistics"
-                      output.extend(gc_lines)
+                  output.extend(format_gc_table(results, title="Memory & GC Statistics"))
 
               except Exception as e:
                   print(f"Error processing results: {e}")
