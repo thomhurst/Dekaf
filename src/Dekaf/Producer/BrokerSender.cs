@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -308,6 +307,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // one connection, all produce requests are pipelined on the same TCP stream.
     private IKafkaConnection? _pinnedConnection;
 
+    /// <summary>
+    /// Signal-based completion notification: rotated TCS that gets signaled when any
+    /// response task completes. Replaces Task.WhenAny polling to avoid per-wait
+    /// continuation allocations for every in-flight task.
+    /// </summary>
+    private TaskCompletionSource _anyResponseCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private volatile bool _disposed;
 
     public BrokerSender(
@@ -422,9 +428,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var carryOver = new PartitionCarryOver();
         var drainList = new List<ReadyBatch>();
 
-        ReadyBatch[]? coalescedBatches = null;
+        var coalescedBatches = new ReadyBatch[maxCoalesce];
         var coalescedCount = 0;
-        var reusableResponseTasks = new List<Task>(_maxInFlight);
+
+        var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         try
         {
@@ -486,7 +493,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // ── 5. Coalesce ──
                 coalescedPartitions.Clear();
                 coalescedCount = 0;
-                coalescedBatches = ArrayPool<ReadyBatch>.Shared.Rent(maxCoalesce);
 
                 // Drain carry-over into temp list for iteration. Per-partition FIFO order
                 // ensures oldest batch per partition is seen first (Java's Deque.pollFirst).
@@ -558,14 +564,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // contain unread NewBatch events that cause immediate (synchronous)
                             // return, creating a spin loop that starves the thread pool and
                             // prevents I/O completion callbacks from running.
-                            // Uses a 100ms periodic wake-up to re-sweep delivery timeouts
-                            // for zombie entries that expire while we're waiting.
-                            reusableResponseTasks.Clear();
-                            for (var i = 0; i < _pendingResponses.Count; i++)
-                                reusableResponseTasks.Add(_pendingResponses[i].ResponseTask);
+                            // Uses a signal-based TCS that gets signaled when any response
+                            // completes, with a 100ms periodic wake-up to re-sweep delivery
+                            // timeouts for zombie entries that expire while we're waiting.
                             try
                             {
-                                await Task.WhenAny(reusableResponseTasks)
+                                await _anyResponseCompleted.Task
                                     .WaitAsync(TimeSpan.FromMilliseconds(100), cancellationToken)
                                     .ConfigureAwait(false);
                             }
@@ -626,8 +630,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             else
                                 carryOver.AddAfterRetries(coalescedBatches[i]);
                         }
-                        ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
-                        coalescedBatches = null;
+                        Array.Clear(coalescedBatches, 0, coalescedCount);
                         coalescedCount = 0;
                         continue;
                     }
@@ -641,9 +644,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         LogSendingCoalesced(_brokerId, coalescedCount);
                         for (var si = 0; si < coalescedCount; si++)
                             coalescedBatches[si].AppendDiag('S');
-                        var batchesToSend = coalescedBatches;
+                        // Copy to a dedicated array for SendCoalescedAsync, which may store it
+                        // in PendingResponse beyond this iteration. The pre-allocated scratch
+                        // array stays with the loop for reuse.
+                        var batchesToSend = new ReadyBatch[coalescedCount];
+                        coalescedBatches.AsSpan(0, coalescedCount).CopyTo(batchesToSend);
                         var countToSend = coalescedCount;
-                        coalescedBatches = null;
+                        Array.Clear(coalescedBatches, 0, coalescedCount);
                         coalescedCount = 0;
                         // Send timeout: if SendCoalescedAsync hangs (connection issues,
                         // stale sockets), the CTS cancellation triggers the Z path (retry/fail)
@@ -652,7 +659,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // SendCoalescedAsync accesses _pendingResponses and _sendFailedRetries
                         // which are not thread-safe.
                         {
-                            using var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                            if (!sendTimeoutCts.TryReset())
+                            {
+                                sendTimeoutCts.Dispose();
+                                sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                            }
                             sendTimeoutCts.CancelAfter(SendCoalescedTimeoutMs);
                             await SendCoalescedAsync(batchesToSend, countToSend, sendTimeoutCts.Token)
                                 .ConfigureAwait(false);
@@ -662,17 +673,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     else
                     {
                         // coalescedCount dropped to 0 (all batches moved to carry-over for
-                        // muted partitions). Return the rented array; nothing to send.
-                        ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
-                        coalescedBatches = null;
+                        // muted partitions). Nothing to send; array already cleared by
+                        // the muting loop above.
                         coalescedCount = 0;
                     }
                 }
                 else
                 {
-                    // No batches were coalesced at all — return the rented array.
-                    ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
-                    coalescedBatches = null;
+                    // No batches were coalesced at all — nothing to clear.
                     coalescedCount = 0;
                 }
 
@@ -695,14 +703,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // any response to complete. Cannot use eventReader.WaitToReadAsync here
                     // because the channel may contain stale NewBatch events that cause
                     // immediate return, creating a spin loop when all carry-over is muted.
-                    // Direct Task.WhenAny on response tasks bypasses the channel and wakes
-                    // exactly when a response completes (which may unmute a partition).
-                    reusableResponseTasks.Clear();
-                    for (var i = 0; i < _pendingResponses.Count; i++)
-                        reusableResponseTasks.Add(_pendingResponses[i].ResponseTask);
+                    // Signal-based TCS bypasses the channel and wakes exactly when a
+                    // response completes (which may unmute a partition).
                     try
                     {
-                        await Task.WhenAny(reusableResponseTasks)
+                        await _anyResponseCompleted.Task
                             .WaitAsync(TimeSpan.FromMilliseconds(100), cancellationToken)
                             .ConfigureAwait(false);
                     }
@@ -734,6 +739,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         catch (Exception ex) { LogSendLoopFailed(ex, _brokerId); }
         finally
         {
+            sendTimeoutCts.Dispose();
             _eventChannel.Writer.TryComplete();
 
             var disposedException = new ObjectDisposedException(nameof(BrokerSender));
@@ -756,21 +762,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                     }
                 }
-                ArrayPool<ReadyBatch>.Shared.Return(pr.Batches, clearArray: true);
+                Array.Clear(pr.Batches);
             }
             _pendingResponses.Clear();
 
             FailCarryOverBatches(carryOver);
 
-            if (coalescedBatches is not null)
+            for (var i = 0; i < coalescedCount; i++)
             {
-                for (var i = 0; i < coalescedCount; i++)
-                {
-                    try { FailAndCleanupBatch(coalescedBatches[i], disposedException); }
-                    catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-                }
-                ArrayPool<ReadyBatch>.Shared.Return(coalescedBatches, clearArray: true);
+                try { FailAndCleanupBatch(coalescedBatches[i], disposedException); }
+                catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
             }
+            Array.Clear(coalescedBatches, 0, coalescedCount);
 
             // Drain remaining events — only NewBatch events carry batches that need cleanup.
             // ResponseReady and Unmute events are lightweight signals with no data.
@@ -973,7 +976,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
-                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+                Array.Clear(batches);
                 continue;
             }
 
@@ -995,7 +998,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ProcessResponseBatches(batches, count, responseLookup, requestStartTime,
                 carryOver, cancellationToken);
 
-            ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+            Array.Clear(batches);
         }
 
         // Compact: remove processed entries from the end
@@ -1211,7 +1214,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            ArrayPool<ReadyBatch>.Shared.Return(pending.Batches, clearArray: true);
+            Array.Clear(pending.Batches);
         }
 
         // Remove all entries. Response tasks are orphaned — they'll eventually complete
@@ -1486,7 +1489,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     CleanupBatch(batches[i]);
                 }
 
-                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+                Array.Clear(batches);
                 return;
             }
 
@@ -1523,10 +1526,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Signal the send loop to wake up and poll when the response arrives.
             // Only a lightweight signal — actual processing happens in ProcessCompletedResponses.
+            // Two signal paths: (1) channel write for the main WaitToReadAsync path,
+            // (2) TCS rotation for the direct response-wait paths (replaces Task.WhenAny).
             _ = responseTask.ContinueWith(static (_, state) =>
             {
-                ((ChannelWriter<SendLoopEvent>)state!).TryWrite(SendLoopEvent.ResponseReady());
-            }, _eventChannel.Writer,
+                var (writer, sender) = ((ChannelWriter<SendLoopEvent>, BrokerSender))state!;
+                writer.TryWrite(SendLoopEvent.ResponseReady());
+                Interlocked.Exchange(ref sender._anyResponseCompleted,
+                        new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously))
+                    .TrySetResult();
+            }, (_eventChannel.Writer, this),
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
@@ -1555,7 +1564,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             for (var i = 0; i < count; i++)
                 FailAndCleanupBatch(batches[i], new ObjectDisposedException(nameof(BrokerSender)));
 
-            ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+            Array.Clear(batches);
         }
         catch (Exception ex)
         {
@@ -1611,7 +1620,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
+            Array.Clear(batches);
         }
     }
 
@@ -1884,7 +1893,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         FailAndCleanupBatch(pr.Batches[j], new ObjectDisposedException(nameof(BrokerSender)));
                 }
 
-                ArrayPool<ReadyBatch>.Shared.Return(pr.Batches, clearArray: true);
+                Array.Clear(pr.Batches);
             }
 
             _pendingResponses.Clear();

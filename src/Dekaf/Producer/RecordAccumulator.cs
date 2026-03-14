@@ -722,8 +722,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // in TryReserveMemory(). This reduces contention under heavy backpressure.
     private readonly AutoResetEvent _bufferSpaceAvailable = new(true); // Initially signaled (space available)
     private readonly CancellationTokenSource _disposalCts = new();
-    // Cached WaitHandle array for WaitAny in ReserveMemorySync — initialized in constructor.
-    private readonly WaitHandle[] _syncWaitHandles;
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
     private readonly SemaphoreSlim _asyncBufferSpaceSignal = new(0, 1);
@@ -1024,7 +1022,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _batchPool = new PartitionBatchPool(options);
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = options.BufferMemory;
-        _syncWaitHandles = [_bufferSpaceAvailable, _disposalCts.Token.WaitHandle];
 
         // Create per-partition-affine append worker channels.
         // Each channel is SingleReader (one worker) but allows multiple writers (caller threads).
@@ -1663,13 +1660,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 throw new OperationCanceledException(_disposalCts.Token);
             }
 
-            // Wait for signal from ReleaseMemory, disposal cancellation, or timeout.
-            // AutoResetEvent.WaitOne doesn't accept CancellationToken, so use WaitAny
-            // with the disposal CTS WaitHandle for prompt cancellation detection.
-            var waitResult = WaitHandle.WaitAny(_syncWaitHandles, (int)Math.Min(remainingMs, int.MaxValue));
+            // Wait for signal from ReleaseMemory or timeout, capping at 100ms to
+            // periodically recheck the disposal flag. This avoids WaitHandle.WaitAny
+            // overhead (which allocates internally and has higher kernel transition cost).
+            _bufferSpaceAvailable.WaitOne((int)Math.Min(remainingMs, 100));
 
-            // waitResult == 1 means the disposal token was signaled
-            if (waitResult == 1 && _disposed)
+            if (_disposed)
             {
                 throw new OperationCanceledException(_disposalCts.Token);
             }
