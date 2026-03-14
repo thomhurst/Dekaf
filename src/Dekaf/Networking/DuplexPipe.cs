@@ -15,6 +15,8 @@ internal sealed class DuplexPipe : IAsyncDisposable
     private readonly Pipe _outputPipe;
     private readonly Task _readPumpTask;
     private readonly Task _writePumpTask;
+    private readonly int _readBufferSize;
+    private volatile bool _disposed;
 
     /// <summary>
     /// The application-facing reader. <see cref="ReceiveLoopAsync"/> reads responses from here.
@@ -28,11 +30,12 @@ internal sealed class DuplexPipe : IAsyncDisposable
     /// </summary>
     public PipeWriter Output => _outputPipe.Writer;
 
-    public DuplexPipe(Stream stream, PipeOptions inputPipeOptions, PipeOptions outputPipeOptions)
+    public DuplexPipe(Stream stream, PipeOptions inputPipeOptions, PipeOptions outputPipeOptions, int readBufferSize = 65536)
     {
         _stream = stream;
         _inputPipe = new Pipe(inputPipeOptions);
         _outputPipe = new Pipe(outputPipeOptions);
+        _readBufferSize = readBufferSize;
 
         // Start pump tasks inline — they yield at their first await
         _readPumpTask = ReadPumpAsync();
@@ -46,7 +49,7 @@ internal sealed class DuplexPipe : IAsyncDisposable
         {
             while (true)
             {
-                var memory = _inputPipe.Writer.GetMemory(4096);
+                var memory = _inputPipe.Writer.GetMemory(_readBufferSize);
                 var bytesRead = await _stream.ReadAsync(memory).ConfigureAwait(false);
 
                 if (bytesRead == 0)
@@ -106,6 +109,11 @@ internal sealed class DuplexPipe : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
         // Signal pumps to stop via pipe completion
         await _inputPipe.Reader.CompleteAsync().ConfigureAwait(false);
         await _outputPipe.Writer.CompleteAsync().ConfigureAwait(false);

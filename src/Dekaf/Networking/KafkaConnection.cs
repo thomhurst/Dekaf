@@ -252,7 +252,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
             minimumSegmentSize: _options.MinimumSegmentSize,
             useSynchronizationContext: false);
 
-        _duplexPipe = new DuplexPipe(_stream, inputPipeOptions, outputPipeOptions);
+        var readBufferSize = _options.ReceiveBufferSize > 0 ? _options.ReceiveBufferSize : 65536;
+        _duplexPipe = new DuplexPipe(_stream, inputPipeOptions, outputPipeOptions, readBufferSize);
 
         _receiveCts = new CancellationTokenSource();
         _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
