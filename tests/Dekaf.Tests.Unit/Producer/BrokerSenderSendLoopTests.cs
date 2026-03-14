@@ -671,6 +671,59 @@ public sealed class BrokerSenderSendLoopTests
 
     [Test]
     [Timeout(30_000)]
+    public async Task SendLoop_AlreadyCompletedResponse_ProcessedViaSynchronousFastPath(CancellationToken cancellationToken)
+    {
+        // Verifies the `if (responseTask.IsCompleted)` fast path in the send loop.
+        // When the mock connection returns a Task that is already completed (via Task.FromResult),
+        // the send loop should process the response synchronously without scheduling an
+        // UnsafeOnCompleted callback. The batch should be acknowledged successfully.
+
+        var successResponse = CreateSuccessResponse("test-topic", 0, baseOffset: 77);
+
+        var connection = Substitute.For<IKafkaConnection>();
+        connection.IsConnected.Returns(true);
+        connection.BrokerId.Returns(1);
+
+        connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
+                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(successResponse));
+
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+
+        var acknowledged = new TaskCompletionSource<(long offset, int count)>();
+
+        var sender = CreateSender(pool, options, accumulator, (tp, offset, _, count, ex) =>
+        {
+            if (ex is null)
+                acknowledged.TrySetResult((offset, count));
+        });
+
+        try
+        {
+            var batch = CreateTestBatch(vtPool, "test-topic", 0);
+            await sender.EnqueueAsync(batch, CancellationToken.None);
+
+            // The response is already complete, so acknowledgement should happen very quickly
+            var result = await acknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            await Assert.That(result.offset).IsEqualTo(77);
+            await Assert.That(result.count).IsEqualTo(1);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
     public async Task SendLoop_HungResponseWithExpiredBatches_FreesCapacitySlot(CancellationToken cancellationToken)
     {
         // Regression test: when a response task never completes (hung connection),
