@@ -3,18 +3,22 @@ using System.IO.Pipelines;
 namespace Dekaf.Networking;
 
 /// <summary>
-/// Decouples reading from a <see cref="Stream"/> by pumping data into an internal <see cref="Pipe"/>,
-/// while writing goes directly to the stream via <see cref="PipeWriter.Create(Stream, StreamPipeWriterOptions?)"/>.
-/// This avoids a known .NET issue where concurrent <c>StreamPipeReader</c> + <c>StreamPipeWriter</c>
-/// on the same stream causes <c>PipeReader.ReadAsync</c> to block indefinitely.
-/// Only the read path needs the pump — the write path was never affected by the bug.
+/// Bridges a <see cref="Stream"/> to two internal <see cref="Pipe"/> objects with async pump loops,
+/// following the Kestrel SocketConnection pattern. This avoids a known .NET issue where concurrent
+/// <c>StreamPipeReader</c> + <c>StreamPipeWriter</c> on the same stream causes
+/// <c>PipeReader.ReadAsync</c> to block indefinitely.
+///
+/// Both pipes use <see cref="PipeScheduler.Inline"/> for the consumer-side scheduler so that
+/// continuations run inline without thread pool dispatch — matching the original direct
+/// <c>PipeReader.Create</c>/<c>PipeWriter.Create</c> latency characteristics.
 /// </summary>
 internal sealed class DuplexPipe : IAsyncDisposable
 {
     private readonly Stream _stream;
     private readonly Pipe _inputPipe;
-    private readonly PipeWriter _writer;
+    private readonly Pipe _outputPipe;
     private readonly Task _readPumpTask;
+    private readonly Task _writePumpTask;
     private readonly int _readBufferSize;
     private int _disposed;
 
@@ -25,24 +29,21 @@ internal sealed class DuplexPipe : IAsyncDisposable
     public PipeReader Input => _inputPipe.Reader;
 
     /// <summary>
-    /// The application-facing writer. Writes go directly to the stream via
-    /// <see cref="PipeWriter.Create(Stream, StreamPipeWriterOptions?)"/> — no pump needed.
+    /// The application-facing writer. Data written here is drained to the stream
+    /// by the write pump.
     /// </summary>
-    public PipeWriter Output => _writer;
+    public PipeWriter Output => _outputPipe.Writer;
 
-    public DuplexPipe(
-        Stream stream,
-        PipeOptions inputPipeOptions,
-        StreamPipeWriterOptions writerOptions,
-        int readBufferSize = 65536)
+    public DuplexPipe(Stream stream, PipeOptions inputPipeOptions, PipeOptions outputPipeOptions, int readBufferSize = 65536)
     {
         _stream = stream;
         _inputPipe = new Pipe(inputPipeOptions);
-        _writer = PipeWriter.Create(stream, writerOptions);
+        _outputPipe = new Pipe(outputPipeOptions);
         _readBufferSize = readBufferSize;
 
-        // Start pump task inline — it yields at its first await
+        // Start pump tasks inline — they yield at their first await
         _readPumpTask = ReadPumpAsync();
+        _writePumpTask = WritePumpAsync();
     }
 
     private async Task ReadPumpAsync()
@@ -76,35 +77,81 @@ internal sealed class DuplexPipe : IAsyncDisposable
         }
     }
 
+    private async Task WritePumpAsync()
+    {
+        Exception? error = null;
+        try
+        {
+            while (true)
+            {
+                var readResult = await _outputPipe.Reader.ReadAsync().ConfigureAwait(false);
+                var buffer = readResult.Buffer;
+
+                try
+                {
+                    if (!buffer.IsEmpty)
+                    {
+                        if (buffer.IsSingleSegment)
+                        {
+                            await _stream.WriteAsync(buffer.First).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            foreach (var segment in buffer)
+                            {
+                                await _stream.WriteAsync(segment).ConfigureAwait(false);
+                            }
+                        }
+
+                        await _stream.FlushAsync().ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    // Safe even on partial write failure: any exception propagates to the
+                    // outer catch, which completes the pipe with the error and tears down
+                    // the connection. The partially-consumed data is never re-read.
+                    _outputPipe.Reader.AdvanceTo(buffer.End);
+                }
+
+                if (readResult.IsCompleted)
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            error = ex;
+        }
+        finally
+        {
+            await _outputPipe.Reader.CompleteAsync(error).ConfigureAwait(false);
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        // Complete the direct writer so no more data can be sent.
-        // StreamPipeWriter.CompleteAsync may throw if it tries to flush pending data
-        // to an already-broken stream — catch and continue with disposal.
-        try
-        {
-            await _writer.CompleteAsync().ConfigureAwait(false);
-        }
-        catch
-        {
-            // Stream already broken (e.g. peer disconnected) — safe to ignore
-        }
+        // Signal the write pump to stop: completing the writer causes the write pump's
+        // _outputPipe.Reader.ReadAsync to return IsCompleted=true. This is necessary because
+        // the write pump reads from the pipe (not the stream), so stream disposal alone
+        // won't unblock it if it's waiting for more data.
+        await _outputPipe.Writer.CompleteAsync().ConfigureAwait(false);
 
-        // Dispose the stream to abort any pending _stream.ReadAsync in the read pump.
-        // The read pump's finally block then calls _inputPipe.Writer.CompleteAsync.
+        // Dispose the stream to abort any pending _stream.ReadAsync/_stream.WriteAsync calls
+        // in the pump tasks. The read pump is blocked on _stream.ReadAsync, so this is what
+        // unblocks it (the read pump's finally block then calls _inputPipe.Writer.CompleteAsync).
         await _stream.DisposeAsync().ConfigureAwait(false);
 
-        // Wait for the read pump to finish (observe exceptions from stream abort)
+        // Wait for pumps to finish (observe exceptions from stream abort)
         try
         {
-            await _readPumpTask.ConfigureAwait(false);
+            await Task.WhenAll(_readPumpTask, _writePumpTask).ConfigureAwait(false);
         }
         catch
         {
-            // Read pump exceptions are expected during shutdown (e.g. stream disposed)
+            // Pump exceptions are expected during shutdown (e.g. stream disposed)
         }
     }
 }
