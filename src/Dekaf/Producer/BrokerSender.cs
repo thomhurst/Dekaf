@@ -426,6 +426,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     internal bool IsAlive => !_sendLoopTask.IsCompleted;
 
     /// <summary>
+    /// Requests cancellation of this BrokerSender's send loop without waiting for it to exit.
+    /// Called during forceful shutdown so all BrokerSender loops begin exiting concurrently
+    /// before DisposeAsync awaits each one.
+    /// </summary>
+    internal void RequestCancellation()
+    {
+        _eventChannel.Writer.TryComplete();
+        _cts.Cancel();
+    }
+
+    /// <summary>
     /// Enqueues a batch for sending to this broker.
     /// TryWrite on the unbounded event channel always succeeds unless the channel is completed
     /// (send loop exited). BufferMemory provides the backpressure — the channel does not need bounding.
