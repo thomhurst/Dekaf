@@ -205,6 +205,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// for the same partition — preserves FIFO among retries while keeping
         /// them ahead of newer non-retry carry-over batches.
         /// </summary>
+        /// <remarks>
+        /// The scan + insert is O(n^2) worst case, but acceptable given typical
+        /// per-partition queue sizes of 1-3 items.
+        /// </remarks>
         public void AddAfterRetries(ReadyBatch batch)
         {
             var queue = GetOrCreateQueue(batch.TopicPartition);
@@ -408,13 +412,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _responseCompletionCallback = () =>
         {
             _eventChannel.Writer.TryWrite(SendLoopEvent.ResponseReady());
-            // Release the semaphore if it's at 0 (not already signaled).
-            // CurrentCount check avoids SemaphoreFullException without try/catch overhead.
-            if (_anyResponseCompleted.CurrentCount == 0)
-            {
-                try { _anyResponseCompleted.Release(); }
-                catch (SemaphoreFullException) { /* Already signaled — benign race */ }
-            }
+            try { _anyResponseCompleted.Release(); }
+            catch (SemaphoreFullException) { /* Already signaled — benign race */ }
         };
         _cts = new CancellationTokenSource();
         _sendLoopTask = SendLoopAsync(_cts.Token);

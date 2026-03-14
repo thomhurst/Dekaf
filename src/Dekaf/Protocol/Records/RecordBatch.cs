@@ -187,15 +187,15 @@ public sealed class RecordBatch : IDisposable
         return buffer;
     }
 
-    public long BaseOffset { get; set; }
-    public int BatchLength { get; set; }
-    public int PartitionLeaderEpoch { get; set; } = -1;
-    public byte Magic { get; set; } = 2;
-    public uint Crc { get; set; }
-    public RecordBatchAttributes Attributes { get; set; }
-    public int LastOffsetDelta { get; set; }
-    public long BaseTimestamp { get; set; }
-    public long MaxTimestamp { get; set; }
+    public long BaseOffset { get; internal set; }
+    public int BatchLength { get; internal set; }
+    public int PartitionLeaderEpoch { get; internal set; } = -1;
+    public byte Magic { get; internal set; } = 2;
+    public uint Crc { get; internal set; }
+    public RecordBatchAttributes Attributes { get; internal set; }
+    public int LastOffsetDelta { get; internal set; }
+    public long BaseTimestamp { get; internal set; }
+    public long MaxTimestamp { get; internal set; }
     public long ProducerId { get; set; } = -1;
     public short ProducerEpoch { get; set; } = -1;
     public int BaseSequence { get; set; } = -1;
@@ -204,7 +204,7 @@ public sealed class RecordBatch : IDisposable
     /// The records in this batch. For batches created via Read(), records are parsed lazily
     /// on first enumeration to avoid allocations for unconsumed records.
     /// </summary>
-    public IReadOnlyList<Record> Records { get; set; } = null!;
+    public IReadOnlyList<Record> Records { get; internal set; } = null!;
 
     /// <summary>
     /// Pre-compressed records data. When set, <see cref="Write"/> skips compression
@@ -347,6 +347,11 @@ public sealed class RecordBatch : IDisposable
     /// CRC is recomputed automatically during Write().
     /// Used during epoch bump recovery to rewrite stale batches with new sequence numbers.
     /// </summary>
+    /// <remarks>
+    /// The caller must call <see cref="ReturnToPool"/> on the old batch (this instance)
+    /// after calling this method, since ownership of pooled resources (e.g. PreCompressedRecords)
+    /// is transferred to the new batch.
+    /// </remarks>
     internal RecordBatch WithProducerState(long producerId, short producerEpoch, int baseSequence)
     {
         var batch = RentFromPool();
