@@ -697,9 +697,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // problem where ManualResetEventSlim.Set() wakes ALL waiters but only one succeeds the CAS
     // in TryReserveMemory(). This reduces contention under heavy backpressure.
     private readonly AutoResetEvent _bufferSpaceAvailable = new(true); // Initially signaled (space available)
-    // Cached WaitHandle array for WaitAny in ReserveMemorySync — avoids per-call allocation.
-    private WaitHandle[]? _syncWaitHandles;
     private readonly CancellationTokenSource _disposalCts = new();
+    // Cached WaitHandle array for WaitAny in ReserveMemorySync — initialized in constructor.
+    private readonly WaitHandle[] _syncWaitHandles;
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
     private readonly SemaphoreSlim _asyncBufferSpaceSignal = new(0, 1);
@@ -822,7 +822,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             finally
             {
-                if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
+                if (lockTaken) pd.Lock.Exit();
             }
 
             if (head is null)
@@ -951,7 +951,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             finally
             {
-                if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
+                if (lockTaken) pd.Lock.Exit();
             }
 
             if (batch is not null)
@@ -983,7 +983,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
-            if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
+            if (lockTaken) pd.Lock.Exit();
         }
         SignalWakeup();
     }
@@ -1018,6 +1018,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _batchPool = new PartitionBatchPool(options);
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = options.BufferMemory;
+        _syncWaitHandles = [_bufferSpaceAvailable, _disposalCts.Token.WaitHandle];
 
         // Create per-partition-affine append worker channels.
         // Each channel is SingleReader (one worker) but allows multiple writers (caller threads).
@@ -1052,7 +1053,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             finally
             {
-                if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
+                if (lockTaken) pd.Lock.Exit();
             }
         }
 
@@ -1278,7 +1279,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
-            if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
+            if (lockTaken) pd.Lock.Exit();
         }
 
         if (batchSealed)
@@ -1361,7 +1362,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
-            if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
+            if (lockTaken) pd.Lock.Exit();
         }
 
         if (batchSealed)
@@ -1470,7 +1471,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
-            if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
+            if (lockTaken) pd.Lock.Exit();
         }
 
         if (batchSealed)
@@ -1683,14 +1684,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Wait for signal from ReleaseMemory, disposal cancellation, or timeout.
             // AutoResetEvent.WaitOne doesn't accept CancellationToken, so use WaitAny
             // with the disposal CTS WaitHandle for prompt cancellation detection.
-            var handles = _syncWaitHandles ??= [_bufferSpaceAvailable, _disposalCts.Token.WaitHandle];
-            var waitResult = WaitHandle.WaitAny(handles, (int)Math.Min(remainingMs, int.MaxValue));
+            var waitResult = WaitHandle.WaitAny(_syncWaitHandles, (int)Math.Min(remainingMs, int.MaxValue));
 
             // waitResult == 1 means the disposal token was signaled
             if (waitResult == 1 && _disposed)
             {
                 throw new OperationCanceledException(_disposalCts.Token);
             }
+        }
+
+        // Chain-wake: AutoResetEvent wakes only one waiter per Set(). If a large batch
+        // freed enough memory for multiple waiters, re-signal so the next waiter can try.
+        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+        {
+            try { _bufferSpaceAvailable.Set(); }
+            catch (ObjectDisposedException) { }
         }
     }
 
@@ -1934,7 +1942,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
                 finally
                 {
-                    if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
+                    if (lockTaken) pd.Lock.Exit();
                 }
             }
 
@@ -2063,7 +2071,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
                 finally
                 {
-                    if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
+                    if (lockTaken) pd.Lock.Exit();
                 }
             }
 
@@ -2362,7 +2370,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             finally
             {
-                if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
+                if (lockTaken) pd.Lock.Exit();
             }
         }
 
@@ -2408,7 +2416,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             finally
             {
-                if (lockTaken) pd.Lock.Exit(useMemoryBarrier: false);
+                if (lockTaken) pd.Lock.Exit();
             }
         }
 
