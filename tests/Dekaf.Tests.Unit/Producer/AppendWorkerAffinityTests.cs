@@ -129,10 +129,27 @@ public class AppendWorkerAffinityTests
 
         var deques = GetPartitionDeques(accumulator);
 
-        // Poll until workers have processed all partitions
+        // Poll until workers have created batches for ALL partitions.
+        // Checking deque count alone is insufficient — a deque entry can exist
+        // before the worker has created the batch (CurrentBatch is still null).
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (GetDequeCount(deques) < partitionCount && sw.ElapsedMilliseconds < 5000)
+        while (sw.ElapsedMilliseconds < 5000)
+        {
+            var allReady = true;
+            for (var p = 0; p < partitionCount; p++)
+            {
+                if (!HasBatchForPartition(deques, new TopicPartition("test-topic", p)))
+                {
+                    allReady = false;
+                    break;
+                }
+            }
+
+            if (allReady)
+                break;
+
             await Task.Delay(10);
+        }
 
         for (var p = 0; p < partitionCount; p++)
         {
