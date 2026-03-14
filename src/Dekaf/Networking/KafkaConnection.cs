@@ -156,7 +156,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     public int BrokerId { get; private set; } = -1;
     public string Host => _host;
     public int Port => _port;
-    public bool IsConnected => !_disposed && (_socket?.Connected ?? false);
+    public bool IsConnected => !_disposed && (_socket?.Connected ?? false) && _writer is not null;
 
     /// <summary>
     /// Gets the current SASL session state, if SASL authentication was performed.
