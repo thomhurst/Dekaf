@@ -1517,10 +1517,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 await connection.SendFireAndForgetWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
                     request, (short)apiVersion, cancellationToken).ConfigureAwait(false);
 
-                // Request serialized to wire — clear scratch references to avoid holding batch data
-                // On exception paths, stale RecordBatch references may persist in scratch arrays
-                // until the next Build() overwrites them. This is bounded by maxCoalesce entries
-                // and not a correctness issue due to ArraySegment slicing.
+                // Clear batch references from scratch arrays (see ClearReferences() doc for exception-path semantics)
                 scratch.ClearReferences();
 
                 var fireAndForgetTimestamp = DateTimeOffset.UtcNow;
@@ -1558,10 +1555,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var responseTask = connection.SendPipelinedWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
                 request, (short)apiVersion, cancellationToken);
 
-            // Request serialized to wire — clear scratch references to avoid holding batch data
-            // On exception paths, stale RecordBatch references may persist in scratch arrays
-            // until the next Build() overwrites them. This is bounded by maxCoalesce entries
-            // and not a correctness issue due to ArraySegment slicing.
+            // Clear batch references from scratch arrays (see ClearReferences() doc for exception-path semantics)
             scratch.ClearReferences();
 
             // Release buffer memory now that data is written to the TCP buffer.
