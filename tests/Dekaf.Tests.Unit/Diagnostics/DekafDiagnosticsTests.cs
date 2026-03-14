@@ -150,17 +150,21 @@ public sealed class DekafDiagnosticsTests
         activity!.SetTag(DekafDiagnostics.MessagingSystem, DekafDiagnostics.MessagingSystemValue);
         activity.SetTag(DekafDiagnostics.MessagingDestinationName, "my-topic");
         activity.SetTag(DekafDiagnostics.MessagingOperationType, "publish");
+        activity.SetTag(DekafDiagnostics.MessagingClientId, "my-producer");
         activity.SetTag(DekafDiagnostics.MessagingMessageKey, "order-123");
         activity.SetTag(DekafDiagnostics.MessagingDestinationPartitionId, "2");
         activity.SetTag(DekafDiagnostics.MessagingMessageOffset, "42");
+        activity.SetTag(DekafDiagnostics.MessagingMessageBodySize, 1024);
 
         var tags = activity.Tags.ToDictionary(t => t.Key, t => t.Value);
         await Assert.That(tags["messaging.system"]).IsEqualTo("kafka");
         await Assert.That(tags["messaging.destination.name"]).IsEqualTo("my-topic");
         await Assert.That(tags["messaging.operation.type"]).IsEqualTo("publish");
+        await Assert.That(tags["messaging.client.id"]).IsEqualTo("my-producer");
         await Assert.That(tags["messaging.kafka.message.key"]).IsEqualTo("order-123");
         await Assert.That(tags["messaging.destination.partition.id"]).IsEqualTo("2");
         await Assert.That(tags["messaging.kafka.message.offset"]).IsEqualTo("42");
+        await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsEqualTo(1024);
     }
 
     [Test]
@@ -180,16 +184,20 @@ public sealed class DekafDiagnosticsTests
         activity!.SetTag(DekafDiagnostics.MessagingSystem, DekafDiagnostics.MessagingSystemValue);
         activity.SetTag(DekafDiagnostics.MessagingDestinationName, "my-topic");
         activity.SetTag(DekafDiagnostics.MessagingOperationType, "receive");
+        activity.SetTag(DekafDiagnostics.MessagingClientId, "my-consumer");
         activity.SetTag(DekafDiagnostics.MessagingDestinationPartitionId, "0");
         activity.SetTag(DekafDiagnostics.MessagingMessageOffset, "100");
+        activity.SetTag(DekafDiagnostics.MessagingMessageBodySize, 512);
         activity.SetTag(DekafDiagnostics.MessagingConsumerGroupName, "my-group");
 
         var tags = activity.Tags.ToDictionary(t => t.Key, t => t.Value);
         await Assert.That(tags["messaging.system"]).IsEqualTo("kafka");
         await Assert.That(tags["messaging.destination.name"]).IsEqualTo("my-topic");
         await Assert.That(tags["messaging.operation.type"]).IsEqualTo("receive");
+        await Assert.That(tags["messaging.client.id"]).IsEqualTo("my-consumer");
         await Assert.That(tags["messaging.destination.partition.id"]).IsEqualTo("0");
         await Assert.That(tags["messaging.kafka.message.offset"]).IsEqualTo("100");
+        await Assert.That(activity.GetTagItem("messaging.message.body.size")).IsEqualTo(512);
         await Assert.That(tags["messaging.consumer.group.name"]).IsEqualTo("my-group");
     }
 
@@ -330,5 +338,34 @@ public sealed class DekafDiagnosticsTests
         var tags = activity!.Tags.ToDictionary(t => t.Key, t => t.Value);
         await Assert.That(tags).ContainsKey("messaging.kafka.message.key");
         await Assert.That(tags["messaging.kafka.message.key"]).IsEqualTo("42");
+    }
+
+    [Test]
+    public async Task RecordException_SetsStatusAndAddsEvent()
+    {
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DekafDiagnostics.ActivitySourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        using var activity = DekafDiagnostics.Source.StartActivity("test publish", ActivityKind.Producer);
+        await Assert.That(activity).IsNotNull();
+
+        var exception = new InvalidOperationException("test error");
+        DekafDiagnostics.RecordException(activity!, exception);
+
+        await Assert.That(activity!.Status).IsEqualTo(ActivityStatusCode.Error);
+        await Assert.That(activity.StatusDescription).IsEqualTo("test error");
+
+        var events = activity.Events.ToList();
+        await Assert.That(events).Count().IsEqualTo(1);
+        await Assert.That(events[0].Name).IsEqualTo("exception");
+
+        var eventTags = events[0].Tags.ToDictionary(t => t.Key, t => t.Value);
+        await Assert.That(eventTags["exception.type"]).IsEqualTo(typeof(InvalidOperationException).FullName);
+        await Assert.That(eventTags["exception.message"]).IsEqualTo("test error");
+        await Assert.That((string?)eventTags["exception.stacktrace"]).IsNotNull();
     }
 }
