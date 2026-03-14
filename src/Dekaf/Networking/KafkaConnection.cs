@@ -6,6 +6,7 @@ using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks.Sources;
 using Dekaf.Internal;
@@ -155,7 +156,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     public int BrokerId { get; private set; } = -1;
     public string Host => _host;
     public int Port => _port;
-    public bool IsConnected => !_disposed && (_socket?.Connected ?? false);
+    public bool IsConnected => !_disposed && (_socket?.Connected ?? false) && _writer is not null;
 
     /// <summary>
     /// Gets the current SASL session state, if SASL authentication was performed.
@@ -617,32 +618,27 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (_writer is null)
             throw new InvalidOperationException("Not connected");
 
-        // Build the request body first to calculate size
-        var bodyBuffer = GetRequestBuffer();
-        var bodyWriter = new KafkaProtocolWriter(bodyBuffer);
+        // Reserve 4 bytes for the size prefix and save the reference for backpatching
+        var sizePrefixMemory = _writer.GetMemory(4);
+        _writer.Advance(4);
 
-        // Write request header
-        var header = new RequestHeader
+        // Serialize header + body directly into the PipeWriter (no intermediate buffer).
+        // We use a separate method scope for the ref struct KafkaProtocolWriter so that
+        // if serialization throws, we can await CompleteAsync outside the ref struct's lifetime.
+        Exception? serializationException = null;
+        var bytesWritten = SerializeRequest<TRequest, TResponse>(request, apiVersion, correlationId, headerVersion, ref serializationException);
+
+        if (serializationException is not null)
         {
-            ApiKey = TRequest.ApiKey,
-            ApiVersion = apiVersion,
-            CorrelationId = correlationId,
-            ClientId = _clientId,
-            HeaderVersion = headerVersion
-        };
-        header.Write(ref bodyWriter);
+            // Pipe is in a corrupt state (partial frame written after Advance(4)) —
+            // complete the writer so no further writes are attempted on this connection.
+            await _writer.CompleteAsync().ConfigureAwait(false);
+            _writer = null;
+            ExceptionDispatchInfo.Capture(serializationException).Throw();
+        }
 
-        // Write request body
-        request.Write(ref bodyWriter, apiVersion);
-
-        // Write size prefix + body to the pipe
-        var totalSize = bodyBuffer.WrittenCount;
-        var memory = _writer.GetMemory(4 + totalSize);
-
-        BinaryPrimitives.WriteInt32BigEndian(memory.Span, totalSize);
-        bodyBuffer.WrittenSpan.CopyTo(memory.Span[4..]);
-
-        _writer.Advance(4 + totalSize);
+        // Backpatch the 4-byte size prefix with the total body size
+        BinaryPrimitives.WriteInt32BigEndian(sizePrefixMemory.Span, bytesWritten);
 
         // Apply timeout to the flush operation.
         // When callerOwnsTimeout is true, the caller's cancellationToken already carries
@@ -716,6 +712,44 @@ public sealed partial class KafkaConnection : IKafkaConnection
         {
             throw new IOException("Flush operation was canceled");
         }
+    }
+
+    /// <summary>
+    /// Serializes the request header and body into the PipeWriter.
+    /// Isolated into a separate method so the ref struct KafkaProtocolWriter does not
+    /// span an await boundary in the caller.
+    /// </summary>
+    private int SerializeRequest<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        int correlationId,
+        short headerVersion,
+        ref Exception? exception)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+    {
+        var bodyWriter = new KafkaProtocolWriter(_writer!);
+
+        var header = new RequestHeader
+        {
+            ApiKey = TRequest.ApiKey,
+            ApiVersion = apiVersion,
+            CorrelationId = correlationId,
+            ClientId = _clientId,
+            HeaderVersion = headerVersion
+        };
+
+        try
+        {
+            header.Write(ref bodyWriter);
+            request.Write(ref bodyWriter, apiVersion);
+        }
+        catch (Exception ex)
+        {
+            exception = ex;
+        }
+
+        return bodyWriter.BytesWritten;
     }
 
     private async Task ReceiveLoopAsync(CancellationToken cancellationToken)
