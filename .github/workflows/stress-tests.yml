@@ -150,12 +150,15 @@ jobs:
           done
 
       - name: Merge Results and Generate Summary
+        env:
+          PYTHONPATH: .github/scripts
         run: |
           python3 << 'EOF'
           import json
           import os
           import glob
           from datetime import datetime
+          from stress_report import generate_scenario_tables, format_gc_table
 
           # Find all JSON result files
           json_files = glob.glob("all-results/**/*.json", recursive=True)
@@ -221,86 +224,7 @@ jobs:
           output.append(f"**Machine:** {machine_name or 'GitHub Actions'} ({processor_count or 'N/A'} processors)")
           output.append("")
 
-          # Group results by scenario
-          producer_results = [r for r in all_results if 'producer' in r.get('scenario', '').lower()]
-          consumer_results = [r for r in all_results if 'consumer' in r.get('scenario', '').lower()]
-
-          def format_throughput_table(results, title):
-              if not results:
-                  return []
-
-              lines = []
-              duration = results[0].get('durationMinutes', 'N/A')
-              message_size = results[0].get('messageSizeBytes', 'N/A')
-
-              lines.append(f"## {title} ({duration} minutes, {message_size}B messages)")
-              lines.append("")
-              lines.append("| Client | Messages/sec | MB/sec | Total Messages | Errors | Ratio |")
-              lines.append("|--------|--------------|--------|----------------|--------|-------|")
-
-              # Find baseline (Confluent)
-              confluent_rate = 0
-              for r in results:
-                  if r.get('client', '').lower() == 'confluent':
-                      confluent_rate = r.get('throughput', {}).get('averageMessagesPerSecond', 0)
-                      break
-
-              if confluent_rate == 0:
-                  confluent_rate = min(r.get('throughput', {}).get('averageMessagesPerSecond', 1) for r in results)
-
-              # Sort by throughput descending
-              sorted_results = sorted(results, key=lambda r: r.get('throughput', {}).get('averageMessagesPerSecond', 0), reverse=True)
-
-              for r in sorted_results:
-                  client = r.get('client', 'Unknown')
-                  throughput = r.get('throughput', {})
-                  msg_sec = throughput.get('averageMessagesPerSecond', 0)
-                  mb_sec = throughput.get('averageMegabytesPerSecond', 0)
-                  total = throughput.get('totalMessages', 0)
-                  errors = throughput.get('totalErrors', 0)
-                  ratio = msg_sec / confluent_rate if confluent_rate > 0 else 1.0
-
-                  lines.append(f"| {client} | {msg_sec:,.0f} | {mb_sec:.2f} | {total:,} | {errors} | {ratio:.2f}x |")
-
-              lines.append("")
-              return lines
-
-          def format_gc_table(results):
-              if not results:
-                  return []
-
-              lines = []
-              lines.append("## GC Statistics")
-              lines.append("")
-              lines.append("| Client | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated |")
-              lines.append("|--------|----------|------|------|------|-----------------|")
-
-              for r in sorted(results, key=lambda x: (x.get('client', ''), x.get('scenario', ''))):
-                  client = r.get('client', 'Unknown')
-                  scenario = r.get('scenario', 'Unknown')
-                  gc = r.get('gcStats', {})
-                  gen0 = gc.get('gen0Collections', 0)
-                  gen1 = gc.get('gen1Collections', 0)
-                  gen2 = gc.get('gen2Collections', 0)
-                  allocated = gc.get('allocatedBytes', 0)
-
-                  # Format allocated bytes
-                  if allocated < 1024:
-                      alloc_str = f"{allocated} B"
-                  elif allocated < 1024 * 1024:
-                      alloc_str = f"{allocated / 1024:.2f} KB"
-                  elif allocated < 1024 * 1024 * 1024:
-                      alloc_str = f"{allocated / (1024 * 1024):.2f} MB"
-                  else:
-                      alloc_str = f"{allocated / (1024 * 1024 * 1024):.2f} GB"
-
-                  lines.append(f"| {client} | {scenario} | {gen0} | {gen1} | {gen2} | {alloc_str} |")
-
-              lines.append("")
-              return lines
-
-          output.extend(format_throughput_table(producer_results, "Producer Throughput"))
-          output.extend(format_throughput_table(consumer_results, "Consumer Throughput"))
+          output.extend(generate_scenario_tables(all_results, include_ratio=True))
           output.extend(format_gc_table(all_results))
 
           # Write to GitHub summary
@@ -342,12 +266,15 @@ jobs:
           path: ./results
 
       - name: Generate Stress Test Documentation
+        env:
+          PYTHONPATH: .github/scripts
         run: |
           python3 << 'EOF'
           import json
           import os
           import glob
           from datetime import datetime
+          from stress_report import generate_scenario_tables, format_gc_table
 
           output = []
           output.append("---")
@@ -380,82 +307,8 @@ jobs:
 
                   results = data.get('results', [])
 
-                  # Group by scenario
-                  producer_results = [r for r in results if 'producer' in r.get('scenario', '').lower()]
-                  consumer_results = [r for r in results if 'consumer' in r.get('scenario', '').lower()]
-
-                  if producer_results:
-                      duration = producer_results[0].get('durationMinutes', 'N/A')
-                      message_size = producer_results[0].get('messageSizeBytes', 'N/A')
-
-                      output.append(f"## Producer Performance ({duration} min, {message_size}B)")
-                      output.append("")
-                      output.append("| Client | Messages/sec | MB/sec | Total | Errors |")
-                      output.append("|--------|--------------|--------|-------|--------|")
-
-                      for r in sorted(producer_results, key=lambda x: x.get('throughput', {}).get('averageMessagesPerSecond', 0), reverse=True):
-                          t = r.get('throughput', {})
-                          output.append(f"| {r.get('client')} | {t.get('averageMessagesPerSecond', 0):,.0f} | {t.get('averageMegabytesPerSecond', 0):.2f} | {t.get('totalMessages', 0):,} | {t.get('totalErrors', 0)} |")
-
-                      output.append("")
-
-                      # Show comparison
-                      dekaf = next((r for r in producer_results if r.get('client', '').lower() == 'dekaf'), None)
-                      confluent = next((r for r in producer_results if r.get('client', '').lower() == 'confluent'), None)
-
-                      if dekaf and confluent:
-                          dekaf_rate = dekaf.get('throughput', {}).get('averageMessagesPerSecond', 0)
-                          confluent_rate = confluent.get('throughput', {}).get('averageMessagesPerSecond', 0)
-                          if confluent_rate > 0:
-                              ratio = dekaf_rate / confluent_rate
-                              if ratio > 1.05:
-                                  output.append(f":::tip")
-                                  output.append(f"**Dekaf is {ratio:.2f}x faster** than Confluent.Kafka for producer throughput!")
-                                  output.append(f":::")
-                              elif ratio < 0.95:
-                                  output.append(f":::note")
-                                  output.append(f"Confluent.Kafka is {1/ratio:.2f}x faster for producer throughput.")
-                                  output.append(f":::")
-                              else:
-                                  output.append(f":::note")
-                                  output.append(f"Dekaf and Confluent.Kafka have similar producer performance.")
-                                  output.append(f":::")
-                          output.append("")
-
-                  if consumer_results:
-                      duration = consumer_results[0].get('durationMinutes', 'N/A')
-                      message_size = consumer_results[0].get('messageSizeBytes', 'N/A')
-
-                      output.append(f"## Consumer Performance ({duration} min, {message_size}B)")
-                      output.append("")
-                      output.append("| Client | Messages/sec | MB/sec | Total | Errors |")
-                      output.append("|--------|--------------|--------|-------|--------|")
-
-                      for r in sorted(consumer_results, key=lambda x: x.get('throughput', {}).get('averageMessagesPerSecond', 0), reverse=True):
-                          t = r.get('throughput', {})
-                          output.append(f"| {r.get('client')} | {t.get('averageMessagesPerSecond', 0):,.0f} | {t.get('averageMegabytesPerSecond', 0):.2f} | {t.get('totalMessages', 0):,} | {t.get('totalErrors', 0)} |")
-
-                      output.append("")
-
-                  # GC Stats
-                  output.append("## Memory & GC Statistics")
-                  output.append("")
-                  output.append("| Client | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated |")
-                  output.append("|--------|----------|------|------|------|-----------------|")
-
-                  for r in sorted(results, key=lambda x: (x.get('client', ''), x.get('scenario', ''))):
-                      gc = r.get('gcStats', {})
-                      allocated = gc.get('allocatedBytes', 0)
-                      if allocated < 1024 * 1024:
-                          alloc_str = f"{allocated / 1024:.1f} KB"
-                      elif allocated < 1024 * 1024 * 1024:
-                          alloc_str = f"{allocated / (1024 * 1024):.1f} MB"
-                      else:
-                          alloc_str = f"{allocated / (1024 * 1024 * 1024):.2f} GB"
-
-                      output.append(f"| {r.get('client')} | {r.get('scenario')} | {gc.get('gen0Collections', 0)} | {gc.get('gen1Collections', 0)} | {gc.get('gen2Collections', 0)} | {alloc_str} |")
-
-                  output.append("")
+                  output.extend(generate_scenario_tables(results, include_callout=True))
+                  output.extend(format_gc_table(results, title="Memory & GC Statistics"))
 
               except Exception as e:
                   print(f"Error processing results: {e}")
@@ -498,8 +351,8 @@ jobs:
           branch: docs/stress-test-results
           delete-branch: true
 
-      - name: Merge Pull Request
+      - name: Enable Auto-Merge
         if: steps.create-pr.outputs.pull-request-number
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr merge ${{ steps.create-pr.outputs.pull-request-number }} --squash --delete-branch --admin
+        run: gh pr merge ${{ steps.create-pr.outputs.pull-request-number }} --squash --delete-branch --auto

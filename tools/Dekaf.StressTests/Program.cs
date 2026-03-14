@@ -138,8 +138,11 @@ public static class Program
             Directory.CreateDirectory(outputDir);
         }
 
-        var jsonPath = Path.Combine(outputDir, $"stress-test-results-{runStartedAt:yyyyMMdd-HHmmss}.json");
-        var mdPath = Path.Combine(outputDir, $"stress-test-results-{runStartedAt:yyyyMMdd-HHmmss}.md");
+        var fileSuffix = options.Scenario != "all" || options.Client != "all"
+            ? $"-{options.Client}-{options.Scenario}-{runStartedAt:yyyyMMdd-HHmmss}"
+            : $"-{runStartedAt:yyyyMMdd-HHmmss}";
+        var jsonPath = Path.Combine(outputDir, $"stress-test-results{fileSuffix}.json");
+        var mdPath = Path.Combine(outputDir, $"stress-test-results{fileSuffix}.md");
 
         await allResults.SaveAsync(jsonPath).ConfigureAwait(false);
         await MarkdownReporter.WriteToFileAsync(allResults, mdPath).ConfigureAwait(false);

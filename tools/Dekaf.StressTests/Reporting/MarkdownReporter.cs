@@ -110,7 +110,9 @@ internal static class MarkdownReporter
     private static string FormatScenarioTitle(string scenario) => scenario switch
     {
         "producer" => "Producer (Fire-and-Forget) Throughput",
+        "producer-idempotent" => "Producer (Fire-and-Forget, Idempotent) Throughput",
         "producer-async" => "Producer (Async) Throughput",
+        "producer-async-idempotent" => "Producer (Async, Idempotent) Throughput",
         "consumer" => "Consumer Throughput",
         _ => $"{scenario} Throughput"
     };
@@ -118,7 +120,9 @@ internal static class MarkdownReporter
     private static string FormatScenarioLabel(string scenario) => scenario switch
     {
         "producer" => "Fire-and-Forget",
+        "producer-idempotent" => "Fire-and-Forget (Idempotent)",
         "producer-async" => "Async",
+        "producer-async-idempotent" => "Async (Idempotent)",
         "consumer" => "Consumer",
         _ => scenario
     };
