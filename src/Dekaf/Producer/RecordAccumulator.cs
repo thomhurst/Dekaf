@@ -5,6 +5,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
+using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Metadata;
 using Dekaf.Protocol;
@@ -581,6 +582,7 @@ internal ref struct ArenaBufferWriter : IBufferWriter<byte>
 public sealed partial class RecordAccumulator : IAsyncDisposable
 {
     private readonly ProducerOptions _options;
+    private readonly CompressionCodecRegistry? _compressionCodecs;
 
     /// <summary>
     /// Per-partition deques of sealed ReadyBatches, matching Java's
@@ -1019,10 +1021,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return await _wakeupSignal.WaitAsync(timeoutMs, cancellationToken).ConfigureAwait(false);
     }
 
-    public RecordAccumulator(ProducerOptions options, ILogger? logger = null)
+    public RecordAccumulator(ProducerOptions options, CompressionCodecRegistry? compressionCodecs = null, ILogger? logger = null)
     {
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
         _options = options;
+        _compressionCodecs = compressionCodecs;
         _readyBatchPool = new ReadyBatchPool();
         _batchPool = new PartitionBatchPool(options);
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
@@ -1266,7 +1269,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             Interlocked.Increment(ref _pendingAwaitedProduceCount);
 
         var pd = GetOrCreateDeque(topic, partition);
-        bool batchSealed = false;
+        ReadyBatch? sealedBatch = null;
 
         {
             using var guard = new SpinLockGuard(ref pd.Lock);
@@ -1287,8 +1290,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     completionSource, callback, recordSize))
                     return true;
 
-                // Current batch is full — seal it
-                SealCurrentBatchUnderLock(pd, currentBatch, ref batchSealed);
+                // Current batch is full — seal it (compress + enqueue after lock release)
+                sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
             }
 
             // Create new batch
@@ -1312,8 +1315,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        if (batchSealed)
+        if (sealedBatch is not null)
+        {
             SignalWakeup();
+        }
 
         return true;
     }
@@ -1347,7 +1352,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Interlocked.Increment(ref _pendingAwaitedProduceCount);
 
         var pd = GetOrCreateDeque(topic, partition);
-        bool batchSealed = false;
+        ReadyBatch? sealedBatch = null;
 
         {
             using var guard = new SpinLockGuard(ref pd.Lock);
@@ -1366,8 +1371,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     completionSource, null, recordSize))
                     return true;
 
-                // Current batch is full — seal it
-                SealCurrentBatchUnderLock(pd, currentBatch, ref batchSealed);
+                // Current batch is full — seal it (compress + enqueue after lock release)
+                sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
             }
 
             // Create new batch
@@ -1389,8 +1394,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        if (batchSealed)
+        if (sealedBatch is not null)
+        {
             SignalWakeup();
+        }
 
         return true;
     }
@@ -1450,7 +1457,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         ReserveMemorySync(recordSize);
 
         var pd = GetOrCreateDeque(topic, partition);
-        bool batchSealed = false;
+        ReadyBatch? sealedBatch = null;
 
         {
             using var guard = new SpinLockGuard(ref pd.Lock);
@@ -1469,8 +1476,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     headers, pooledHeaderArray, callback, recordSize))
                     return true;
 
-                // Current batch is full — seal it
-                SealCurrentBatchUnderLock(pd, currentBatch, ref batchSealed);
+                // Current batch is full — seal it (compress + enqueue after lock release)
+                sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
             }
 
             // Create new batch
@@ -1492,8 +1499,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
         }
 
-        if (batchSealed)
+        if (sealedBatch is not null)
+        {
             SignalWakeup();
+        }
 
         return true;
     }
@@ -1530,10 +1539,24 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Seals the current batch in a partition deque, enqueues the ready batch, and returns the shell to pool.
+    /// Seals the current batch in a partition deque and returns the ready batch.
+    /// Seals, pre-compresses, tracks, and enqueues the batch — all under the caller's lock.
+    ///
+    /// Compression is performed under the partition SpinLock to preserve per-partition FIFO ordering.
+    /// If two batches for the same partition are sealed in rapid succession (e.g., one by the append
+    /// worker and one by the linger timer), releasing the lock between seal and enqueue would allow
+    /// concurrent compression to complete out of order — Batch B could finish before Batch A and
+    /// get enqueued first, violating ordering guarantees.
+    ///
+    /// The SpinLock contention from compression is acceptable because:
+    /// 1. Partition-affine routing (partition % workerCount) means typically only one append thread
+    ///    per partition, so lock contention is minimal.
+    /// 2. The real performance win of pre-compression is moving it OFF the send loop thread —
+    ///    whether it runs under a partition lock or not doesn't change that benefit.
+    ///
     /// MUST be called under pd.Lock.
     /// </summary>
-    private void SealCurrentBatchUnderLock(PartitionDeque pd, PartitionBatch currentBatch, ref bool batchSealed)
+    private ReadyBatch? SealCurrentBatchUnderLock(PartitionDeque pd, PartitionBatch currentBatch)
     {
         var readyBatch = currentBatch.Complete();
         if (readyBatch is not null)
@@ -1541,14 +1564,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (readyBatch.CompletionSourcesCount > 0)
                 Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
             ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+
+            // Pre-compress under the lock to preserve per-partition ordering.
+            if (_options.CompressionType != CompressionType.None)
+            {
+                readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
+            }
+
             OnBatchEntersPipeline(readyBatch);
             pd.AddLast(readyBatch);
-            batchSealed = true;
             ProducerDebugCounters.RecordBatchQueuedToReady();
         }
         _batchPool.Return(currentBatch);
         pd.CurrentBatch = null;
         Interlocked.Decrement(ref _unsealedBatchCount);
+        return readyBatch;
     }
 
     /// <summary>
@@ -1885,6 +1915,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             foreach (var kvp in _partitionDeques)
             {
                 var pd = kvp.Value;
+                ReadyBatch? sealedBatch = null;
 
                 {
                     using var guard = new SpinLockGuard(ref pd.Lock);
@@ -1901,10 +1932,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             if (readyBatch.CompletionSourcesCount > 0)
                                 Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
                             ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
+
+                            // Pre-compress under the lock to preserve per-partition ordering.
+                            if (_options.CompressionType != CompressionType.None)
+                            {
+                                readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
+                            }
+
                             OnBatchEntersPipeline(readyBatch);
                             pd.AddLast(readyBatch);
                             ProducerDebugCounters.RecordBatchQueuedToReady();
-                            anySealed = true;
+                            sealedBatch = readyBatch;
                         }
                         _batchPool.Return(pd.CurrentBatch);
                         pd.CurrentBatch = null;
@@ -1917,6 +1955,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         if (batchCreatedTicks < newOldestTicks)
                             newOldestTicks = batchCreatedTicks;
                     }
+                }
+
+                if (sealedBatch is not null)
+                {
+                    anySealed = true;
                 }
             }
 
@@ -3678,6 +3721,10 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         {
             ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Return(_callbacks, clearArray: true);
         }
+
+        // Pre-compressed buffer cleanup is handled by RecordBatch.Dispose() which calls
+        // ReturnPreCompressedBuffer(). No need to call it explicitly here — consolidating
+        // ownership in RecordBatch avoids double-return risk.
     }
 }
 

@@ -476,4 +476,157 @@ public class RecordBatchTests
     }
 
     #endregion
+
+    #region PreCompress Tests
+
+    [Test]
+    public async Task PreCompress_ThenWithProducerState_TransfersDataToNewBatch()
+    {
+        var batch = new RecordBatch
+        {
+            BaseOffset = 0,
+            BaseTimestamp = 1000,
+            MaxTimestamp = 1000,
+            ProducerId = 1,
+            ProducerEpoch = 0,
+            BaseSequence = 0,
+            Records =
+            [
+                new Record
+                {
+                    OffsetDelta = 0,
+                    TimestampDelta = 0,
+                    Key = "key"u8.ToArray(),
+                    Value = "value"u8.ToArray()
+                }
+            ]
+        };
+
+        // Pre-compress with Gzip (built-in codec)
+        batch.PreCompress(CompressionType.Gzip, null);
+
+        await Assert.That(batch.PreCompressedRecords).IsNotNull();
+        await Assert.That(batch.PreCompressedLength).IsGreaterThan(0);
+        await Assert.That(batch.PreCompressedType).IsEqualTo(CompressionType.Gzip);
+
+        // Transfer to new batch via WithProducerState
+        var newBatch = batch.WithProducerState(42, 1, 10);
+
+        // New batch should have the pre-compressed data
+        await Assert.That(newBatch.PreCompressedRecords).IsNotNull();
+        await Assert.That(newBatch.PreCompressedLength).IsGreaterThan(0);
+        await Assert.That(newBatch.PreCompressedType).IsEqualTo(CompressionType.Gzip);
+        await Assert.That(newBatch.ProducerId).IsEqualTo(42L);
+        await Assert.That(newBatch.ProducerEpoch).IsEqualTo((short)1);
+        await Assert.That(newBatch.BaseSequence).IsEqualTo(10);
+
+        // Old batch should have cleared pre-compressed data
+        await Assert.That(batch.PreCompressedRecords).IsNull();
+        await Assert.That(batch.PreCompressedLength).IsEqualTo(0);
+        await Assert.That(batch.PreCompressedType).IsEqualTo(CompressionType.None);
+
+        // Clean up
+        newBatch.Dispose();
+    }
+
+    [Test]
+    public async Task ReturnPreCompressedBuffer_CalledTwice_IsIdempotent()
+    {
+        var batch = new RecordBatch
+        {
+            BaseOffset = 0,
+            BaseTimestamp = 0,
+            MaxTimestamp = 0,
+            Records =
+            [
+                new Record
+                {
+                    OffsetDelta = 0,
+                    TimestampDelta = 0,
+                    Key = "key"u8.ToArray(),
+                    Value = "value"u8.ToArray()
+                }
+            ]
+        };
+
+        // Pre-compress to populate the buffer
+        batch.PreCompress(CompressionType.Gzip, null);
+        await Assert.That(batch.PreCompressedRecords).IsNotNull();
+
+        // First call should clear it
+        batch.ReturnPreCompressedBuffer();
+        await Assert.That(batch.PreCompressedRecords).IsNull();
+        await Assert.That(batch.PreCompressedLength).IsEqualTo(0);
+
+        // Second call should be safe (no-op, no double-return to ArrayPool)
+        batch.ReturnPreCompressedBuffer();
+        await Assert.That(batch.PreCompressedRecords).IsNull();
+
+        // Dispose should also be safe after explicit return
+        batch.Dispose();
+    }
+
+    [Test]
+    public async Task Write_WithPreCompressedData_ProducesSameOutputAsInlineCompression()
+    {
+        var records = new Record[]
+        {
+            new()
+            {
+                OffsetDelta = 0,
+                TimestampDelta = 0,
+                Key = "key1"u8.ToArray(),
+                Value = "value1"u8.ToArray()
+            },
+            new()
+            {
+                OffsetDelta = 1,
+                TimestampDelta = 1,
+                Key = "key2"u8.ToArray(),
+                Value = "value2"u8.ToArray()
+            }
+        };
+
+        // Batch 1: Write with inline compression (no pre-compress)
+        var batch1 = new RecordBatch
+        {
+            BaseOffset = 0,
+            BaseTimestamp = 1000,
+            MaxTimestamp = 1001,
+            LastOffsetDelta = 1,
+            ProducerId = -1,
+            ProducerEpoch = -1,
+            BaseSequence = -1,
+            Records = records
+        };
+
+        var inlineBuffer = new ArrayBufferWriter<byte>();
+        batch1.Write(inlineBuffer, CompressionType.Gzip);
+
+        // Batch 2: Write with pre-compressed data
+        var batch2 = new RecordBatch
+        {
+            BaseOffset = 0,
+            BaseTimestamp = 1000,
+            MaxTimestamp = 1001,
+            LastOffsetDelta = 1,
+            ProducerId = -1,
+            ProducerEpoch = -1,
+            BaseSequence = -1,
+            Records = records
+        };
+
+        batch2.PreCompress(CompressionType.Gzip, null);
+        var preCompressedBuffer = new ArrayBufferWriter<byte>();
+        batch2.Write(preCompressedBuffer);
+
+        // Both should produce identical output (same compression, same data)
+        await Assert.That(preCompressedBuffer.WrittenSpan.ToArray())
+            .IsEquivalentTo(inlineBuffer.WrittenSpan.ToArray());
+
+        // Clean up
+        batch2.Dispose();
+    }
+
+    #endregion
 }
