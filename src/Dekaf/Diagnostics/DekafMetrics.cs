@@ -8,47 +8,47 @@ namespace Dekaf.Diagnostics;
 /// </summary>
 internal static class DekafMetrics
 {
-    // Producer metrics
+    // OTel semantic convention metrics
     internal static readonly Counter<long> MessagesSent =
         DekafDiagnostics.Meter.CreateCounter<long>(
-            "messaging.publish.messages",
+            "messaging.client.sent.messages",
             unit: "{message}",
             description: "Number of messages published to Kafka.");
 
     internal static readonly Counter<long> BytesSent =
         DekafDiagnostics.Meter.CreateCounter<long>(
-            "messaging.publish.bytes",
+            "messaging.client.sent.bytes",
             unit: "By",
             description: "Total bytes published to Kafka.");
 
-    internal static readonly Histogram<double> ProduceDuration =
+    internal static readonly Histogram<double> OperationDuration =
         DekafDiagnostics.Meter.CreateHistogram<double>(
-            "messaging.publish.duration",
+            "messaging.client.operation.duration",
             unit: "s",
-            description: "Duration of produce operations.");
+            description: "Duration of messaging operations (produce or consume).");
 
     internal static readonly Counter<long> ProduceErrors =
         DekafDiagnostics.Meter.CreateCounter<long>(
-            "messaging.publish.errors",
+            "messaging.client.sent.errors",
             unit: "{error}",
             description: "Number of produce errors.");
 
     internal static readonly Counter<long> Retries =
         DekafDiagnostics.Meter.CreateCounter<long>(
-            "messaging.publish.retries",
+            "messaging.client.sent.retries",
             unit: "{retry}",
             description: "Number of produce retries.");
 
     // Consumer metrics
     internal static readonly Counter<long> MessagesReceived =
         DekafDiagnostics.Meter.CreateCounter<long>(
-            "messaging.receive.messages",
+            "messaging.client.consumed.messages",
             unit: "{message}",
             description: "Number of messages received from Kafka.");
 
     internal static readonly Counter<long> BytesReceived =
         DekafDiagnostics.Meter.CreateCounter<long>(
-            "messaging.receive.bytes",
+            "messaging.client.consumed.bytes",
             unit: "By",
             description: "Total bytes received from Kafka.");
 }
