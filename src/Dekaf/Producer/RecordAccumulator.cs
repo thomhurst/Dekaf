@@ -1767,7 +1767,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// a tight <c>Send()</c> loop during a metadata cache miss can queue hundreds of thousands
     /// of Tasks, saturating the thread pool and preventing the sender loop from draining batches.
     /// </summary>
-    internal void WaitForBufferSpace(long maxBlockMs, CancellationToken cancellationToken)
+    /// <remarks>
+    /// Uses <c>_disposalCts.Token</c> (same as <see cref="ReserveMemorySync"/>) so that
+    /// <see cref="DisposeAsync"/> promptly unblocks any thread waiting here.
+    /// <para/>
+    /// Note: this gate shares <c>_syncBufferSpaceSignal</c> with <see cref="ReserveMemorySync"/>.
+    /// Both are woken by <see cref="ReleaseMemory"/> when batches complete. A gate waiter may
+    /// consume a signal intended for a reserve waiter (and vice versa), but both retry in a loop
+    /// with a 100ms timeout cap, so no waiter is permanently starved.
+    /// </remarks>
+    internal void WaitForBufferSpace()
     {
         // Fast path: buffer has space — the common case.
         if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
@@ -1779,14 +1788,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         while ((ulong)Volatile.Read(ref _bufferedBytes) >= _maxBufferMemory)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
             if (_disposed)
                 throw new ObjectDisposedException(nameof(RecordAccumulator));
 
             var elapsed = Environment.TickCount64 - startTicks;
-            if (elapsed >= maxBlockMs)
-                ThrowBufferMemoryTimeout(0, startTicks);
+            if (elapsed >= _options.MaxBlockMs)
+                ThrowBufferFullTimeout(startTicks);
 
             if (!spinWait.NextSpinWillYield)
             {
@@ -1794,19 +1801,30 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 continue;
             }
 
-            // Yield and retry. SemaphoreSlim is not used here because this gate
-            // doesn't participate in the reservation/release accounting — we just
-            // need to wait for the buffered byte count to drop.
-            var remainingMs = maxBlockMs - elapsed;
+            var remainingMs = _options.MaxBlockMs - elapsed;
             try
             {
-                _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100), cancellationToken);
+                _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100), _disposalCts.Token);
             }
             catch (OperationCanceledException) when (_disposed)
             {
                 throw new ObjectDisposedException(nameof(RecordAccumulator));
             }
         }
+    }
+
+    private void ThrowBufferFullTimeout(long startTicks)
+    {
+        var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
+        var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - startTicks);
+        throw new KafkaTimeoutException(
+            TimeoutKind.MaxBlock,
+            elapsed,
+            configured,
+            $"Buffer is full ({Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes) and did not " +
+            $"drain within max.block.ms ({_options.MaxBlockMs}ms). " +
+            $"Producer is generating messages faster than the network can send them. " +
+            $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
     }
 
     /// <summary>

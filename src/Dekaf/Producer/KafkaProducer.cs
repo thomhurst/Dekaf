@@ -2432,7 +2432,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // The sync fast path applies this via ReserveMemorySync, but this async fallback
         // (taken when metadata isn't cached) would otherwise dispatch unbounded fire-and-forget
         // Tasks that saturate the thread pool and starve the sender loop.
-        _accumulator.WaitForBufferSpace(_options.MaxBlockMs, _senderCts.Token);
+        _accumulator.WaitForBufferSpace();
 
         var completion = _valueTaskSourcePool.Rent();
         _ = ProduceInternalFireAndForgetAsync(message, completion);
@@ -2447,7 +2447,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         ProducerMessage<TKey, TValue> message,
         Action<RecordMetadata, Exception?> deliveryHandler)
     {
-        _accumulator.WaitForBufferSpace(_options.MaxBlockMs, _senderCts.Token);
+        _accumulator.WaitForBufferSpace();
 
         var completion = _valueTaskSourcePool.Rent();
         completion.SetDeliveryHandler(deliveryHandler);
