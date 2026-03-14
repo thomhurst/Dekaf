@@ -29,12 +29,20 @@ public readonly record struct Record
     public bool IsValueNull { get; init; }
 
     /// <summary>
+    /// Pre-computed body size to avoid redundant calculation during Write().
+    /// Set at record creation time; 0 means not pre-computed (use CalculateBodySize()).
+    /// </summary>
+    internal int CachedBodySize { get; init; }
+
+    /// <summary>
     /// Writes the record to the protocol writer.
     /// </summary>
     public void Write(ref KafkaProtocolWriter writer)
     {
         // First calculate the record body size
-        var bodySize = CalculateBodySize();
+        var bodySize = CachedBodySize > 0
+            ? CachedBodySize
+            : ComputeBodySize(TimestampDelta, OffsetDelta, IsKeyNull, Key.Length, IsValueNull, Value.Length, Headers);
 
         // Write length as varint
         writer.WriteVarInt(bodySize);
@@ -129,39 +137,39 @@ public readonly record struct Record
         };
     }
 
-    private int CalculateBodySize()
+    internal static int ComputeBodySize(long timestampDelta, int offsetDelta, bool isKeyNull, int keyLength, bool isValueNull, int valueLength, IReadOnlyList<Header>? headers)
     {
         var size = 1; // attributes
 
-        size += VarLongSize(TimestampDelta);
-        size += VarIntSize(OffsetDelta);
+        size += VarLongSize(timestampDelta);
+        size += VarIntSize(offsetDelta);
 
-        if (IsKeyNull)
+        if (isKeyNull)
         {
             size += VarIntSize(-1);
         }
         else
         {
-            size += VarIntSize(Key.Length);
-            size += Key.Length;
+            size += VarIntSize(keyLength);
+            size += keyLength;
         }
 
-        if (IsValueNull)
+        if (isValueNull)
         {
             size += VarIntSize(-1);
         }
         else
         {
-            size += VarIntSize(Value.Length);
-            size += Value.Length;
+            size += VarIntSize(valueLength);
+            size += valueLength;
         }
 
-        var headerCount = Headers?.Count ?? 0;
+        var headerCount = headers?.Count ?? 0;
         size += VarIntSize(headerCount);
 
-        if (Headers is not null)
+        if (headers is not null)
         {
-            foreach (var header in Headers)
+            foreach (var header in headers)
             {
                 size += header.CalculateSize();
             }
