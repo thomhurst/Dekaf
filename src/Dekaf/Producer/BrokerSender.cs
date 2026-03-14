@@ -10,6 +10,7 @@ using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
+using Dekaf.Protocol.Records;
 using Dekaf.Statistics;
 using Microsoft.Extensions.Logging;
 
@@ -123,54 +124,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public void ReturnBatchesArray()
         {
             ArrayPool<ReadyBatch>.Shared.Return(Batches, clearArray: true);
-        }
-    }
-
-    /// <summary>
-    /// Tracks rented arrays from <see cref="BuildProduceRequest"/> so they can be returned
-    /// to <see cref="ArrayPool{T}.Shared"/> after the request is serialized onto the wire.
-    /// Single-threaded: only used within the send loop.
-    /// </summary>
-    private struct PooledRequestArrays
-    {
-        private ProduceRequestTopicData[]? _topicDataArray;
-        private ProduceRequestPartitionData[][]? _partitionDataArrays;
-        private int _partitionArrayCount;
-
-        public ProduceRequestTopicData[] RentTopicData(int topicCount)
-        {
-            _topicDataArray = ArrayPool<ProduceRequestTopicData>.Shared.Rent(topicCount);
-            _partitionDataArrays = ArrayPool<ProduceRequestPartitionData[]>.Shared.Rent(topicCount);
-            _partitionArrayCount = 0;
-            return _topicDataArray;
-        }
-
-        public ProduceRequestPartitionData[] RentPartitionData(int count)
-        {
-            var array = ArrayPool<ProduceRequestPartitionData>.Shared.Rent(count);
-            _partitionDataArrays![_partitionArrayCount++] = array;
-            return array;
-        }
-
-        public void ReturnAll()
-        {
-            if (_topicDataArray is not null)
-            {
-                ArrayPool<ProduceRequestTopicData>.Shared.Return(_topicDataArray, clearArray: true);
-                _topicDataArray = null;
-            }
-
-            if (_partitionDataArrays is not null)
-            {
-                for (var i = 0; i < _partitionArrayCount; i++)
-                {
-                    ArrayPool<ProduceRequestPartitionData>.Shared.Return(_partitionDataArrays[i], clearArray: true);
-                }
-                var partitionArrays = _partitionDataArrays;
-                _partitionDataArrays = null;
-                _partitionArrayCount = 0;
-                ArrayPool<ProduceRequestPartitionData[]>.Shared.Return(partitionArrays, clearArray: true);
-            }
         }
     }
 
@@ -512,6 +465,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var coalescedBatches = new ReadyBatch[maxCoalesce];
         var coalescedCount = 0;
 
+        // Pre-allocate reusable ProduceRequest structures.
+        // The send loop is single-threaded and awaits each send before reusing,
+        // so these can be safely reused without synchronization.
+        var requestScratch = new ProduceRequestScratch(_options, _compressionCodecs, maxCoalesce);
+
         var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         try
@@ -749,7 +707,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                             }
                             sendTimeoutCts.CancelAfter(SendCoalescedTimeoutMs);
-                            await SendCoalescedAsync(batchesToSend, countToSend, sendTimeoutCts.Token)
+                            await SendCoalescedAsync(batchesToSend, countToSend,
+                                    requestScratch, sendTimeoutCts.Token)
                                 .ConfigureAwait(false);
                         }
                         sentThisIteration = true;
@@ -1454,11 +1413,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private async ValueTask SendCoalescedAsync(
         ReadyBatch[] batches,
         int count,
+        ProduceRequestScratch scratch,
         CancellationToken cancellationToken)
     {
-        // Tracks rented protocol arrays (topic/partition data) from BuildProduceRequest.
-        // Declared outside try-catch so catch blocks can return arrays on error paths.
-        var pooledArrays = new PooledRequestArrays();
         try
         {
             // Assign sequences at send time (Java Kafka Sender pattern).
@@ -1545,9 +1502,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            // Build coalesced ProduceRequest using pooled arrays for topic/partition data.
-            // Arrays are returned to the pool after the request is serialized onto the wire.
-            var request = BuildProduceRequest(batches, count, ref pooledArrays);
+            // Build coalesced ProduceRequest (reuses pre-allocated scratch structures)
+            var request = scratch.Build(batches, count);
 
             var requestStartTime = Stopwatch.GetTimestamp();
             _statisticsCollector.RecordRequestSent();
@@ -1560,7 +1516,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // The cancellationToken already carries BrokerSender's sendTimeoutCts timeout.
                 await connection.SendFireAndForgetWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
                     request, (short)apiVersion, cancellationToken).ConfigureAwait(false);
-                pooledArrays.ReturnAll();
+
+                // Clear batch references from scratch arrays (see ClearReferences() doc for exception-path semantics)
+                scratch.ClearReferences();
 
                 var fireAndForgetTimestamp = DateTimeOffset.UtcNow;
                 for (var i = 0; i < count; i++)
@@ -1597,8 +1555,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var responseTask = connection.SendPipelinedWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
                 request, (short)apiVersion, cancellationToken);
 
-            // Request is now serialized onto the wire — return pooled protocol arrays.
-            pooledArrays.ReturnAll();
+            // Clear batch references from scratch arrays (see ClearReferences() doc for exception-path semantics)
+            scratch.ClearReferences();
 
             // Release buffer memory now that data is written to the TCP buffer.
             // The untracked gap (between release and response) is bounded by
@@ -1670,7 +1628,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             for (var i = 0; i < count; i++)
                 FailAndCleanupBatch(batches[i], new ObjectDisposedException(nameof(BrokerSender)));
 
-            pooledArrays.ReturnAll();
+            scratch.ClearReferences();
             ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
         catch (Exception ex)
@@ -1727,77 +1685,133 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            pooledArrays.ReturnAll();
+            scratch.ClearReferences();
             ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
     }
 
     /// <summary>
-    /// Builds a coalesced ProduceRequest for multiple batches (one per partition).
+    /// Pre-allocated scratch space for building ProduceRequest without per-send allocations.
+    /// The send loop is single-threaded and awaits each send before reusing, so all
+    /// arrays and objects are safe to reuse without synchronization.
+    /// Uses ArraySegment&lt;T&gt; to slice the scratch arrays for IReadOnlyList&lt;T&gt; compatibility.
     /// </summary>
-    private ProduceRequest BuildProduceRequest(ReadyBatch[] batches, int count,
-        ref PooledRequestArrays pooledArrays)
+    private sealed class ProduceRequestScratch
     {
-        // Sort batches by topic name so equal topics are contiguous.
-        // This is a private method and callers do not depend on input order.
-        var batchesSpan = batches.AsSpan(0, count);
-        batchesSpan.Sort(static (a, b) =>
-            string.Compare(a.TopicPartition.Topic, b.TopicPartition.Topic, StringComparison.Ordinal));
+        private readonly ProduceRequest _request;
+        private readonly ProduceRequestTopicData[] _topicData;
+        private readonly ProduceRequestPartitionData[] _partitionData;
+        private readonly RecordBatch[][] _recordBatches;
+        private int _lastTopicCount;
+        private int _lastPartitionCount;
 
-        // Single pass: count unique topics (runs of equal topic names)
-        var topicCount = count > 0 ? 1 : 0;
-        for (var i = 1; i < count; i++)
+        public ProduceRequestScratch(ProducerOptions options, CompressionCodecRegistry compressionCodecs, int capacity)
         {
-            if (batchesSpan[i].TopicPartition.Topic != batchesSpan[i - 1].TopicPartition.Topic)
+            _request = new ProduceRequest
             {
-                topicCount++;
-            }
-        }
-
-        var topicDataArray = pooledArrays.RentTopicData(topicCount);
-        var topicIdx = 0;
-        var runStart = 0;
-
-        // Single pass: build topic and partition data from contiguous runs
-        while (runStart < count)
-        {
-            var topicName = batchesSpan[runStart].TopicPartition.Topic;
-            var runEnd = runStart + 1;
-            while (runEnd < count && batchesSpan[runEnd].TopicPartition.Topic == topicName)
-            {
-                runEnd++;
-            }
-
-            var partCount = runEnd - runStart;
-            var partitionDataArray = pooledArrays.RentPartitionData(partCount);
-            for (var p = 0; p < partCount; p++)
-            {
-                var batch = batchesSpan[runStart + p];
-                partitionDataArray[p] = new ProduceRequestPartitionData
-                {
-                    Index = batch.TopicPartition.Partition,
-                    Records = [batch.RecordBatch],
-                    Compression = _options.CompressionType,
-                    CompressionCodecs = _compressionCodecs
-                };
-            }
-
-            topicDataArray[topicIdx++] = new ProduceRequestTopicData
-            {
-                Name = topicName,
-                PartitionData = new ArraySegment<ProduceRequestPartitionData>(partitionDataArray, 0, partCount)
+                Acks = (short)options.Acks,
+                TimeoutMs = options.RequestTimeoutMs,
+                TransactionalId = options.TransactionalId
             };
-
-            runStart = runEnd;
+            _topicData = new ProduceRequestTopicData[capacity];
+            _partitionData = new ProduceRequestPartitionData[capacity];
+            _recordBatches = new RecordBatch[capacity][];
+            for (var i = 0; i < capacity; i++)
+            {
+                _topicData[i] = new ProduceRequestTopicData();
+                _partitionData[i] = new ProduceRequestPartitionData
+                {
+                    Compression = options.CompressionType,
+                    CompressionCodecs = compressionCodecs
+                };
+                _recordBatches[i] = new RecordBatch[1];
+            }
         }
 
-        return new ProduceRequest
+        /// <summary>
+        /// Populates the reusable request from the given batches. Returns the same
+        /// ProduceRequest instance each time — callers must not hold references past
+        /// the next call.
+        /// </summary>
+        public ProduceRequest Build(ReadyBatch[] batches, int count)
         {
-            Acks = (short)_options.Acks,
-            TimeoutMs = _options.RequestTimeoutMs,
-            TransactionalId = _options.TransactionalId,
-            TopicData = new ArraySegment<ProduceRequestTopicData>(topicDataArray, 0, topicCount)
-        };
+            // Sort batches by topic name so equal topics are contiguous.
+            var batchesSpan = batches.AsSpan(0, count);
+            batchesSpan.Sort(static (a, b) =>
+                string.Compare(a.TopicPartition.Topic, b.TopicPartition.Topic, StringComparison.Ordinal));
+
+            // Single pass: count unique topics (runs of equal topic names)
+            var topicCount = count > 0 ? 1 : 0;
+            for (var i = 1; i < count; i++)
+            {
+                if (batchesSpan[i].TopicPartition.Topic != batchesSpan[i - 1].TopicPartition.Topic)
+                {
+                    topicCount++;
+                }
+            }
+
+            var topicIdx = 0;
+            var partIdx = 0;
+            var runStart = 0;
+
+            // Single pass: populate scratch topic and partition data from contiguous runs
+            while (runStart < count)
+            {
+                var topicName = batchesSpan[runStart].TopicPartition.Topic;
+                var runEnd = runStart + 1;
+                while (runEnd < count && batchesSpan[runEnd].TopicPartition.Topic == topicName)
+                {
+                    runEnd++;
+                }
+
+                var partCount = runEnd - runStart;
+                var partitionDataStart = partIdx;
+                for (var p = 0; p < partCount; p++)
+                {
+                    var batch = batchesSpan[runStart + p];
+                    _recordBatches[partIdx][0] = batch.RecordBatch;
+                    var partData = _partitionData[partIdx];
+                    partData.Index = batch.TopicPartition.Partition;
+                    partData.Records = _recordBatches[partIdx];
+                    partIdx++;
+                }
+
+                var topicData = _topicData[topicIdx];
+                topicData.Name = topicName;
+                topicData.PartitionData = new ArraySegment<ProduceRequestPartitionData>(
+                    _partitionData, partitionDataStart, partCount);
+                topicIdx++;
+
+                runStart = runEnd;
+            }
+
+            _request.TopicData = new ArraySegment<ProduceRequestTopicData>(
+                _topicData, 0, topicCount);
+            _lastTopicCount = topicCount;
+            _lastPartitionCount = partIdx;
+            return _request;
+        }
+
+        /// <summary>
+        /// Clears references in scratch structures after a send completes to avoid
+        /// holding onto RecordBatch data longer than necessary.
+        /// </summary>
+        public void ClearReferences()
+        {
+            _request.TopicData = [];
+            for (var i = 0; i < _lastTopicCount; i++)
+            {
+                _topicData[i].Name = string.Empty;
+                _topicData[i].PartitionData = [];
+            }
+            for (var i = 0; i < _lastPartitionCount; i++)
+            {
+                _partitionData[i].Records = [];
+                _recordBatches[i][0] = default!;
+            }
+            _lastTopicCount = 0;
+            _lastPartitionCount = 0;
+        }
     }
 
     /// <summary>
