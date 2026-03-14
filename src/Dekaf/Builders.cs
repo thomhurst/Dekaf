@@ -47,6 +47,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private bool _enableIdempotence = true;
+    private int _connectionsPerBroker = 1;
     private List<IProducerInterceptor<TKey, TValue>>? _interceptors;
     private TimeSpan? _metadataMaxAge;
     private int? _deliveryTimeoutMs;
@@ -156,6 +157,25 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> WithIdempotence(bool enable)
     {
         _enableIdempotence = enable;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the number of TCP connections to maintain per broker.
+    /// Multiple connections enable parallel request handling for non-idempotent producers,
+    /// improving throughput by reducing write lock contention.
+    /// </summary>
+    /// <param name="connectionsPerBroker">
+    /// Number of connections per broker. Must be at least 1.
+    /// Cannot be greater than 1 when idempotence is enabled.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1.
+    /// </exception>
+    public ProducerBuilder<TKey, TValue> WithConnectionsPerBroker(int connectionsPerBroker)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
+        _connectionsPerBroker = connectionsPerBroker;
         return this;
     }
 
@@ -593,6 +613,12 @@ public sealed class ProducerBuilder<TKey, TValue>
         if (_transactionalId is not null && !_enableIdempotence)
             throw new InvalidOperationException("Idempotence cannot be disabled when TransactionalId is set. Transactions require idempotence for correctness.");
 
+        if (_enableIdempotence && _connectionsPerBroker > 1)
+            throw new InvalidOperationException(
+                "ConnectionsPerBroker cannot be greater than 1 when idempotence is enabled. " +
+                "Idempotent producers require a single pinned connection per broker to maintain sequence number ordering. " +
+                "Either disable idempotence with WithIdempotence(false) or use ConnectionsPerBroker = 1.");
+
         if (_enableIdempotence && _acks == Acks.None)
             throw new InvalidOperationException("Acks.None is incompatible with idempotence because the broker cannot acknowledge sequence numbers without sending a response.");
 
@@ -624,6 +650,7 @@ public sealed class ProducerBuilder<TKey, TValue>
             DeliveryTimeoutMs = _deliveryTimeoutMs ?? 120000,
             RequestTimeoutMs = _requestTimeoutMs ?? 30000,
             EnableIdempotence = _enableIdempotence,
+            ConnectionsPerBroker = _connectionsPerBroker,
             TransactionalId = _transactionalId,
             TransactionTimeoutMs = _transactionTimeoutMs ?? 60000,
             CompressionType = _compressionType,

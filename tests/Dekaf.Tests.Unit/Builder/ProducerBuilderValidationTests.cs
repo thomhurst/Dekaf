@@ -343,4 +343,88 @@ public class ProducerBuilderValidationTests
     }
 
     #endregion
+
+    #region ConnectionsPerBroker Validation
+
+    [Test]
+    public async Task Build_WithIdempotenceAndConnectionsPerBrokerGreaterThan1_ThrowsInvalidOperationException()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithIdempotence(true)
+            .WithConnectionsPerBroker(4);
+
+        var act = () => builder.Build();
+
+        await Assert.That(act).Throws<InvalidOperationException>()
+            .And.HasMessageContaining("ConnectionsPerBroker cannot be greater than 1");
+    }
+
+    [Test]
+    public async Task Build_WithDefaultIdempotenceAndConnectionsPerBrokerGreaterThan1_ThrowsInvalidOperationException()
+    {
+        // Default idempotence is true, so this should also throw
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithConnectionsPerBroker(2);
+
+        var act = () => builder.Build();
+
+        await Assert.That(act).Throws<InvalidOperationException>()
+            .And.HasMessageContaining("ConnectionsPerBroker cannot be greater than 1");
+    }
+
+    [Test]
+    public async Task Build_WithIdempotenceDisabledAndConnectionsPerBrokerGreaterThan1_Succeeds()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithIdempotence(false)
+            .WithConnectionsPerBroker(4)
+            .Build();
+
+        await Assert.That(producer).IsNotNull();
+    }
+
+    [Test]
+    public async Task Build_WithIdempotenceAndConnectionsPerBroker1_Succeeds()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithIdempotence(true)
+            .WithConnectionsPerBroker(1)
+            .Build();
+
+        await Assert.That(producer).IsNotNull();
+    }
+
+    [Test]
+    public async Task WithConnectionsPerBroker_Zero_ThrowsArgumentOutOfRangeException()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+
+        var act = () => builder.WithConnectionsPerBroker(0);
+
+        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task WithConnectionsPerBroker_Negative_ThrowsArgumentOutOfRangeException()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+
+        var act = () => builder.WithConnectionsPerBroker(-1);
+
+        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task WithConnectionsPerBroker_ReturnsSameBuilder()
+    {
+        var builder = Kafka.CreateProducer<string, string>();
+        var result = builder.WithConnectionsPerBroker(3);
+        await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    #endregion
 }

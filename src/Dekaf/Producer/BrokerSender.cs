@@ -313,11 +313,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Single-threaded send loop — no locks needed.
     private readonly HashSet<TopicPartition> _partitionsNeedingSequenceReset = new();
 
-    // Pinned connection: the send loop reuses a single connection to preserve wire order.
-    // With multiple connections per broker (round-robin pool), requests on different
-    // TCP connections can arrive at the broker out of order, causing OOSN. By pinning
-    // one connection, all produce requests are pipelined on the same TCP stream.
+    // Pinned connection: for idempotent producers, the send loop reuses a single connection
+    // to preserve wire order. With multiple connections per broker (round-robin pool), requests
+    // on different TCP connections can arrive at the broker out of order, causing OOSN.
+    // By pinning one connection, all produce requests are pipelined on the same TCP stream.
+    //
+    // For non-idempotent producers with ConnectionsPerBroker > 1, _useRoundRobinConnections
+    // is true and GetPinnedConnectionAsync fetches a new connection from the pool each time
+    // (round-robin), distributing load across TCP streams for higher throughput.
     private IKafkaConnection? _pinnedConnection;
+    private readonly bool _useRoundRobinConnections;
 
     /// <summary>
     /// Signal-based completion notification: rotated TCS that gets signaled when any
@@ -391,6 +396,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Only mute at send time when limited to 1 in-flight request.
         // Idempotent producers with maxInFlight > 1 rely on sequence numbers for ordering.
         _muteOnSend = _maxInFlight <= 1;
+
+        // Non-idempotent producers with multiple connections per broker use round-robin
+        // connection selection to distribute load across TCP streams.
+        _useRoundRobinConnections = !options.EnableIdempotence && options.ConnectionsPerBroker > 1;
 
         _responseCompletionCallback = () =>
         {
@@ -1833,16 +1842,28 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns the pinned connection for this BrokerSender. The send loop reuses a single
-    /// connection to ensure all produce requests are pipelined on the same TCP stream.
-    /// With round-robin connection pools (ConnectionsPerBroker > 1), using different connections
-    /// per request causes the broker to process requests out of order, leading to OOSN.
+    /// Returns a connection for this BrokerSender.
+    /// <para>
+    /// For idempotent producers (or non-idempotent with ConnectionsPerBroker = 1), the send loop
+    /// reuses a single pinned connection to ensure all produce requests are pipelined on the same
+    /// TCP stream. This prevents out-of-order sequence number errors (OOSN).
+    /// </para>
+    /// <para>
+    /// For non-idempotent producers with ConnectionsPerBroker &gt; 1, each call fetches a
+    /// connection from the pool's round-robin selection, distributing load across TCP streams
+    /// for higher throughput.
+    /// </para>
     /// </summary>
     private async ValueTask<IKafkaConnection> GetPinnedConnectionAsync(CancellationToken cancellationToken)
     {
-        var conn = _pinnedConnection;
-        if (conn is not null && conn.IsConnected)
-            return conn;
+        // Pinned mode: reuse a single connection for sequence number ordering.
+        // Skip pool call if we already have a healthy pinned connection.
+        if (!_useRoundRobinConnections)
+        {
+            var conn = _pinnedConnection;
+            if (conn is not null && conn.IsConnected)
+                return conn;
+        }
 
         // Apply request timeout to prevent indefinite blocking during connection creation.
         // If GetConnectionAsync hangs (e.g., broker unreachable, TCP SYN drops), the entire
@@ -1852,10 +1873,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(_options.RequestTimeoutMs));
 
-        conn = await _connectionPool.GetConnectionAsync(_brokerId, timeoutCts.Token)
+        var connection = await _connectionPool.GetConnectionAsync(_brokerId, timeoutCts.Token)
             .ConfigureAwait(false);
-        _pinnedConnection = conn;
-        return conn;
+
+        // In pinned mode, cache the connection for reuse. In round-robin mode,
+        // the pool handles connection selection — no caching needed.
+        if (!_useRoundRobinConnections)
+            _pinnedConnection = connection;
+
+        return connection;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

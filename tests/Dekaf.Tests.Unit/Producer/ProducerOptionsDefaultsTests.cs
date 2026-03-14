@@ -166,6 +166,13 @@ public class ProducerOptionsDefaultsTests
     }
 
     [Test]
+    public async Task ConnectionsPerBroker_DefaultsTo_1()
+    {
+        var options = CreateOptions();
+        await Assert.That(options.ConnectionsPerBroker).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task SaslUsername_DefaultsTo_Null()
     {
         var options = CreateOptions();
