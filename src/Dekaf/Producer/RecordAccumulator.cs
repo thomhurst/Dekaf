@@ -1197,6 +1197,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Hit rate is high in partition-affine append workers and single-partition scenarios.
     // Note: holds a strong reference to the accumulator until the thread reuses the cache slot.
     // This is acceptable because producers are typically singleton-lifetime objects.
+    // IMPORTANT: This cache is only valid because _partitionDeques never removes entries.
+    // If partition eviction is ever added, the cache must be invalidated on removal.
     [ThreadStatic]
     private static RecordAccumulator? t_cachedAccumulator;
     [ThreadStatic]
@@ -1218,6 +1220,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (t_cachedAccumulator == this && !_disposed && t_cachedTopicPartition == tp && t_cachedDeque is { } cached)
             return cached;
 
+        return GetOrCreateDequeSlow(tp);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private PartitionDeque GetOrCreateDequeSlow(TopicPartition tp)
+    {
         var deque = _partitionDeques.GetOrAdd(tp, static _ => new PartitionDeque());
 
         // Update thread-local cache
@@ -1825,10 +1833,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Volatile.Read(ref _inFlightBatchCount) > 0)
             return true;
 
+        if (Volatile.Read(ref _unsealedBatchCount) > 0)
+            return true;
+
+        // Still need O(n) scan for sealed-but-not-yet-sent batches (pd.Count > 0)
         foreach (var kvp in _partitionDeques)
         {
-            var pd = kvp.Value;
-            if (pd.CurrentBatch is not null || pd.Count > 0)
+            if (kvp.Value.Count > 0)
                 return true;
         }
         return false;
