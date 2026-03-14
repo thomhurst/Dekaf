@@ -1571,16 +1571,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private void CompressAndEnqueueBatch(PartitionDeque pd, ReadyBatch readyBatch)
     {
-        // Pre-compress outside the lock so compression happens on partition-affine
-        // append workers instead of the single-threaded BrokerSender send loop.
-        // This is a per-batch operation (acceptable allocation cost).
+        // Compress outside the lock — CPU-bound work must not hold SpinLock
         if (_options.CompressionType != CompressionType.None)
         {
             readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
         }
 
         OnBatchEntersPipeline(readyBatch);
-        pd.AddLast(readyBatch);
+
+        // Re-acquire lock only for the deque mutation (sub-microsecond).
+        // PartitionDeque uses a LinkedList<ReadyBatch> which is NOT thread-safe;
+        // the drain thread calls PeekFirst/PollFirst under pd.Lock, so AddLast
+        // must also be under pd.Lock to prevent linked-list corruption.
+        {
+            using var guard = new SpinLockGuard(ref pd.Lock);
+            pd.AddLast(readyBatch);
+        }
+
         ProducerDebugCounters.RecordBatchQueuedToReady();
     }
 
