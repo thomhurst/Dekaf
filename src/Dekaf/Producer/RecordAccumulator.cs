@@ -1005,9 +1005,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     internal void SignalWakeup()
     {
-        // Non-blocking signal — if already signaled, this is a no-op
-        // SemaphoreSlim.Release throws if count would exceed max, so use try-catch
-        try { _wakeupSignal.Release(); }
+        TryReleaseSemaphore(_wakeupSignal);
+    }
+
+    /// <summary>
+    /// Attempts to release a semaphore, ignoring races and disposal.
+    /// Used for buffer-space and wakeup signals where lost signals are harmless.
+    /// </summary>
+    private static void TryReleaseSemaphore(SemaphoreSlim semaphore)
+    {
+        try
+        {
+            if (semaphore.CurrentCount == 0)
+                semaphore.Release();
+        }
+        catch (ObjectDisposedException) { }
         catch (SemaphoreFullException) { }
     }
 
@@ -1692,35 +1704,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 #endif
         }
 
-        // Signal that space is available.
-        // SemaphoreSlim.Release() wakes ONE sync/async waiter (no thundering herd).
-        try
-        {
-            if (_syncBufferSpaceSignal.CurrentCount == 0)
-                _syncBufferSpaceSignal.Release();
-        }
-        catch (ObjectDisposedException)
-        {
-            // Accumulator is disposed — ignore
-        }
-        catch (SemaphoreFullException)
-        {
-            // Race: count changed between check and Release — harmless
-        }
-
-        try
-        {
-            if (_asyncBufferSpaceSignal.CurrentCount == 0)
-                _asyncBufferSpaceSignal.Release();
-        }
-        catch (ObjectDisposedException)
-        {
-            // Accumulator is disposed — ignore
-        }
-        catch (SemaphoreFullException)
-        {
-            // Race: count changed between check and Release — harmless
-        }
+        // Signal that space is available — wake one sync and one async waiter.
+        TryReleaseSemaphore(_syncBufferSpaceSignal);
+        TryReleaseSemaphore(_asyncBufferSpaceSignal);
     }
 
     /// <summary>
@@ -2231,9 +2217,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // (CloseAsync checks _disposed and returns immediately, so channels may not be completed)
         CompleteAppendWorkerChannels();
 
-        // Wake any threads blocked in ReserveMemorySync's Wait so they recheck
-        // _disposed promptly instead of waiting for the backoff timeout.
-        try { if (_syncBufferSpaceSignal.CurrentCount == 0) _syncBufferSpaceSignal.Release(); } catch (ObjectDisposedException) { } catch (SemaphoreFullException) { }
+        // Wake any threads blocked in ReserveMemorySync/Async so they recheck
+        // _disposed promptly instead of waiting for the timeout.
+        TryReleaseSemaphore(_syncBufferSpaceSignal);
+        TryReleaseSemaphore(_asyncBufferSpaceSignal);
 
         // Cancel the disposal token to interrupt any blocked operations
         // (e.g., workers stuck in ReserveMemorySync/Async). Do this AFTER graceful shutdown attempt

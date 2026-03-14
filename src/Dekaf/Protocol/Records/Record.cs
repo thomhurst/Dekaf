@@ -135,7 +135,7 @@ public readonly record struct Record
         };
     }
 
-    internal int CalculateBodySize()
+    private int CalculateBodySize()
     {
         return ComputeBodySize(TimestampDelta, OffsetDelta, IsKeyNull, Key.Length, IsValueNull, Value.Length, Headers);
     }
