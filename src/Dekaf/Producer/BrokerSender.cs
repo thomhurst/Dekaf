@@ -314,6 +314,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private TaskCompletionSource _anyResponseCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    /// <summary>
+    /// Pre-allocated state for the response ContinueWith callback, avoiding a boxed
+    /// value-tuple allocation on every send.
+    /// </summary>
+    private sealed class ResponseCallbackState(ChannelWriter<SendLoopEvent> writer, BrokerSender sender)
+    {
+        public readonly ChannelWriter<SendLoopEvent> Writer = writer;
+        public readonly BrokerSender Sender = sender;
+    }
+    private ResponseCallbackState? _responseCallbackState;
+
     private volatile bool _disposed;
 
     public BrokerSender(
@@ -365,6 +376,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Idempotent producers with maxInFlight > 1 rely on sequence numbers for ordering.
         _muteOnSend = _maxInFlight <= 1;
 
+        _responseCallbackState = new ResponseCallbackState(_eventChannel.Writer, this);
         _cts = new CancellationTokenSource();
         _sendLoopTask = SendLoopAsync(_cts.Token);
     }
@@ -567,6 +579,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // Uses a signal-based TCS that gets signaled when any response
                             // completes, with a 100ms periodic wake-up to re-sweep delivery
                             // timeouts for zombie entries that expire while we're waiting.
+                            // Signal may be missed if multiple responses complete between
+                            // iterations; 100ms fallback ensures we don't wait indefinitely.
                             try
                             {
                                 await _anyResponseCompleted.Task
@@ -705,6 +719,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // immediate return, creating a spin loop when all carry-over is muted.
                     // Signal-based TCS bypasses the channel and wakes exactly when a
                     // response completes (which may unmute a partition).
+                    // Signal may be missed if multiple responses complete between
+                    // iterations; 100ms fallback ensures we don't wait indefinitely.
                     try
                     {
                         await _anyResponseCompleted.Task
@@ -1530,12 +1546,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // (2) TCS rotation for the direct response-wait paths (replaces Task.WhenAny).
             _ = responseTask.ContinueWith(static (_, state) =>
             {
-                var (writer, sender) = ((ChannelWriter<SendLoopEvent>, BrokerSender))state!;
-                writer.TryWrite(SendLoopEvent.ResponseReady());
-                Interlocked.Exchange(ref sender._anyResponseCompleted,
+                var s = (ResponseCallbackState)state!;
+                s.Writer.TryWrite(SendLoopEvent.ResponseReady());
+                Interlocked.Exchange(ref s.Sender._anyResponseCompleted,
                         new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously))
                     .TrySetResult();
-            }, (_eventChannel.Writer, this),
+            }, _responseCallbackState,
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);

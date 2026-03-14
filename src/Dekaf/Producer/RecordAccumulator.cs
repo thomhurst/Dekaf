@@ -2254,6 +2254,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // (CloseAsync checks _disposed and returns immediately, so channels may not be completed)
         CompleteAppendWorkerChannels();
 
+        // Wake any threads blocked in ReserveMemorySync's WaitOne so they recheck
+        // _disposed promptly instead of waiting up to 100ms for the cap timeout.
+        try { _bufferSpaceAvailable.Set(); } catch (ObjectDisposedException) { }
+
         // Cancel the disposal token to interrupt any blocked operations
         // (e.g., workers stuck in ReserveMemorySync/Async). Do this AFTER graceful shutdown attempt
         // so FlushAsync can complete normally.
