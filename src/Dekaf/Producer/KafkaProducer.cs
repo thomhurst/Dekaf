@@ -875,7 +875,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         // Step 5: Append to accumulator (under deque lock for ordering safety)
-        AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueLength, recordHeaders, pooledHeaderArray);
+        AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, pooledHeaderArray);
 
         if (_statisticsEnabled)
         {
@@ -894,9 +894,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         long timestampMs,
         bool keyIsNull,
         int keyLength,
+        bool valueIsNull,
         int valueLength,
         IReadOnlyList<Header>? recordHeaders,
-        Header[]? pooledHeaderArray)
+        Header[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?>? callback = null)
     {
         // Pass raw spans from thread-local buffers directly to the accumulator.
         // The accumulator will try arena allocation first, falling back to ArrayPool.
@@ -904,7 +906,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             ? t_keySerializationBuffer.AsSpan(0, keyLength)
             : ReadOnlySpan<byte>.Empty;
 
-        var valueSpan = valueLength > 0
+        var valueSpan = !valueIsNull && valueLength > 0
             ? t_valueSerializationBuffer.AsSpan(0, valueLength)
             : ReadOnlySpan<byte>.Empty;
 
@@ -915,10 +917,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             keySpan,
             keyIsNull,
             valueSpan,
-            valueLength == 0,
+            valueIsNull,
             recordHeaders,
             pooledHeaderArray,
-            null))
+            callback))
         {
             if (pooledHeaderArray is not null)
                 ArrayPool<Header>.Shared.Return(pooledHeaderArray, clearArray: false);
@@ -1280,54 +1282,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         // Step 5: Append to accumulator with callback (under deque lock for ordering safety)
-        AppendWithSlowPathWithCallback(topic, partition, timestampMs, keyIsNull, keyLength, valueLength, recordHeaders, pooledHeaderArray, callback);
+        AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, pooledHeaderArray, callback);
 
         if (_statisticsEnabled)
         {
             _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
-        }
-    }
-
-    /// <summary>
-    /// Appends a record with callback via the accumulator (under deque lock).
-    /// Uses arena-based zero-copy when possible, falling back to ArrayPool rentals.
-    /// </summary>
-    private void AppendWithSlowPathWithCallback(
-        string topic,
-        int partition,
-        long timestampMs,
-        bool keyIsNull,
-        int keyLength,
-        int valueLength,
-        IReadOnlyList<Header>? recordHeaders,
-        Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?> callback)
-    {
-        // Pass raw spans from thread-local buffers directly to the accumulator.
-        // The accumulator will try arena allocation first, falling back to ArrayPool.
-        var keySpan = !keyIsNull && keyLength > 0
-            ? t_keySerializationBuffer.AsSpan(0, keyLength)
-            : ReadOnlySpan<byte>.Empty;
-
-        var valueSpan = valueLength > 0
-            ? t_valueSerializationBuffer.AsSpan(0, valueLength)
-            : ReadOnlySpan<byte>.Empty;
-
-        if (!_accumulator.AppendFromSpans(
-            topic,
-            partition,
-            timestampMs,
-            keySpan,
-            keyIsNull,
-            valueSpan,
-            valueLength == 0,
-            recordHeaders,
-            pooledHeaderArray,
-            callback))
-        {
-            if (pooledHeaderArray is not null)
-                ArrayPool<Header>.Shared.Return(pooledHeaderArray, clearArray: false);
-            throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
         }
     }
 
