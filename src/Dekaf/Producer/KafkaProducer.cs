@@ -628,32 +628,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 return;
             }
 
-            // Topic cache miss — fetch topic metadata synchronously and produce.
-            // This is a one-time cost per new topic.
-            try
-            {
-                var topicInfo = FetchTopicMetadataSync(message.Topic);
-                ProduceSyncCoreFireAndForgetDirect(
-                    message.Topic,
-                    message.Key,
-                    message.Value,
-                    message.Partition,
-                    message.Timestamp,
-                    message.Headers,
-                    topicInfo);
-                activity?.SetStatus(ActivityStatusCode.Ok);
-            }
-            catch (KafkaTimeoutException)
-            {
-                // BufferMemory backpressure or metadata timeout must propagate
-                throw;
-            }
-            catch (Exception ex)
-            {
-                if (activity is not null)
-                    Diagnostics.DekafDiagnostics.RecordException(activity, ex);
-                LogFireAndForgetMetadataFetchFailed(ex, message.Topic);
-            }
+            // Topic cache miss — delegate to the async produce path which fetches
+            // metadata without blocking. The message enters the accumulator asynchronously
+            // and will be sent with the next batch. FlushAsync/DisposeAsync will wait for it.
+            ProduceFireAndForgetAsync(message);
         }
         catch (Exception ex) when (activity is not null)
         {
@@ -688,7 +666,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             return;
         }
 
-        // Topic cache miss — fall back to the message-based overload which handles sync topic fetch.
+        // Topic cache miss — fall back to the message-based overload which delegates to async path.
         Send(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
     }
 
@@ -1173,13 +1151,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             return;
         }
 
-        // Topic cache miss — fetch topic metadata synchronously and retry.
-        FetchTopicMetadataSync(message.Topic);
-
-        if (!TryProduceSyncWithHandler(message, deliveryHandler))
-        {
-            throw new InvalidOperationException($"Failed to produce to topic '{message.Topic}'");
-        }
+        // Topic cache miss — delegate to async path which fetches metadata without blocking.
+        ProduceFireAndForgetWithHandlerAsync(message, deliveryHandler);
     }
 
     /// <summary>
@@ -2448,40 +2421,55 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <summary>
-    /// Fetches topic metadata synchronously for Send() when the topic is not in the cache.
-    /// This is a rare path — only hit on the first produce to a new topic.
-    /// Uses TaskCreationOptions.LongRunning to avoid thread pool starvation.
+    /// Handles fire-and-forget produce when topic metadata is not cached.
+    /// Delegates to the async produce path which fetches metadata without blocking.
+    /// Uses ObserveForFireAndForget to ensure the PooledValueTaskSource is returned to the pool.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private TopicInfo FetchTopicMetadataSync(string topic)
+    private void ProduceFireAndForgetAsync(ProducerMessage<TKey, TValue> message)
     {
-        using var timeoutCts = new CancellationTokenSource(_options.MaxBlockMs);
-        var token = timeoutCts.Token;
-        TopicInfo topicInfo;
+        var completion = _valueTaskSourcePool.Rent();
+        _ = ProduceInternalFireAndForgetAsync(message, completion);
+    }
+
+    /// <summary>
+    /// Handles fire-and-forget produce with delivery handler when topic metadata is not cached.
+    /// Sets the delivery handler on the completion source so it's invoked by the batch pipeline.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void ProduceFireAndForgetWithHandlerAsync(
+        ProducerMessage<TKey, TValue> message,
+        Action<RecordMetadata, Exception?> deliveryHandler)
+    {
+        var completion = _valueTaskSourcePool.Rent();
+        completion.SetDeliveryHandler(deliveryHandler);
+        _ = ProduceInternalFireAndForgetAsync(message, completion);
+    }
+
+    /// <summary>
+    /// Runs ProduceInternalAsync and ensures the completion source is observed for pool return.
+    /// On failure, completes the source with the exception so the delivery handler is invoked
+    /// and the source is returned to the pool.
+    /// </summary>
+    private async Task ProduceInternalFireAndForgetAsync(
+        ProducerMessage<TKey, TValue> message,
+        PooledValueTaskSource<RecordMetadata> completion)
+    {
         try
         {
-            // Use LongRunning to get a dedicated thread — avoids thread pool starvation
-            // when multiple producers fetch topic metadata simultaneously.
-            topicInfo = Task.Factory.StartNew(
-                () => _metadataManager.GetTopicMetadataAsync(topic, token).AsTask(),
-                CancellationToken.None,
-                TaskCreationOptions.LongRunning,
-                TaskScheduler.Default).Unwrap().GetAwaiter().GetResult()!;
+            await ProduceInternalAsync(message, completion, CancellationToken.None).ConfigureAwait(false);
+            // Message is now in the accumulator. ObserveForFireAndForget ensures the
+            // completion source is returned to the pool when the batch pipeline completes it.
+            completion.ObserveForFireAndForget();
         }
-        catch (OperationCanceledException)
+        catch (Exception ex)
         {
-            throw new ProduceException(
-                $"Failed to fetch metadata for topic '{topic}' within max.block.ms ({_options.MaxBlockMs}ms). " +
-                $"Ensure the topic exists and the Kafka cluster is reachable.") { Topic = topic };
+            // Complete the source so the delivery handler (if any) is invoked and
+            // the source is returned to the pool.
+            completion.TrySetException(ex);
+            completion.ObserveForFireAndForget();
+            LogFireAndForgetMetadataFetchFailed(ex, message.Topic);
         }
-
-        if (topicInfo is null || topicInfo.PartitionCount == 0)
-        {
-            throw new ProduceException($"Topic '{topic}' not found or has no partitions") { Topic = topic };
-        }
-
-        UpdateCachedTopicInfo(topic, topicInfo);
-        return topicInfo;
     }
 
     /// <summary>
