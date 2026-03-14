@@ -356,6 +356,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
     /// CancellationTokenRegistration allocation. The caller's token must already carry a
     /// timeout (e.g. BrokerSender's sendTimeoutCts).
     /// </summary>
+    /// <remarks>
+    /// If the token does not carry a timeout, flush operations may block indefinitely.
+    /// </remarks>
     public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
@@ -413,6 +416,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
     /// timeout (e.g. BrokerSender's sendTimeoutCts).
     /// The response phase still uses the standard timeout via AwaitAndParseResponseAsync.
     /// </summary>
+    /// <remarks>
+    /// If the token does not carry a timeout, flush operations may block indefinitely.
+    /// </remarks>
     public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
@@ -597,6 +603,11 @@ public sealed partial class KafkaConnection : IKafkaConnection
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
+#if DEBUG
+        System.Diagnostics.Debug.Assert(!callerOwnsTimeout || cancellationToken.CanBeCanceled,
+            "callerOwnsTimeout path requires a timeout-bearing token");
+#endif
+
         if (_writer is null)
             throw new InvalidOperationException("Not connected");
 
