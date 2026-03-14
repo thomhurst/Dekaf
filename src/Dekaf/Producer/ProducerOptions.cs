@@ -38,6 +38,10 @@ public sealed class ProducerOptions
     /// significantly improving throughput with minimal latency impact.
     /// Set to 0 for immediate send with no batching delay.
     /// </summary>
+    /// <remarks>
+    /// This default was changed from 0 to 5 in v1.0.0 to improve batching for awaited
+    /// <c>ProduceAsync</c> callers. Set to 0 to restore the previous immediate-flush behavior.
+    /// </remarks>
     public int LingerMs { get; init; } = 5;
 
     /// <summary>
