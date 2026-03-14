@@ -240,9 +240,16 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         LogConfiguringPipe(BrokerId, pauseThreshold, resumeThreshold);
 
+        // Use PipeScheduler.Inline for the readerScheduler so that when the read pump
+        // calls FlushAsync, the ReceiveLoopAsync ReadAsync continuation runs inline on
+        // the read pump thread — avoiding a thread pool dispatch per response.
+        // This is safe because ReceiveLoopAsync does lightweight protocol parsing, not
+        // blocking I/O. Without this, the thread pool hop adds ~5-7x latency per
+        // request-response cycle in sequential operations (e.g. integration tests).
         var inputPipeOptions = new PipeOptions(
             pool: MemoryPool<byte>.Shared,
             minimumSegmentSize: _options.MinimumSegmentSize,
+            readerScheduler: PipeScheduler.Inline,
             pauseWriterThreshold: pauseThreshold,
             resumeWriterThreshold: resumeThreshold,
             useSynchronizationContext: false);
