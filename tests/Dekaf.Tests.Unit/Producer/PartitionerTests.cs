@@ -51,11 +51,11 @@ public class DefaultPartitionerTests
     {
         var partitioner = new DefaultPartitioner();
 
-        // Set counter to near uint.MaxValue using reflection
-        var counterField = typeof(DefaultPartitioner).GetField("_counter",
-            BindingFlags.NonPublic | BindingFlags.Instance);
+        // Set thread-static counter to near uint.MaxValue using reflection
+        var counterField = typeof(DefaultPartitioner).GetField("t_counter",
+            BindingFlags.NonPublic | BindingFlags.Static);
         await Assert.That(counterField).IsNotNull();
-        counterField!.SetValue(partitioner, uint.MaxValue - 100);
+        counterField!.SetValue(null, uint.MaxValue - 100);
 
         // Call partition many times around the overflow point
         for (var i = 0; i < 200; i++)
@@ -72,11 +72,11 @@ public class DefaultPartitionerTests
         var partitioner = new DefaultPartitioner();
         const int partitionCount = 10;
 
-        // Set counter to uint.MaxValue - 1 so next increment wraps to 0
-        var counterField = typeof(DefaultPartitioner).GetField("_counter",
-            BindingFlags.NonPublic | BindingFlags.Instance);
+        // Set thread-static counter to uint.MaxValue - 1 so next increment wraps to 0
+        var counterField = typeof(DefaultPartitioner).GetField("t_counter",
+            BindingFlags.NonPublic | BindingFlags.Static);
         await Assert.That(counterField).IsNotNull();
-        counterField!.SetValue(partitioner, uint.MaxValue - 1);
+        counterField!.SetValue(null, uint.MaxValue - 1);
 
         // Get partition right before overflow
         var beforeOverflow = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, partitionCount);
@@ -269,11 +269,11 @@ public class RoundRobinPartitionerTests
     {
         var partitioner = new RoundRobinPartitioner();
 
-        // Set counter to near uint.MaxValue using reflection
-        var counterField = typeof(RoundRobinPartitioner).GetField("_counter",
-            BindingFlags.NonPublic | BindingFlags.Instance);
+        // Set thread-static counter to near uint.MaxValue using reflection
+        var counterField = typeof(RoundRobinPartitioner).GetField("t_counter",
+            BindingFlags.NonPublic | BindingFlags.Static);
         await Assert.That(counterField).IsNotNull();
-        counterField!.SetValue(partitioner, uint.MaxValue - 100);
+        counterField!.SetValue(null, uint.MaxValue - 100);
 
         // Call partition many times around the overflow point
         for (var i = 0; i < 200; i++)
@@ -290,11 +290,11 @@ public class RoundRobinPartitionerTests
         var partitioner = new RoundRobinPartitioner();
         const int partitionCount = 10;
 
-        // Set counter to uint.MaxValue - 1 so next increment wraps to 0
-        var counterField = typeof(RoundRobinPartitioner).GetField("_counter",
-            BindingFlags.NonPublic | BindingFlags.Instance);
+        // Set thread-static counter to uint.MaxValue - 1 so next increment wraps to 0
+        var counterField = typeof(RoundRobinPartitioner).GetField("t_counter",
+            BindingFlags.NonPublic | BindingFlags.Static);
         await Assert.That(counterField).IsNotNull();
-        counterField!.SetValue(partitioner, uint.MaxValue - 1);
+        counterField!.SetValue(null, uint.MaxValue - 1);
 
         // Get partition right before overflow
         var beforeOverflow = partitioner.Partition("test-topic", ReadOnlySpan<byte>.Empty, true, partitionCount);

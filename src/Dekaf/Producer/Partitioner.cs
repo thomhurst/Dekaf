@@ -18,14 +18,15 @@ public interface IPartitioner
 /// </summary>
 public sealed class DefaultPartitioner : IPartitioner
 {
-    private uint _counter;
+    [ThreadStatic]
+    private static uint t_counter;
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         if (keyIsNull || key.Length == 0)
         {
-            // Round-robin for null keys - use uint to avoid overflow to negative values
-            return (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount);
+            // Thread-local round-robin for null keys - avoids Interlocked cache line contention
+            return (int)(++t_counter % (uint)partitionCount);
         }
 
         // Murmur2 hash for consistent partitioning
@@ -81,12 +82,13 @@ public sealed class StickyPartitioner : IPartitioner
 /// </summary>
 public sealed class RoundRobinPartitioner : IPartitioner
 {
-    private uint _counter;
+    [ThreadStatic]
+    private static uint t_counter;
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
-        // Use uint to avoid overflow to negative values
-        return (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount);
+        // Thread-local round-robin - avoids Interlocked cache line contention
+        return (int)(++t_counter % (uint)partitionCount);
     }
 }
 

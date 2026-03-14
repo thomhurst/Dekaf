@@ -1387,7 +1387,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         Action<RecordMetadata, Exception?>? callback,
         int estimatedSize)
     {
-        var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completionSource, callback);
+        var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completionSource, callback, estimatedSize);
 
         if (result.Success)
         {
@@ -1492,7 +1492,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int estimatedSize)
     {
         var result = batch.TryAppendFromSpans(timestamp, keyData, keyIsNull, valueData, valueIsNull,
-            headers, pooledHeaderArray, callback);
+            headers, pooledHeaderArray, callback, estimatedSize);
 
         if (result.Success)
         {
@@ -2689,9 +2689,10 @@ internal sealed class PartitionBatch
         IReadOnlyList<Header>? headers,
         Header[]? pooledHeaderArray,
         PooledValueTaskSource<RecordMetadata>? completionSource,
-        Action<RecordMetadata, Exception?>? callback)
+        Action<RecordMetadata, Exception?>? callback,
+        int estimatedRecordSize = 0)
     {
-        var recordSize = EstimateRecordSize(key.Length, value.Length, headers);
+        var recordSize = estimatedRecordSize > 0 ? estimatedRecordSize : EstimateRecordSize(key.Length, value.Length, headers);
 
         // Check if batch was completed
         if (Volatile.Read(ref _isCompleted) != 0)
@@ -2799,11 +2800,12 @@ internal sealed class PartitionBatch
         bool valueIsNull,
         IReadOnlyList<Header>? headers,
         Header[]? pooledHeaderArray,
-        Action<RecordMetadata, Exception?>? callback)
+        Action<RecordMetadata, Exception?>? callback,
+        int estimatedRecordSize = 0)
     {
         var keyLength = keyIsNull ? 0 : keyData.Length;
         var valueLength = valueIsNull ? 0 : valueData.Length;
-        var recordSize = EstimateRecordSize(keyLength, valueLength, headers);
+        var recordSize = estimatedRecordSize > 0 ? estimatedRecordSize : EstimateRecordSize(keyLength, valueLength, headers);
 
         // Check if batch was completed
         if (Volatile.Read(ref _isCompleted) != 0)
