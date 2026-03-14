@@ -327,7 +327,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// callback only writes to a channel and rotates a <see cref="TaskCompletionSource"/> —
     /// no ambient context (e.g. <c>AsyncLocal</c>, <c>SecurityContext</c>) needs to flow.
     /// </remarks>
-    private Action _responseCompletionCallback;
+    private readonly Action _responseCompletionCallback;
 
     private volatile bool _disposed;
 
