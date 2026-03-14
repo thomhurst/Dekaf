@@ -1758,6 +1758,58 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Blocks the caller while the buffer is at capacity.
+    /// Unlike <see cref="ReserveMemorySync"/>, this does NOT reserve any bytes — it is a pure
+    /// gate that prevents unbounded work from being queued when the buffer is full.
+    /// Used by the fire-and-forget async fallback path in <c>Send()</c>, which otherwise
+    /// bypasses synchronous backpressure entirely (messages are dispatched as fire-and-forget
+    /// Tasks that each call <see cref="ReserveMemoryAsync"/> independently). Without this gate,
+    /// a tight <c>Send()</c> loop during a metadata cache miss can queue hundreds of thousands
+    /// of Tasks, saturating the thread pool and preventing the sender loop from draining batches.
+    /// </summary>
+    internal void WaitForBufferSpace(long maxBlockMs, CancellationToken cancellationToken)
+    {
+        // Fast path: buffer has space — the common case.
+        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+            return;
+
+        // Slow path: buffer is full, wait until the sender loop drains some batches.
+        var startTicks = Environment.TickCount64;
+        var spinWait = new SpinWait();
+
+        while ((ulong)Volatile.Read(ref _bufferedBytes) >= _maxBufferMemory)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(RecordAccumulator));
+
+            var elapsed = Environment.TickCount64 - startTicks;
+            if (elapsed >= maxBlockMs)
+                ThrowBufferMemoryTimeout(0, startTicks);
+
+            if (!spinWait.NextSpinWillYield)
+            {
+                spinWait.SpinOnce();
+                continue;
+            }
+
+            // Yield and retry. SemaphoreSlim is not used here because this gate
+            // doesn't participate in the reservation/release accounting — we just
+            // need to wait for the buffered byte count to drop.
+            var remainingMs = maxBlockMs - elapsed;
+            try
+            {
+                _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100), cancellationToken);
+            }
+            catch (OperationCanceledException) when (_disposed)
+            {
+                throw new ObjectDisposedException(nameof(RecordAccumulator));
+            }
+        }
+    }
+
+    /// <summary>
     /// Releases reserved buffer memory when a batch is completed/sent.
     /// </summary>
     internal void ReleaseMemory(int batchSize)

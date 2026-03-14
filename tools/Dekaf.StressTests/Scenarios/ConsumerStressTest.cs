@@ -28,18 +28,12 @@ internal sealed class ConsumerStressTest : IStressTestScenario
             .WithBatchSize(options.BatchSize)
             .BuildAsync(cancellationToken);
 
-        // Pre-seed messages before starting consumer measurement.
-        // Flush in batches to avoid exceeding BufferMemory on slow CI runners.
+        // Pre-seed messages before starting consumer measurement
         Console.WriteLine($"  Pre-seeding messages for consumer test...");
         const int preseedCount = 500_000;
-        const int flushInterval = 50_000;
         for (var i = 0; i < preseedCount; i++)
         {
             producer.Send(options.Topic, GetKey(i), messageValue);
-            if ((i + 1) % flushInterval == 0)
-            {
-                await producer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-            }
         }
         await producer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
         Console.WriteLine($"  Pre-seeded {preseedCount:N0} messages");
