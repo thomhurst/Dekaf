@@ -3,9 +3,9 @@ using System.IO.Pipelines;
 namespace Dekaf.Networking;
 
 /// <summary>
-/// Bridges a <see cref="Stream"/> to the <see cref="IDuplexPipe"/> pattern using two internal
-/// <see cref="Pipe"/> objects and async pump loops. This avoids a known .NET issue where
-/// concurrent <c>StreamPipeReader</c> + <c>StreamPipeWriter</c> on the same stream causes
+/// Bridges a <see cref="Stream"/> to a duplex pipe using two internal <see cref="Pipe"/> objects
+/// and async pump loops. This avoids a known .NET issue where concurrent
+/// <c>StreamPipeReader</c> + <c>StreamPipeWriter</c> on the same stream causes
 /// <c>PipeReader.ReadAsync</c> to block indefinitely.
 /// </summary>
 internal sealed class DuplexPipe : IAsyncDisposable
@@ -16,7 +16,7 @@ internal sealed class DuplexPipe : IAsyncDisposable
     private readonly Task _readPumpTask;
     private readonly Task _writePumpTask;
     private readonly int _readBufferSize;
-    private volatile bool _disposed;
+    private int _disposed;
 
     /// <summary>
     /// The application-facing reader. <see cref="ReceiveLoopAsync"/> reads responses from here.
@@ -83,15 +83,29 @@ internal sealed class DuplexPipe : IAsyncDisposable
                 var readResult = await _outputPipe.Reader.ReadAsync().ConfigureAwait(false);
                 var buffer = readResult.Buffer;
 
-                foreach (var segment in buffer)
+                try
                 {
-                    await _stream.WriteAsync(segment).ConfigureAwait(false);
+                    if (!buffer.IsEmpty)
+                    {
+                        if (buffer.IsSingleSegment)
+                        {
+                            await _stream.WriteAsync(buffer.First).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            foreach (var segment in buffer)
+                            {
+                                await _stream.WriteAsync(segment).ConfigureAwait(false);
+                            }
+                        }
+
+                        await _stream.FlushAsync().ConfigureAwait(false);
+                    }
                 }
-
-                if (!buffer.IsEmpty)
-                    await _stream.FlushAsync().ConfigureAwait(false);
-
-                _outputPipe.Reader.AdvanceTo(buffer.End);
+                finally
+                {
+                    _outputPipe.Reader.AdvanceTo(buffer.End);
+                }
 
                 if (readResult.IsCompleted)
                     break;
@@ -109,16 +123,20 @@ internal sealed class DuplexPipe : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        _disposed = true;
-
-        // Signal pumps to stop via pipe completion
+        // Signal pumps to stop via pipe completion:
+        // - Completing _inputPipe.Reader causes the read pump's FlushAsync to return IsCompleted=true
+        // - Completing _outputPipe.Writer causes the write pump's ReadAsync to return IsCompleted=true
+        // These provide clean shutdown signals, but the read pump may be blocked on _stream.ReadAsync
+        // and won't see the signal until the stream is disposed below.
+        // Note: KafkaConnection.DisposeAsync awaits ReceiveLoopAsync before calling this, so there
+        // is no race with concurrent Input.ReadAsync calls from the receive loop.
         await _inputPipe.Reader.CompleteAsync().ConfigureAwait(false);
         await _outputPipe.Writer.CompleteAsync().ConfigureAwait(false);
 
-        // Dispose the stream to abort any pending ReadAsync/WriteAsync calls
+        // Dispose the stream to abort any pending _stream.ReadAsync/_stream.WriteAsync calls
         // that would otherwise block the pump tasks indefinitely.
         // This must happen before awaiting the pump tasks.
         await _stream.DisposeAsync().ConfigureAwait(false);
