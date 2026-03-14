@@ -64,8 +64,10 @@ internal sealed class SocketPipe : IAsyncDisposable
         }
         finally
         {
+            // Only complete the Writer (producer side). The Reader is owned by ReceiveLoopAsync
+            // and will see IsCompleted when the writer is done — completing it here could race
+            // with an active ReadAsync if the pump exits before disposal.
             await _inputPipe.Writer.CompleteAsync(error).ConfigureAwait(false);
-            await _inputPipe.Reader.CompleteAsync().ConfigureAwait(false);
         }
     }
 
