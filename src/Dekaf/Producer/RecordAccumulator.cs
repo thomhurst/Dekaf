@@ -628,6 +628,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // O(1) counter for fast flush-check (is anything in-flight?).
     // The separate _inFlightBatches dictionary provides reference-tracking for orphan sweep.
     private long _inFlightBatchCount;
+
+    // O(1) counter tracking the number of partition deques with an unsealed CurrentBatch.
+    // Replaces O(n) enumeration of _partitionDeques in HasUnsealedBatches().
+    // Incremented when pd.CurrentBatch is set to a new batch, decremented when set to null.
+    private int _unsealedBatchCount;
     // TCS for async waiting - created on-demand, completed when counter reaches 0
     // Using TCS instead of ManualResetEventSlim avoids polling and ThreadPool starvation
     // Not volatile - use Volatile.Read/Interlocked for thread-safe access
@@ -1187,14 +1192,39 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return batch;
     }
 
+    // Per-thread one-slot cache for GetOrCreateDeque to avoid ConcurrentDictionary hash+lookup
+    // on every message. The cache stores (accumulator instance, TopicPartition, PartitionDeque).
+    // Hit rate is high in partition-affine append workers and single-partition scenarios.
+    [ThreadStatic]
+    private static RecordAccumulator? t_cachedAccumulator;
+    [ThreadStatic]
+    private static TopicPartition t_cachedTopicPartition;
+    [ThreadStatic]
+    private static PartitionDeque? t_cachedDeque;
+
     /// <summary>
     /// Gets or creates the PartitionDeque for a topic-partition pair.
-    /// TopicPartition is a readonly record struct (stack-allocated, value equality),
-    /// so constructing it inline is zero-allocation and requires only one dictionary lookup.
+    /// Uses a per-thread one-slot cache to avoid ConcurrentDictionary lookup when the
+    /// same thread repeatedly accesses the same partition (common in append workers).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private PartitionDeque GetOrCreateDeque(string topic, int partition)
-        => _partitionDeques.GetOrAdd(new TopicPartition(topic, partition), static _ => new PartitionDeque());
+    {
+        var tp = new TopicPartition(topic, partition);
+
+        // Fast path: check thread-local cache
+        if (t_cachedAccumulator == this && t_cachedTopicPartition == tp && t_cachedDeque is { } cached)
+            return cached;
+
+        var deque = _partitionDeques.GetOrAdd(tp, static _ => new PartitionDeque());
+
+        // Update thread-local cache
+        t_cachedAccumulator = this;
+        t_cachedTopicPartition = tp;
+        t_cachedDeque = deque;
+
+        return deque;
+    }
 
     /// <summary>
     /// Unified append method matching Java's RecordAccumulator.append().
@@ -1254,6 +1284,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Create new batch
             var newBatch = RentBatch(new TopicPartition(topic, partition));
             pd.CurrentBatch = newBatch;
+            Interlocked.Increment(ref _unsealedBatchCount);
 
             // Append to new batch — must succeed since batch is empty
             if (!TryAppendToBatch(newBatch, timestamp, key, value, headers, pooledHeaderArray,
@@ -1261,6 +1292,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 // Record too large for a single batch
                 pd.CurrentBatch = null;
+                Interlocked.Decrement(ref _unsealedBatchCount);
                 _batchPool.Return(newBatch);
                 if (completionSource is not null)
                     Interlocked.Decrement(ref _pendingAwaitedProduceCount);
@@ -1331,12 +1363,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Create new batch
             var newBatch = RentBatch(new TopicPartition(topic, partition));
             pd.CurrentBatch = newBatch;
+            Interlocked.Increment(ref _unsealedBatchCount);
 
             // Append to new batch — must succeed since batch is empty
             if (!TryAppendToBatch(newBatch, timestamp, key, value, headers, pooledHeaderArray,
                 completionSource, null, recordSize))
             {
                 pd.CurrentBatch = null;
+                Interlocked.Decrement(ref _unsealedBatchCount);
                 _batchPool.Return(newBatch);
                 Interlocked.Decrement(ref _pendingAwaitedProduceCount);
                 ReleaseMemory(recordSize);
@@ -1432,6 +1466,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Create new batch
             var newBatch = RentBatch(new TopicPartition(topic, partition));
             pd.CurrentBatch = newBatch;
+            Interlocked.Increment(ref _unsealedBatchCount);
 
             // Append to new batch — must succeed since batch is empty
             if (!TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
@@ -1439,6 +1474,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 // Record too large for a single batch
                 pd.CurrentBatch = null;
+                Interlocked.Decrement(ref _unsealedBatchCount);
                 _batchPool.Return(newBatch);
                 ReleaseMemory(recordSize);
                 throw new KafkaException(ErrorCode.MessageTooLarge,
@@ -1502,6 +1538,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         _batchPool.Return(currentBatch);
         pd.CurrentBatch = null;
+        Interlocked.Decrement(ref _unsealedBatchCount);
     }
 
     /// <summary>
@@ -1797,16 +1834,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     /// <summary>
     /// Checks if any partition deque has an unsealed current batch.
+    /// O(1) via atomic counter instead of O(n) enumeration.
     /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool HasUnsealedBatches()
-    {
-        foreach (var kvp in _partitionDeques)
-        {
-            if (kvp.Value.CurrentBatch is not null)
-                return true;
-        }
-        return false;
-    }
+        => Volatile.Read(ref _unsealedBatchCount) > 0;
 
     /// <summary>
     /// Unified batch-sealing method used by both linger timer and flush.
@@ -1863,6 +1895,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                         }
                         _batchPool.Return(pd.CurrentBatch);
                         pd.CurrentBatch = null;
+                        Interlocked.Decrement(ref _unsealedBatchCount);
                     }
                     else
                     {
@@ -2273,6 +2306,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     }
                     _batchPool.Return(current);
                     pd.CurrentBatch = null;
+                    Interlocked.Decrement(ref _unsealedBatchCount);
                 }
 
                 // Drain sealed batches
