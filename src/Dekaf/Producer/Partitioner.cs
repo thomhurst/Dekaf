@@ -18,18 +18,16 @@ public interface IPartitioner
 /// </summary>
 public sealed class DefaultPartitioner : IPartitioner
 {
-    // Shared per-thread, not per-instance — two DefaultPartitioner instances on the same thread
-    // share this counter. This is intentional: round-robin distribution is still even, and avoiding
-    // per-instance state eliminates Interlocked contention in the hot path.
-    [ThreadStatic]
-    private static uint t_counter;
+    // Non-atomic increment is intentional: avoids Interlocked cache line contention across threads.
+    // Two threads may occasionally read the same counter value (benign — just means two messages
+    // land on the same partition), but distribution remains even over time.
+    private uint _counter;
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         if (keyIsNull || key.Length == 0)
         {
-            // Thread-local round-robin for null keys - avoids Interlocked cache line contention
-            return (int)(++t_counter % (uint)partitionCount);
+            return (int)(++_counter % (uint)partitionCount);
         }
 
         // Murmur2 hash for consistent partitioning
@@ -85,14 +83,12 @@ public sealed class StickyPartitioner : IPartitioner
 /// </summary>
 public sealed class RoundRobinPartitioner : IPartitioner
 {
-    // Shared per-thread, not per-instance (see DefaultPartitioner comment).
-    [ThreadStatic]
-    private static uint t_counter;
+    // Non-atomic increment — see DefaultPartitioner comment for rationale.
+    private uint _counter;
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
-        // Thread-local round-robin - avoids Interlocked cache line contention
-        return (int)(++t_counter % (uint)partitionCount);
+        return (int)(++_counter % (uint)partitionCount);
     }
 }
 
