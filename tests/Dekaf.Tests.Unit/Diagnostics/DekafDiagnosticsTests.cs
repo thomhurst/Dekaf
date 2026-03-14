@@ -90,13 +90,13 @@ public sealed class DekafDiagnosticsTests
         DekafMetrics.MessagesReceived.Add(0);
         DekafMetrics.BytesReceived.Add(0);
 
-        await Assert.That(instrumentNames).Contains("messaging.publish.messages");
-        await Assert.That(instrumentNames).Contains("messaging.publish.bytes");
-        await Assert.That(instrumentNames).Contains("messaging.publish.duration");
-        await Assert.That(instrumentNames).Contains("messaging.publish.errors");
-        await Assert.That(instrumentNames).Contains("messaging.publish.retries");
-        await Assert.That(instrumentNames).Contains("messaging.receive.messages");
-        await Assert.That(instrumentNames).Contains("messaging.receive.bytes");
+        await Assert.That(instrumentNames).Contains("messaging.client.sent.messages");
+        await Assert.That(instrumentNames).Contains("messaging.client.sent.bytes");
+        await Assert.That(instrumentNames).Contains("messaging.client.operation.duration");
+        await Assert.That(instrumentNames).Contains("messaging.client.sent.errors");
+        await Assert.That(instrumentNames).Contains("messaging.client.sent.retries");
+        await Assert.That(instrumentNames).Contains("messaging.client.consumed.messages");
+        await Assert.That(instrumentNames).Contains("messaging.client.consumed.bytes");
     }
 
     [Test]
@@ -190,7 +190,7 @@ public sealed class DekafDiagnosticsTests
         await Assert.That(tags["messaging.operation.type"]).IsEqualTo("receive");
         await Assert.That(tags["messaging.destination.partition.id"]).IsEqualTo("0");
         await Assert.That(tags["messaging.kafka.message.offset"]).IsEqualTo("100");
-        await Assert.That(tags["messaging.kafka.consumer.group"]).IsEqualTo("my-group");
+        await Assert.That(tags["messaging.consumer.group.name"]).IsEqualTo("my-group");
     }
 
     [Test]

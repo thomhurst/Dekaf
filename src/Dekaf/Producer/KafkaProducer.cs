@@ -332,6 +332,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, message.Topic);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "publish");
+            if (_options.ClientId is not null)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
             if (message.Key is string stringKey)
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, stringKey);
             else if (message.Key is not null and not byte[])
@@ -447,6 +449,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // Success: record metrics and set activity tags
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, metadata.Partition);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageOffset, metadata.Offset);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageBodySize, metadata.KeySize + metadata.ValueSize);
             activity.SetStatus(ActivityStatusCode.Ok);
 
             var tagList = new TagList { { Diagnostics.DekafDiagnostics.MessagingDestinationName, topic } };
@@ -464,7 +467,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 tags: new ActivityTagsCollection
                 {
                     { "exception.type", ex.GetType().FullName },
-                    { "exception.message", ex.Message }
+                    { "exception.message", ex.Message },
+                    { "exception.stacktrace", ex.ToString() }
                 }));
 
             var tagList = new TagList { { Diagnostics.DekafDiagnostics.MessagingDestinationName, topic } };
@@ -613,6 +617,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, message.Topic);
             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "publish");
+            if (_options.ClientId is not null)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
             if (message.Key is string stringKey)
                 activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, stringKey);
             else if (message.Key is not null and not byte[])
@@ -657,6 +663,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         catch (Exception ex) when (activity is not null)
         {
             activity.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity.AddEvent(new ActivityEvent("exception",
+                tags: new ActivityTagsCollection
+                {
+                    { "exception.type", ex.GetType().FullName },
+                    { "exception.message", ex.Message },
+                    { "exception.stacktrace", ex.ToString() }
+                }));
             throw;
         }
         finally

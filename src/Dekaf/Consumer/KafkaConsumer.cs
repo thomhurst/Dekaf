@@ -779,6 +779,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "receive");
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, pending.PartitionIndex);
                         activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageOffset, offset);
+                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageBodySize,
+                            (record.IsKeyNull ? 0 : record.Key.Length) + (record.IsValueNull ? 0 : record.Value.Length));
+                        if (_options.ClientId is not null)
+                            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
                         if (_options.GroupId is not null)
                             activity.SetTag(Diagnostics.DekafDiagnostics.MessagingConsumerGroupName, _options.GroupId);
                         previousActivity = activity;

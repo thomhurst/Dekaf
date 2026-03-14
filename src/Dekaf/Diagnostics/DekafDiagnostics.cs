@@ -30,10 +30,10 @@ public static class DekafDiagnostics
     internal const string MessagingOperationType = "messaging.operation.type";
     internal const string MessagingMessageOffset = "messaging.kafka.message.offset";
     internal const string MessagingDestinationPartitionId = "messaging.destination.partition.id";
-    internal const string MessagingConsumerGroupName = "messaging.kafka.consumer.group";
+    internal const string MessagingConsumerGroupName = "messaging.consumer.group.name";
     internal const string MessagingMessageKey = "messaging.kafka.message.key";
-    internal const string ServerAddress = "server.address";
-    internal const string ServerPort = "server.port";
+    internal const string MessagingClientId = "messaging.client.id";
+    internal const string MessagingMessageBodySize = "messaging.message.body.size";
 
     internal const string MessagingSystemValue = "kafka";
 }
