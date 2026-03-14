@@ -34,8 +34,11 @@ public sealed class ProducerOptions
 
     /// <summary>
     /// Linger time in milliseconds before sending a batch.
+    /// A small linger (5ms default) allows co-temporal messages to batch together,
+    /// significantly improving throughput with minimal latency impact.
+    /// Set to 0 for immediate send with no batching delay.
     /// </summary>
-    public int LingerMs { get; init; } = 0;
+    public int LingerMs { get; init; } = 5;
 
     /// <summary>
     /// Maximum batch size in bytes.

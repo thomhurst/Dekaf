@@ -2961,7 +2961,7 @@ internal sealed class PartitionBatch
     /// Smart batching strategy:
     /// - If there are completion sources waiting (awaited produces), use a micro-linger
     ///   of min(1ms, LingerMs/10) to let co-temporal messages batch together
-    /// - When LingerMs == 0 (default), awaited produces still flush immediately
+    /// - When LingerMs == 0, awaited produces still flush immediately
     /// - Fire-and-forget messages wait for full linger time
     /// This balances low latency for awaited produces with efficient batching.
     /// </summary>
@@ -2977,8 +2977,8 @@ internal sealed class PartitionBatch
         var elapsedMs = (now - _createdAt).TotalMilliseconds;
 
         // Awaited produces: use micro-linger instead of immediate flush.
-        // When LingerMs > 0, wait min(1ms, LingerMs/10) to let co-temporal messages batch.
-        // When LingerMs == 0, flush immediately (preserves current default behavior).
+        // When LingerMs > 0 (default is 5), wait min(1ms, LingerMs/10) to let co-temporal messages batch.
+        // When LingerMs == 0, flush immediately.
         // Fire-and-forget messages (Send) don't add completion sources, so they
         // still benefit from full linger time batching.
         if (Volatile.Read(ref _completionSourceCount) > 0)
