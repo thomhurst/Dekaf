@@ -805,7 +805,7 @@ public class RecordAccumulatorTests
 
         // Call TryAppend with null completionSource and null callback (fire-and-forget)
         var tryAppendMethod = partitionBatchType.GetMethods()
-            .Single(m => m.Name == "TryAppend" && m.GetParameters().Length == 7);
+            .Single(m => m.Name == "TryAppend" && m.GetParameters().Length == 8);
         var pooledKey = new PooledMemory(null, 0, isNull: true);
         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
@@ -817,7 +817,8 @@ public class RecordAccumulatorTests
             null,   // headers
             null,   // pooledHeaderArray
             null,   // completionSource
-            null    // callback
+            null,   // callback
+            20      // estimatedRecordSize: base overhead for empty record (key=null, value=null, no headers)
         });
 
         // Verify append succeeded

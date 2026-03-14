@@ -18,14 +18,16 @@ public interface IPartitioner
 /// </summary>
 public sealed class DefaultPartitioner : IPartitioner
 {
+    // Non-atomic increment is intentional: avoids Interlocked cache line contention across threads.
+    // Two threads may occasionally read the same counter value (benign — just means two messages
+    // land on the same partition), but distribution remains even over time.
     private uint _counter;
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
         if (keyIsNull || key.Length == 0)
         {
-            // Round-robin for null keys - use uint to avoid overflow to negative values
-            return (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount);
+            return (int)(++_counter % (uint)partitionCount);
         }
 
         // Murmur2 hash for consistent partitioning
@@ -81,12 +83,12 @@ public sealed class StickyPartitioner : IPartitioner
 /// </summary>
 public sealed class RoundRobinPartitioner : IPartitioner
 {
+    // Non-atomic increment — see DefaultPartitioner comment for rationale.
     private uint _counter;
 
     public int Partition(string topic, ReadOnlySpan<byte> key, bool keyIsNull, int partitionCount)
     {
-        // Use uint to avoid overflow to negative values
-        return (int)(Interlocked.Increment(ref _counter) % (uint)partitionCount);
+        return (int)(++_counter % (uint)partitionCount);
     }
 }
 
