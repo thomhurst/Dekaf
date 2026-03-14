@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 
 namespace Dekaf.Producer;
@@ -109,10 +110,7 @@ internal static class Murmur2
 
         while (length >= 4)
         {
-            var k = (uint)(data[offset] |
-                          (data[offset + 1] << 8) |
-                          (data[offset + 2] << 16) |
-                          (data[offset + 3] << 24));
+            var k = (uint)BinaryPrimitives.ReadInt32LittleEndian(data[offset..]);
 
             k *= M;
             k ^= k >> R;

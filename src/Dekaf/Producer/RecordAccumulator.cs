@@ -724,22 +724,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
     private readonly SemaphoreSlim _asyncBufferSpaceSignal = new(0, 1);
 
-    // Cache for TopicPartition instances to avoid repeated allocations.
-    // Using a nested ConcurrentDictionary: outer key is topic (string), inner key is partition (int).
-    // This allows O(1) lookup without allocating a TopicPartition struct on the hot path.
-    //
-    // TRADE-OFF: Unbounded cache growth - the cache grows as new topic-partition pairs are seen.
-    // This is acceptable because:
-    // 1. Typical workloads have a bounded set of topic-partition pairs (e.g., 100 topics × 10 partitions = 1000 entries)
-    // 2. Each entry is small (~50 bytes: string reference + int + dictionary overhead)
-    // 3. The memory cost (50KB for 1000 partitions) is negligible compared to batch buffers (MB-GB range)
-    // 4. Producers typically write to the same topics throughout their lifetime
-    // 5. The cache is cleared on disposal, preventing leaks in producer recreation scenarios
-    //
-    // For extreme cases with thousands of topics, the memory overhead is still minor and worth the
-    // allocation elimination in the critical produce path.
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, TopicPartition>> _topicPartitionCache = new();
-
     /// <summary>
     /// Per-partition state matching Java's Deque&lt;ProducerBatch&gt; design.
     /// The deque holds sealed ReadyBatches waiting to be drained by the sender loop.
@@ -1204,14 +1188,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Gets or creates a cached TopicPartition instance to avoid allocation on the hot path.
+    /// Gets or creates the PartitionDeque for a topic-partition pair.
+    /// TopicPartition is a readonly record struct (stack-allocated, value equality),
+    /// so constructing it inline is zero-allocation and requires only one dictionary lookup.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private TopicPartition GetOrCreateTopicPartition(string topic, int partition)
-    {
-        var partitionCache = _topicPartitionCache.GetOrAdd(topic, static _ => new ConcurrentDictionary<int, TopicPartition>());
-        return partitionCache.GetOrAdd(partition, static (p, t) => new TopicPartition(t, p), topic);
-    }
+    private PartitionDeque GetOrCreateDeque(string topic, int partition)
+        => _partitionDeques.GetOrAdd(new TopicPartition(topic, partition), static _ => new PartitionDeque());
 
     /// <summary>
     /// Unified append method matching Java's RecordAccumulator.append().
@@ -1236,15 +1219,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
         ReserveMemorySync(recordSize);
 
-        var topicPartition = GetOrCreateTopicPartition(topic, partition);
-
         // Track pending awaited produce BEFORE append to prevent race condition:
         // Without this, ExpireLingerAsync could see _pendingAwaitedProduceCount == 0
         // after the message is in the batch but before the counter is incremented.
         if (completionSource is not null)
             Interlocked.Increment(ref _pendingAwaitedProduceCount);
 
-        var pd = GetOrCreateDeque(topicPartition);
+        var pd = GetOrCreateDeque(topic, partition);
         bool batchSealed = false;
 
         {
@@ -1271,7 +1252,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
 
             // Create new batch
-            var newBatch = RentBatch(topicPartition);
+            var newBatch = RentBatch(new TopicPartition(topic, partition));
             pd.CurrentBatch = newBatch;
 
             // Append to new batch — must succeed since batch is empty
@@ -1320,12 +1301,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (!TryReserveMemory(recordSize))
             return false;
 
-        var topicPartition = GetOrCreateTopicPartition(topic, partition);
-
         // Track pending awaited produce BEFORE append
         Interlocked.Increment(ref _pendingAwaitedProduceCount);
 
-        var pd = GetOrCreateDeque(topicPartition);
+        var pd = GetOrCreateDeque(topic, partition);
         bool batchSealed = false;
 
         {
@@ -1350,7 +1329,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
 
             // Create new batch
-            var newBatch = RentBatch(topicPartition);
+            var newBatch = RentBatch(new TopicPartition(topic, partition));
             pd.CurrentBatch = newBatch;
 
             // Append to new batch — must succeed since batch is empty
@@ -1426,9 +1405,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, headers);
         ReserveMemorySync(recordSize);
 
-        var topicPartition = GetOrCreateTopicPartition(topic, partition);
-
-        var pd = GetOrCreateDeque(topicPartition);
+        var pd = GetOrCreateDeque(topic, partition);
         bool batchSealed = false;
 
         {
@@ -1453,7 +1430,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
 
             // Create new batch
-            var newBatch = RentBatch(topicPartition);
+            var newBatch = RentBatch(new TopicPartition(topic, partition));
             pd.CurrentBatch = newBatch;
 
             // Append to new batch — must succeed since batch is empty
@@ -1749,8 +1726,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return false;
         }
 
-        var topicPartition = GetOrCreateTopicPartition(topic, partition);
-        if (_partitionDeques.TryGetValue(topicPartition, out var pd))
+        if (_partitionDeques.TryGetValue(new TopicPartition(topic, partition), out var pd))
         {
             batch = pd.CurrentBatch;
             return batch is not null;
@@ -2203,9 +2179,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         LogDisposeStarted(_partitionDeques.Count, inFlightBatches);
         _disposed = true;
 
-
-        // Clear the TopicPartition cache to release memory
-        _topicPartitionCache.Clear();
 
         // FIRST: Try graceful shutdown (send remaining batches) with timeout
         // This matches Confluent.Kafka behavior and prevents data loss
