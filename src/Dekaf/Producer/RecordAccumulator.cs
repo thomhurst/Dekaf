@@ -1660,8 +1660,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (remainingMs <= 0)
                 ThrowBufferMemoryTimeout(recordSize, currentTicks);
 
-            // Wait for signal from ReleaseMemory. SemaphoreSlim.Wait wakes ONE waiter (no thundering herd).
-            _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, int.MaxValue));
+            // Wait for signal from ReleaseMemory or disposal cancellation.
+            // SemaphoreSlim.Wait wakes ONE waiter (no thundering herd).
+            // Passing _disposalCts.Token ensures all sync waiters are interrupted on disposal,
+            // mirroring how ReserveMemoryAsync uses a linked CTS with WaitAsync.
+            try
+            {
+                _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, int.MaxValue), _disposalCts.Token);
+            }
+            catch (OperationCanceledException) when (_disposed)
+            {
+                throw new OperationCanceledException(_disposalCts.Token);
+            }
         }
     }
 
