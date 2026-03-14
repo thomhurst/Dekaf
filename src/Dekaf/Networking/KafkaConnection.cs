@@ -633,6 +633,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             // Pipe is in a corrupt state (partial frame written after Advance(4)) —
             // complete the writer so no further writes are attempted on this connection.
             await _writer.CompleteAsync().ConfigureAwait(false);
+            _writer = null;
             ExceptionDispatchInfo.Capture(serializationException).Throw();
         }
 
