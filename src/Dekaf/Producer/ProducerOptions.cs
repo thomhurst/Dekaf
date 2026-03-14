@@ -84,17 +84,13 @@ public sealed class ProducerOptions
 
     /// <summary>
     /// Number of connections to maintain per broker for parallel request handling.
-    /// Higher values can improve throughput for non-idempotent producers by reducing
-    /// contention on the write lock and enabling parallel TCP sends.
+    /// When set greater than 1 for non-idempotent producers, connections are selected via round-robin
+    /// to distribute load across TCP streams, improving throughput by enabling parallel sends.
     /// <para>
     /// For idempotent producers (<see cref="EnableIdempotence"/> = true), this must be 1
     /// because sequence number ordering requires all produce requests to be pipelined on
     /// the same TCP connection. Setting this greater than 1 with idempotence enabled will
     /// throw an <see cref="InvalidOperationException"/> at build time.
-    /// </para>
-    /// <para>
-    /// For non-idempotent producers, connections are selected via round-robin to distribute
-    /// load across TCP streams.
     /// </para>
     /// Default is 1.
     /// </summary>

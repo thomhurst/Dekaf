@@ -1009,7 +1009,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var ex = task.Exception?.InnerException ?? new OperationCanceledException();
                 LogResponseFailed(ex, _brokerId);
-                _pinnedConnection = null;
+                _pinnedConnection = null; // No-op in round-robin mode — connection is fetched from pool each time
 
                 for (var j = 0; j < count; j++)
                 {
@@ -1223,7 +1223,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Must process ALL entries (not just the timed-out one) because they share the same
         // connection, which is now unreliable. This matches Java's behavior: when any request
         // times out, ALL in-flight requests for that node are failed.
-        _pinnedConnection = null;
+        _pinnedConnection = null; // No-op in round-robin mode — connection is fetched from pool each time
         LogRequestTimeoutDisconnection(_brokerId, _pendingResponses.Count);
 
         var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
@@ -1644,7 +1644,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             // Send failed (connection error, timeout, etc.) — retry batches instead of permanently failing.
             // Aligned with Java Kafka's Sender: transient failures cause reenqueue for retry.
-            _pinnedConnection = null; // Invalidate broken connection
+            _pinnedConnection = null; // Invalidate broken connection; no-op in round-robin mode — connection is fetched from pool each time
             LogResponseFailed(ex, _brokerId);
 
             for (var i = 0; i < count; i++)
