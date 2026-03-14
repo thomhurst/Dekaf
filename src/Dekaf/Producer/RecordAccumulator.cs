@@ -932,13 +932,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var size = 0;
         var count = partitions.Count;
+        var now = Stopwatch.GetTimestamp();
+        var lastDrainIndex = startIndex;
 
         for (var i = 0; i < count; i++)
         {
             var idx = (startIndex + i) % count;
             var tp = partitions[idx];
 
-            _drainIndex[nodeId] = (startIndex + i + 1) % count;
+            lastDrainIndex = (startIndex + i + 1) % count;
 
             if (_mutedPartitions.ContainsKey(tp))
                 continue;
@@ -955,7 +957,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     continue;
 
                 if (batch.IsRetry && batch.RetryNotBefore > 0
-                    && Stopwatch.GetTimestamp() < batch.RetryNotBefore)
+                    && now < batch.RetryNotBefore)
                     continue;
 
                 if (ready.Count > 0 && size + batch.DataSize > maxRequestSize)
@@ -971,6 +973,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 ready.Add(batch);
             }
         }
+
+        _drainIndex[nodeId] = lastDrainIndex;
     }
 
     /// <summary>
