@@ -151,7 +151,7 @@ public sealed class BrokerSenderSendLoopTests
     [Timeout(30_000)]
     public async Task SendLoop_ResponseCompletion_WakesSendLoopAndProcessesBatch(CancellationToken cancellationToken)
     {
-        // Verifies that when a response task completes, the ContinueWith bridge
+        // Verifies that when a response task completes, the response completion callback
         // pushes a ResponseCompleted event to the unified channel, waking the send loop.
 
         var tcs = new TaskCompletionSource<ProduceResponse>();
@@ -180,7 +180,7 @@ public sealed class BrokerSenderSendLoopTests
             // Wait for the send loop to actually send the request
             await requestSent.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
 
-            // Complete the response — ContinueWith pushes event, send loop wakes and processes
+            // Complete the response — UnsafeOnCompleted callback pushes event, send loop wakes and processes
             tcs.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 42));
 
             // Wait for acknowledgement (with timeout to detect missed wakeup)
@@ -368,7 +368,7 @@ public sealed class BrokerSenderSendLoopTests
     [Timeout(30_000)]
     public async Task SendLoop_FaultedResponse_WakesSendLoopAndRetries(CancellationToken cancellationToken)
     {
-        // When a response task faults (e.g., connection error), the ContinueWith bridge
+        // When a response task faults (e.g., connection error), the response completion callback
         // pushes a ResponseCompleted event. The send loop processes it and retries the batch.
 
         var tcs1 = new TaskCompletionSource<ProduceResponse>();
@@ -529,7 +529,7 @@ public sealed class BrokerSenderSendLoopTests
     {
         // With Acks.None, the send loop uses SendFireAndForgetAsync and completes
         // batches synchronously without adding to _pendingResponses.
-        // Verifies fire-and-forget path works after ContinueWith removal.
+        // Verifies fire-and-forget path works with UnsafeOnCompleted response callbacks.
 
         var connection = Substitute.For<IKafkaConnection>();
         connection.IsConnected.Returns(true);
@@ -660,6 +660,59 @@ public sealed class BrokerSenderSendLoopTests
 
             // Verify all 3 sends occurred (batch A, batch B, batch A retry)
             await Assert.That(Volatile.Read(ref sendCount)).IsEqualTo(3);
+        }
+        finally
+        {
+            await sender.DisposeAsync();
+            await accumulator.DisposeAsync();
+            await vtPool.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(30_000)]
+    public async Task SendLoop_AlreadyCompletedResponse_ProcessedViaSynchronousFastPath(CancellationToken cancellationToken)
+    {
+        // Verifies the `if (responseTask.IsCompleted)` fast path in the send loop.
+        // When the mock connection returns a Task that is already completed (via Task.FromResult),
+        // the send loop should process the response synchronously without scheduling an
+        // UnsafeOnCompleted callback. The batch should be acknowledged successfully.
+
+        var successResponse = CreateSuccessResponse("test-topic", 0, baseOffset: 77);
+
+        var connection = Substitute.For<IKafkaConnection>();
+        connection.IsConnected.Returns(true);
+        connection.BrokerId.Returns(1);
+
+        connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
+                Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(successResponse));
+
+        var pool = Substitute.For<IConnectionPool>();
+        pool.GetConnectionAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(connection);
+
+        var options = CreateOptions();
+        var accumulator = new RecordAccumulator(options);
+        var vtPool = new ValueTaskSourcePool<RecordMetadata>();
+
+        var acknowledged = new TaskCompletionSource<(long offset, int count)>();
+
+        var sender = CreateSender(pool, options, accumulator, (tp, offset, _, count, ex) =>
+        {
+            if (ex is null)
+                acknowledged.TrySetResult((offset, count));
+        });
+
+        try
+        {
+            var batch = CreateTestBatch(vtPool, "test-topic", 0);
+            await sender.EnqueueAsync(batch, CancellationToken.None);
+
+            // The response is already complete, so acknowledgement should happen very quickly
+            var result = await acknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            await Assert.That(result.offset).IsEqualTo(77);
+            await Assert.That(result.count).IsEqualTo(1);
         }
         finally
         {
