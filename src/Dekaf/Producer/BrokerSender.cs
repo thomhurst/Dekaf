@@ -1518,7 +1518,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     request, (short)apiVersion, cancellationToken).ConfigureAwait(false);
 
                 // Request serialized to wire — clear scratch references to avoid holding batch data
-                scratch.ClearReferences(count);
+                scratch.ClearReferences();
 
                 var fireAndForgetTimestamp = DateTimeOffset.UtcNow;
                 for (var i = 0; i < count; i++)
@@ -1556,7 +1556,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 request, (short)apiVersion, cancellationToken);
 
             // Request serialized to wire — clear scratch references to avoid holding batch data
-            scratch.ClearReferences(count);
+            scratch.ClearReferences();
 
             // Release buffer memory now that data is written to the TCP buffer.
             // The untracked gap (between release and response) is bounded by
@@ -1696,12 +1696,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// arrays and objects are safe to reuse without synchronization.
     /// Uses ArraySegment&lt;T&gt; to slice the scratch arrays for IReadOnlyList&lt;T&gt; compatibility.
     /// </summary>
-    private readonly struct ProduceRequestScratch
+    private struct ProduceRequestScratch
     {
         private readonly ProduceRequest _request;
         private readonly ProduceRequestTopicData[] _topicData;
         private readonly ProduceRequestPartitionData[] _partitionData;
         private readonly RecordBatch[][] _recordBatches;
+        private int _lastTopicCount;
+        private int _lastPartitionCount;
 
         public ProduceRequestScratch(ProducerOptions options, CompressionCodecRegistry compressionCodecs, int capacity)
         {
@@ -1785,6 +1787,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             _request.TopicData = new ArraySegment<ProduceRequestTopicData>(
                 _topicData, 0, topicCount);
+            _lastTopicCount = topicCount;
+            _lastPartitionCount = partIdx;
             return _request;
         }
 
@@ -1792,16 +1796,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         /// Clears references in scratch structures after a send completes to avoid
         /// holding onto RecordBatch data longer than necessary.
         /// </summary>
-        public void ClearReferences(int partitionCount)
+        public void ClearReferences()
         {
             _request.TopicData = [];
-            for (var i = 0; i < partitionCount; i++)
+            for (var i = 0; i < _lastTopicCount; i++)
             {
                 _topicData[i].Name = string.Empty;
                 _topicData[i].PartitionData = [];
+            }
+            for (var i = 0; i < _lastPartitionCount; i++)
+            {
                 _partitionData[i].Records = [];
                 _recordBatches[i][0] = default!;
             }
+            _lastTopicCount = 0;
+            _lastPartitionCount = 0;
         }
     }
 
