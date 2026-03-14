@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -113,7 +114,60 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Task<ProduceResponse> ResponseTask,
         ReadyBatch[] Batches,
         int Count,
-        long RequestStartTime);
+        long RequestStartTime)
+    {
+        /// <summary>
+        /// Clears batch references and returns the pooled array to <see cref="ArrayPool{T}.Shared"/>.
+        /// Must be called exactly once per PendingResponse when processing is complete.
+        /// </summary>
+        public void ReturnBatchesArray()
+        {
+            ArrayPool<ReadyBatch>.Shared.Return(Batches, clearArray: true);
+        }
+    }
+
+    /// <summary>
+    /// Tracks rented arrays from <see cref="BuildProduceRequest"/> so they can be returned
+    /// to <see cref="ArrayPool{T}.Shared"/> after the request is serialized onto the wire.
+    /// Single-threaded: only used within the send loop.
+    /// </summary>
+    private struct PooledRequestArrays
+    {
+        private ProduceRequestTopicData[]? _topicDataArray;
+        private List<ProduceRequestPartitionData[]>? _partitionDataArrays;
+
+        public ProduceRequestTopicData[] RentTopicData(int count)
+        {
+            _topicDataArray = ArrayPool<ProduceRequestTopicData>.Shared.Rent(count);
+            return _topicDataArray;
+        }
+
+        public ProduceRequestPartitionData[] RentPartitionData(int count)
+        {
+            _partitionDataArrays ??= [];
+            var array = ArrayPool<ProduceRequestPartitionData>.Shared.Rent(count);
+            _partitionDataArrays.Add(array);
+            return array;
+        }
+
+        public void ReturnAll()
+        {
+            if (_topicDataArray is not null)
+            {
+                ArrayPool<ProduceRequestTopicData>.Shared.Return(_topicDataArray, clearArray: true);
+                _topicDataArray = null;
+            }
+
+            if (_partitionDataArrays is not null)
+            {
+                foreach (var arr in _partitionDataArrays)
+                {
+                    ArrayPool<ProduceRequestPartitionData>.Shared.Return(arr, clearArray: true);
+                }
+                _partitionDataArrays.Clear();
+            }
+        }
+    }
 
     private enum SendLoopEventType : byte
     {
@@ -658,10 +712,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         LogSendingCoalesced(_brokerId, coalescedCount);
                         for (var si = 0; si < coalescedCount; si++)
                             coalescedBatches[si].AppendDiag('S');
-                        // Copy to a dedicated array for SendCoalescedAsync, which may store it
-                        // in PendingResponse beyond this iteration. The pre-allocated scratch
-                        // array stays with the loop for reuse.
-                        var batchesToSend = new ReadyBatch[coalescedCount];
+                        // Rent a pooled array for SendCoalescedAsync, which stores it in
+                        // PendingResponse beyond this iteration. Returned to the pool when
+                        // the response is processed (ProcessCompletedResponses, HandleTimedOutRequests,
+                        // or disposal). The pre-allocated scratch array stays with the loop for reuse.
+                        var batchesToSend = ArrayPool<ReadyBatch>.Shared.Rent(coalescedCount);
                         coalescedBatches.AsSpan(0, coalescedCount).CopyTo(batchesToSend);
                         var countToSend = coalescedCount;
                         Array.Clear(coalescedBatches, 0, coalescedCount);
@@ -778,7 +833,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                     }
                 }
-                Array.Clear(pr.Batches);
+                pr.ReturnBatchesArray();
             }
             _pendingResponses.Clear();
 
@@ -992,7 +1047,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
-                Array.Clear(batches);
+                pending.ReturnBatchesArray();
                 continue;
             }
 
@@ -1014,7 +1069,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ProcessResponseBatches(batches, count, responseLookup, requestStartTime,
                 carryOver, cancellationToken);
 
-            Array.Clear(batches);
+            pending.ReturnBatchesArray();
         }
 
         // Compact: remove processed entries from the end
@@ -1230,7 +1285,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            Array.Clear(pending.Batches);
+            pending.ReturnBatchesArray();
         }
 
         // Remove all entries. Response tasks are orphaned — they'll eventually complete
@@ -1386,6 +1441,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         int count,
         CancellationToken cancellationToken)
     {
+        // Tracks rented protocol arrays (topic/partition data) from BuildProduceRequest.
+        // Declared outside try-catch so catch blocks can return arrays on error paths.
+        var pooledArrays = new PooledRequestArrays();
         try
         {
             // Assign sequences at send time (Java Kafka Sender pattern).
@@ -1472,8 +1530,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            // Build coalesced ProduceRequest
-            var request = BuildProduceRequest(batches, count);
+            // Build coalesced ProduceRequest using pooled arrays for topic/partition data.
+            // Arrays are returned to the pool after the request is serialized onto the wire.
+            var request = BuildProduceRequest(batches, count, ref pooledArrays);
 
             var requestStartTime = Stopwatch.GetTimestamp();
             _statisticsCollector.RecordRequestSent();
@@ -1483,6 +1542,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
                     request, (short)apiVersion, cancellationToken).ConfigureAwait(false);
+                pooledArrays.ReturnAll();
 
                 var fireAndForgetTimestamp = DateTimeOffset.UtcNow;
                 for (var i = 0; i < count; i++)
@@ -1505,7 +1565,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     CleanupBatch(batches[i]);
                 }
 
-                Array.Clear(batches);
+                ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
                 return;
             }
 
@@ -1515,6 +1575,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // making retry ordering deterministic by construction.
             var responseTask = connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
                 request, (short)apiVersion, cancellationToken);
+
+            // Request is now serialized onto the wire — return pooled protocol arrays.
+            pooledArrays.ReturnAll();
 
             // Release buffer memory now that data is written to the TCP buffer.
             // The untracked gap (between release and response) is bounded by
@@ -1580,7 +1643,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             for (var i = 0; i < count; i++)
                 FailAndCleanupBatch(batches[i], new ObjectDisposedException(nameof(BrokerSender)));
 
-            Array.Clear(batches);
+            pooledArrays.ReturnAll();
+            ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
         catch (Exception ex)
         {
@@ -1636,14 +1700,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            Array.Clear(batches);
+            pooledArrays.ReturnAll();
+            ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
     }
 
     /// <summary>
     /// Builds a coalesced ProduceRequest for multiple batches (one per partition).
     /// </summary>
-    private ProduceRequest BuildProduceRequest(ReadyBatch[] batches, int count)
+    private ProduceRequest BuildProduceRequest(ReadyBatch[] batches, int count,
+        ref PooledRequestArrays pooledArrays)
     {
         // Sort batches by topic name so equal topics are contiguous.
         // This is a private method and callers do not depend on input order.
@@ -1661,7 +1727,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
         }
 
-        var topicDataArray = new ProduceRequestTopicData[topicCount];
+        var topicDataArray = pooledArrays.RentTopicData(topicCount);
         var topicIdx = 0;
         var runStart = 0;
 
@@ -1676,7 +1742,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             var partCount = runEnd - runStart;
-            var partitionDataArray = new ProduceRequestPartitionData[partCount];
+            var partitionDataArray = pooledArrays.RentPartitionData(partCount);
             for (var p = 0; p < partCount; p++)
             {
                 var batch = batchesSpan[runStart + p];
@@ -1692,7 +1758,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             topicDataArray[topicIdx++] = new ProduceRequestTopicData
             {
                 Name = topicName,
-                PartitionData = partitionDataArray
+                PartitionData = new ArraySegment<ProduceRequestPartitionData>(partitionDataArray, 0, partCount)
             };
 
             runStart = runEnd;
@@ -1703,7 +1769,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             Acks = (short)_options.Acks,
             TimeoutMs = _options.RequestTimeoutMs,
             TransactionalId = _options.TransactionalId,
-            TopicData = topicDataArray
+            TopicData = new ArraySegment<ProduceRequestTopicData>(topicDataArray, 0, topicCount)
         };
     }
 
@@ -1902,7 +1968,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         FailAndCleanupBatch(pr.Batches[j], new ObjectDisposedException(nameof(BrokerSender)));
                 }
 
-                Array.Clear(pr.Batches);
+                pr.ReturnBatchesArray();
             }
 
             _pendingResponses.Clear();
