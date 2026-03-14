@@ -1730,6 +1730,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 throw new ObjectDisposedException(nameof(RecordAccumulator));
             }
+
+            // Intentionally not resetting spinWait here. After the first blocking wait,
+            // the spin budget is exhausted so subsequent iterations go straight to the
+            // semaphore wait — this is correct because repeated contention means the
+            // semaphore is the right backpressure mechanism, not CPU-burning spins.
         }
 
         // Chain-wake: if space still remains after this reservation, signal the next sync waiter.
