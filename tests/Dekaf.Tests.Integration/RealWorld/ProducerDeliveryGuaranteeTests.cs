@@ -39,8 +39,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
 
         consumer.Assign(new TopicPartition(topic, metadata.Partition));
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30));
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Value).IsEqualTo("durable-value");
@@ -75,8 +74,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
 
         consumer.Assign(new TopicPartition(topic, 0));
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30));
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Value.Value).IsEqualTo("fast-value");
@@ -398,8 +396,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
 
         consumer.Assign(new TopicPartition(topic, 0));
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30));
 
         await Assert.That(result).IsNotNull();
         // Kafka stores timestamps at millisecond precision

@@ -1,32 +1,35 @@
 using System.IO.Pipelines;
+using System.Net.Sockets;
 
 namespace Dekaf.Networking;
 
 /// <summary>
-/// Decouples reading from a <see cref="Stream"/> by pumping data into an internal <see cref="Pipe"/>.
+/// High-performance read pump that reads directly from a <see cref="Socket"/> into a <see cref="Pipe"/>,
+/// bypassing the <see cref="Stream"/> abstraction. Uses <see cref="PipeScheduler.Inline"/> to eliminate
+/// thread pool context switches — the reader continuation runs directly on the pump thread.
+/// <para/>
 /// This avoids a known .NET issue where <c>PipeReader.Create(Stream).ReadAsync</c> can block
 /// indefinitely when concurrent reads and writes target the same underlying socket.
-/// Used for TLS connections where <see cref="System.Net.Security.SslStream"/> requires the
-/// <see cref="Stream"/> abstraction. Plain TCP connections use <see cref="SocketPipe"/> instead.
-/// Writing is handled directly by <see cref="KafkaConnection"/> via <c>PipeWriter.Create(stream)</c>.
+/// Used for plain TCP connections. TLS connections use <see cref="DuplexPipe"/> instead
+/// (because <see cref="System.Net.Security.SslStream"/> requires the <see cref="Stream"/> abstraction).
 /// </summary>
-internal sealed class DuplexPipe : IAsyncDisposable
+internal sealed class SocketPipe : IAsyncDisposable
 {
-    private readonly Stream _stream;
+    private readonly Socket _socket;
     private readonly Pipe _inputPipe;
     private readonly Task _readPumpTask;
     private readonly int _readBufferSize;
     private int _disposed;
 
     /// <summary>
-    /// The application-facing reader. Data is pumped from the stream into this pipe
-    /// by the read pump, decoupling stream reads from pipe reads.
+    /// The application-facing reader. Data is pumped from the socket into this pipe
+    /// by the read pump, decoupling socket reads from pipe reads.
     /// </summary>
     public PipeReader Input => _inputPipe.Reader;
 
-    public DuplexPipe(Stream stream, PipeOptions inputPipeOptions, int readBufferSize = 65536)
+    public SocketPipe(Socket socket, PipeOptions inputPipeOptions, int readBufferSize = 65536)
     {
-        _stream = stream;
+        _socket = socket;
         _inputPipe = new Pipe(inputPipeOptions);
         _readBufferSize = readBufferSize;
 
@@ -42,7 +45,7 @@ internal sealed class DuplexPipe : IAsyncDisposable
             while (true)
             {
                 var memory = _inputPipe.Writer.GetMemory(_readBufferSize);
-                var bytesRead = await _stream.ReadAsync(memory).ConfigureAwait(false);
+                var bytesRead = await _socket.ReceiveAsync(memory, SocketFlags.None).ConfigureAwait(false);
 
                 if (bytesRead == 0)
                     break; // EOF
@@ -73,18 +76,25 @@ internal sealed class DuplexPipe : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        // Dispose the stream to abort any pending _stream.ReadAsync in the read pump.
-        // The read pump's finally block then calls _inputPipe.Writer.CompleteAsync.
-        await _stream.DisposeAsync().ConfigureAwait(false);
+        // Shutdown the socket receive side to abort any pending ReceiveAsync in the pump.
+        // The pump will see 0 bytes (EOF) or get a SocketException, then complete the pipe writer.
+        try
+        {
+            _socket.Shutdown(SocketShutdown.Receive);
+        }
+        catch
+        {
+            // Socket may already be closed
+        }
 
-        // Wait for the read pump to finish (observe exceptions from stream abort)
+        // Wait for the read pump to finish (observe exceptions from socket shutdown)
         try
         {
             await _readPumpTask.ConfigureAwait(false);
         }
         catch
         {
-            // Read pump exceptions are expected during shutdown (e.g. stream disposed)
+            // Read pump exceptions are expected during shutdown
         }
     }
 }

@@ -118,10 +118,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
     private Socket? _socket;
     private Stream? _stream;
-    private Stream? _readStream; // Separate stream for reading to avoid concurrent StreamPipeReader+StreamPipeWriter bug
     private PipeReader? _reader;
     private PipeWriter? _writer;
-    private DuplexPipe? _duplexPipe; // Only used for TLS connections where separate streams aren't possible
+    private SocketPipe? _socketPipe;
+    private DuplexPipe? _duplexPipe;
 
     // IMPORTANT: Use global correlation ID counter to prevent TCP port reuse issues.
     // When connections are rapidly closed and reopened, the OS may reuse local TCP ports.
@@ -248,31 +248,32 @@ public sealed partial class KafkaConnection : IKafkaConnection
             minimumBufferSize: _options.SendBufferSize > 0 ? _options.SendBufferSize : 65536,
             leaveOpen: true));
 
+        // Use a read pump to decouple reads from PipeReader signaling.
+        // PipeReader.Create(Stream).ReadAsync can block indefinitely when concurrent reads
+        // and writes target the same underlying socket. The pump reads into an internal Pipe,
+        // ensuring PipeReader.ReadAsync always wakes promptly when data arrives.
+        // PipeScheduler.Inline eliminates thread pool context switches — the reader continuation
+        // runs directly on the pump thread (like Kestrel's SocketConnection).
+        var inputPipeOptions = new PipeOptions(
+            pool: MemoryPool<byte>.Shared,
+            readerScheduler: PipeScheduler.Inline,
+            writerScheduler: PipeScheduler.Inline,
+            minimumSegmentSize: _options.MinimumSegmentSize,
+            pauseWriterThreshold: pauseThreshold,
+            resumeWriterThreshold: resumeThreshold,
+            useSynchronizationContext: false);
+
+        var readBufferSize = _options.ReceiveBufferSize > 0 ? _options.ReceiveBufferSize : 65536;
+
         if (_stream is NetworkStream)
         {
-            // Create a separate NetworkStream for reading to avoid a known .NET issue where
-            // concurrent StreamPipeReader + StreamPipeWriter on the same stream instance causes
-            // PipeReader.ReadAsync to block indefinitely. Two NetworkStream instances on the same
-            // socket are fully independent — Socket natively supports concurrent Send + Receive.
-            _readStream = new NetworkStream(_socket!, ownsSocket: false);
-            _reader = PipeReader.Create(_readStream, new StreamPipeReaderOptions(
-                pool: MemoryPool<byte>.Shared,
-                bufferSize: _options.ReceiveBufferSize > 0 ? _options.ReceiveBufferSize : 65536,
-                minimumReadSize: _options.MinimumReadSize,
-                leaveOpen: true));
+            // Plain TCP: read directly from the Socket, bypassing the Stream abstraction.
+            _socketPipe = new SocketPipe(_socket!, inputPipeOptions, readBufferSize);
+            _reader = _socketPipe.Input;
         }
         else
         {
-            // For TLS (SslStream), we cannot create a second stream instance — the TLS state
-            // machine is bound to a single stream. Use a read pump to decouple the read path.
-            var inputPipeOptions = new PipeOptions(
-                pool: MemoryPool<byte>.Shared,
-                minimumSegmentSize: _options.MinimumSegmentSize,
-                pauseWriterThreshold: pauseThreshold,
-                resumeWriterThreshold: resumeThreshold,
-                useSynchronizationContext: false);
-
-            var readBufferSize = _options.ReceiveBufferSize > 0 ? _options.ReceiveBufferSize : 65536;
+            // TLS: SslStream requires the Stream abstraction for decryption.
             _duplexPipe = new DuplexPipe(_stream, inputPipeOptions, readBufferSize);
             _reader = _duplexPipe.Input;
         }
@@ -1541,20 +1542,20 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         _receiveCts?.Dispose();
 
-        // For the plain TCP path, complete reader/writer explicitly.
-        // For TLS, DuplexPipe owns the reader and stream — skip reader completion here.
-        if (_reader is not null && _duplexPipe is null)
-            await _reader.CompleteAsync().ConfigureAwait(false);
-
         if (_writer is not null)
             await _writer.CompleteAsync().ConfigureAwait(false);
 
+        if (_socketPipe is not null)
+            await _socketPipe.DisposeAsync().ConfigureAwait(false);
+
         if (_duplexPipe is not null)
             await _duplexPipe.DisposeAsync().ConfigureAwait(false);
-        else
-            _stream?.Dispose();
 
-        _readStream?.Dispose();
+        // For plain TCP, _stream is a NetworkStream with ownsSocket: false — disposing it
+        // releases the managed stream object but not the socket (handled by _socket.Dispose below).
+        // For TLS, DuplexPipe.DisposeAsync already disposed the stream.
+        _stream?.Dispose();
+
         _socket?.Dispose();
 
         _reauthTimer?.Dispose();
