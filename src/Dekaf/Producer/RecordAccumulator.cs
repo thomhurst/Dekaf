@@ -692,11 +692,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Buffer memory tracking for backpressure
     private readonly ulong _maxBufferMemory;
     private long _bufferedBytes;
-    // Use ManualResetEventSlim instead of SemaphoreSlim for buffer space signaling.
-    // When memory is released, Set() wakes ALL waiting threads so they can race to reserve
-    // via lock-free TryReserveMemory(). This eliminates the serialized wakeup bottleneck
-    // that occurred with SemaphoreSlim(1,1) which only woke one thread per Release().
-    private readonly ManualResetEventSlim _bufferSpaceAvailable = new(true); // Initially signaled (space available)
+    // Use AutoResetEvent for sync buffer space signaling.
+    // AutoResetEvent wakes only ONE waiting thread per Set() call, avoiding the thundering herd
+    // problem where ManualResetEventSlim.Set() wakes ALL waiters but only one succeeds the CAS
+    // in TryReserveMemory(). This reduces contention under heavy backpressure.
+    private readonly AutoResetEvent _bufferSpaceAvailable = new(true); // Initially signaled (space available)
+    // Cached WaitHandle array for WaitAny in ReserveMemorySync — avoids per-call allocation.
+    private WaitHandle[]? _syncWaitHandles;
     private readonly CancellationTokenSource _disposalCts = new();
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
@@ -1520,22 +1522,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (remainingMs <= 0)
                 ThrowBufferMemoryTimeout(recordSize, currentTicks);
 
-            // Reset event before waiting — ReleaseMemory will Set() it when space becomes available.
-            _bufferSpaceAvailable.Reset();
+            // AutoResetEvent auto-resets after waking one thread — no manual Reset() needed.
 
-            // Double-check disposal after reset but before wait
+            // Double-check disposal before wait
             if (_disposed)
             {
                 throw new OperationCanceledException(_disposalCts.Token);
             }
 
             // Wait for signal from ReleaseMemory, disposal cancellation, or timeout.
-            // MRES.Wait uses efficient spin-then-kernel-wait internally — no polling needed.
-            try
-            {
-                _bufferSpaceAvailable.Wait((int)Math.Min(remainingMs, int.MaxValue), _disposalCts.Token);
-            }
-            catch (OperationCanceledException) when (_disposed)
+            // AutoResetEvent.WaitOne doesn't accept CancellationToken, so use WaitAny
+            // with the disposal CTS WaitHandle for prompt cancellation detection.
+            var handles = _syncWaitHandles ??= [_bufferSpaceAvailable, _disposalCts.Token.WaitHandle];
+            var waitResult = WaitHandle.WaitAny(handles, (int)Math.Min(remainingMs, int.MaxValue));
+
+            // waitResult == 1 means the disposal token was signaled
+            if (waitResult == 1 && _disposed)
             {
                 throw new OperationCanceledException(_disposalCts.Token);
             }
@@ -1582,7 +1584,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Signal that space is available.
-        // MRES.Set() wakes ALL sync waiters so they can race via lock-free TryReserveMemory().
+        // AutoResetEvent.Set() wakes ONE sync waiter, avoiding thundering herd contention.
         // SemaphoreSlim.Release() wakes ONE async waiter (who will retry and re-wait if CAS fails).
         try
         {
