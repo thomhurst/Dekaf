@@ -16,7 +16,7 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>
     /// <summary>
     /// Transactional ID for exactly-once semantics (v3+).
     /// </summary>
-    public string? TransactionalId { get; init; }
+    public string? TransactionalId { get; set; }
 
     /// <summary>
     /// Required acknowledgments.
@@ -24,17 +24,17 @@ public sealed class ProduceRequest : IKafkaRequest<ProduceResponse>
     ///  0 = no acknowledgments (fire and forget)
     ///  1 = leader only
     /// </summary>
-    public required short Acks { get; init; }
+    public short Acks { get; set; }
 
     /// <summary>
     /// Timeout in milliseconds.
     /// </summary>
-    public required int TimeoutMs { get; init; }
+    public int TimeoutMs { get; set; }
 
     /// <summary>
     /// Topic data to produce.
     /// </summary>
-    public required IReadOnlyList<ProduceRequestTopicData> TopicData { get; init; }
+    public IReadOnlyList<ProduceRequestTopicData> TopicData { get; set; } = [];
 
     public static bool IsFlexibleVersion(short version) => version >= 9;
     public static short GetRequestHeaderVersion(short version) => version >= 9 ? (short)2 : (short)1;
@@ -85,12 +85,12 @@ public sealed class ProduceRequestTopicData
     /// <summary>
     /// Topic name.
     /// </summary>
-    public required string Name { get; init; }
+    public string Name { get; set; } = string.Empty;
 
     /// <summary>
     /// Partition data.
     /// </summary>
-    public required IReadOnlyList<ProduceRequestPartitionData> PartitionData { get; init; }
+    public IReadOnlyList<ProduceRequestPartitionData> PartitionData { get; set; } = [];
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
@@ -150,23 +150,23 @@ public sealed class ProduceRequestPartitionData
     /// <summary>
     /// Partition index.
     /// </summary>
-    public required int Index { get; init; }
+    public int Index { get; set; }
 
     /// <summary>
     /// Record batches to produce.
     /// </summary>
-    public required IReadOnlyList<RecordBatch> Records { get; init; }
+    public IReadOnlyList<RecordBatch> Records { get; set; } = [];
 
     /// <summary>
     /// Compression type to apply to record batches.
     /// </summary>
-    public CompressionType Compression { get; init; } = CompressionType.None;
+    public CompressionType Compression { get; set; } = CompressionType.None;
 
     /// <summary>
     /// Compression codec registry to use for compression.
     /// When null, the default registry is used.
     /// </summary>
-    public CompressionCodecRegistry? CompressionCodecs { get; init; }
+    public CompressionCodecRegistry? CompressionCodecs { get; set; }
 
     public void Write(ref KafkaProtocolWriter writer, short version)
     {
