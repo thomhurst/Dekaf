@@ -22,7 +22,7 @@ namespace Dekaf.Producer;
 ///
 /// All wake-up sources (new batches, response completions, partition unmutes) flow through
 /// a single <see cref="_eventChannel"/> — like Java Kafka's Sender.poll() model. Response
-/// tasks complete and signal the channel via lightweight <c>ContinueWith</c> wake-ups;
+/// tasks complete and signal the channel via lightweight <c>UnsafeOnCompleted</c> wake-ups;
 /// the send loop then polls <c>_pendingResponses</c> for completed tasks (like main's
 /// ProcessCompletedResponses). This avoids cross-thread reference sharing of batches arrays.
 ///
@@ -52,7 +52,7 @@ namespace Dekaf.Producer;
 /// </para>
 /// <para>
 /// Response completion is detected by polling <c>_pendingResponses</c> for completed tasks
-/// (checking <c>ResponseTask.IsCompleted</c>). <c>ContinueWith</c> callbacks write lightweight
+/// (checking <c>ResponseTask.IsCompleted</c>). <c>UnsafeOnCompleted</c> callbacks write lightweight
 /// <see cref="SendLoopEvent.ResponseReady"/> signals to wake up the send loop when responses
 /// arrive. In-flight capacity is measured by <c>_pendingResponses.Count</c>.
 /// </para>
@@ -315,13 +315,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private TaskCompletionSource _anyResponseCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>
-    /// Pre-allocated state for the response ContinueWith callback, avoiding a boxed
-    /// value-tuple allocation on every send.
+    /// Pre-allocated callback for response completion signaling.
+    /// Caches a single <see cref="Action"/> delegate that is reused across all response tasks,
+    /// eliminating the continuation <see cref="Task"/> allocation that <c>ContinueWith</c> would create.
+    /// The <see cref="Action"/> is registered via <c>UnsafeOnCompleted</c> which has no return value
+    /// (no Task allocation).
     /// </summary>
     private sealed class ResponseCallbackState(ChannelWriter<SendLoopEvent> writer, BrokerSender sender)
     {
-        public readonly ChannelWriter<SendLoopEvent> Writer = writer;
-        public readonly BrokerSender Sender = sender;
+        /// <summary>
+        /// Cached delegate allocated once and reused for every response task registration.
+        /// </summary>
+        public readonly Action Callback = () =>
+        {
+            writer.TryWrite(SendLoopEvent.ResponseReady());
+            Interlocked.Exchange(ref sender._anyResponseCompleted,
+                    new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously))
+                .TrySetResult();
+        };
     }
     private ResponseCallbackState _responseCallbackState = null!;
 
@@ -1544,17 +1555,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Only a lightweight signal — actual processing happens in ProcessCompletedResponses.
             // Two signal paths: (1) channel write for the main WaitToReadAsync path,
             // (2) TCS rotation for the direct response-wait paths (replaces Task.WhenAny).
-            _ = responseTask.ContinueWith(static (_, state) =>
+            //
+            // Uses UnsafeOnCompleted with a cached Action delegate instead of ContinueWith
+            // to avoid allocating a continuation Task on every pipelined send. The callback
+            // is pre-allocated once in ResponseCallbackState and reused for all response tasks.
+            if (responseTask.IsCompleted)
             {
-                var s = (ResponseCallbackState)state!;
-                s.Writer.TryWrite(SendLoopEvent.ResponseReady());
-                Interlocked.Exchange(ref s.Sender._anyResponseCompleted,
-                        new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously))
-                    .TrySetResult();
-            }, _responseCallbackState,
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
+                // Already completed — signal inline without registering a continuation.
+                _responseCallbackState.Callback();
+            }
+            else
+            {
+                responseTask.ConfigureAwait(false).GetAwaiter()
+                    .UnsafeOnCompleted(_responseCallbackState.Callback);
+            }
 
             // Mute partitions at send time when limited to 1 in-flight request.
             // This ensures at most one batch per partition in-flight across all requests.
