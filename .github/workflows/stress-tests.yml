@@ -221,9 +221,24 @@ jobs:
           output.append(f"**Machine:** {machine_name or 'GitHub Actions'} ({processor_count or 'N/A'} processors)")
           output.append("")
 
-          # Group results by scenario
-          producer_results = [r for r in all_results if 'producer' in r.get('scenario', '').lower()]
-          consumer_results = [r for r in all_results if 'consumer' in r.get('scenario', '').lower()]
+          # Group results by exact scenario
+          from collections import defaultdict
+          scenario_groups = defaultdict(list)
+          for r in all_results:
+              scenario_groups[r.get('scenario', 'unknown')].append(r)
+
+          # Separate producer and consumer scenarios
+          producer_scenarios = {k: v for k, v in scenario_groups.items() if 'producer' in k}
+          consumer_scenarios = {k: v for k, v in scenario_groups.items() if 'consumer' in k}
+
+          # Pretty names for scenarios
+          scenario_titles = {
+              'producer': 'Producer (Fire-and-Forget)',
+              'producer-idempotent': 'Producer (Fire-and-Forget, Idempotent)',
+              'producer-async': 'Producer (Async)',
+              'producer-async-idempotent': 'Producer (Async, Idempotent)',
+              'consumer': 'Consumer',
+          }
 
           def format_throughput_table(results, title):
               if not results:
@@ -238,7 +253,7 @@ jobs:
               lines.append("| Client | Messages/sec | MB/sec | Total Messages | Errors | Ratio |")
               lines.append("|--------|--------------|--------|----------------|--------|-------|")
 
-              # Find baseline (Confluent)
+              # Find baseline (Confluent) for this specific scenario group
               confluent_rate = 0
               for r in results:
                   if r.get('client', '').lower() == 'confluent':
@@ -299,8 +314,13 @@ jobs:
               lines.append("")
               return lines
 
-          output.extend(format_throughput_table(producer_results, "Producer Throughput"))
-          output.extend(format_throughput_table(consumer_results, "Consumer Throughput"))
+          for scenario, results in sorted(producer_scenarios.items()):
+              title = scenario_titles.get(scenario, f"Producer ({scenario})")
+              output.extend(format_throughput_table(results, f"{title} Throughput"))
+
+          for scenario, results in sorted(consumer_scenarios.items()):
+              title = scenario_titles.get(scenario, f"Consumer ({scenario})")
+              output.extend(format_throughput_table(results, f"{title} Throughput"))
           output.extend(format_gc_table(all_results))
 
           # Write to GitHub summary
@@ -380,28 +400,42 @@ jobs:
 
                   results = data.get('results', [])
 
-                  # Group by scenario
-                  producer_results = [r for r in results if 'producer' in r.get('scenario', '').lower()]
-                  consumer_results = [r for r in results if 'consumer' in r.get('scenario', '').lower()]
+                  # Group by exact scenario
+                  from collections import defaultdict
+                  scenario_groups = defaultdict(list)
+                  for r in results:
+                      scenario_groups[r.get('scenario', 'unknown')].append(r)
 
-                  if producer_results:
-                      duration = producer_results[0].get('durationMinutes', 'N/A')
-                      message_size = producer_results[0].get('messageSizeBytes', 'N/A')
+                  producer_scenarios = {k: v for k, v in scenario_groups.items() if 'producer' in k}
+                  consumer_scenarios = {k: v for k, v in scenario_groups.items() if 'consumer' in k}
 
-                      output.append(f"## Producer Performance ({duration} min, {message_size}B)")
-                      output.append("")
-                      output.append("| Client | Messages/sec | MB/sec | Total | Errors |")
-                      output.append("|--------|--------------|--------|-------|--------|")
+                  scenario_titles = {
+                      'producer': 'Producer (Fire-and-Forget)',
+                      'producer-idempotent': 'Producer (Fire-and-Forget, Idempotent)',
+                      'producer-async': 'Producer (Async)',
+                      'producer-async-idempotent': 'Producer (Async, Idempotent)',
+                      'consumer': 'Consumer',
+                  }
 
-                      for r in sorted(producer_results, key=lambda x: x.get('throughput', {}).get('averageMessagesPerSecond', 0), reverse=True):
+                  def format_comparison(scenario_results, scenario_title):
+                      """Generate table and comparison callout for a single scenario."""
+                      lines = []
+                      duration = scenario_results[0].get('durationMinutes', 'N/A')
+                      message_size = scenario_results[0].get('messageSizeBytes', 'N/A')
+
+                      lines.append(f"## {scenario_title} Performance ({duration} min, {message_size}B)")
+                      lines.append("")
+                      lines.append("| Client | Messages/sec | MB/sec | Total | Errors |")
+                      lines.append("|--------|--------------|--------|-------|--------|")
+
+                      for r in sorted(scenario_results, key=lambda x: x.get('throughput', {}).get('averageMessagesPerSecond', 0), reverse=True):
                           t = r.get('throughput', {})
-                          output.append(f"| {r.get('client')} | {t.get('averageMessagesPerSecond', 0):,.0f} | {t.get('averageMegabytesPerSecond', 0):.2f} | {t.get('totalMessages', 0):,} | {t.get('totalErrors', 0)} |")
+                          lines.append(f"| {r.get('client')} | {t.get('averageMessagesPerSecond', 0):,.0f} | {t.get('averageMegabytesPerSecond', 0):.2f} | {t.get('totalMessages', 0):,} | {t.get('totalErrors', 0)} |")
 
-                      output.append("")
+                      lines.append("")
 
-                      # Show comparison
-                      dekaf = next((r for r in producer_results if r.get('client', '').lower() == 'dekaf'), None)
-                      confluent = next((r for r in producer_results if r.get('client', '').lower() == 'confluent'), None)
+                      dekaf = next((r for r in scenario_results if r.get('client', '').lower() == 'dekaf'), None)
+                      confluent = next((r for r in scenario_results if r.get('client', '').lower() == 'confluent'), None)
 
                       if dekaf and confluent:
                           dekaf_rate = dekaf.get('throughput', {}).get('averageMessagesPerSecond', 0)
@@ -409,33 +443,26 @@ jobs:
                           if confluent_rate > 0:
                               ratio = dekaf_rate / confluent_rate
                               if ratio > 1.05:
-                                  output.append(f":::tip")
-                                  output.append(f"**Dekaf is {ratio:.2f}x faster** than Confluent.Kafka for producer throughput!")
-                                  output.append(f":::")
+                                  lines.append(f":::tip")
+                                  lines.append(f"**Dekaf is {ratio:.2f}x faster** than Confluent.Kafka for {scenario_title.lower()} throughput!")
+                                  lines.append(f":::")
                               elif ratio < 0.95:
-                                  output.append(f":::note")
-                                  output.append(f"Confluent.Kafka is {1/ratio:.2f}x faster for producer throughput.")
-                                  output.append(f":::")
+                                  lines.append(f":::note")
+                                  lines.append(f"Confluent.Kafka is {1/ratio:.2f}x faster for {scenario_title.lower()} throughput.")
+                                  lines.append(f":::")
                               else:
-                                  output.append(f":::note")
-                                  output.append(f"Dekaf and Confluent.Kafka have similar producer performance.")
-                                  output.append(f":::")
-                          output.append("")
+                                  lines.append(f":::note")
+                                  lines.append(f"Dekaf and Confluent.Kafka have similar {scenario_title.lower()} performance.")
+                                  lines.append(f":::")
+                      return lines
 
-                  if consumer_results:
-                      duration = consumer_results[0].get('durationMinutes', 'N/A')
-                      message_size = consumer_results[0].get('messageSizeBytes', 'N/A')
+                  for scenario in sorted(producer_scenarios):
+                      title = scenario_titles.get(scenario, f"Producer ({scenario})")
+                      output.extend(format_comparison(producer_scenarios[scenario], title))
 
-                      output.append(f"## Consumer Performance ({duration} min, {message_size}B)")
-                      output.append("")
-                      output.append("| Client | Messages/sec | MB/sec | Total | Errors |")
-                      output.append("|--------|--------------|--------|-------|--------|")
-
-                      for r in sorted(consumer_results, key=lambda x: x.get('throughput', {}).get('averageMessagesPerSecond', 0), reverse=True):
-                          t = r.get('throughput', {})
-                          output.append(f"| {r.get('client')} | {t.get('averageMessagesPerSecond', 0):,.0f} | {t.get('averageMegabytesPerSecond', 0):.2f} | {t.get('totalMessages', 0):,} | {t.get('totalErrors', 0)} |")
-
-                      output.append("")
+                  for scenario in sorted(consumer_scenarios):
+                      title = scenario_titles.get(scenario, f"Consumer ({scenario})")
+                      output.extend(format_comparison(consumer_scenarios[scenario], title))
 
                   # GC Stats
                   output.append("## Memory & GC Statistics")
