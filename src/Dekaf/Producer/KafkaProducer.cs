@@ -455,7 +455,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var tagList = new TagList { { Diagnostics.DekafDiagnostics.MessagingDestinationName, topic } };
             Diagnostics.DekafMetrics.MessagesSent.Add(1, tagList);
             Diagnostics.DekafMetrics.BytesSent.Add(metadata.KeySize + metadata.ValueSize, tagList);
-            Diagnostics.DekafMetrics.ProduceDuration.Record(
+            Diagnostics.DekafMetrics.OperationDuration.Record(
                 Stopwatch.GetElapsedTime(startTimestamp).TotalSeconds, tagList);
 
             return metadata;
@@ -650,6 +650,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
             catch (Exception ex)
             {
+                if (activity is not null)
+                    Diagnostics.DekafDiagnostics.RecordException(activity, ex);
                 LogFireAndForgetMetadataFetchFailed(ex, message.Topic);
             }
         }

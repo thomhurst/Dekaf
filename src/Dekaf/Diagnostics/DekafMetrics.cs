@@ -21,11 +21,11 @@ internal static class DekafMetrics
             unit: "By",
             description: "Total bytes published to Kafka.");
 
-    internal static readonly Histogram<double> ProduceDuration =
+    internal static readonly Histogram<double> OperationDuration =
         DekafDiagnostics.Meter.CreateHistogram<double>(
             "messaging.client.operation.duration",
             unit: "s",
-            description: "Duration of produce operations.");
+            description: "Duration of messaging operations (produce or consume).");
 
     internal static readonly Counter<long> ProduceErrors =
         DekafDiagnostics.Meter.CreateCounter<long>(

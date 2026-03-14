@@ -84,7 +84,7 @@ public sealed class DekafDiagnosticsTests
         // Force instrument creation by touching them
         DekafMetrics.MessagesSent.Add(0);
         DekafMetrics.BytesSent.Add(0);
-        DekafMetrics.ProduceDuration.Record(0);
+        DekafMetrics.OperationDuration.Record(0);
         DekafMetrics.ProduceErrors.Add(0);
         DekafMetrics.Retries.Add(0);
         DekafMetrics.MessagesReceived.Add(0);
