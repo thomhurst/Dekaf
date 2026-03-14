@@ -1746,6 +1746,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             // Sort batches by topic name so equal topics are contiguous.
             // Fast-path: skip the O(n log n) sort when count <= 1 or already sorted.
+            // The pre-scan uses string.Compare (ordinal) because it needs the sign of the
+            // comparison to detect out-of-order elements, not just inequality.
             var batchesSpan = batches.AsSpan(0, count);
             var alreadySorted = true;
             var topicCount = count > 0 ? 1 : 0;
@@ -1758,7 +1760,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (cmp > 0)
                 {
                     alreadySorted = false;
-                    break;
+                    break; // topicCount is partial — will be recomputed after sort below
                 }
 
                 if (cmp != 0)
@@ -1767,12 +1769,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
+            // Unsorted path: pays a small extra cost (partial pre-scan + sort + recount) compared
+            // to sorting directly. This is an acceptable trade-off since multi-topic unsorted
+            // batches are rare; the common case (single topic or already sorted) skips the sort.
             if (!alreadySorted)
             {
                 batchesSpan.Sort(static (a, b) =>
                     string.Compare(a.TopicPartition.Topic, b.TopicPartition.Topic, StringComparison.Ordinal));
 
-                // Recount topics after sorting
+                // Discard the partial topicCount from the pre-scan and recount from scratch.
+                // Post-sort, topics are contiguous so simple != equality suffices (no need for
+                // the three-way comparison the pre-scan uses to detect ordering violations).
                 topicCount = count > 0 ? 1 : 0;
                 for (var i = 1; i < count; i++)
                 {
