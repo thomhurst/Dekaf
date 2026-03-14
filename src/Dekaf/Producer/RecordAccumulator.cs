@@ -1698,8 +1698,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         while (!TryReserveMemory(recordSize))
         {
-            // Spin briefly before blocking (hot path optimization)
-            if (spinWait.Count < 10)
+            // Spin briefly before blocking (hot path optimization).
+            // NextSpinWillYield adapts to the hardware: more spins on multi-core,
+            // fewer on single-core, avoiding wasteful spinning.
+            if (!spinWait.NextSpinWillYield)
             {
                 spinWait.SpinOnce();
                 continue;
