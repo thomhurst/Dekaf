@@ -118,8 +118,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
     private Socket? _socket;
     private Stream? _stream;
-    private PipeReader? _reader;
-    private PipeWriter? _writer;
+    private DuplexPipe? _duplexPipe;
 
     // IMPORTANT: Use global correlation ID counter to prevent TCP port reuse issues.
     // When connections are rapidly closed and reopened, the OS may reuse local TCP ports.
@@ -241,23 +240,19 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         LogConfiguringPipe(BrokerId, pauseThreshold, resumeThreshold);
 
-        var pipe = new Pipe(new PipeOptions(
+        var inputPipeOptions = new PipeOptions(
             pool: MemoryPool<byte>.Shared,
             minimumSegmentSize: _options.MinimumSegmentSize,
-            useSynchronizationContext: false,
             pauseWriterThreshold: pauseThreshold,
-            resumeWriterThreshold: resumeThreshold));
+            resumeWriterThreshold: resumeThreshold,
+            useSynchronizationContext: false);
 
-        _reader = PipeReader.Create(_stream, new StreamPipeReaderOptions(
+        var outputPipeOptions = new PipeOptions(
             pool: MemoryPool<byte>.Shared,
-            bufferSize: _options.ReceiveBufferSize > 0 ? _options.ReceiveBufferSize : 65536,
-            minimumReadSize: _options.MinimumReadSize,
-            leaveOpen: true));
+            minimumSegmentSize: _options.MinimumSegmentSize,
+            useSynchronizationContext: false);
 
-        _writer = PipeWriter.Create(_stream, new StreamPipeWriterOptions(
-            pool: MemoryPool<byte>.Shared,
-            minimumBufferSize: _options.SendBufferSize > 0 ? _options.SendBufferSize : 65536,
-            leaveOpen: true));
+        _duplexPipe = new DuplexPipe(_stream, inputPipeOptions, outputPipeOptions);
 
         _receiveCts = new CancellationTokenSource();
         _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
@@ -532,7 +527,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        if (_writer is null)
+        if (_duplexPipe is null)
             throw new InvalidOperationException("Not connected");
 
         // Build the request body first to calculate size
@@ -555,12 +550,12 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         // Write size prefix + body to the pipe
         var totalSize = bodyBuffer.WrittenCount;
-        var memory = _writer.GetMemory(4 + totalSize);
+        var memory = _duplexPipe.Output.GetMemory(4 + totalSize);
 
         BinaryPrimitives.WriteInt32BigEndian(memory.Span, totalSize);
         bodyBuffer.WrittenSpan.CopyTo(memory.Span[4..]);
 
-        _writer.Advance(4 + totalSize);
+        _duplexPipe.Output.Advance(4 + totalSize);
 
         // Apply RequestTimeout to flush operation using pooled CTS
         using var timeoutCts = _timeoutCtsPool.Rent();
@@ -572,7 +567,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         FlushResult result;
         try
         {
-            result = await _writer.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
+            result = await _duplexPipe.Output.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
@@ -616,7 +611,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
     private async Task ReceiveLoopAsync(CancellationToken cancellationToken)
     {
-        if (_reader is null)
+        if (_duplexPipe is null)
             return;
 
         LogReceiveLoopStarted(_host, _port);
@@ -659,7 +654,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
                     //    CancelPendingRead() is not currently called in this codebase, so IsCanceled
                     //    is not explicitly checked here. If future code introduces CancelPendingRead(),
                     //    an IsCanceled check should be added.
-                    result = await _reader.ReadAsync(timeoutCts.Token).ConfigureAwait(false);
+                    result = await _duplexPipe!.Input.ReadAsync(timeoutCts.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                 {
@@ -696,7 +691,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
                     }
                 }
 
-                _reader.AdvanceTo(buffer.Start, buffer.End);
+                _duplexPipe!.Input.AdvanceTo(buffer.Start, buffer.End);
 
                 // After processing all available responses, check if the stream has ended.
                 // IsCompleted=true means the remote peer closed the connection (EOF).
@@ -1523,13 +1518,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         _receiveCts?.Dispose();
 
-        if (_reader is not null)
-            await _reader.CompleteAsync().ConfigureAwait(false);
-
-        if (_writer is not null)
-            await _writer.CompleteAsync().ConfigureAwait(false);
-
-        _stream?.Dispose();
+        if (_duplexPipe is not null)
+            await _duplexPipe.DisposeAsync().ConfigureAwait(false);
+        else
+            _stream?.Dispose(); // Stream not yet wrapped (failed during SASL auth)
         _socket?.Dispose();
 
         _reauthTimer?.Dispose();
