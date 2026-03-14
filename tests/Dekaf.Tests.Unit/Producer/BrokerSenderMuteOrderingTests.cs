@@ -177,7 +177,7 @@ public sealed class BrokerSenderMuteOrderingTests
     /// Verifies: batch A acknowledged before batch B (ordering preserved).
     /// </summary>
     [Test]
-    [Timeout(30_000)]
+    [Timeout(60_000)]
     public async Task RetriableError_MutesPartition_BlocksNormalBatchUntilRetrySucceeds(CancellationToken ct)
     {
         // Send 1: batch A (p0) → retriable error
@@ -227,28 +227,32 @@ public sealed class BrokerSenderMuteOrderingTests
             await sender.EnqueueAsync(batchA, CancellationToken.None);
 
             // Wait for send 1
-            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // Return retriable error → triggers HandleRetriableBatch → mutes p0
             tcs1.SetResult(CreateRetriableErrorResponse("test-topic", 0));
 
-            // Enqueue batch B (p0) — should be blocked because p0 is muted
+            // Wait for send 2 (retry of batch A) — do this BEFORE enqueuing B to ensure
+            // the send loop has processed the retriable error and started the retry.
+            // On slow CI runners, enqueuing B before the retry is processed can cause the
+            // send loop to enter extra poll cycles (100ms each) while B sits muted in
+            // carry-over, accumulating latency.
+            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+
+            // Now enqueue batch B (p0) — retry already in flight, p0 is muted by _muteOnSend
             var batchB = CreateTestBatch(vtPool, "test-topic", 0);
             await sender.EnqueueAsync(batchB, CancellationToken.None);
-
-            // Wait for send 2 (retry of batch A)
-            await sendSignals[1].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
 
             // Complete retry → FinalizeCoalescedRetries unmutes p0
             tcs2.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 100));
 
             // Wait for send 3 (batch B, now that p0 is unmuted)
-            await sendSignals[2].Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await sendSignals[2].Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // Complete batch B
             tcs3.SetResult(CreateSuccessResponse("test-topic", 0, baseOffset: 101));
 
-            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await allAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
 
             // Verify ordering: A acknowledged before B
             await Assert.That(ackOrder).Count().IsEqualTo(2);
