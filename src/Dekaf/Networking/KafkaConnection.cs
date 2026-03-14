@@ -120,6 +120,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private Stream? _stream;
     private PipeReader? _reader;
     private PipeWriter? _writer;
+    private SocketPipe? _socketPipe;
     private DuplexPipe? _duplexPipe;
 
     // IMPORTANT: Use global correlation ID counter to prevent TCP port reuse issues.
@@ -247,21 +248,35 @@ public sealed partial class KafkaConnection : IKafkaConnection
             minimumBufferSize: _options.SendBufferSize > 0 ? _options.SendBufferSize : 65536,
             leaveOpen: true));
 
-        // Use a read pump for all connections to decouple stream reads from PipeReader signaling.
-        // PipeReader.Create(Stream) has a known issue where ReadAsync can block indefinitely
-        // when concurrent reads and writes happen on the same underlying socket, even with
-        // separate NetworkStream instances. The pump reads from the stream into an internal
-        // Pipe, ensuring PipeReader.ReadAsync always wakes promptly when data arrives.
+        // Use a read pump to decouple reads from PipeReader signaling.
+        // PipeReader.Create(Stream).ReadAsync can block indefinitely when concurrent reads
+        // and writes target the same underlying socket. The pump reads into an internal Pipe,
+        // ensuring PipeReader.ReadAsync always wakes promptly when data arrives.
+        // PipeScheduler.Inline eliminates thread pool context switches — the reader continuation
+        // runs directly on the pump thread (like Kestrel's SocketConnection).
         var inputPipeOptions = new PipeOptions(
             pool: MemoryPool<byte>.Shared,
+            readerScheduler: PipeScheduler.Inline,
+            writerScheduler: PipeScheduler.Inline,
             minimumSegmentSize: _options.MinimumSegmentSize,
             pauseWriterThreshold: pauseThreshold,
             resumeWriterThreshold: resumeThreshold,
             useSynchronizationContext: false);
 
         var readBufferSize = _options.ReceiveBufferSize > 0 ? _options.ReceiveBufferSize : 65536;
-        _duplexPipe = new DuplexPipe(_stream, inputPipeOptions, readBufferSize);
-        _reader = _duplexPipe.Input;
+
+        if (_stream is NetworkStream)
+        {
+            // Plain TCP: read directly from the Socket, bypassing the Stream abstraction.
+            _socketPipe = new SocketPipe(_socket!, inputPipeOptions, readBufferSize);
+            _reader = _socketPipe.Input;
+        }
+        else
+        {
+            // TLS: SslStream requires the Stream abstraction for decryption.
+            _duplexPipe = new DuplexPipe(_stream, inputPipeOptions, readBufferSize);
+            _reader = _duplexPipe.Input;
+        }
 
         _receiveCts = new CancellationTokenSource();
         _receiveTask = ReceiveLoopAsync(_receiveCts.Token);
@@ -1529,6 +1544,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         if (_writer is not null)
             await _writer.CompleteAsync().ConfigureAwait(false);
+
+        if (_socketPipe is not null)
+            await _socketPipe.DisposeAsync().ConfigureAwait(false);
 
         if (_duplexPipe is not null)
             await _duplexPipe.DisposeAsync().ConfigureAwait(false);
