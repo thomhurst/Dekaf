@@ -1400,6 +1400,110 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Appends a record from raw span data, using arena-based zero-copy when possible.
+    /// This avoids per-message ArrayPool rentals on the fire-and-forget slow path.
+    /// </summary>
+    /// <returns>true if appended successfully, false if the accumulator is disposed.</returns>
+    internal bool AppendFromSpans(
+        string topic,
+        int partition,
+        long timestamp,
+        ReadOnlySpan<byte> keyData,
+        bool keyIsNull,
+        ReadOnlySpan<byte> valueData,
+        bool valueIsNull,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?>? callback)
+    {
+        if (_disposed)
+            return false;
+
+        var keyLength = keyIsNull ? 0 : keyData.Length;
+        var valueLength = valueIsNull ? 0 : valueData.Length;
+        var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, headers);
+        ReserveMemorySync(recordSize);
+
+        var topicPartition = GetOrCreateTopicPartition(topic, partition);
+
+        var pd = GetOrCreateDeque(topicPartition);
+        bool batchSealed = false;
+
+        lock (pd.Lock)
+        {
+            // Check disposal under lock
+            if (_disposed)
+            {
+                ReleaseMemory(recordSize);
+                return false;
+            }
+
+            // Try append to current batch
+            if (pd.CurrentBatch is { } currentBatch)
+            {
+                if (TryAppendFromSpansToBatch(currentBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
+                    headers, pooledHeaderArray, callback, recordSize))
+                    return true;
+
+                // Current batch is full — seal it
+                SealCurrentBatchUnderLock(pd, currentBatch, ref batchSealed);
+            }
+
+            // Create new batch
+            var newBatch = RentBatch(topicPartition);
+            pd.CurrentBatch = newBatch;
+
+            // Append to new batch — must succeed since batch is empty
+            if (!TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
+                headers, pooledHeaderArray, callback, recordSize))
+            {
+                // Record too large for a single batch
+                pd.CurrentBatch = null;
+                _batchPool.Return(newBatch);
+                ReleaseMemory(recordSize);
+                throw new KafkaException(ErrorCode.MessageTooLarge,
+                    $"Record of size {recordSize} exceeds maximum batch size of {_options.BatchSize}");
+            }
+        }
+
+        if (batchSealed)
+            SignalWakeup();
+
+        return true;
+    }
+
+    /// <summary>
+    /// Helper: tries to append a record from span data to the given batch using arena zero-copy.
+    /// Called under the deque lock.
+    /// </summary>
+    private bool TryAppendFromSpansToBatch(
+        PartitionBatch batch,
+        long timestamp,
+        ReadOnlySpan<byte> keyData,
+        bool keyIsNull,
+        ReadOnlySpan<byte> valueData,
+        bool valueIsNull,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?>? callback,
+        int estimatedSize)
+    {
+        var result = batch.TryAppendFromSpans(timestamp, keyData, keyIsNull, valueData, valueIsNull,
+            headers, pooledHeaderArray, callback);
+
+        if (result.Success)
+        {
+            ProducerDebugCounters.RecordMessageAppended(hasCompletionSource: false);
+            var overestimate = estimatedSize - result.ActualSizeAdded;
+            if (overestimate > 0)
+                ReleaseMemory(overestimate);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Seals the current batch in a partition deque, enqueues the ready batch, and returns the shell to pool.
     /// MUST be called under pd.Lock.
     /// </summary>
@@ -2717,6 +2821,149 @@ internal sealed class PartitionBatch
             _completionSources[_completionSourceCount++] = completionSource;
             ProducerDebugCounters.RecordCompletionSourceStoredInBatch();
         }
+
+        if (callback is not null)
+        {
+            _callbacks![_callbackCount++] = callback;
+        }
+
+        _recordCount++;
+        _estimatedSize += recordSize;
+
+        return new RecordAppendResult(Success: true, ActualSizeAdded: recordSize);
+    }
+
+    /// <summary>
+    /// Appends a record from raw span data, using the arena for zero-copy when possible.
+    /// Falls back to ArrayPool rental when the arena is full.
+    /// Caller must hold the per-partition deque lock.
+    /// </summary>
+    public RecordAppendResult TryAppendFromSpans(
+        long timestamp,
+        ReadOnlySpan<byte> keyData,
+        bool keyIsNull,
+        ReadOnlySpan<byte> valueData,
+        bool valueIsNull,
+        IReadOnlyList<Header>? headers,
+        Header[]? pooledHeaderArray,
+        Action<RecordMetadata, Exception?>? callback)
+    {
+        var keyLength = keyIsNull ? 0 : keyData.Length;
+        var valueLength = valueIsNull ? 0 : valueData.Length;
+        var recordSize = EstimateRecordSize(keyLength, valueLength, headers);
+
+        // Check if batch was completed
+        if (Volatile.Read(ref _isCompleted) != 0)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        // Defensive check: if arrays are null, batch is in inconsistent state (being pooled)
+        if (_records is null || _pooledArrays is null)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        if (_recordCount == 0)
+        {
+            _baseTimestamp = timestamp;
+        }
+
+        // Check size limit
+        if (_estimatedSize + recordSize > _options.BatchSize && _recordCount > 0)
+        {
+            return new RecordAppendResult(false);
+        }
+
+        // Grow arrays if needed (rare - only happens if batch fills beyond initial capacity)
+        if (_recordCount >= _records.Length)
+        {
+            GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
+        }
+        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
+        {
+            GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
+        }
+        if (callback is not null)
+        {
+            _callbacks ??= ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Rent(_initialRecordCapacity);
+            if (_callbackCount >= _callbacks.Length)
+            {
+                GrowArray(ref _callbacks!, ref _callbackCount, ArrayPool<Action<RecordMetadata, Exception?>?>.Shared);
+            }
+        }
+
+        // Try to use arena for zero-copy serialization
+        ReadOnlyMemory<byte> keyMemory = ReadOnlyMemory<byte>.Empty;
+        ReadOnlyMemory<byte> valueMemory = ReadOnlyMemory<byte>.Empty;
+        bool usedArenaForKey = false;
+        bool usedArenaForValue = false;
+
+        if (!keyIsNull && keyLength > 0 && _arena is not null)
+        {
+            if (_arena.TryAllocate(keyLength, out var keySpan, out var keyOffset))
+            {
+                keyData.CopyTo(keySpan);
+                keyMemory = _arena.Buffer.AsMemory(keyOffset, keyLength);
+                usedArenaForKey = true;
+            }
+        }
+
+        if (!valueIsNull && valueLength > 0 && _arena is not null)
+        {
+            if (_arena.TryAllocate(valueLength, out var valueSpan, out var valueOffset))
+            {
+                valueData.CopyTo(valueSpan);
+                valueMemory = _arena.Buffer.AsMemory(valueOffset, valueLength);
+                usedArenaForValue = true;
+            }
+        }
+
+        // Fall back to ArrayPool for data that didn't fit in the arena
+        if (!keyIsNull && keyLength > 0 && !usedArenaForKey)
+        {
+            // Grow _pooledArrays if needed (we may need up to 2 slots)
+            if (_pooledArrayCount + 2 >= _pooledArrays.Length)
+            {
+                GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
+            }
+
+            var keyArray = ArrayPool<byte>.Shared.Rent(keyLength);
+            keyData.CopyTo(keyArray);
+            keyMemory = keyArray.AsMemory(0, keyLength);
+            _pooledArrays[_pooledArrayCount++] = keyArray;
+        }
+
+        if (!valueIsNull && valueLength > 0 && !usedArenaForValue)
+        {
+            // Grow _pooledArrays if needed
+            if (_pooledArrayCount + 1 >= _pooledArrays.Length)
+            {
+                GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
+            }
+
+            var valueArray = ArrayPool<byte>.Shared.Rent(valueLength);
+            valueData.CopyTo(valueArray);
+            valueMemory = valueArray.AsMemory(0, valueLength);
+            _pooledArrays[_pooledArrayCount++] = valueArray;
+        }
+
+        if (pooledHeaderArray is not null)
+        {
+            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
+        }
+
+        var timestampDelta = timestamp - _baseTimestamp;
+        _records[_recordCount] = new Record
+        {
+            TimestampDelta = timestampDelta,
+            OffsetDelta = _recordCount,
+            Key = keyMemory,
+            IsKeyNull = keyIsNull,
+            Value = valueMemory,
+            IsValueNull = valueIsNull,
+            Headers = headers
+        };
 
         if (callback is not null)
         {
