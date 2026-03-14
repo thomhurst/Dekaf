@@ -1555,7 +1555,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Handle Acks.None (fire-and-forget)
             if (_options.Acks == Acks.None)
             {
-                await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
+                // Use the caller-timeout overload to avoid per-write
+                // CancellationTokenSource + CancellationTokenRegistration allocations.
+                // The cancellationToken already carries BrokerSender's sendTimeoutCts timeout.
+                await connection.SendFireAndForgetWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
                     request, (short)apiVersion, cancellationToken).ConfigureAwait(false);
                 pooledArrays.ReturnAll();
 
@@ -1588,7 +1591,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Add to _pendingResponses for the send loop to process inline (like Java's client.poll()).
             // No fire-and-forget — responses are processed in the single-threaded send loop,
             // making retry ordering deterministic by construction.
-            var responseTask = connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
+            // Use the caller-timeout overload to avoid per-write
+            // CancellationTokenSource + CancellationTokenRegistration allocations.
+            // The cancellationToken already carries BrokerSender's sendTimeoutCts timeout.
+            var responseTask = connection.SendPipelinedWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
                 request, (short)apiVersion, cancellationToken);
 
             // Request is now serialized onto the wire — return pooled protocol arrays.

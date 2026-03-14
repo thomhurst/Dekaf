@@ -61,6 +61,42 @@ public interface IKafkaConnection : IAsyncDisposable
         where TResponse : IKafkaResponse;
 
     /// <summary>
+    /// Sends a request without waiting for a response (fire-and-forget), where the caller's
+    /// cancellation token already carries a timeout. Skips the per-write CancellationTokenSource
+    /// allocation — a hot-path optimization for BrokerSender.
+    /// </summary>
+    /// <remarks>
+    /// The caller's token MUST be exclusively a timeout token (e.g., from a CancellationTokenSource
+    /// configured with only CancelAfter). Do NOT pass a linked user-cancellation token;
+    /// use the standard Send methods instead, which correctly distinguish timeout from explicit cancellation.
+    /// If the token does not carry a timeout, flush operations may block indefinitely.
+    /// </remarks>
+    ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken = default)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse;
+
+    /// <summary>
+    /// Sends a pipelined request where the caller's cancellation token already carries a timeout
+    /// for the write phase. Skips the per-write CancellationTokenSource allocation — a hot-path
+    /// optimization for BrokerSender. The response phase still uses the standard timeout.
+    /// </summary>
+    /// <remarks>
+    /// The caller's token MUST be exclusively a timeout token (e.g., from a CancellationTokenSource
+    /// configured with only CancelAfter). Do NOT pass a linked user-cancellation token;
+    /// use the standard Send methods instead, which correctly distinguish timeout from explicit cancellation.
+    /// If the token does not carry a timeout, flush operations may block indefinitely.
+    /// </remarks>
+    Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken = default)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse;
+
+    /// <summary>
     /// Connects to the broker.
     /// </summary>
     ValueTask ConnectAsync(CancellationToken cancellationToken = default);
