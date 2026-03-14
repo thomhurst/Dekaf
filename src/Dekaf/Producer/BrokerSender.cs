@@ -323,7 +323,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         public readonly ChannelWriter<SendLoopEvent> Writer = writer;
         public readonly BrokerSender Sender = sender;
     }
-    private ResponseCallbackState? _responseCallbackState;
+    private ResponseCallbackState _responseCallbackState = null!;
 
     private volatile bool _disposed;
 
@@ -583,7 +583,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // iterations; 100ms fallback ensures we don't wait indefinitely.
                             try
                             {
-                                await _anyResponseCompleted.Task
+                                await Volatile.Read(ref _anyResponseCompleted).Task
                                     .WaitAsync(TimeSpan.FromMilliseconds(100), cancellationToken)
                                     .ConfigureAwait(false);
                             }
@@ -723,13 +723,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // iterations; 100ms fallback ensures we don't wait indefinitely.
                     try
                     {
-                        await _anyResponseCompleted.Task
+                        await Volatile.Read(ref _anyResponseCompleted).Task
                             .WaitAsync(TimeSpan.FromMilliseconds(100), cancellationToken)
                             .ConfigureAwait(false);
                     }
                     catch (TimeoutException)
                     {
-                        // Periodic wake-up — loop back to re-check and sweep timeouts
+                        // Periodic wake-up — loop back to re-check responses and timeouts
                     }
                 }
                 else if (carryOver.Count > 0)
