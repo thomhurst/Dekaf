@@ -356,10 +356,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
     /// CancellationTokenRegistration allocation. The caller's token must already carry a
     /// timeout (e.g. BrokerSender's sendTimeoutCts).
     /// </summary>
-    internal ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+    public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken = default)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
         => SendFireAndForgetCoreAsync<TRequest, TResponse>(request, apiVersion, callerOwnsTimeout: true, cancellationToken);
@@ -413,10 +413,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
     /// timeout (e.g. BrokerSender's sendTimeoutCts).
     /// The response phase still uses the standard timeout via AwaitAndParseResponseAsync.
     /// </summary>
-    internal Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+    public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken = default)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
         => SendPipelinedCoreAsync<TRequest, TResponse>(request, apiVersion, callerOwnsTimeout: true, cancellationToken);
@@ -634,7 +634,17 @@ public sealed partial class KafkaConnection : IKafkaConnection
         FlushResult result;
         if (callerOwnsTimeout)
         {
-            result = await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                result = await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
+
+                throw new KafkaException(
+                    $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
+            }
         }
         else
         {

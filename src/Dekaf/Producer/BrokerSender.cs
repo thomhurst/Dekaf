@@ -1481,15 +1481,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Handle Acks.None (fire-and-forget)
             if (_options.Acks == Acks.None)
             {
-                // Use the caller-timeout overload when possible to avoid per-write
+                // Use the caller-timeout overload to avoid per-write
                 // CancellationTokenSource + CancellationTokenRegistration allocations.
                 // The cancellationToken already carries BrokerSender's sendTimeoutCts timeout.
-                if (connection is KafkaConnection kafkaConn)
-                    await kafkaConn.SendFireAndForgetWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
-                        request, (short)apiVersion, cancellationToken).ConfigureAwait(false);
-                else
-                    await connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
-                        request, (short)apiVersion, cancellationToken).ConfigureAwait(false);
+                await connection.SendFireAndForgetWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
+                    request, (short)apiVersion, cancellationToken).ConfigureAwait(false);
 
                 var fireAndForgetTimestamp = DateTimeOffset.UtcNow;
                 for (var i = 0; i < count; i++)
@@ -1520,14 +1516,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Add to _pendingResponses for the send loop to process inline (like Java's client.poll()).
             // No fire-and-forget — responses are processed in the single-threaded send loop,
             // making retry ordering deterministic by construction.
-            // Use the caller-timeout overload when possible to avoid per-write
+            // Use the caller-timeout overload to avoid per-write
             // CancellationTokenSource + CancellationTokenRegistration allocations.
             // The cancellationToken already carries BrokerSender's sendTimeoutCts timeout.
-            var responseTask = connection is KafkaConnection kafkaConn2
-                ? kafkaConn2.SendPipelinedWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
-                    request, (short)apiVersion, cancellationToken)
-                : connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
-                    request, (short)apiVersion, cancellationToken);
+            var responseTask = connection.SendPipelinedWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
+                request, (short)apiVersion, cancellationToken);
 
             // Release buffer memory now that data is written to the TCP buffer.
             // The untracked gap (between release and response) is bounded by

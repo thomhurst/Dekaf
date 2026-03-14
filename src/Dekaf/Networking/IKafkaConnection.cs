@@ -61,6 +61,30 @@ public interface IKafkaConnection : IAsyncDisposable
         where TResponse : IKafkaResponse;
 
     /// <summary>
+    /// Sends a request without waiting for a response (fire-and-forget), where the caller's
+    /// cancellation token already carries a timeout. Skips the per-write CancellationTokenSource
+    /// allocation — a hot-path optimization for BrokerSender.
+    /// </summary>
+    ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken = default)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse;
+
+    /// <summary>
+    /// Sends a pipelined request where the caller's cancellation token already carries a timeout
+    /// for the write phase. Skips the per-write CancellationTokenSource allocation — a hot-path
+    /// optimization for BrokerSender. The response phase still uses the standard timeout.
+    /// </summary>
+    Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken = default)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse;
+
+    /// <summary>
     /// Connects to the broker.
     /// </summary>
     ValueTask ConnectAsync(CancellationToken cancellationToken = default);

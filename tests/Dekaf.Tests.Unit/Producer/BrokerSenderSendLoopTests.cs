@@ -52,7 +52,7 @@ public sealed class BrokerSenderSendLoopTests
         connection.IsConnected.Returns(true);
         connection.BrokerId.Returns(1);
 
-        connection.SendPipelinedAsync<ProduceRequest, ProduceResponse>(
+        connection.SendPipelinedWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
                 Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(_ =>
             {
@@ -534,7 +534,7 @@ public sealed class BrokerSenderSendLoopTests
         var connection = Substitute.For<IKafkaConnection>();
         connection.IsConnected.Returns(true);
         connection.BrokerId.Returns(1);
-        connection.SendFireAndForgetAsync<ProduceRequest, ProduceResponse>(
+        connection.SendFireAndForgetWithCallerTimeoutAsync<ProduceRequest, ProduceResponse>(
                 Arg.Any<ProduceRequest>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
             .Returns(ValueTask.CompletedTask);
 
