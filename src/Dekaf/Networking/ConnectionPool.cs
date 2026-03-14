@@ -25,7 +25,7 @@ public sealed partial class ConnectionPool : IConnectionPool
 
     // Multi-connection support: connection groups and round-robin index
     private readonly ConcurrentDictionary<int, IKafkaConnection[]> _connectionGroupsById = new();
-    private readonly ConcurrentDictionary<EndpointKey, IKafkaConnection[]> _connectionGroupsByEndpoint = new();
+
     private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<IKafkaConnection>>> _connectionGroupCreationTasks = new();
 
     // Thread-local round-robin counter to eliminate atomic contention on hot path
@@ -125,6 +125,8 @@ public sealed partial class ConnectionPool : IConnectionPool
             cancellationToken,
             timeoutCts.Token);
 
+        var token = linkedCts.Token; // capture struct, not source
+
         try
         {
             for (var i = 0; i < _connectionsPerBroker; i++)
@@ -134,7 +136,7 @@ public sealed partial class ConnectionPool : IConnectionPool
                 var lazyTask = _connectionGroupCreationTasks.GetOrAdd(
                     (brokerId, index),
                     _ => new Lazy<ValueTask<IKafkaConnection>>(() =>
-                        CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, linkedCts.Token)));
+                        CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, token)));
 
                 tasks[i] = lazyTask.Value.AsTask();
             }
@@ -151,8 +153,6 @@ public sealed partial class ConnectionPool : IConnectionPool
 
             // Atomically set the connection group
             _connectionGroupsById[brokerId] = connections;
-            _connectionGroupsByEndpoint[new EndpointKey(brokerInfo.Host, brokerInfo.Port)] = connections;
-
             LogCreatedConnectionGroup(_connectionsPerBroker, brokerId);
 
             // Return the first connection
@@ -169,16 +169,21 @@ public sealed partial class ConnectionPool : IConnectionPool
             throw new KafkaException(
                 $"Connection group creation timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            // CTS timeout - clean up failed connection attempts
+            // Clean up failed connection attempts for both timeout and caller-cancellation
             for (var i = 0; i < _connectionsPerBroker; i++)
             {
                 _connectionGroupCreationTasks.TryRemove((brokerId, i), out _);
             }
 
-            throw new KafkaException(
-                $"Connection group creation timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
+            if (timeoutCts.IsCancellationRequested)
+            {
+                throw new KafkaException(
+                    $"Connection group creation timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId}");
+            }
+
+            throw; // caller-cancellation: preserve original exception
         }
         finally
         {
@@ -195,12 +200,14 @@ public sealed partial class ConnectionPool : IConnectionPool
             cancellationToken,
             timeoutCts.Token);
 
+        var token = linkedCts.Token; // capture struct, not source
+
         try
         {
             var lazyTask = _connectionGroupCreationTasks.GetOrAdd(
                 (brokerId, index),
                 _ => new Lazy<ValueTask<IKafkaConnection>>(() =>
-                    CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, linkedCts.Token)));
+                    CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, token)));
 
             var connection = await lazyTask.Value.ConfigureAwait(false);
 
@@ -215,13 +222,18 @@ public sealed partial class ConnectionPool : IConnectionPool
 
             return connection;
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            // Timeout occurred - clean up failed connection attempt
+            // Clean up failed connection attempt for both timeout and caller-cancellation
             _connectionGroupCreationTasks.TryRemove((brokerId, index), out _);
 
-            throw new KafkaException(
-                $"Connection replacement timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} index {index}");
+            if (timeoutCts.IsCancellationRequested)
+            {
+                throw new KafkaException(
+                    $"Connection replacement timeout after {(int)_connectionOptions.ConnectionTimeout.TotalMilliseconds}ms to broker {brokerId} index {index}");
+            }
+
+            throw; // caller-cancellation: preserve original exception
         }
         finally
         {
@@ -388,6 +400,22 @@ public sealed partial class ConnectionPool : IConnectionPool
             await connection.DisposeAsync().ConfigureAwait(false);
             LogRemovedConnection(brokerId);
         }
+
+        if (_connectionGroupsById.TryRemove(brokerId, out var group))
+        {
+            // Clean up creation tasks for all indices
+            for (var i = 0; i < _connectionsPerBroker; i++)
+                _connectionGroupCreationTasks.TryRemove((brokerId, i), out _);
+
+            // Dispose all connections in the group
+            foreach (var conn in group)
+            {
+                if (conn is not null)
+                    await conn.DisposeAsync().ConfigureAwait(false);
+            }
+
+            LogRemovedConnection(brokerId);
+        }
     }
 
     public async ValueTask CloseAllAsync()
@@ -453,7 +481,6 @@ public sealed partial class ConnectionPool : IConnectionPool
             _connectionsById.Clear();
             _connectionCreationTasks.Clear();
             _connectionGroupsById.Clear();
-            _connectionGroupsByEndpoint.Clear();
             _connectionGroupCreationTasks.Clear();
 
             LogAllConnectionsClosed();
