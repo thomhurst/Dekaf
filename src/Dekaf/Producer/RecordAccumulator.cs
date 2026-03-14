@@ -1674,7 +1674,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 _ => 100,
             });
             _bufferSpaceAvailable.Wait(waitMs);
-            _bufferSpaceAvailable.Reset();
+            // Only reset if buffer is still full; otherwise leave it signaled for other waiters.
+            // Without this guard, a Set() from ReleaseMemory between Wait returning and Reset
+            // executing would be silently consumed, delaying other waiters by up to one backoff interval.
+            if ((ulong)Volatile.Read(ref _bufferedBytes) >= _maxBufferMemory)
+                _bufferSpaceAvailable.Reset();
             waitCount++;
 
             if (_disposed)

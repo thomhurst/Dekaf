@@ -12,7 +12,7 @@ namespace Dekaf.Protocol.Records;
 /// this uses ArrayPool.Rent (not zero-initialized) and returns buffers with clearArray: false.
 /// Designed for thread-local reuse in serialization hot paths.
 /// </summary>
-internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>
+internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposable
 {
     private byte[] _buffer;
     private int _written;
@@ -89,18 +89,32 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>
     }
 
     /// <summary>
-    /// Replaces the internal buffer with a larger pooled buffer if needed.
-    /// Used by GetDecompressedBuffer when the existing buffer is too small.
+    /// Resets the write position and ensures the buffer has at least the specified capacity.
+    /// Discards any existing written data. Used by GetDecompressedBuffer when the existing
+    /// buffer is too small for the next decompression operation.
     /// </summary>
-    public void EnsureMinimumCapacity(int minimumCapacity)
+    public void ResetAndEnsureCapacity(int minimumCapacity)
     {
+        _written = 0;
+
         if (_buffer.Length >= minimumCapacity)
             return;
 
         // Return the old buffer and rent a larger one
         ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
         _buffer = ArrayPool<byte>.Shared.Rent(minimumCapacity);
+    }
+
+    /// <summary>
+    /// Returns the pooled buffer. After disposal, the writer must not be used.
+    /// </summary>
+    public void Dispose()
+    {
+        var buf = _buffer;
+        _buffer = [];
         _written = 0;
+        if (buf.Length > 0)
+            ArrayPool<byte>.Shared.Return(buf, clearArray: false);
     }
 }
 
@@ -166,9 +180,8 @@ public sealed class RecordBatch : IDisposable
         }
         else
         {
-            buffer.Clear();
-            // Ensure capacity for decompressed data
-            buffer.EnsureMinimumCapacity(estimatedSize);
+            // Reset write position and ensure capacity for decompressed data
+            buffer.ResetAndEnsureCapacity(estimatedSize);
         }
         return buffer;
     }
