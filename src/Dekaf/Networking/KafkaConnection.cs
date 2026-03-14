@@ -240,22 +240,23 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         LogConfiguringPipe(BrokerId, pauseThreshold, resumeThreshold);
 
-        // Both pipes use PipeScheduler.Inline on the consumer-side scheduler so that
-        // continuations run inline without thread pool dispatch — matching the original
-        // direct PipeReader.Create/PipeWriter.Create latency characteristics.
+        // Both pipes use PipeScheduler.Inline for BOTH reader and writer schedulers
+        // to eliminate all thread pool dispatch overhead per operation.
         //
-        // Input pipe (stream → app): readerScheduler=Inline so ReceiveLoopAsync's
-        //   ReadAsync continuation runs inline when the read pump calls FlushAsync.
-        // Output pipe (app → stream): readerScheduler=Inline so the write pump's
-        //   ReadAsync continuation runs inline when WriteRequestAsync calls FlushAsync.
+        // readerScheduler=Inline: when the writer flushes, the reader's ReadAsync
+        //   continuation runs inline on the flushing thread.
+        // writerScheduler=Inline: when the reader calls AdvanceTo (freeing buffer space),
+        //   the writer's FlushAsync continuation resumes inline — critical for the input
+        //   pipe where backpressure thresholds can pause the read pump's FlushAsync.
         //
-        // This is safe because the inline consumers do non-blocking work:
-        //   - ReceiveLoopAsync: protocol parsing and response dispatch
-        //   - Write pump: stream.WriteAsync (async I/O, yields immediately)
+        // Without writerScheduler=Inline on the input pipe, every AdvanceTo that
+        // resumes the read pump from backpressure dispatches to the thread pool,
+        // adding latency per response.
         var inputPipeOptions = new PipeOptions(
             pool: MemoryPool<byte>.Shared,
             minimumSegmentSize: _options.MinimumSegmentSize,
             readerScheduler: PipeScheduler.Inline,
+            writerScheduler: PipeScheduler.Inline,
             pauseWriterThreshold: pauseThreshold,
             resumeWriterThreshold: resumeThreshold,
             useSynchronizationContext: false);
@@ -264,6 +265,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             pool: MemoryPool<byte>.Shared,
             minimumSegmentSize: _options.MinimumSegmentSize,
             readerScheduler: PipeScheduler.Inline,
+            writerScheduler: PipeScheduler.Inline,
             useSynchronizationContext: false);
 
         var readBufferSize = _options.ReceiveBufferSize > 0 ? _options.ReceiveBufferSize : 65536;
