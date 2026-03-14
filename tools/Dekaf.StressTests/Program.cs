@@ -15,7 +15,7 @@ namespace Dekaf.StressTests;
 /// Options:
 ///   --duration &lt;minutes&gt;    Test duration in minutes (default: 15)
 ///   --message-size &lt;bytes&gt;  Message size in bytes (default: 1000)
-///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-async, consumer, all (default: all)
+///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-async, producer-async-idempotent, consumer, all (default: all)
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
 ///   report --input &lt;path&gt;   Generate report from existing results
@@ -202,8 +202,12 @@ public static class Program
         {
             new ProducerStressTest(),
             new ConfluentProducerStressTest(),
+            new ProducerIdempotentStressTest(),
+            new ConfluentProducerIdempotentStressTest(),
             new ProducerAsyncStressTest(),
             new ConfluentProducerAsyncStressTest(),
+            new ProducerAsyncIdempotentStressTest(),
+            new ConfluentProducerAsyncIdempotentStressTest(),
             new ConsumerStressTest(),
             new ConfluentConsumerStressTest()
         };
@@ -308,7 +312,7 @@ public static class Program
             Options:
               --duration <minutes>    Test duration in minutes (default: 15)
               --message-size <bytes>  Message size in bytes (default: 1000)
-              --scenario <name>       Run specific scenario: producer, producer-async, consumer, all (default: all)
+              --scenario <name>       Run specific scenario: producer, producer-idempotent, producer-async, producer-async-idempotent, consumer, all (default: all)
               --client <name>         Run specific client: dekaf, confluent, all (default: all)
               --output <path>         Output directory for results (default: ./results)
               --partitions <count>    Number of topic partitions (default: 6)

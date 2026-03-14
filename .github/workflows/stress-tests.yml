@@ -31,6 +31,12 @@ jobs:
           - scenario: producer
             client: confluent
             name: Confluent Producer
+          - scenario: producer-idempotent
+            client: dekaf
+            name: Dekaf Producer (Idempotent)
+          - scenario: producer-idempotent
+            client: confluent
+            name: Confluent Producer (Idempotent)
           - scenario: consumer
             client: dekaf
             name: Dekaf Consumer

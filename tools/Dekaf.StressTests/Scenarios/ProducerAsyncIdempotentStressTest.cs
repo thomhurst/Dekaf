@@ -9,11 +9,11 @@ using Dekaf.StressTests.Reporting;
 
 namespace Dekaf.StressTests.Scenarios;
 
-internal sealed class ProducerAsyncStressTest : IStressTestScenario
+internal sealed class ProducerAsyncIdempotentStressTest : IStressTestScenario
 {
     private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
 
-    public string Name => "producer-async";
+    public string Name => "producer-async-idempotent";
     public string Client => "Dekaf";
 
     public async Task<StressTestResult> RunAsync(StressTestOptions options, CancellationToken cancellationToken)
@@ -25,9 +25,9 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
 
         var builder = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(options.BootstrapServers)
-            .WithClientId("stress-producer-async-dekaf")
-            .WithIdempotence(false)
-            .WithAcks(Acks.Leader)
+            .WithClientId("stress-producer-async-idempotent-dekaf")
+            .WithIdempotence(true)
+            .WithAcks(Acks.All)
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize);
 
@@ -41,7 +41,7 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
 
         var producer = await builder.BuildAsync(cancellationToken);
 
-        Console.WriteLine($"  Warming up Dekaf async producer...");
+        Console.WriteLine($"  Warming up Dekaf async idempotent producer...");
         for (var i = 0; i < 1000; i++)
         {
             await producer.ProduceAsync(options.Topic, "warmup", "warmup", cancellationToken).ConfigureAwait(false);
@@ -55,7 +55,7 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
 
-        Console.WriteLine($"  Running Dekaf async producer stress test for {options.DurationMinutes} minutes...");
+        Console.WriteLine($"  Running Dekaf async idempotent producer stress test for {options.DurationMinutes} minutes...");
         Console.WriteLine($"  Start time: {DateTime.UtcNow:HH:mm:ss.fff} UTC");
         LogResourceUsage("Initial");
 

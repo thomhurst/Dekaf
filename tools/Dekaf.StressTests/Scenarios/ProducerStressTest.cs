@@ -26,6 +26,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
         var builder = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(options.BootstrapServers)
             .WithClientId("stress-producer-dekaf")
+            .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize);

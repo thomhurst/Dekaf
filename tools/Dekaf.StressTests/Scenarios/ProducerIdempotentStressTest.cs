@@ -9,11 +9,11 @@ using Dekaf.StressTests.Reporting;
 
 namespace Dekaf.StressTests.Scenarios;
 
-internal sealed class ProducerAsyncStressTest : IStressTestScenario
+internal sealed class ProducerIdempotentStressTest : IStressTestScenario
 {
     private static readonly string[] PreAllocatedKeys = CreatePreAllocatedKeys(10_000);
 
-    public string Name => "producer-async";
+    public string Name => "producer-idempotent";
     public string Client => "Dekaf";
 
     public async Task<StressTestResult> RunAsync(StressTestOptions options, CancellationToken cancellationToken)
@@ -25,9 +25,9 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
 
         var builder = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(options.BootstrapServers)
-            .WithClientId("stress-producer-async-dekaf")
-            .WithIdempotence(false)
-            .WithAcks(Acks.Leader)
+            .WithClientId("stress-producer-idempotent-dekaf")
+            .WithIdempotence(true)
+            .WithAcks(Acks.All)
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize);
 
@@ -41,11 +41,12 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
 
         var producer = await builder.BuildAsync(cancellationToken);
 
-        Console.WriteLine($"  Warming up Dekaf async producer...");
+        Console.WriteLine($"  Warming up Dekaf idempotent producer...");
         for (var i = 0; i < 1000; i++)
         {
-            await producer.ProduceAsync(options.Topic, "warmup", "warmup", cancellationToken).ConfigureAwait(false);
+            producer.Send(options.Topic, "warmup", "warmup");
         }
+        await producer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
 
         GC.Collect();
         GC.WaitForPendingFinalizers();
@@ -55,7 +56,7 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromMinutes(options.DurationMinutes));
 
-        Console.WriteLine($"  Running Dekaf async producer stress test for {options.DurationMinutes} minutes...");
+        Console.WriteLine($"  Running Dekaf idempotent producer stress test for {options.DurationMinutes} minutes...");
         Console.WriteLine($"  Start time: {DateTime.UtcNow:HH:mm:ss.fff} UTC");
         LogResourceUsage("Initial");
 
@@ -72,14 +73,15 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
             try
             {
                 var start = Stopwatch.GetTimestamp();
-                await producer.ProduceAsync(options.Topic, GetKey(messageIndex), messageValue, cts.Token).ConfigureAwait(false);
+                producer.Send(options.Topic, GetKey(messageIndex), messageValue);
                 latency.RecordTicks(Stopwatch.GetTimestamp() - start);
                 throughput.RecordMessage(options.MessageSizeBytes);
                 messageIndex++;
 
-                // Report status periodically - lower threshold than fire-and-forget since throughput is lower
-                if (messageIndex % 10_000 == 0)
+                // Yield and report status periodically
+                if (messageIndex % 100_000 == 0)
                 {
+                    await Task.Yield();
                     var now = DateTime.UtcNow;
                     if ((now - lastStatusTime).TotalSeconds >= 10)
                     {
@@ -100,6 +102,16 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
             {
                 throughput.RecordError();
             }
+        }
+
+        Console.WriteLine($"  Flushing remaining messages...");
+        try
+        {
+            await producer.FlushAsync(CancellationToken.None).AsTask().WaitAsync(TimeSpan.FromSeconds(30), CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            Console.WriteLine($"  Warning: Flush timed out after 30 seconds");
         }
 
         throughput.Stop();
