@@ -343,10 +343,32 @@ public sealed partial class KafkaConnection : IKafkaConnection
         }
     }
 
-    public async ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
+    public ValueTask SendFireAndForgetAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+        => SendFireAndForgetCoreAsync<TRequest, TResponse>(request, apiVersion, callerOwnsTimeout: false, cancellationToken);
+
+    /// <summary>
+    /// Fire-and-forget overload that skips the per-write CancellationTokenSource rent and
+    /// CancellationTokenRegistration allocation. The caller's token must already carry a
+    /// timeout (e.g. BrokerSender's sendTimeoutCts).
+    /// </summary>
+    internal ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+        => SendFireAndForgetCoreAsync<TRequest, TResponse>(request, apiVersion, callerOwnsTimeout: true, cancellationToken);
+
+    private async ValueTask SendFireAndForgetCoreAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        bool callerOwnsTimeout,
+        CancellationToken cancellationToken)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
@@ -366,7 +388,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await WriteRequestAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken)
+            await WriteRequestAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
                 .ConfigureAwait(false);
         }
         finally
@@ -377,10 +399,33 @@ public sealed partial class KafkaConnection : IKafkaConnection
         LogFireAndForgetRequestSent(correlationId);
     }
 
-    public async Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
+    public Task<TResponse> SendPipelinedAsync<TRequest, TResponse>(
         TRequest request,
         short apiVersion,
         CancellationToken cancellationToken = default)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+        => SendPipelinedCoreAsync<TRequest, TResponse>(request, apiVersion, callerOwnsTimeout: false, cancellationToken);
+
+    /// <summary>
+    /// Pipelined overload that skips the per-write CancellationTokenSource rent and
+    /// CancellationTokenRegistration allocation. The caller's token must already carry a
+    /// timeout (e.g. BrokerSender's sendTimeoutCts).
+    /// The response phase still uses the standard timeout via AwaitAndParseResponseAsync.
+    /// </summary>
+    internal Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        CancellationToken cancellationToken)
+        where TRequest : IKafkaRequest<TResponse>
+        where TResponse : IKafkaResponse
+        => SendPipelinedCoreAsync<TRequest, TResponse>(request, apiVersion, callerOwnsTimeout: true, cancellationToken);
+
+    private async Task<TResponse> SendPipelinedCoreAsync<TRequest, TResponse>(
+        TRequest request,
+        short apiVersion,
+        bool callerOwnsTimeout,
+        CancellationToken cancellationToken)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
@@ -406,7 +451,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await WriteRequestAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken)
+                await WriteRequestAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
                     .ConfigureAwait(false);
             }
             finally
@@ -547,7 +592,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
         int correlationId,
         short apiVersion,
         short headerVersion,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool callerOwnsTimeout = false)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
@@ -581,24 +627,34 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         _writer.Advance(4 + totalSize);
 
-        // Apply RequestTimeout to flush operation using pooled CTS
-        using var timeoutCts = _timeoutCtsPool.Rent();
-        timeoutCts.CancelAfter(_options.RequestTimeout);
-        using var reg = cancellationToken.CanBeCanceled
-            ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
-            : default;
-
+        // Apply timeout to the flush operation.
+        // When callerOwnsTimeout is true, the caller's cancellationToken already carries
+        // a timeout (e.g. BrokerSender's sendTimeoutCts), so we skip the per-write CTS
+        // rent and CancellationTokenRegistration allocation — a hot-path optimization.
         FlushResult result;
-        try
+        if (callerOwnsTimeout)
         {
-            result = await _writer.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
+            result = await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        else
         {
-            LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
+            using var timeoutCts = _timeoutCtsPool.Rent();
+            timeoutCts.CancelAfter(_options.RequestTimeout);
+            using var reg = cancellationToken.CanBeCanceled
+                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
+                : default;
 
-            throw new KafkaException(
-                $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
+            try
+            {
+                result = await _writer.FlushAsync(timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
+
+                throw new KafkaException(
+                    $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
+            }
         }
 
         // FlushResult state machine (System.IO.Pipelines):
