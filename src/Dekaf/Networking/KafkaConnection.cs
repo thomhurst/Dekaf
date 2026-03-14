@@ -617,11 +617,13 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (_writer is null)
             throw new InvalidOperationException("Not connected");
 
-        // Build the request body first to calculate size
-        var bodyBuffer = GetRequestBuffer();
-        var bodyWriter = new KafkaProtocolWriter(bodyBuffer);
+        // Reserve 4 bytes for the size prefix and save the reference for backpatching
+        var sizePrefixMemory = _writer.GetMemory(4);
+        _writer.Advance(4);
 
-        // Write request header
+        // Serialize header + body directly into the PipeWriter (no intermediate buffer)
+        var bodyWriter = new KafkaProtocolWriter(_writer);
+
         var header = new RequestHeader
         {
             ApiKey = TRequest.ApiKey,
@@ -632,17 +634,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
         };
         header.Write(ref bodyWriter);
 
-        // Write request body
         request.Write(ref bodyWriter, apiVersion);
 
-        // Write size prefix + body to the pipe
-        var totalSize = bodyBuffer.WrittenCount;
-        var memory = _writer.GetMemory(4 + totalSize);
-
-        BinaryPrimitives.WriteInt32BigEndian(memory.Span, totalSize);
-        bodyBuffer.WrittenSpan.CopyTo(memory.Span[4..]);
-
-        _writer.Advance(4 + totalSize);
+        // Backpatch the 4-byte size prefix with the total body size
+        BinaryPrimitives.WriteInt32BigEndian(sizePrefixMemory.Span, bodyWriter.BytesWritten);
 
         // Apply timeout to the flush operation.
         // When callerOwnsTimeout is true, the caller's cancellationToken already carries
