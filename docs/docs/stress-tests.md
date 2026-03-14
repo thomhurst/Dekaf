@@ -6,7 +6,7 @@ sidebar_position: 14
 
 Long-running stress tests comparing sustained performance between Dekaf and Confluent.Kafka under real-world load.
 
-**Last Updated:** 2026-03-13 23:42 UTC
+**Last Updated:** 2026-03-14 01:36 UTC
 
 :::info
 These tests run weekly (Sunday 2 AM UTC) and can be manually triggered. 
@@ -17,8 +17,8 @@ They measure sustained performance over 15+ minutes with real Kafka instances.
 
 | Client | Messages/sec | MB/sec | Total | Errors |
 |--------|--------------|--------|-------|--------|
-| Confluent | 418,107 | 398.74 | 376,361,124 | 37727217 |
-| Dekaf | 401,914 | 383.29 | 361,922,939 | 0 |
+| Confluent | 428,670 | 408.81 | 385,863,176 | 41387715 |
+| Dekaf | 418,580 | 399.19 | 376,931,918 | 0 |
 
 :::note
 Dekaf and Confluent.Kafka have similar producer performance.
@@ -28,17 +28,17 @@ Dekaf and Confluent.Kafka have similar producer performance.
 
 | Client | Messages/sec | MB/sec | Total | Errors |
 |--------|--------------|--------|-------|--------|
-| Confluent | 377,992 | 360.48 | 340,193,849 | 0 |
-| Dekaf | 324,105 | 309.09 | 291,696,654 | 0 |
+| Dekaf | 400,157 | 381.62 | 360,142,365 | 0 |
+| Confluent | 399,731 | 381.21 | 359,758,881 | 0 |
 
 ## Memory & GC Statistics
 
 | Client | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated |
 |--------|----------|------|------|------|-----------------|
-| Confluent | consumer | 83068 | 503 | 8 | 1207.93 GB |
-| Confluent | producer | 33574 | 89 | 9 | 520.34 GB |
-| Dekaf | consumer | 54046 | 27850 | 1427 | 804.16 GB |
-| Dekaf | producer | 10248 | 10247 | 1902 | 196.37 GB |
+| Confluent | consumer | 59326 | 355 | 8 | 1292.14 GB |
+| Confluent | producer | 23134 | 89 | 9 | 538.42 GB |
+| Dekaf | consumer | 47635 | 3678 | 11 | 741.16 GB |
+| Dekaf | producer | 90 | 12 | 4 | 2.06 GB |
 
 ---
 
