@@ -1630,6 +1630,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             : long.MaxValue;
 
         var spinWait = new SpinWait();
+        var waitCount = 0;
 
         while (!TryReserveMemory(recordSize))
         {
@@ -1665,15 +1666,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Wait for signal from ReleaseMemory or timeout, using exponential backoff
             // to reduce kernel transitions under sustained backpressure.
             // ManualResetEventSlim spins in user-mode before kernel transition.
-            var waitMs = (int)Math.Min(remainingMs, spinWait.Count switch
+            var waitMs = (int)Math.Min(remainingMs, waitCount switch
             {
-                < 12 => 1,
-                < 14 => 5,
-                < 16 => 25,
+                < 2 => 1,
+                < 4 => 5,
+                < 6 => 25,
                 _ => 100,
             });
             _bufferSpaceAvailable.Wait(waitMs);
             _bufferSpaceAvailable.Reset();
+            waitCount++;
 
             if (_disposed)
             {

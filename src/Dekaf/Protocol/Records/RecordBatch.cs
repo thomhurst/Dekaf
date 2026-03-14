@@ -75,7 +75,7 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void Grow(int sizeHint)
     {
-        var required = _written + sizeHint;
+        var required = checked(_written + sizeHint);
         var newSize = Math.Max(_buffer.Length * 2, required);
 
         // Rent from pool - not zero-initialized, avoiding Buffer.ZeroMemoryInternal overhead.
