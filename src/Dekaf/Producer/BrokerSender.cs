@@ -1628,7 +1628,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             for (var i = 0; i < count; i++)
                 FailAndCleanupBatch(batches[i], new ObjectDisposedException(nameof(BrokerSender)));
 
-            scratch.ClearReferences(count);
+            scratch.ClearReferences();
             ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
         catch (Exception ex)
@@ -1685,7 +1685,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            scratch.ClearReferences(count);
+            scratch.ClearReferences();
             ArrayPool<ReadyBatch>.Shared.Return(batches, clearArray: true);
         }
     }
