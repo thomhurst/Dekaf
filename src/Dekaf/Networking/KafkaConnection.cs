@@ -357,6 +357,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
     /// timeout (e.g. BrokerSender's sendTimeoutCts).
     /// </summary>
     /// <remarks>
+    /// The caller's token MUST be exclusively a timeout token (e.g., from a CancellationTokenSource
+    /// configured with only CancelAfter). Do NOT pass a linked user-cancellation token;
+    /// use the standard Send methods instead, which correctly distinguish timeout from explicit cancellation.
     /// If the token does not carry a timeout, flush operations may block indefinitely.
     /// </remarks>
     public ValueTask SendFireAndForgetWithCallerTimeoutAsync<TRequest, TResponse>(
@@ -417,6 +420,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
     /// The response phase still uses the standard timeout via AwaitAndParseResponseAsync.
     /// </summary>
     /// <remarks>
+    /// The caller's token MUST be exclusively a timeout token (e.g., from a CancellationTokenSource
+    /// configured with only CancelAfter). Do NOT pass a linked user-cancellation token;
+    /// use the standard Send methods instead, which correctly distinguish timeout from explicit cancellation.
     /// If the token does not carry a timeout, flush operations may block indefinitely.
     /// </remarks>
     public Task<TResponse> SendPipelinedWithCallerTimeoutAsync<TRequest, TResponse>(
@@ -649,7 +655,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
             {
                 result = await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            // callerOwnsTimeout contract: token fires only on timeout, never explicit user cancellation.
+            // Any OperationCanceledException here means the caller's timeout elapsed.
+            catch (OperationCanceledException)
             {
                 LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
