@@ -429,15 +429,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Requests cancellation of this BrokerSender's send loop without waiting for it to exit.
     /// Called during forceful shutdown so all BrokerSender loops begin exiting concurrently
     /// before DisposeAsync awaits each one.
-    /// </summary>
-    internal void RequestCancellation() => CancelInternal();
-
-    /// <summary>
-    /// Completes the event channel and cancels the CTS so the send loop exits promptly.
-    /// Shared by <see cref="RequestCancellation"/> (fire-and-forget) and <see cref="DisposeAsync"/> (awaited).
+    /// Uses synchronous Cancel() because this is a fire-and-forget context where we cannot await.
     /// Safe to call multiple times: TryComplete and Cancel are both idempotent.
     /// </summary>
-    private void CancelInternal()
+    internal void RequestCancellation()
     {
         _eventChannel.Writer.TryComplete();
         _cts.Cancel();
@@ -2057,8 +2052,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         LogDisposing(_brokerId);
 
-        // Complete the channel and cancel CTS so WaitToReadAsync is interrupted promptly.
-        CancelInternal();
+        // Complete the channel so no new events are accepted, then cancel the CTS so
+        // WaitToReadAsync is interrupted promptly. We use CancelAsync here (rather than
+        // synchronous Cancel) because CTS cancellation callbacks may perform I/O and we
+        // are already in an async context that can await them without blocking a thread.
+        _eventChannel.Writer.TryComplete();
+        await _cts.CancelAsync().ConfigureAwait(false);
 
         // Wait for send loop to finish (should exit quickly now that CTS is cancelled).
         // The send loop owns _pendingResponses — it will process remaining responses

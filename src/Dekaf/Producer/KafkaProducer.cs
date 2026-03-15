@@ -2828,7 +2828,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // Note: senders created by RerouteBatchToCurrentLeader between this
             // iteration and the disposal loop below won't have RequestCancellation
             // called. This is benign — they proceed directly to DisposeAsync which
-            // performs the same cancellation internally via CancelInternal().
+            // performs the same cancellation internally. The do/while disposal loop
+            // below will also discover senders added during earlier iterations,
+            // since it re-checks _brokerSenders.Count after each round.
             foreach (var (_, sender) in _brokerSenders)
                 sender.RequestCancellation();
 
@@ -2881,6 +2883,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
             catch (TimeoutException)
             {
+                // This is a wall-clock safety net only — it prevents DisposeAsync from
+                // hanging indefinitely if a BrokerSender's send loop is stuck. Per-sender
+                // exceptions are already swallowed and logged inside DisposeOneSenderAsync,
+                // so this catch only fires when the aggregate WaitAsync deadline expires.
                 LogBrokerSenderParallelDisposeTimedOut(_brokerSenders.Count);
             }
         } while (_brokerSenders.Count > previousCount);
