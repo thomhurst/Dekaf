@@ -1773,6 +1773,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             }
             catch (OperationCanceledException) when (_disposed)
             {
+                // Caller's token was cancelled while _disposed is true — convert to
+                // ObjectDisposedException for a clearer signal. Without the linked CTS,
+                // this only fires on the narrow window of simultaneous user-cancel + disposal;
+                // the primary disposal path is the _disposed check at loop top.
                 throw new ObjectDisposedException(nameof(RecordAccumulator));
             }
             // OperationCanceledException from caller's token propagates naturally
@@ -1818,13 +1822,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (remainingMs <= 0)
                 ThrowBufferMemoryTimeout(recordSize, currentTicks);
 
-            // Wait for signal from ReleaseMemory with timeout only (no CancellationToken).
-            // SemaphoreSlim.Wait wakes ONE waiter (no thundering herd).
-            // Avoiding the CancellationToken overload eliminates internal timer/callback
-            // allocation that SemaphoreSlim creates to register cancellation.
-            // Disposal is checked at the top of the loop on each wake-up instead.
-            // Cap at 100ms to ensure prompt disposal detection when multiple threads
-            // are blocked (only one gets woken by TryReleaseSemaphore in DisposeAsync).
+            // No CancellationToken intentionally: the timeout-only overload avoids the
+            // internal timer/callback allocation that SemaphoreSlim creates for cancellation
+            // registration. Disposal is detected via the _disposed check at loop top.
+            // (Contrast with ReserveMemoryAsync, which retains the caller's CancellationToken
+            // because async callers have user-supplied tokens and the allocation is amortised
+            // differently across awaits.)
+            //
+            // Cap at 100ms so that all blocked threads detect disposal promptly —
+            // TryReleaseSemaphore in DisposeAsync wakes only one waiter, so the remaining
+            // N-1 threads poll out within 100ms each.
             _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100));
 
             // Intentionally not resetting spinWait here. After the first blocking wait,
@@ -1900,9 +1907,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 continue;
             }
 
-            // Wait with timeout only (no CancellationToken) to avoid internal timer/callback
-            // allocation. Disposal wakes this semaphore via TryReleaseSemaphore in DisposeAsync,
-            // so waiters check _disposed at the top of the loop.
+            // No CancellationToken intentionally: avoids internal timer/callback allocation.
+            // This method is non-cancellable from the caller by design — it is a pure gate,
+            // not a user-facing wait. Disposal wakes this semaphore via TryReleaseSemaphore
+            // in DisposeAsync; waiters detect it at the _disposed check at loop top.
             var remainingMs = _options.MaxBlockMs - elapsed;
             _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100));
         }
