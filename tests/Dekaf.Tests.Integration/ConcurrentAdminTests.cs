@@ -218,7 +218,9 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
                 var desc = await admin.DescribeTopicsAsync([topic]).ConfigureAwait(false);
                 return desc[topic];
             },
-            desc => desc.Partitions.Count == 4).ConfigureAwait(false);
+            desc => desc.Partitions.Count == 4,
+            maxRetries: 10,
+            initialDelayMs: 1000).ConfigureAwait(false);
 
         await Assert.That(finalDescription.Partitions.Count).IsEqualTo(4);
     }
