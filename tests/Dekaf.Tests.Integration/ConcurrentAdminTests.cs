@@ -211,14 +211,16 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         // Partition count should be either 1 (before) or 4 (after)
         await Assert.That(partitionCount is 1 or 4).IsTrue();
 
-        // Wait for partition creation to fully propagate, then verify final state
+        // Wait for partition creation to fully propagate, then verify final state.
         var finalDescription = await WaitForConditionAsync(
             async () =>
             {
                 var desc = await admin.DescribeTopicsAsync([topic]).ConfigureAwait(false);
                 return desc[topic];
             },
-            desc => desc.Partitions.Count == 4).ConfigureAwait(false);
+            desc => desc.Partitions.Count == 4,
+            maxRetries: 10,
+            initialDelayMs: 1000).ConfigureAwait(false);
 
         await Assert.That(finalDescription.Partitions.Count).IsEqualTo(4);
     }
