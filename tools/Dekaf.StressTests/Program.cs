@@ -117,6 +117,7 @@ public static class Program
             };
 
             var result = await scenario.RunAsync(testOptions, CancellationToken.None).ConfigureAwait(false);
+            result.BrokerCount = options.Brokers;
             results.Add(result);
 
             GC.Collect();
@@ -132,7 +133,8 @@ public static class Program
             RunCompletedAtUtc = runCompletedAt,
             MachineName = Environment.MachineName,
             ProcessorCount = Environment.ProcessorCount,
-            Results = results
+            Results = results,
+            BrokerCount = options.Brokers
         };
 
         var outputDir = options.OutputPath;

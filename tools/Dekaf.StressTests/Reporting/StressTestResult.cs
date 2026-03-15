@@ -15,6 +15,7 @@ internal sealed class StressTestResult
     public required ThroughputSnapshot Throughput { get; init; }
     public LatencySnapshot? Latency { get; init; }
     public required GcSnapshot GcStats { get; init; }
+    public int BrokerCount { get; set; } = 1;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -37,6 +38,7 @@ internal sealed class StressTestResults
     public required string MachineName { get; init; }
     public required int ProcessorCount { get; init; }
     public required List<StressTestResult> Results { get; init; }
+    public int BrokerCount { get; init; } = 1;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

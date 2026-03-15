@@ -16,22 +16,41 @@ internal static class MarkdownReporter
         sb.AppendLine();
 
         var scenarioGroups = results.Results
-            .GroupBy(r => r.Scenario)
-            .OrderBy(g => g.Key);
+            .GroupBy(r => (r.Scenario, r.BrokerCount))
+            .OrderBy(g => g.Key.Scenario)
+            .ThenBy(g => g.Key.BrokerCount);
 
         foreach (var group in scenarioGroups)
         {
-            var title = FormatScenarioTitle(group.Key);
+            var brokerSuffix = group.Key.BrokerCount > 1 ? $", {group.Key.BrokerCount} Brokers" : "";
+            var title = FormatScenarioTitle(group.Key.Scenario) + brokerSuffix;
             GenerateThroughputTable(sb, title, group.ToList());
         }
 
-        var resultsWithLatency = results.Results.Where(r => r.Latency is not null).ToList();
-        if (resultsWithLatency.Count > 0)
+        var latencyGroups = results.Results
+            .Where(r => r.Latency is not null)
+            .GroupBy(r => (r.Scenario, r.BrokerCount))
+            .OrderBy(g => g.Key.Scenario)
+            .ThenBy(g => g.Key.BrokerCount);
+
+        foreach (var group in latencyGroups)
         {
-            GenerateLatencyTable(sb, resultsWithLatency);
+            var brokerSuffix = group.Key.BrokerCount > 1 ? $", {group.Key.BrokerCount} Brokers" : "";
+            var latencyTitle = FormatScenarioTitle(group.Key.Scenario) + brokerSuffix;
+            GenerateLatencyTable(sb, group.ToList(), latencyTitle);
         }
 
-        GenerateGcTable(sb, results.Results);
+        var gcGroups = results.Results
+            .GroupBy(r => (r.Scenario, r.BrokerCount))
+            .OrderBy(g => g.Key.Scenario)
+            .ThenBy(g => g.Key.BrokerCount);
+
+        foreach (var group in gcGroups)
+        {
+            var brokerSuffix = group.Key.BrokerCount > 1 ? $", {group.Key.BrokerCount} Brokers" : "";
+            var gcTitle = "GC Statistics - " + FormatScenarioTitle(group.Key.Scenario) + brokerSuffix;
+            GenerateGcTable(sb, group.ToList(), gcTitle);
+        }
 
         return sb.ToString();
     }
@@ -75,9 +94,9 @@ internal static class MarkdownReporter
         }
     }
 
-    private static void GenerateLatencyTable(StringBuilder sb, List<StressTestResult> results)
+    private static void GenerateLatencyTable(StringBuilder sb, List<StressTestResult> results, string title = "Latency Percentiles")
     {
-        sb.AppendLine("## Latency Percentiles");
+        sb.AppendLine($"## {title}");
         sb.AppendLine();
         sb.AppendLine("| Client    | Scenario         | p50    | p95    | p99    | Max    |");
         sb.AppendLine("|-----------|------------------|--------|--------|--------|--------|");
@@ -92,9 +111,9 @@ internal static class MarkdownReporter
         sb.AppendLine();
     }
 
-    private static void GenerateGcTable(StringBuilder sb, List<StressTestResult> results)
+    private static void GenerateGcTable(StringBuilder sb, List<StressTestResult> results, string title = "GC Statistics")
     {
-        sb.AppendLine("## GC Statistics");
+        sb.AppendLine($"## {title}");
         sb.AppendLine();
         sb.AppendLine("| Client    | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated |");
         sb.AppendLine("|-----------|----------|------|------|------|-----------------|");

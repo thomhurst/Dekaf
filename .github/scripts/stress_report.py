@@ -12,10 +12,13 @@ SCENARIO_TITLES = {
 
 
 def group_by_scenario(results):
-    """Group results by exact scenario name, split into producer and consumer."""
+    """Group results by scenario name and broker count, split into producer and consumer."""
     scenario_groups = defaultdict(list)
     for r in results:
-        scenario_groups[r.get('scenario', 'unknown')].append(r)
+        broker_count = r.get('brokerCount', 1)
+        suffix = f" ({broker_count} Brokers)" if broker_count > 1 else ""
+        key = r.get('scenario', 'unknown') + suffix
+        scenario_groups[key].append(r)
 
     producer = {k: v for k, v in scenario_groups.items() if 'producer' in k}
     consumer = {k: v for k, v in scenario_groups.items() if 'consumer' in k}
