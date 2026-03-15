@@ -2845,9 +2845,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _disposed = true;
         LogProducerDisposing();
 
-        // Graceful shutdown: flush all pending messages to Kafka before closing.
-        // Budget split: 40% graceful flush, 60% for forceful cleanup + BrokerSender disposal
-        // + post-disposal resource cleanup (accumulator, connection pool, etc.).
+        // Time budget allocation within CloseTimeoutMs:
+        //   40% → graceful flush (accumulator close + sender drain)
+        //   ~48% → BrokerSender disposal (remaining minus cleanup reservation)
+        //   ~12% → post-disposal cleanup (statistics, accumulator, pool, network)
+        //
         // Previously the split was 50/50 and post-disposal cleanup had NO time budget,
         // so internal timeouts in the accumulator (10s) and connection pool (30s) could
         // cause DisposeAsync to far exceed CloseTimeoutMs.
@@ -3024,8 +3026,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         await DisposeWithBudgetAsync(
             _accumulator.DisposeAsync(), Math.Max(500, RemainingMs()), "accumulator");
 
-        // Dispose ValueTaskSource pool — prevents resource leaks (fast, no timeout needed)
-        await _valueTaskSourcePool.DisposeAsync().ConfigureAwait(false);
+        // Dispose ValueTaskSource pool — prevents resource leaks (usually fast).
+        await DisposeWithBudgetAsync(
+            _valueTaskSourcePool.DisposeAsync(), Math.Max(200, RemainingMs() / 10), "valueTaskSourcePool");
 
         // Dispose metadata manager and connection pool in parallel.
         // Connection pool disposal waits up to ConnectionTimeout (30s default) per connection,
@@ -3044,9 +3047,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 LogPostDisposalStepTimedOut("network");
             }
-            catch
+            catch (Exception ex) when (ex is not OperationCanceledException and not TimeoutException)
             {
-                // Swallow — individual DisposeAsync implementations log their own errors
+                LogDisposalStepFailed(ex, "network");
             }
         }
     }
@@ -3083,11 +3086,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
         catch (TimeoutException)
         {
-            LogPostDisposalStepTimedOut(step ?? "unknown");
+            LogPostDisposalStepTimedOut(step);
         }
-        catch
+        catch (Exception ex) when (ex is not OperationCanceledException and not TimeoutException)
         {
-            // Swallow — individual DisposeAsync implementations log their own errors
+            LogDisposalStepFailed(ex, step);
         }
     }
 
@@ -3185,6 +3188,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Non-fatal exception during batch cleanup step (suppressed)")]
     private partial void LogBatchCleanupStepFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Non-fatal exception during {Step} disposal (suppressed)")]
+    private partial void LogDisposalStepFailed(Exception exception, string step);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Sender loop failed with unexpected exception")]
     private partial void LogSenderLoopFailed(Exception ex);
