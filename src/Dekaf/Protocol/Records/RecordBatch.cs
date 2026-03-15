@@ -147,23 +147,32 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
 /// </remarks>
 public sealed class RecordBatch : IDisposable
 {
-    // Thread-local reusable buffers for serialization to avoid per-batch allocations.
-    // Uses PooledReusableBufferWriter (ArrayPool-backed) instead of ArrayBufferWriter
-    // to avoid Buffer.ZeroMemoryInternal overhead from new byte[] allocations on growth.
+    // Single thread-local cache consolidating all per-thread buffer state.
+    // Reduces 3 separate [ThreadStatic] lookups to 1.
     [ThreadStatic]
-    private static PooledReusableBufferWriter? t_recordsBuffer;
-    [ThreadStatic]
-    private static PooledReusableBufferWriter? t_compressedBuffer;
-    [ThreadStatic]
-    private static PooledReusableBufferWriter? t_decompressedBuffer;
+    private static RecordBatchThreadCache? t_cache;
+
+    /// <summary>
+    /// Holds all per-thread cached buffer state for RecordBatch serialization/deserialization.
+    /// Consolidating into a single class reduces thread-static lookup overhead from 3 to 1.
+    /// Uses PooledReusableBufferWriter (ArrayPool-backed) instead of ArrayBufferWriter
+    /// to avoid Buffer.ZeroMemoryInternal overhead from new byte[] allocations on growth.
+    /// </summary>
+    private sealed class RecordBatchThreadCache
+    {
+        public PooledReusableBufferWriter? RecordsBuffer;
+        public PooledReusableBufferWriter? CompressedBuffer;
+        public PooledReusableBufferWriter? DecompressedBuffer;
+    }
 
     private static PooledReusableBufferWriter GetRecordsBuffer()
     {
-        var buffer = t_recordsBuffer;
+        var cache = t_cache ??= new RecordBatchThreadCache();
+        var buffer = cache.RecordsBuffer;
         if (buffer is null)
         {
             buffer = new PooledReusableBufferWriter(4096);
-            t_recordsBuffer = buffer;
+            cache.RecordsBuffer = buffer;
         }
         else
         {
@@ -174,11 +183,12 @@ public sealed class RecordBatch : IDisposable
 
     private static PooledReusableBufferWriter GetCompressedBuffer()
     {
-        var buffer = t_compressedBuffer;
+        var cache = t_cache ??= new RecordBatchThreadCache();
+        var buffer = cache.CompressedBuffer;
         if (buffer is null)
         {
             buffer = new PooledReusableBufferWriter(4096);
-            t_compressedBuffer = buffer;
+            cache.CompressedBuffer = buffer;
         }
         else
         {
@@ -189,11 +199,12 @@ public sealed class RecordBatch : IDisposable
 
     private static PooledReusableBufferWriter GetDecompressedBuffer(int estimatedSize)
     {
-        var buffer = t_decompressedBuffer;
+        var cache = t_cache ??= new RecordBatchThreadCache();
+        var buffer = cache.DecompressedBuffer;
         if (buffer is null)
         {
             buffer = new PooledReusableBufferWriter(Math.Max(4096, estimatedSize));
-            t_decompressedBuffer = buffer;
+            cache.DecompressedBuffer = buffer;
         }
         else
         {
