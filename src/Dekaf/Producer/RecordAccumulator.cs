@@ -1199,16 +1199,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Interlocked.CompareExchange(ref _appendWorkersStarted, 1, 0) != 0)
             return;
 
-        _appendWorkerTasks = new Task[_appendWorkerCount];
+        // Build the array locally, then publish via Volatile.Write so DisposeAsync
+        // never observes a partially-populated array with null Task entries.
+        var tasks = new Task[_appendWorkerCount];
         for (var i = 0; i < _appendWorkerCount; i++)
         {
             var workerIndex = i;
-            _appendWorkerTasks[i] = Task.Factory.StartNew(
+            tasks[i] = Task.Factory.StartNew(
                 () => ProcessAppendWorkerAsync(workerIndex, _appendWorkerCancellationToken),
                 CancellationToken.None,
                 TaskCreationOptions.LongRunning,
                 TaskScheduler.Default).Unwrap();
         }
+        Volatile.Write(ref _appendWorkerTasks, tasks);
     }
 
     /// <summary>
