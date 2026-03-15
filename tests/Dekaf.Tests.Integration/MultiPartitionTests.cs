@@ -204,16 +204,20 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
 
         await WarmUpAllPartitions(producer, topic, 3);
 
-        // Produce to all partitions
-        for (var p = 0; p < 3; p++)
+        // Produce multiple messages per partition so there's data available even if
+        // consumer group rebalance assigns partitions incrementally on slow CI.
+        for (var round = 0; round < 3; round++)
         {
-            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            for (var p = 0; p < 3; p++)
             {
-                Topic = topic,
-                Key = $"key-{p}",
-                Value = $"value-{p}",
-                Partition = p
-            });
+                await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = $"key-{p}",
+                    Value = $"value-{p}-{round}",
+                    Partition = p
+                });
+            }
         }
 
         // Act - subscribe (not manual assign)
@@ -227,6 +231,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         consumer.Subscribe(topic);
 
         var messages = new List<ConsumeResult<string, string>>();
+        var seenPartitions = new HashSet<int>();
         // Consumer group rebalance can take 30+ seconds on slow CI runners with
         // thread pool starvation. Use a generous timeout to avoid flaky failures.
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -234,13 +239,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count(m => m.Key != "warmup") >= 3) break;
+            if (msg.Key != "warmup")
+                seenPartitions.Add(msg.Partition);
+            // Break only when we've seen messages from ALL 3 partitions
+            if (seenPartitions.Count >= 3) break;
         }
 
-        // Assert - should get messages from all 3 partitions (filter out warmup)
-        var actual = messages.Where(m => m.Key != "warmup").ToList();
-        await Assert.That(actual).Count().IsGreaterThanOrEqualTo(3);
-        var partitions = actual.Select(m => m.Partition).Distinct().OrderBy(p => p).ToList();
+        // Assert - should have received messages from all 3 partitions
+        var partitions = seenPartitions.OrderBy(p => p).ToList();
         int[] expectedPartitions = [0, 1, 2];
         await Assert.That(partitions).IsEquivalentTo(expectedPartitions);
     }
