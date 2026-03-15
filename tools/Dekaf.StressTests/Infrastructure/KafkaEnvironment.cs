@@ -224,26 +224,6 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         }
 
         Console.WriteLine($"Created topic: {topic} (partitions={partitions}, replication={replicationFactor})");
-
-        // Wait for topic metadata to propagate
-        for (var attempt = 0; attempt < 20; attempt++)
-        {
-            var check = await container.ExecAsync([
-                executablePath,
-                "--bootstrap-server", bootstrapServer,
-                "--describe",
-                "--topic", topic
-            ]).ConfigureAwait(false);
-
-            if (check.ExitCode == 0 && check.Stdout.Contains(topic))
-            {
-                return;
-            }
-
-            await Task.Delay(500).ConfigureAwait(false);
-        }
-
-        Console.WriteLine($"Warning: Topic {topic} not confirmed ready after creation");
     }
 
     public async ValueTask DisposeAsync()
