@@ -2637,6 +2637,7 @@ internal sealed class PartitionBatchPool
     private readonly ProducerOptions _options;
     private readonly int _maxPoolSize;
     private ReadyBatchPool? _readyBatchPool;
+    private readonly BatchArrayReuseQueue _arrayReuseQueue;
 
     /// <summary>
     /// Creates a new PartitionBatchPool.
@@ -2648,6 +2649,7 @@ internal sealed class PartitionBatchPool
     {
         _options = options;
         _maxPoolSize = maxPoolSize;
+        _arrayReuseQueue = new BatchArrayReuseQueue(maxSize: maxPoolSize);
     }
 
     /// <summary>
@@ -2668,11 +2670,13 @@ internal sealed class PartitionBatchPool
         {
             batch.Reset(topicPartition);
             batch.SetReadyBatchPool(_readyBatchPool);
+            batch.SetArrayReuseQueue(_arrayReuseQueue);
             return batch;
         }
 
         var newBatch = new PartitionBatch(topicPartition, _options);
         newBatch.SetReadyBatchPool(_readyBatchPool);
+        newBatch.SetArrayReuseQueue(_arrayReuseQueue);
         return newBatch;
     }
 
@@ -2685,7 +2689,7 @@ internal sealed class PartitionBatchPool
         // Only pool if we haven't exceeded the limit
         if (_pool.Count < _maxPoolSize)
         {
-            batch.PrepareForPooling(_options);
+            batch.PrepareForPooling(_options, _arrayReuseQueue);
             _pool.Push(batch);
         }
         // If pool is full, the batch will be garbage collected
@@ -2714,6 +2718,7 @@ internal sealed class PartitionBatch
     private ProducerOptions _options;
     private readonly int _initialRecordCapacity;
     private ReadyBatchPool? _readyBatchPool; // Pool for renting ReadyBatch objects
+    private BatchArrayReuseQueue? _arrayReuseQueue; // Reuse queue for working arrays
 
     // Arena for zero-copy serialization - all message data in one contiguous buffer
     private BatchArena? _arena;
@@ -2796,6 +2801,15 @@ internal sealed class PartitionBatch
     }
 
     /// <summary>
+    /// Sets the array reuse queue for recycling working arrays through ReadyBatch.
+    /// Called when constructing a new batch outside the pool path.
+    /// </summary>
+    internal void SetArrayReuseQueue(BatchArrayReuseQueue? queue)
+    {
+        _arrayReuseQueue = queue;
+    }
+
+    /// <summary>
     /// Sets the transaction state for this batch. Called by RecordAccumulator after renting.
     /// </summary>
     internal void SetTransactionState(long producerId, short producerEpoch, bool isTransactional, RecordAccumulator? accumulator)
@@ -2837,9 +2851,10 @@ internal sealed class PartitionBatch
     /// Allocates new arrays (the old ones were transferred to ReadyBatch).
     /// IMPORTANT: This must only be called after Complete() which transfers arrays to ReadyBatch.
     /// </summary>
-    internal void PrepareForPooling(ProducerOptions options)
+    internal void PrepareForPooling(ProducerOptions options, BatchArrayReuseQueue? arrayReuseQueue = null)
     {
         _options = options;
+        _arrayReuseQueue = arrayReuseQueue;
 
         // Arena was transferred to ReadyBatch by Complete(), so _arena should be null.
         // This is a no-op but kept for safety.
@@ -2850,11 +2865,23 @@ internal sealed class PartitionBatch
         _arena = BatchArena.RentOrCreate(arenaCapacity);
 
         // Arrays were transferred to ReadyBatch by Complete() and are now null.
-        // Allocate fresh arrays for the pooled batch.
-        _records = ArrayPool<Record>.Shared.Rent(_initialRecordCapacity);
-        _completionSources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(_initialRecordCapacity);
-        _pooledArrays = ArrayPool<byte[]>.Shared.Rent(_initialRecordCapacity * 2);
-        _pooledHeaderArrays = ArrayPool<Header[]>.Shared.Rent(8);
+        // Try to reclaim arrays from the reuse queue first (returned by ReadyBatch.Cleanup()),
+        // avoiding 4 ArrayPool Rent operations per batch cycle.
+        if (_arrayReuseQueue is not null && _arrayReuseQueue.TryDequeue(out var reusable))
+        {
+            _records = reusable.Records;
+            _completionSources = reusable.CompletionSources;
+            _pooledArrays = reusable.PooledDataArrays;
+            _pooledHeaderArrays = reusable.PooledHeaderArrays;
+        }
+        else
+        {
+            // Fallback: rent fresh arrays from ArrayPool
+            _records = ArrayPool<Record>.Shared.Rent(_initialRecordCapacity);
+            _completionSources = ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Rent(_initialRecordCapacity);
+            _pooledArrays = ArrayPool<byte[]>.Shared.Rent(_initialRecordCapacity * 2);
+            _pooledHeaderArrays = ArrayPool<Header[]>.Shared.Rent(8);
+        }
 
         // Reset counters and state for reuse.
         // IMPORTANT: Do NOT reset _isCompleted here!
@@ -3247,7 +3274,8 @@ internal sealed class PartitionBatch
             pooledRecordsArray,
             _arena,
             _callbacks,
-            _callbackCount);
+            _callbackCount,
+            _arrayReuseQueue);
 
         _completedBatch = readyBatch;
 
@@ -3387,6 +3415,61 @@ internal sealed class ReadyBatchPool
 }
 
 /// <summary>
+/// Reuse queue for the 4 working arrays that PartitionBatch rents from ArrayPool.
+/// When ReadyBatch finishes cleanup, it pushes the container arrays here instead of returning
+/// them to ArrayPool. PartitionBatch.PrepareForPooling() dequeues from here first, falling back
+/// to ArrayPool on miss. This eliminates ~4 ArrayPool Rent/Return pairs per batch cycle.
+/// Thread-safe via ConcurrentQueue.
+/// </summary>
+internal sealed class BatchArrayReuseQueue
+{
+    private readonly ConcurrentQueue<ReusableArrays> _queue = new();
+    private readonly int _maxSize;
+
+    public BatchArrayReuseQueue(int maxSize = 128)
+    {
+        _maxSize = maxSize;
+    }
+
+    internal readonly record struct ReusableArrays(
+        Record[] Records,
+        PooledValueTaskSource<RecordMetadata>[] CompletionSources,
+        byte[][] PooledDataArrays,
+        Header[][] PooledHeaderArrays);
+
+    /// <summary>
+    /// Enqueues arrays for reuse, or returns them to ArrayPool if the queue is full.
+    /// </summary>
+    public void EnqueueOrReturn(
+        Record[] records,
+        PooledValueTaskSource<RecordMetadata>[] completionSources,
+        byte[][] pooledDataArrays,
+        Header[][] pooledHeaderArrays)
+    {
+        if (_queue.Count < _maxSize)
+        {
+            _queue.Enqueue(new ReusableArrays(records, completionSources, pooledDataArrays, pooledHeaderArrays));
+        }
+        else
+        {
+            // Queue is full - fall back to returning arrays to ArrayPool
+            ArrayPool<Record>.Shared.Return(records, clearArray: false);
+            ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(completionSources, clearArray: false);
+            ArrayPool<byte[]>.Shared.Return(pooledDataArrays, clearArray: false);
+            ArrayPool<Header[]>.Shared.Return(pooledHeaderArrays, clearArray: false);
+        }
+    }
+
+    /// <summary>
+    /// Tries to dequeue a set of reusable arrays.
+    /// </summary>
+    public bool TryDequeue(out ReusableArrays arrays)
+    {
+        return _queue.TryDequeue(out arrays);
+    }
+}
+
+/// <summary>
 /// A batch ready to be sent. Poolable to eliminate per-batch allocations.
 /// Returns pooled arrays to ArrayPool when complete.
 /// PooledValueTaskSource instances auto-return to their pool when GetResult() is called.
@@ -3433,6 +3516,9 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     private Header[][]? _pooledHeaderArrays;
     private int _pooledHeaderArraysCount;
     private Record[]? _pooledRecordsArray; // Pooled records array from RecordBatch
+
+    // Reuse queue for returning working arrays back to PartitionBatch without ArrayPool round-trip
+    private BatchArrayReuseQueue? _arrayReuseQueue;
     private BatchArena? _arena; // Arena for zero-copy serialization data
 
     // Callbacks for Send(message, callback) - inline invocation without ThreadPool
@@ -3551,7 +3637,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         Record[]? pooledRecordsArray = null,
         BatchArena? arena = null,
         Action<RecordMetadata, Exception?>?[]? callbacks = null,
-        int callbackCount = 0)
+        int callbackCount = 0,
+        BatchArrayReuseQueue? arrayReuseQueue = null)
     {
         // Reset lifecycle flags at the START of a new lifecycle (not in Reset()).
         // This ensures stale references from a previous lifecycle see _cleanedUp=1
@@ -3574,6 +3661,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _arena = arena;
         _callbacks = callbacks;
         _callbackCount = callbackCount;
+        _arrayReuseQueue = arrayReuseQueue;
         StopwatchCreatedTicks = Stopwatch.GetTimestamp();
         _createdTimestamp = StopwatchCreatedTicks;
     }
@@ -3616,6 +3704,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _arena = null;
         _callbacks = null;
         _callbackCount = 0;
+        _arrayReuseQueue = null;
         InflightEntry = null;
         MemoryReleased = false;
         IsRetry = false;
@@ -3841,21 +3930,33 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             }
         }
 
-        // Return the working arrays to pool
-        // Note: PooledValueTaskSource instances auto-return to their pool when awaited
-        // clearArray: false for tracking arrays - they only hold references, not actual data
-        // Null checks are defensive against partially constructed batches during race conditions
-        if (_completionSourcesArray is not null)
-            ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(_completionSourcesArray, clearArray: false);
-        if (_pooledDataArrays is not null)
-            ArrayPool<byte[]>.Shared.Return(_pooledDataArrays, clearArray: false);
-        if (_pooledHeaderArrays is not null)
-            ArrayPool<Header[]>.Shared.Return(_pooledHeaderArrays, clearArray: false);
-
-        // Return pooled records array if present
-        if (_pooledRecordsArray is not null)
+        // Return the working (container) arrays: either to the reuse queue for fast recycling
+        // back to PartitionBatch, or to ArrayPool as fallback.
+        // Note: PooledValueTaskSource instances auto-return to their pool when awaited.
+        if (_arrayReuseQueue is not null
+            && _pooledRecordsArray is not null
+            && _completionSourcesArray is not null
+            && _pooledDataArrays is not null
+            && _pooledHeaderArrays is not null)
         {
-            ArrayPool<Record>.Shared.Return(_pooledRecordsArray, clearArray: false);
+            // Enqueue all 4 working arrays for reuse by PartitionBatch.PrepareForPooling().
+            // Safety: clearArray: false is intentional. Array slots past _recordCount may contain stale
+            // PooledValueTaskSource references, but these are never accessed because counters reset to 0
+            // on reuse. PooledValueTaskSource instances auto-return to their pool via GetResult(),
+            // so stale references don't prevent pool recycling. This matches ArrayPool behavior.
+            _arrayReuseQueue.EnqueueOrReturn(_pooledRecordsArray, _completionSourcesArray, _pooledDataArrays, _pooledHeaderArrays);
+        }
+        else
+        {
+            // Fallback: return individually to ArrayPool (partial batch or no reuse queue)
+            if (_completionSourcesArray is not null)
+                ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(_completionSourcesArray, clearArray: false);
+            if (_pooledDataArrays is not null)
+                ArrayPool<byte[]>.Shared.Return(_pooledDataArrays, clearArray: false);
+            if (_pooledHeaderArrays is not null)
+                ArrayPool<Header[]>.Shared.Return(_pooledHeaderArrays, clearArray: false);
+            if (_pooledRecordsArray is not null)
+                ArrayPool<Record>.Shared.Return(_pooledRecordsArray, clearArray: false);
         }
 
         // Return arena to pool for reuse (arena-based path)
