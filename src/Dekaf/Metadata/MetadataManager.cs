@@ -347,12 +347,37 @@ public sealed partial class MetadataManager : IAsyncDisposable
         await _refreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // Re-check cache after acquiring lock — another thread may have refreshed
+            // the metadata we need while we were waiting for the lock, avoiding a
+            // redundant network request.
+            if (topics is not null && AllTopicsCached(topics))
+            {
+                return;
+            }
+
             await RefreshMetadataInternalAsync(topics, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             _refreshLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Returns true if all requested topics already have valid cached metadata
+    /// (non-null, with partitions, no error code).
+    /// </summary>
+    private bool AllTopicsCached(IEnumerable<string> topics)
+    {
+        foreach (var topicName in topics)
+        {
+            if (!TryGetCachedTopicMetadata(topicName, out _))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private async ValueTask RefreshMetadataInternalAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
@@ -648,10 +673,15 @@ public sealed partial class MetadataManager : IAsyncDisposable
                 endpoints.Add((broker.Host, broker.Port));
             }
 
-            // Then bootstrap servers
+            // Then bootstrap servers (skip duplicates — common in single-broker setups
+            // where the advertised listener matches the bootstrap address, avoiding
+            // redundant 30s request timeouts against the same endpoint)
             foreach (var endpoint in _bootstrapEndpoints)
             {
-                endpoints.Add(endpoint);
+                if (!endpoints.Contains(endpoint))
+                {
+                    endpoints.Add(endpoint);
+                }
             }
 
             // Update cache with new hash and endpoints
