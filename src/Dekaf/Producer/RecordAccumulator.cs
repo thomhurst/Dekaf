@@ -624,7 +624,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 {
     // ReadyBatch lifecycle (seal→send→response→cleanup) is longer than PartitionBatch
     // (create→fill→seal), so its pool needs proportionally more capacity.
-    internal const int ReadyBatchPoolSizeRatio = 2;
+    private const int ReadyBatchPoolSizeRatio = 2;
 
     private readonly ProducerOptions _options;
     private readonly CompressionCodecRegistry? _compressionCodecs;
@@ -3465,7 +3465,7 @@ internal sealed class ReadyBatchPool
     private readonly int _maxPoolSize;
     private int _poolCount;
 
-    public ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSize * RecordAccumulator.ReadyBatchPoolSizeRatio)
+    public ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSize * 2)
     {
         _maxPoolSize = maxPoolSize;
     }
