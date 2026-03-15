@@ -217,8 +217,16 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // sources (awaited produces), but waits for full LingerMs for fire-and-forget batches.
         // This provides low latency for ProduceAsync while maintaining efficient batching for Send.
         _lingerTimer = new PeriodicTimer(TimeSpan.FromMilliseconds(1));
-        _senderTask = SenderLoopAsync(_senderCts.Token);
-        _lingerTask = LingerLoopAsync(_senderCts.Token);
+        _senderTask = Task.Factory.StartNew(
+            () => SenderLoopAsync(_senderCts.Token),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default).Unwrap();
+        _lingerTask = Task.Factory.StartNew(
+            () => LingerLoopAsync(_senderCts.Token),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default).Unwrap();
         _accumulator.StartAppendWorkers(_senderCts.Token);
 
         // Start statistics emitter if configured
@@ -2250,7 +2258,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             {
                 // Observe any disposal exceptions to prevent UnobservedTaskException
                 _ = t.Exception;
-            }, null, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+            }, null, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             return replacement;
         }
 

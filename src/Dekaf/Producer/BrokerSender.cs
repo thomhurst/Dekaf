@@ -424,7 +424,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             catch (SemaphoreFullException) { /* Already signaled — benign race */ }
         };
         _cts = new CancellationTokenSource();
-        _sendLoopTask = SendLoopAsync(_cts.Token);
+        _sendLoopTask = Task.Factory.StartNew(
+            () => SendLoopAsync(_cts.Token),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default).Unwrap();
     }
 
     /// <summary>
