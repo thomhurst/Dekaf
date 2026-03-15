@@ -100,7 +100,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             var hostname = $"kafka-{nodeId}";
             var externalPort = 29091 + nodeId; // 29092, 29093, 29094
 
-            var container = new ContainerBuilder("apache/kafka:3.9.0")
+            var container = new ContainerBuilder("apache/kafka:4.1.0")
                 .WithName($"{hostname}-{Guid.NewGuid():N}")
                 .WithHostname(hostname)
                 .WithNetwork(network)
