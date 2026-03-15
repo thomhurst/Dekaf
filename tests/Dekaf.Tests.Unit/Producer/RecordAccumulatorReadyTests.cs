@@ -17,7 +17,7 @@ public class RecordAccumulatorReadyTests
     {
         return new ProducerOptions
         {
-            BootstrapServers = new[] { "localhost:9092" },
+            BootstrapServers = ["localhost:9092"],
             ClientId = "test-producer",
             BufferMemory = ulong.MaxValue,
             BatchSize = batchSize,
@@ -74,7 +74,6 @@ public class RecordAccumulatorReadyTests
 
         try
         {
-            // Append two records to partition 0 - second should trigger seal of first batch
             var pooledKey = new PooledMemory(null, 0, isNull: true);
             var pooledValue = new PooledMemory(null, 0, isNull: true);
 

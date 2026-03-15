@@ -1073,7 +1073,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 pd.AddFirst(batch);
         }
 
-        // Push notification so Ready() can drain O(n_ready) instead of scanning O(n_all).
+        // Notify Ready() that this partition has a sendable batch.
         _readyPartitions.Enqueue(batch.TopicPartition);
         SignalWakeup();
     }
@@ -1754,7 +1754,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             pd.AddLast(readyBatch);
             ProducerDebugCounters.RecordBatchQueuedToReady();
 
-            // Push notification so Ready() can drain O(n_ready) instead of scanning O(n_all).
+            // Notify Ready() that this partition has a sendable batch.
             _readyPartitions.Enqueue(readyBatch.TopicPartition);
         }
         _batchPool.Return(currentBatch);
@@ -2245,7 +2245,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             pd.AddLast(readyBatch);
                             ProducerDebugCounters.RecordBatchQueuedToReady();
 
-                            // Push notification so Ready() can drain O(n_ready) instead of scanning O(n_all).
+                            // Notify Ready() that this partition has a sendable batch.
                             _readyPartitions.Enqueue(readyBatch.TopicPartition);
                             sealedBatch = readyBatch;
                         }
