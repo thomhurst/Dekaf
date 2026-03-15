@@ -347,12 +347,39 @@ public sealed partial class MetadataManager : IAsyncDisposable
         await _refreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // Re-check cache after acquiring lock — another thread may have refreshed
+            // the metadata we need while we were waiting for the lock, avoiding a
+            // redundant network request. When topics is null, this is an explicit
+            // full-cluster refresh (background/init) that should always hit the network.
+            if (topics is not null && AllTopicsCached(topics))
+            {
+                LogMetadataRefreshSkippedCacheHit();
+                return;
+            }
+
             await RefreshMetadataInternalAsync(topics, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             _refreshLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Returns true if all requested topics already have valid cached metadata
+    /// (non-null, with partitions, no error code).
+    /// </summary>
+    private bool AllTopicsCached(IEnumerable<string> topics)
+    {
+        foreach (var topicName in topics)
+        {
+            if (!TryGetCachedTopicMetadata(topicName, out _))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private async ValueTask RefreshMetadataInternalAsync(IEnumerable<string>? topics, CancellationToken cancellationToken)
@@ -642,16 +669,26 @@ public sealed partial class MetadataManager : IAsyncDisposable
             var endpoints = new List<(string Host, int Port)>(
                 currentBrokers.Count + _bootstrapEndpoints.Count);
 
-            // First try known brokers
+            // First try known brokers, tracking seen endpoints for O(1) dedup
+            var seen = new HashSet<(string Host, int Port)>(
+                currentBrokers.Count + _bootstrapEndpoints.Count);
+
             foreach (var broker in currentBrokers)
             {
-                endpoints.Add((broker.Host, broker.Port));
+                var ep = (broker.Host, broker.Port);
+                seen.Add(ep);
+                endpoints.Add(ep);
             }
 
-            // Then bootstrap servers
+            // Then bootstrap servers (skip duplicates — common in single-broker setups
+            // where the advertised listener matches the bootstrap address, avoiding
+            // redundant 30s request timeouts against the same endpoint)
             foreach (var endpoint in _bootstrapEndpoints)
             {
-                endpoints.Add(endpoint);
+                if (seen.Add(endpoint))
+                {
+                    endpoints.Add(endpoint);
+                }
             }
 
             // Update cache with new hash and endpoints
@@ -785,6 +822,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Trace, Message = "Metadata refresh requested")]
     private partial void LogMetadataRefreshRequested();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Metadata refresh skipped — all requested topics already cached")]
+    private partial void LogMetadataRefreshSkippedCacheHit();
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Background metadata refresh loop started with interval {IntervalMs}ms")]
     private partial void LogBackgroundRefreshStarted(int intervalMs);

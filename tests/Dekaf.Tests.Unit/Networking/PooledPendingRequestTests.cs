@@ -738,4 +738,56 @@ public class PooledPendingRequestTests
 
         pool.Return(request2);
     }
+
+    [Test]
+    public async Task RunContinuationsAsynchronously_SurvivesResetAndReuse()
+    {
+        // Regression test: RunContinuationsAsynchronously must remain true after
+        // Reset() and pool reuse. If it reverts to false, response continuations
+        // run inline on the SocketPipe pump thread, causing deadlocks when
+        // Send() → .GetAwaiter().GetResult() blocks the pump thread.
+        var pool = new PendingRequestPool();
+        var request = pool.Rent();
+        request.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+
+        // Complete, reset, reuse — simulates pool lifecycle
+        var testData = new byte[] { 0, 0, 0, 1, 10 };
+        var buffer = new PooledResponseBuffer(testData, testData.Length, isPooled: false);
+        request.TryComplete(buffer);
+        await request.AsValueTask().ConfigureAwait(false);
+        pool.Return(request);
+
+        // Reuse the same instance
+        var reused = pool.Rent();
+        reused.Initialize(responseHeaderVersion: 0, CancellationToken.None);
+
+        // Verify TryComplete returns BEFORE the continuation runs.
+        // With RunContinuationsAsynchronously = true, SetResult queues the
+        // continuation and returns immediately. With false, the continuation
+        // would run inline inside TryComplete, and the flag below would be
+        // true before TryComplete returns.
+        var continuationRanInline = false;
+        var continuationRan = new TaskCompletionSource();
+
+        var vt = reused.AsValueTask();
+        vt.GetAwaiter().UnsafeOnCompleted(() =>
+        {
+            continuationRanInline = true;
+            continuationRan.SetResult();
+        });
+
+        var testData2 = new byte[] { 0, 0, 0, 2, 20 };
+        var buffer2 = new PooledResponseBuffer(testData2, testData2.Length, isPooled: false);
+        reused.TryComplete(buffer2);
+
+        // If RunContinuationsAsynchronously is true, the continuation hasn't
+        // run yet at this point — it was queued to the thread pool.
+        var ranBeforeTryCompleteReturned = continuationRanInline;
+
+        await continuationRan.Task.ConfigureAwait(false);
+
+        await Assert.That(ranBeforeTryCompleteReturned).IsFalse();
+
+        pool.Return(reused);
+    }
 }
