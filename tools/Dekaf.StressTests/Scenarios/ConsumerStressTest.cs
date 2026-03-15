@@ -35,7 +35,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         {
             producer.Send(options.Topic, GetKey(i), messageValue);
         }
-        await producer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+        await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
         Console.WriteLine($"  Pre-seeded {preseedCount:N0} messages");
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()

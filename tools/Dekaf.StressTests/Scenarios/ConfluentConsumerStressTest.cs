@@ -30,9 +30,12 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
 
         using var producer = new ConfluentKafka.ProducerBuilder<string, string>(producerConfig).Build();
 
-        // Pre-seed messages before starting consumer measurement
+        // Pre-seed messages before starting consumer measurement.
+        // Confluent.Kafka's Produce() throws Queue full without backpressure,
+        // so flush in batches to avoid exceeding the internal queue.
         Console.WriteLine($"  Pre-seeding messages for consumer test...");
         const int preseedCount = 500_000;
+        const int flushInterval = 50_000;
         for (var i = 0; i < preseedCount; i++)
         {
             producer.Produce(options.Topic, new ConfluentKafka.Message<string, string>
@@ -40,6 +43,10 @@ internal sealed class ConfluentConsumerStressTest : IStressTestScenario
                 Key = GetKey(i),
                 Value = messageValue
             });
+            if ((i + 1) % flushInterval == 0)
+            {
+                producer.Flush(TimeSpan.FromSeconds(60));
+            }
         }
         producer.Flush(TimeSpan.FromSeconds(60));
         Console.WriteLine($"  Pre-seeded {preseedCount:N0} messages");

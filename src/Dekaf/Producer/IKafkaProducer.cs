@@ -64,6 +64,10 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <para>This method queues the message for delivery without waiting for broker acknowledgment.
     /// It provides lower latency than <see cref="ProduceAsync"/> but offers no delivery guarantees.</para>
     ///
+    /// <para>When the internal buffer is full, this method applies backpressure by blocking the caller
+    /// for up to <see cref="ProducerOptions.MaxBlockMs"/>. If the buffer does not drain within
+    /// that window, a <see cref="Errors.KafkaTimeoutException"/> is thrown.</para>
+    ///
     /// <para>To ensure all messages are delivered, call <see cref="FlushAsync"/> before disposing the producer.</para>
     ///
     /// <para>Errors during delivery will be logged but not thrown. For reliable delivery with error handling,
@@ -77,6 +81,10 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <remarks>
     /// <para>This is an optimized overload that avoids allocating a <see cref="ProducerMessage{TKey, TValue}"/>
     /// object, making it ideal for high-throughput fire-and-forget scenarios.</para>
+    ///
+    /// <para>When the internal buffer is full, this method applies backpressure by blocking the caller
+    /// for up to <see cref="ProducerOptions.MaxBlockMs"/>. If the buffer does not drain within
+    /// that window, a <see cref="Errors.KafkaTimeoutException"/> is thrown.</para>
     ///
     /// <para>To ensure all messages are delivered, call <see cref="FlushAsync"/> before disposing the producer.</para>
     ///
@@ -94,6 +102,10 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <remarks>
     /// <para>This method queues the message for delivery and invokes the callback when delivery completes
     /// (either successfully or with an error).</para>
+    ///
+    /// <para>When the internal buffer is full, this method applies backpressure by blocking the caller
+    /// for up to <see cref="ProducerOptions.MaxBlockMs"/>. If the buffer does not drain within
+    /// that window, a <see cref="Errors.KafkaTimeoutException"/> is thrown.</para>
     ///
     /// <para>The callback is invoked on a background thread. Do not perform blocking operations in the callback.</para>
     /// </remarks>

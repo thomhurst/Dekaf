@@ -1758,6 +1758,88 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Blocks the caller while the buffer is at capacity.
+    /// Unlike <see cref="ReserveMemorySync"/>, this does NOT reserve any bytes — it is a pure
+    /// gate that prevents unbounded work from being queued when the buffer is full.
+    /// Used by the fire-and-forget async fallback path in <c>Send()</c>, which otherwise
+    /// bypasses synchronous backpressure entirely (messages are dispatched as fire-and-forget
+    /// Tasks that each call <see cref="ReserveMemoryAsync"/> independently). Without this gate,
+    /// a tight <c>Send()</c> loop during a metadata cache miss can queue hundreds of thousands
+    /// of Tasks, saturating the thread pool and preventing the sender loop from draining batches.
+    /// </summary>
+    /// <remarks>
+    /// Uses <c>_disposalCts.Token</c> (same as <see cref="ReserveMemorySync"/>) so that
+    /// <see cref="DisposeAsync"/> promptly unblocks any thread waiting here.
+    /// <para/>
+    /// Note: this gate shares <c>_syncBufferSpaceSignal</c> with <see cref="ReserveMemorySync"/>.
+    /// Both are woken by <see cref="ReleaseMemory"/> when batches complete. A gate waiter may
+    /// consume a signal intended for a reserve waiter (and vice versa), but both retry in a loop
+    /// with a 100ms timeout cap, so no waiter is permanently starved.
+    /// </remarks>
+    internal void WaitForBufferSpace()
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(RecordAccumulator));
+
+        // Fast path: buffer has space — the common case.
+        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+            return;
+
+        // Slow path: buffer is full, wait until the sender loop drains some batches.
+        var startTicks = Environment.TickCount64;
+        var spinWait = new SpinWait();
+
+        while ((ulong)Volatile.Read(ref _bufferedBytes) >= _maxBufferMemory)
+        {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(RecordAccumulator));
+
+            var elapsed = Environment.TickCount64 - startTicks;
+            if (elapsed >= _options.MaxBlockMs)
+                ThrowBufferFullTimeout(startTicks);
+
+            if (!spinWait.NextSpinWillYield)
+            {
+                spinWait.SpinOnce();
+                continue;
+            }
+
+            var remainingMs = _options.MaxBlockMs - elapsed;
+            try
+            {
+                _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100), _disposalCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Re-check _disposed unconditionally: there is a race where _disposalCts fires
+                // before _disposed is set, so the `when (_disposed)` guard could miss it.
+                if (_disposed)
+                    throw new ObjectDisposedException(nameof(RecordAccumulator));
+                throw;
+            }
+        }
+
+        // Chain-wake: if space still remains, signal the next sync waiter so concurrent
+        // ReserveMemorySync callers aren't delayed up to 100ms waiting for their own signal.
+        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+            TryReleaseSemaphore(_syncBufferSpaceSignal);
+    }
+
+    private void ThrowBufferFullTimeout(long startTicks)
+    {
+        var configured = TimeSpan.FromMilliseconds(_options.MaxBlockMs);
+        var elapsed = TimeSpan.FromMilliseconds(Environment.TickCount64 - startTicks);
+        throw new KafkaTimeoutException(
+            TimeoutKind.MaxBlock,
+            elapsed,
+            configured,
+            $"Buffer is full ({Volatile.Read(ref _bufferedBytes)}/{_maxBufferMemory} bytes) and did not " +
+            $"drain within max.block.ms ({_options.MaxBlockMs}ms). " +
+            $"Producer is generating messages faster than the network can send them. " +
+            $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
+    }
+
+    /// <summary>
     /// Releases reserved buffer memory when a batch is completed/sent.
     /// </summary>
     internal void ReleaseMemory(int batchSize)
@@ -1818,6 +1900,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         batch = null;
         return false;
+    }
+
+    /// <summary>
+    /// Clears the current unsealed batch for the given partition, preventing double-release
+    /// during disposal. Used by tests that manually call <see cref="ReleaseMemory"/>.
+    /// </summary>
+    internal void ClearCurrentBatch(string topic, int partition)
+    {
+        if (_partitionDeques.TryGetValue(new TopicPartition(topic, partition), out var pd))
+        {
+            using var guard = new SpinLockGuard(ref pd.Lock);
+            if (pd.CurrentBatch is not null)
+            {
+                Interlocked.Decrement(ref _unsealedBatchCount);
+                pd.CurrentBatch = null;
+            }
+        }
     }
 
     /// <remarks>
