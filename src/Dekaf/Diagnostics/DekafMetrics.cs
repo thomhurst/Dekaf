@@ -51,4 +51,25 @@ internal static class DekafMetrics
             "messaging.client.consumed.bytes",
             unit: "By",
             description: "Total bytes received from Kafka.");
+
+    internal static readonly Histogram<double> RebalanceDuration =
+        DekafDiagnostics.Meter.CreateHistogram<double>(
+            "messaging.consumer.rebalance.duration",
+            unit: "s",
+            description: "Duration of consumer group rebalances.");
+
+    internal static readonly Histogram<double> FetchDuration =
+        DekafDiagnostics.Meter.CreateHistogram<double>(
+            "messaging.consumer.fetch.duration",
+            unit: "s",
+            description: "Round-trip time of fetch requests to Kafka brokers.");
+
+    /// <summary>
+    /// Observable gauge for consumer lag is created per-consumer instance via
+    /// <see cref="DekafDiagnostics.Meter"/>.<see cref="Meter.CreateObservableGauge{T}(string, Func{T}, string?, string?)"/>.
+    /// See <c>KafkaConsumer</c> constructor for registration.
+    /// </summary>
+    internal const string ConsumerLagName = "messaging.consumer.lag";
+    internal const string ConsumerLagUnit = "{message}";
+    internal const string ConsumerLagDescription = "Difference between high watermark and committed offset per partition.";
 }

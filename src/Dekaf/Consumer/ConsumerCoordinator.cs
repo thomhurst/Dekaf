@@ -121,6 +121,12 @@ public sealed partial class ConsumerCoordinator : IAsyncDisposable
 
                     _state = CoordinatorState.Stable;
 
+                    // Record rebalance duration (~3ns no-op when no listener)
+                    Diagnostics.DekafMetrics.RebalanceDuration.Record(
+                        Stopwatch.GetElapsedTime(startedAt).TotalSeconds,
+                        new System.Diagnostics.TagList
+                            { { Diagnostics.DekafDiagnostics.MessagingConsumerGroupName, _options.GroupId } });
+
                     // Start heartbeat
                     StartHeartbeat();
 
