@@ -1175,8 +1175,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         // Store the token for lazy start. Workers are created on first EnqueueAppend call
         // to avoid allocating dedicated threads for fire-and-forget producers.
-        // Volatile.Write ensures the token is visible to other threads on ARM architectures
-        // before _appendWorkersStarted is read.
+        // CancellationToken is a struct containing a single CancellationTokenSource reference;
+        // its copy is a pointer-width write, atomic on all .NET platforms.
+        // Volatile.Write on _appendWorkersReady provides a release fence, ensuring the token
+        // store is visible to threads that read _appendWorkersReady via Volatile.Read (acquire).
         _appendWorkerCancellationToken = cancellationToken;
         Volatile.Write(ref _appendWorkersReady, 1);
     }
@@ -1186,7 +1188,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Volatile.Read(ref _appendWorkersStarted) != 0)
             return;
 
-        // Ensure StartAppendWorkers has been called (token is stored)
+        // Ensure StartAppendWorkers has been called (token is stored).
+        // If this fires, EnqueueAppend was called before StartAppendWorkers —
+        // items would sit in the channel with no consumer.
+        Debug.Assert(Volatile.Read(ref _appendWorkersReady) != 0,
+            "EnqueueAppend called before StartAppendWorkers");
         if (Volatile.Read(ref _appendWorkersReady) == 0)
             return;
 

@@ -314,6 +314,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// Uses the pre-built reverse index in the metadata snapshot for O(1) lookup
     /// instead of scanning all topics × partitions.
     /// </summary>
+    /// <remarks>
+    /// Thin pass-through to <see cref="ClusterMetadata.GetPartitionsForBroker"/>.
+    /// Kept as a facade so callers (RecordAccumulator) depend on MetadataManager
+    /// rather than reaching into ClusterMetadata directly.
+    /// </remarks>
     internal IReadOnlyList<TopicPartition> GetPartitionsForNode(int nodeId)
     {
         return _metadata.GetPartitionsForBroker(nodeId);

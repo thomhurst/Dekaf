@@ -51,6 +51,7 @@ internal sealed class ClusterMetadataSnapshot
     private static Dictionary<int, IReadOnlyList<TopicPartition>> BuildPartitionsByBroker(
         Dictionary<string, TopicInfo> topics)
     {
+        // First pass: build mutable lists
         var builder = new Dictionary<int, List<TopicPartition>>();
         foreach (var topic in topics.Values)
         {
@@ -65,10 +66,10 @@ internal sealed class ClusterMetadataSnapshot
             }
         }
 
-        // Convert to IReadOnlyList values to prevent mutation of the immutable snapshot
+        // Freeze lists into arrays for the immutable snapshot
         var result = new Dictionary<int, IReadOnlyList<TopicPartition>>(builder.Count);
         foreach (var kvp in builder)
-            result[kvp.Key] = kvp.Value;
+            result[kvp.Key] = kvp.Value.ToArray();
         return result;
     }
 }
@@ -145,7 +146,7 @@ public sealed class ClusterMetadata
     {
         return _snapshot.PartitionsByBroker.TryGetValue(brokerId, out var partitions)
             ? partitions
-            : (IReadOnlyList<TopicPartition>)Array.Empty<TopicPartition>();
+            : Array.Empty<TopicPartition>();
     }
 
     /// <summary>
