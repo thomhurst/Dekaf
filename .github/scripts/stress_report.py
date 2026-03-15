@@ -25,15 +25,12 @@ def group_by_scenario(results):
 
 
 def scenario_title(scenario_key, fallback_prefix=''):
-    """Get the display title for a scenario key (scenario_name, broker_count) tuple."""
-    if isinstance(scenario_key, tuple):
-        scenario, broker_count = scenario_key
-        base_title = SCENARIO_TITLES.get(scenario, f"{fallback_prefix}({scenario})" if fallback_prefix else scenario)
-        if broker_count > 1:
-            return f"{base_title}, {broker_count} Brokers"
-        return base_title
-    # Backward compat: plain string key
-    return SCENARIO_TITLES.get(scenario_key, f"{fallback_prefix}({scenario_key})" if fallback_prefix else scenario_key)
+    """Get the display title for a (scenario_name, broker_count) tuple key."""
+    scenario, broker_count = scenario_key
+    base_title = SCENARIO_TITLES.get(scenario, f"{fallback_prefix}({scenario})" if fallback_prefix else scenario)
+    if broker_count > 1:
+        return f"{base_title}, {broker_count} Brokers"
+    return base_title
 
 
 def format_bytes(num_bytes):

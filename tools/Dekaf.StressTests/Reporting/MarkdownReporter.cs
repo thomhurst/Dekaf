@@ -15,7 +15,7 @@ internal static class MarkdownReporter
         sb.AppendLine($"**Total Duration:** {(results.RunCompletedAtUtc - results.RunStartedAtUtc).TotalMinutes:F1} minutes");
         sb.AppendLine();
 
-        var scenarioGroups = GroupByScenarioAndBrokers(results.Results);
+        var scenarioGroups = GroupByScenarioAndBrokers(results.Results).ToList();
 
         foreach (var group in scenarioGroups)
         {
@@ -28,14 +28,14 @@ internal static class MarkdownReporter
             var resultsWithLatency = group.Where(r => r.Latency is not null).ToList();
             if (resultsWithLatency.Count > 0)
             {
-                var title = FormatGroupTitle(FormatScenarioTitle(group.Key.Scenario), group.Key.BrokerCount);
+                var title = FormatGroupTitle("Latency - " + FormatScenarioLabel(group.Key.Scenario), group.Key.BrokerCount);
                 GenerateLatencyTable(sb, resultsWithLatency, title);
             }
         }
 
         foreach (var group in scenarioGroups)
         {
-            var title = FormatGroupTitle("GC Statistics - " + FormatScenarioTitle(group.Key.Scenario), group.Key.BrokerCount);
+            var title = FormatGroupTitle("GC Statistics - " + FormatScenarioLabel(group.Key.Scenario), group.Key.BrokerCount);
             GenerateGcTable(sb, group.ToList(), title);
         }
 
