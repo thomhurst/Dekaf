@@ -1,3 +1,4 @@
+using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
 
@@ -192,5 +193,68 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
             await Assert.That(task.IsCompletedSuccessfully).IsTrue();
             await Assert.That(task.Result.Offset).IsGreaterThanOrEqualTo(0);
         }
+    }
+
+    /// <summary>
+    /// Regression test: Send() in a tight loop to a topic the producer hasn't seen before
+    /// must not throw KafkaTimeoutException. Previously, each Send() launched an async task
+    /// when metadata wasn't cached, creating a thundering herd that exhausted BufferMemory.
+    /// </summary>
+    [Test]
+    [NotInParallel]
+    [Timeout(120_000)] // 2 minutes — bounded failure if FlushAsync hangs
+    public async Task Send_TightLoopToNewTopic_DoesNotTimeout(CancellationToken testTimeout)
+    {
+        // Arrange: create topic before producer so it exists in Kafka but not in producer cache
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+
+        // Use default buffer size (256 MB) and timeout (60s) — matching the CI stress test
+        // configuration. The key validation is that Send() goes through the sync metadata path
+        // instead of launching async tasks per message (thundering herd).
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("send-metadata-test")
+            .WithAcks(Acks.Leader)
+            .BuildAsync(testTimeout);
+
+        var messageValue = new string('x', 1000); // 1 KB messages
+
+        // Act: tight Send() loop without intermediate flushes — this is the exact
+        // pattern that caused KafkaTimeoutException in the consumer stress test.
+        // 10K messages is enough to validate the metadata path without being
+        // bottlenecked by single-partition sender throughput.
+        const int messageCount = 10_000;
+        for (var i = 0; i < messageCount; i++)
+        {
+            producer.Send(topic, $"key-{i % 100}", messageValue);
+        }
+
+        await producer.FlushAsync(testTimeout);
+
+        // Assert: consume messages to verify they were all delivered
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId($"verify-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .BuildAsync(testTimeout);
+
+        consumer.Subscribe(topic);
+
+        var received = 0;
+        try
+        {
+            await foreach (var msg in consumer.ConsumeAsync(testTimeout))
+            {
+                received++;
+                if (received >= messageCount)
+                    break;
+            }
+        }
+        catch (OperationCanceledException) when (received < messageCount)
+        {
+            // Test timeout while consuming — will fail the assertion below
+        }
+
+        await Assert.That(received).IsEqualTo(messageCount);
     }
 }

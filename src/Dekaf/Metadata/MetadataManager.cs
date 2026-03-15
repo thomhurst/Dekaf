@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Runtime.CompilerServices;
+using Dekaf.Errors;
 using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
@@ -27,8 +28,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
     private readonly ConcurrentDictionary<ApiKey, (short MinVersion, short MaxVersion)> _brokerApiVersions = new();
     private readonly ConcurrentDictionary<(ApiKey, short, short), short> _negotiatedVersionCache = new();
     private volatile bool _disposed;
+    private readonly CancellationTokenSource _disposalCts = new();
     private CancellationTokenSource? _backgroundRefreshCts;
     private Task? _backgroundRefreshTask;
+
+    private readonly ConcurrentDictionary<string, Lazy<Task<TopicInfo?>>> _pendingTopicFetches = new();
 
     // Rebootstrap recovery state
     private readonly List<string> _originalBootstrapHostnames;
@@ -168,6 +172,76 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         // Slow path: need to refresh metadata
         return await GetTopicMetadataSlowAsync(topicName, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Synchronously blocks until topic metadata is available, coalescing concurrent requests
+    /// for the same topic into a single metadata fetch. This prevents the thundering herd problem
+    /// when Send() (fire-and-forget) encounters a topic not yet in the metadata cache.
+    /// </summary>
+    /// <remarks>
+    /// Analogous to Java client's waitOnMetadata. Uses Lazy&lt;Task&gt; via GetOrAdd to ensure
+    /// only one metadata fetch is in-flight per topic, regardless of how many threads call this
+    /// concurrently. The Lazy wrapper ensures the Task factory runs exactly once even under
+    /// concurrent GetOrAdd calls (ConcurrentDictionary may invoke the factory speculatively,
+    /// but Lazy defers execution until .Value is accessed).
+    /// </remarks>
+    internal TopicInfo? WaitForTopicMetadataSync(string topicName, int timeoutMs)
+    {
+        if (TryGetCachedTopicMetadata(topicName, out var topic))
+            return topic;
+
+        // Coalesce: all callers for the same topic share one fetch task.
+        // The inner task uses _disposalCts so it is cancelled promptly on disposal,
+        // regardless of the caller's timeout. This is intentional — the underlying
+        // network operation should continue running even if one waiter times out,
+        // so that other waiters (or retry callers) can benefit from the result.
+        var sharedTask = _pendingTopicFetches.GetOrAdd(topicName,
+            static (t, self) => new Lazy<Task<TopicInfo?>>(
+                () => self.GetTopicMetadataSlowAsync(t, self._disposalCts.Token).AsTask()),
+            this);
+
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(_disposalCts.Token);
+            timeoutCts.CancelAfter(timeoutMs);
+            return sharedTask.Value.WaitAsync(timeoutCts.Token).GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException) when (_disposalCts.IsCancellationRequested)
+        {
+            throw new ObjectDisposedException(nameof(MetadataManager));
+        }
+        catch (OperationCanceledException)
+        {
+            throw new KafkaTimeoutException(
+                TimeoutKind.Metadata,
+                TimeSpan.FromMilliseconds(timeoutMs),
+                TimeSpan.FromMilliseconds(timeoutMs),
+                $"Failed to fetch metadata for topic '{topicName}' within max.block.ms ({timeoutMs}ms). " +
+                $"Ensure the topic exists and the Kafka cluster is reachable.");
+        }
+        finally
+        {
+            if (sharedTask.IsValueCreated && sharedTask.Value.IsCompleted)
+            {
+                _pendingTopicFetches.TryRemove(topicName, out _);
+            }
+            else if (sharedTask.IsValueCreated)
+            {
+                // We timed out but the inner task is still running.
+                // Remove unconditionally on completion so callers always get a fresh
+                // fetch — a successful-but-late result would otherwise leave a stale
+                // entry permanently in the dictionary.
+                sharedTask.Value.ContinueWith(static (t, state) =>
+                {
+                    var (dict, key) = ((ConcurrentDictionary<string, Lazy<Task<TopicInfo?>>>, string))state!;
+                    dict.TryRemove(key, out _);
+                }, (_pendingTopicFetches, topicName),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            }
+        }
     }
 
     /// <summary>
@@ -639,6 +713,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         _disposed = true;
 
+        _disposalCts.Cancel();
         _backgroundRefreshCts?.Cancel();
 
         if (_backgroundRefreshTask is not null)
@@ -654,6 +729,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
         }
 
         _backgroundRefreshCts?.Dispose();
+        _disposalCts.Dispose();
         _refreshLock.Dispose();
     }
 
