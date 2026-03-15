@@ -19,4 +19,5 @@ internal sealed class StressTestOptions
     public int LingerMs { get; init; } = 5;
     public int BatchSize { get; init; } = 16384;
     public string Compression { get; init; } = "none";
+    public int BrokerCount { get; init; } = 1;
 }

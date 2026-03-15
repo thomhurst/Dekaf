@@ -240,10 +240,24 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         if (_clusterContainers is not null)
         {
             Console.WriteLine($"Stopping {_clusterContainers.Count}-broker cluster...");
-            await Task.WhenAll(_clusterContainers.Select(c => c.DisposeAsync().AsTask())).ConfigureAwait(false);
-        }
+            var exceptions = new List<Exception>();
+            foreach (var c in _clusterContainers)
+            {
+                try { await c.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception ex) { exceptions.Add(ex); }
+            }
 
-        if (_network is not null)
+            if (_network is not null)
+            {
+                await _network.DisposeAsync().ConfigureAwait(false);
+            }
+
+            if (exceptions.Count > 0)
+            {
+                throw new AggregateException("One or more broker containers failed to stop", exceptions);
+            }
+        }
+        else if (_network is not null)
         {
             await _network.DisposeAsync().ConfigureAwait(false);
         }

@@ -119,6 +119,7 @@ internal sealed class ConfluentProducerAsyncIdempotentStressTest : IStressTestSc
             Scenario = Name,
             Client = Client,
             DurationMinutes = options.DurationMinutes,
+            BrokerCount = options.BrokerCount,
             MessageSizeBytes = options.MessageSizeBytes,
             StartedAtUtc = startedAt,
             CompletedAtUtc = completedAt,

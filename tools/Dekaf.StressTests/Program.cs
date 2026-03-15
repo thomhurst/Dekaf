@@ -113,11 +113,11 @@ public static class Program
                 Partitions = options.Partitions,
                 LingerMs = options.LingerMs,
                 BatchSize = options.BatchSize,
-                Compression = options.Compression
+                Compression = options.Compression,
+                BrokerCount = options.Brokers
             };
 
             var result = await scenario.RunAsync(testOptions, CancellationToken.None).ConfigureAwait(false);
-            result.BrokerCount = options.Brokers;
             results.Add(result);
 
             GC.Collect();
@@ -299,6 +299,10 @@ public static class Program
                     break;
                 case "--brokers":
                     options.Brokers = int.Parse(args[++i]);
+                    if (options.Brokers < 1)
+                    {
+                        throw new ArgumentException("--brokers must be at least 1");
+                    }
                     break;
                 case "--help":
                 case "-h":
