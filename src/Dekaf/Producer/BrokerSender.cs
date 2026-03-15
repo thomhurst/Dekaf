@@ -629,6 +629,33 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (carryOver.Count > 0)
                     SweepExpiredCarryOver(carryOver);
 
+                // ── 5b. Micro-linger for small coalesced batches ──
+                // When few batches are coalesced (e.g., broker has only 2 partitions in a
+                // multi-broker setup), sending immediately produces many small ProduceRequests.
+                // A brief yield gives the sender coordinator a chance to drain more batches
+                // into our channel before we send, reducing per-request overhead.
+                // Only applies when in-flight capacity is available and no carry-over is waiting.
+                if (coalescedCount > 0 && coalescedCount < _maxInFlight
+                    && carryOver.Count == 0
+                    && _pendingResponses.Count < _maxInFlight)
+                {
+                    // Yield to let the sender coordinator's drain cycle post more batches.
+                    // Zero-allocation: no Task.Delay timer, no spin-wait burning CPU.
+                    Thread.Yield();
+
+                    // Drain any newly arrived batches
+                    while (eventReader.TryRead(out var evt))
+                    {
+                        if (evt.Type == SendLoopEventType.NewBatch)
+                        {
+                            CoalesceBatch(evt.Batch!, coalescedBatches, ref coalescedCount,
+                                coalescedPartitions, carryOver);
+                            if (coalescedCount >= _maxInFlight)
+                                break;
+                        }
+                    }
+                }
+
                 // ── 6. Send or wait ──
                 var sentThisIteration = false;
                 if (coalescedCount > 0)

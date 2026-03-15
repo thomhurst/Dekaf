@@ -282,6 +282,95 @@ public sealed class ClusterMetadataTests
 
     #endregion
 
+    #region GetPartitionsForBroker
+
+    [Test]
+    public async Task GetPartitionsForBroker_ReturnsCorrectPartitions()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateMetadataResponse());
+
+        var partitions = metadata.GetPartitionsForBroker(1);
+
+        await Assert.That(partitions).Count().IsEqualTo(1);
+        await Assert.That(partitions[0].Topic).IsEqualTo("test-topic");
+        await Assert.That(partitions[0].Partition).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task GetPartitionsForBroker_NonExistentBroker_ReturnsEmpty()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateMetadataResponse());
+
+        var partitions = metadata.GetPartitionsForBroker(999);
+
+        await Assert.That(partitions).Count().IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task GetPartitionsForBroker_MultipleTopics_ReturnsAllPartitions()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateMetadataResponseMultipleTopics());
+
+        // Both topics have partition 0 led by broker 1
+        var partitions = metadata.GetPartitionsForBroker(1);
+
+        await Assert.That(partitions).Count().IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task GetPartitionsForBroker_EmptyMetadata_ReturnsEmpty()
+    {
+        var metadata = new ClusterMetadata();
+
+        var partitions = metadata.GetPartitionsForBroker(1);
+
+        await Assert.That(partitions).Count().IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task GetPartitionsForBroker_UpdateRefreshesIndex()
+    {
+        var metadata = new ClusterMetadata();
+        metadata.Update(CreateMetadataResponse());
+
+        // Broker 1 initially leads partition 0
+        await Assert.That(metadata.GetPartitionsForBroker(1)).Count().IsEqualTo(1);
+
+        // Update so broker 1 now leads all 3 partitions
+        metadata.Update(new MetadataResponse
+        {
+            ClusterId = "test-cluster",
+            ControllerId = 1,
+            Brokers =
+            [
+                new BrokerMetadata { NodeId = 1, Host = "broker1", Port = 9092 },
+            ],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = "test-topic",
+                    Partitions =
+                    [
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] },
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 1, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] },
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 2, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] },
+                    ]
+                }
+            ]
+        });
+
+        await Assert.That(metadata.GetPartitionsForBroker(1)).Count().IsEqualTo(3);
+        // Old broker 2 and 3 no longer lead any partitions
+        await Assert.That(metadata.GetPartitionsForBroker(2)).Count().IsEqualTo(0);
+    }
+
+    #endregion
+
     #region Update Replaces Previous State
 
     [Test]

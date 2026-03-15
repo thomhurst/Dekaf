@@ -310,21 +310,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
     }
 
     /// <summary>
-    /// Populates <paramref name="result"/> with all TopicPartitions currently led by the given broker node.
-    /// The caller owns the list and should clear/reuse it across iterations to avoid per-call allocations.
-    /// Used by the sender loop's drain algorithm for per-broker batch selection.
+    /// Returns all TopicPartitions currently led by the given broker node.
+    /// Uses the pre-built reverse index in the metadata snapshot for O(1) lookup
+    /// instead of scanning all topics × partitions.
     /// </summary>
-    internal void GetPartitionsForNode(int nodeId, List<TopicPartition> result)
+    internal IReadOnlyList<TopicPartition> GetPartitionsForNode(int nodeId)
     {
-        result.Clear();
-        foreach (var topic in _metadata.GetTopics())
-        {
-            foreach (var partition in topic.Partitions)
-            {
-                if (partition.LeaderId == nodeId)
-                    result.Add(new TopicPartition(topic.Name, partition.PartitionIndex));
-            }
-        }
+        return _metadata.GetPartitionsForBroker(nodeId);
     }
 
     /// <summary>

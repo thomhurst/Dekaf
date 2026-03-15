@@ -24,6 +24,13 @@ internal sealed class ClusterMetadataSnapshot
     public IReadOnlyDictionary<string, TopicInfo> Topics { get; }
     public IReadOnlyDictionary<Guid, TopicInfo> TopicsById { get; }
 
+    /// <summary>
+    /// Reverse index: broker node ID → list of TopicPartitions led by that broker.
+    /// Built at snapshot creation time so the sender loop's drain algorithm can look up
+    /// partitions for a broker in O(1) instead of scanning all topics × partitions.
+    /// </summary>
+    public IReadOnlyDictionary<int, IReadOnlyList<TopicPartition>> PartitionsByBroker { get; }
+
     public ClusterMetadataSnapshot(
         string? clusterId,
         int controllerId,
@@ -38,6 +45,31 @@ internal sealed class ClusterMetadataSnapshot
         Brokers = brokers;
         Topics = topics;
         TopicsById = topicsById;
+        PartitionsByBroker = BuildPartitionsByBroker(topics);
+    }
+
+    private static Dictionary<int, IReadOnlyList<TopicPartition>> BuildPartitionsByBroker(
+        Dictionary<string, TopicInfo> topics)
+    {
+        var builder = new Dictionary<int, List<TopicPartition>>();
+        foreach (var topic in topics.Values)
+        {
+            foreach (var partition in topic.Partitions)
+            {
+                if (!builder.TryGetValue(partition.LeaderId, out var list))
+                {
+                    list = new List<TopicPartition>();
+                    builder[partition.LeaderId] = list;
+                }
+                list.Add(new TopicPartition(topic.Name, partition.PartitionIndex));
+            }
+        }
+
+        // Convert to IReadOnlyList values to prevent mutation of the immutable snapshot
+        var result = new Dictionary<int, IReadOnlyList<TopicPartition>>(builder.Count);
+        foreach (var kvp in builder)
+            result[kvp.Key] = kvp.Value;
+        return result;
     }
 }
 
@@ -102,6 +134,18 @@ public sealed class ClusterMetadata
     public BrokerNode? GetBroker(int brokerId)
     {
         return _snapshot.Brokers.TryGetValue(brokerId, out var broker) ? broker : null;
+    }
+
+    /// <summary>
+    /// Gets all TopicPartitions led by the given broker, using the pre-built reverse index.
+    /// Returns an empty list if the broker has no partitions.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal IReadOnlyList<TopicPartition> GetPartitionsForBroker(int brokerId)
+    {
+        return _snapshot.PartitionsByBroker.TryGetValue(brokerId, out var partitions)
+            ? partitions
+            : (IReadOnlyList<TopicPartition>)Array.Empty<TopicPartition>();
     }
 
     /// <summary>
