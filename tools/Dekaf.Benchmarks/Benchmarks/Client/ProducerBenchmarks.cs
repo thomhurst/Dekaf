@@ -187,7 +187,7 @@ public class ProducerBenchmarks
     {
         for (var i = 0; i < BatchSize; i++)
         {
-            _dekafProducer.Send(Topic, $"key-{i}", _messageValue);
+            _dekafProducer.Produce(Topic, $"key-{i}", _messageValue);
         }
     }
 }

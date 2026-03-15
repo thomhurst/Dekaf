@@ -178,7 +178,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             .BuildAsync();
 
         // Act - send with delivery callback
-        producer.Send(
+        producer.Produce(
             new ProducerMessage<string, string>
             {
                 Topic = topic,

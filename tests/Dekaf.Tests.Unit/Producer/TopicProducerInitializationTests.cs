@@ -27,7 +27,7 @@ public sealed class TopicProducerInitializationTests
 
         await Assert.That(() =>
         {
-            producer.Send("key", "value");
+            producer.Produce("key", "value");
         }).Throws<InvalidOperationException>();
     }
 

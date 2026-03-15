@@ -235,7 +235,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         // Send messages via fire-and-forget
         for (var i = 0; i < 20; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
@@ -369,7 +369,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         const int messageCount = 50;
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",

@@ -46,7 +46,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
             .WithAcks(Acks.All)
             .BuildAsync(cancellationToken);
 
-        producer.Send(new ProducerMessage<string, string>
+        producer.Produce(new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "k",
@@ -93,7 +93,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
         for (var i = 0; i < 10; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "k",
@@ -116,7 +116,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
         for (var i = 0; i < 100; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "k",
@@ -143,7 +143,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
         for (var i = 0; i < 50; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "k",
@@ -170,7 +170,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
         {
             for (var i = 0; i < 25; i++)
             {
-                producer.Send(new ProducerMessage<int, string>
+                producer.Produce(new ProducerMessage<int, string>
                 {
                     Topic = topic,
                     Partition = p,
@@ -200,7 +200,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
         var sw = Stopwatch.StartNew();
         for (var i = 0; i < 500; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "k",
@@ -258,7 +258,7 @@ public sealed class ProducerDiagnosticTests(KafkaTestContainer kafka) : KafkaInt
 
         for (var i = 0; i < 100; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "k",

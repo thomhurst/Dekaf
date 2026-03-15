@@ -100,7 +100,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             KafkaContainer.BootstrapServers, topic);
 
         // Act - fire-and-forget
-        producer.Send("key1", "value1");
+        producer.Produce("key1", "value1");
         await producer.FlushAsync();
 
         // Verify by consuming
@@ -133,7 +133,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         var headers = Headers.Create("custom-header", "header-value");
 
         // Act
-        producer.Send("key1", "value1", headers);
+        producer.Produce("key1", "value1", headers);
         await producer.FlushAsync();
 
         // Verify by consuming
@@ -166,7 +166,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
             KafkaContainer.BootstrapServers, topic);
 
         // Act
-        producer.Send("key1", "value1", (metadata, ex) => callbackInvoked.TrySetResult((metadata, ex)));
+        producer.Produce("key1", "value1", (metadata, ex) => callbackInvoked.TrySetResult((metadata, ex)));
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         cts.Token.Register(() => callbackInvoked.TrySetCanceled());
@@ -365,7 +365,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         // Act - send multiple fire-and-forget messages
         for (var i = 0; i < 10; i++)
         {
-            producer.Send($"key-{i}", $"value-{i}");
+            producer.Produce($"key-{i}", $"value-{i}");
         }
 
         // Flush should complete delivery

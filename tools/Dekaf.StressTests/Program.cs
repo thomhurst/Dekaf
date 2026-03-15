@@ -186,7 +186,7 @@ public static class Program
             for (var i = 0; i < batchSize; i++)
             {
                 var messageIndex = batch * batchSize + i;
-                producer.Send(topic, GetKey(messageIndex), messageValue);
+                producer.Produce(topic, GetKey(messageIndex), messageValue);
             }
 
             // Flush every batch to avoid overwhelming the buffer with backpressure

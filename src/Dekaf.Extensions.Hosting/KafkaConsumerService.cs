@@ -361,7 +361,7 @@ public abstract partial class KafkaConsumerService<TKey, TValue> : BackgroundSer
             }
             else
             {
-                _dlqProducer.Send(message);
+                _dlqProducer.Produce(message);
             }
 
             LogMessageRoutedToDeadLetter(result.Topic, result.Partition, result.Offset, dlqTopic);

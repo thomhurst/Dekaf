@@ -48,7 +48,7 @@ public sealed class ProducerInitializationTests
 
         await Assert.That(() =>
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = "test",
                 Key = "key",
@@ -66,7 +66,7 @@ public sealed class ProducerInitializationTests
 
         await Assert.That(() =>
         {
-            producer.Send("test", "key", "value");
+            producer.Produce("test", "key", "value");
         }).Throws<InvalidOperationException>();
     }
 
@@ -79,7 +79,7 @@ public sealed class ProducerInitializationTests
 
         await Assert.That(() =>
         {
-            producer.Send(
+            producer.Produce(
                 new ProducerMessage<string, string> { Topic = "test", Key = "key", Value = "value" },
                 (_, _) => { });
         }).Throws<InvalidOperationException>();

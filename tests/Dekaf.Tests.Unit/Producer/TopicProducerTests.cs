@@ -165,10 +165,10 @@ public class TopicProducerTests
         var topicProducer = new TopicProducer<string, string>(mockProducer, "my-topic", ownsProducer: false);
 
         // Act
-        topicProducer.Send("key", "value");
+        topicProducer.Produce("key", "value");
 
         // Assert
-        mockProducer.Received(1).Send("my-topic", "key", "value");
+        mockProducer.Received(1).Produce("my-topic", "key", "value");
         await Task.CompletedTask; // For async test assertion
     }
 
@@ -181,10 +181,10 @@ public class TopicProducerTests
         var headers = Headers.Create("key", "value");
 
         // Act
-        topicProducer.Send("key", "value", headers);
+        topicProducer.Produce("key", "value", headers);
 
         // Assert
-        mockProducer.Received(1).Send(
+        mockProducer.Received(1).Produce(
             Arg.Is<ProducerMessage<string, string>>(m =>
                 m.Topic == "my-topic" &&
                 m.Headers != null));
@@ -200,10 +200,10 @@ public class TopicProducerTests
         Action<RecordMetadata, Exception?> callback = (_, _) => { };
 
         // Act
-        topicProducer.Send("key", "value", callback);
+        topicProducer.Produce("key", "value", callback);
 
         // Assert
-        mockProducer.Received(1).Send(
+        mockProducer.Received(1).Produce(
             Arg.Is<ProducerMessage<string, string>>(m => m.Topic == "my-topic"),
             Arg.Any<Action<RecordMetadata, Exception?>>());
         await Task.CompletedTask;
@@ -352,7 +352,7 @@ public class TopicProducerTests
         // Act & Assert
         await Assert.ThrowsAsync<ObjectDisposedException>(() =>
         {
-            topicProducer.Send("key", "value");
+            topicProducer.Produce("key", "value");
             return Task.CompletedTask;
         });
     }

@@ -185,7 +185,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
         // Act - fire-and-forget with small buffer
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",

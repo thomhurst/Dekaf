@@ -58,7 +58,7 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Sends a message without waiting for acknowledgment (fire-and-forget).
+    /// Produces a message without waiting for acknowledgment (fire-and-forget).
     /// </summary>
     /// <remarks>
     /// <para>This method queues the message for delivery without waiting for broker acknowledgment.
@@ -73,10 +73,10 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <para>Errors during delivery will be logged but not thrown. For reliable delivery with error handling,
     /// use the callback overload or <see cref="ProduceAsync"/>.</para>
     /// </remarks>
-    void Send(ProducerMessage<TKey, TValue> message);
+    void Produce(ProducerMessage<TKey, TValue> message);
 
     /// <summary>
-    /// Sends a message to the specified topic without waiting for acknowledgment (fire-and-forget).
+    /// Produces a message to the specified topic without waiting for acknowledgment (fire-and-forget).
     /// </summary>
     /// <remarks>
     /// <para>This is an optimized overload that avoids allocating a <see cref="ProducerMessage{TKey, TValue}"/>
@@ -94,10 +94,10 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// <param name="topic">The topic to produce to.</param>
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
-    void Send(string topic, TKey? key, TValue value);
+    void Produce(string topic, TKey? key, TValue value);
 
     /// <summary>
-    /// Sends a message without waiting for acknowledgment, with a delivery callback.
+    /// Produces a message without waiting for acknowledgment, with a delivery callback.
     /// </summary>
     /// <remarks>
     /// <para>This method queues the message for delivery and invokes the callback when delivery completes
@@ -111,7 +111,7 @@ public interface IKafkaProducer<TKey, TValue> : IInitializableKafkaClient, IAsyn
     /// </remarks>
     /// <param name="message">The message to produce.</param>
     /// <param name="deliveryHandler">Callback invoked when delivery completes. The exception parameter is null on success.</param>
-    void Send(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler);
+    void Produce(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler);
 
     /// <summary>
     /// Produces multiple messages and waits for all acknowledgments.

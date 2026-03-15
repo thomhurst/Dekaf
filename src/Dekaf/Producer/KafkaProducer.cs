@@ -552,7 +552,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <inheritdoc />
-    public void Send(ProducerMessage<TKey, TValue> message)
+    public void Produce(ProducerMessage<TKey, TValue> message)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -601,7 +601,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <inheritdoc />
-    public void Send(string topic, TKey? key, TValue value)
+    public void Produce(string topic, TKey? key, TValue value)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));
@@ -611,7 +611,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // When interceptors are present, we must create a ProducerMessage so interceptors can operate
         if (_interceptors is not null)
         {
-            Send(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
+            Produce(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
             return;
         }
 
@@ -1122,7 +1122,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <inheritdoc />
-    public void Send(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
+    public void Produce(ProducerMessage<TKey, TValue> message, Action<RecordMetadata, Exception?> deliveryHandler)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(KafkaProducer<TKey, TValue>));

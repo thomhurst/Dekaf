@@ -141,7 +141,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
             .BuildForTopicAsync(topic);
 
         // Fire-and-forget through topic producer
-        topicProducer.Send("fire-key", "fire-value");
+        topicProducer.Produce("fire-key", "fire-value");
         await topicProducer.FlushAsync();
 
         // Verify by consuming
