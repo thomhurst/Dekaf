@@ -1,9 +1,7 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Producer;
-using Dekaf.Statistics;
 
 namespace Dekaf.Tests.Integration;
 
@@ -353,16 +351,12 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
         // Arrange - default broker config has no quotas, so high throughput should work
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 3);
 
-        var stats = new ConcurrentBag<ProducerStatistics>();
-
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-no-throttle")
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithIdempotence(false)
             .WithAcks(Acks.Leader)
-            .WithStatisticsInterval(TimeSpan.FromSeconds(1))
-            .WithStatisticsHandler(s => stats.Add(s))
             .BuildAsync();
 
         // Act - produce a burst of messages
@@ -390,9 +384,6 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
         await producer.FlushAsync();
         sw.Stop();
 
-        // Wait for at least one stats callback
-        await Task.Delay(2000);
-
         // Assert - all messages delivered
         await Assert.That(results.Count).IsEqualTo(messageCount);
         foreach (var result in results)
@@ -403,16 +394,6 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
         // Assert - production completed in a reasonable time (no throttling)
         // 500 messages * ~500 bytes = ~250KB should complete well under 60 seconds unthrottled
         await Assert.That(sw.Elapsed.TotalSeconds).IsLessThan(60);
-
-        // Assert - statistics were collected
-        await Assert.That(stats.Count).IsGreaterThanOrEqualTo(1);
-
-        var latestStats = stats.OrderByDescending(s => s.Timestamp).First();
-        await Assert.That(latestStats.MessagesProduced).IsGreaterThanOrEqualTo(messageCount);
-        await Assert.That(latestStats.BytesProduced).IsGreaterThan(0);
-
-        // Assert - no failed messages (would indicate throttling-related errors)
-        await Assert.That(latestStats.MessagesFailed).IsEqualTo(0);
 
         Console.WriteLine($"[QuotaTest] {messageCount} messages produced in {sw.ElapsedMilliseconds}ms " +
                           $"({messageCount / sw.Elapsed.TotalSeconds:F0} msgs/sec)");

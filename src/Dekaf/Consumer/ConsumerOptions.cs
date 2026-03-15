@@ -249,16 +249,6 @@ public sealed class ConsumerOptions
     public bool EnablePartitionEof { get; init; }
 
     /// <summary>
-    /// Interval at which statistics events are emitted. Set to null or TimeSpan.Zero to disable.
-    /// </summary>
-    public TimeSpan? StatisticsInterval { get; init; }
-
-    /// <summary>
-    /// Handler for statistics events. Called periodically based on StatisticsInterval.
-    /// </summary>
-    public Action<Statistics.ConsumerStatistics>? StatisticsHandler { get; init; }
-
-    /// <summary>
     /// Strategy for recovering cluster metadata when all known brokers become unavailable.
     /// <see cref="MetadataRecoveryStrategy.Rebootstrap"/> re-resolves bootstrap server DNS
     /// to discover new broker IPs, which is critical in cloud environments where broker IPs

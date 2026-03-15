@@ -11,7 +11,6 @@ using Dekaf.Networking;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
-using Dekaf.Statistics;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Producer;
@@ -96,7 +95,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly ProducerOptions _options;
     private readonly CompressionCodecRegistry _compressionCodecs;
     private readonly PartitionInflightTracker _inflightTracker;
-    private readonly ProducerStatisticsCollector _statisticsCollector;
     private readonly Action<ReadyBatch>? _rerouteBatch;
     private readonly Action<TopicPartition, long, DateTimeOffset, int, Exception?>? _onAcknowledgement;
     private readonly Func<short, IReadOnlyCollection<TopicPartition>, (long ProducerId, short ProducerEpoch)>? _bumpEpoch;
@@ -372,7 +370,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         ProducerOptions options,
         CompressionCodecRegistry compressionCodecs,
         PartitionInflightTracker inflightTracker,
-        ProducerStatisticsCollector statisticsCollector,
         Func<int> getProduceApiVersion,
         Action<int> setProduceApiVersion,
         Func<bool> isTransactional,
@@ -390,7 +387,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _options = options;
         _compressionCodecs = compressionCodecs;
         _inflightTracker = inflightTracker;
-        _statisticsCollector = statisticsCollector;
         _getProduceApiVersion = getProduceApiVersion;
         _setProduceApiVersion = setProduceApiVersion;
         _isTransactional = isTransactional;
@@ -1025,7 +1021,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var task = pending.ResponseTask;
             var batches = pending.Batches;
             var count = pending.Count;
-            var requestStartTime = pending.RequestStartTime;
 
             if (task.IsFaulted || task.IsCanceled)
             {
@@ -1057,10 +1052,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             var response = task.Result;
-            var elapsedTicks = Stopwatch.GetTimestamp() - requestStartTime;
-            var latencyMs = (long)(elapsedTicks * 1000.0 / Stopwatch.Frequency);
-            _statisticsCollector.RecordResponseReceived(latencyMs);
-
             // Reuse caller-provided dictionary to avoid per-response allocation.
             // The dictionary is cleared after use in ProcessResponseBatches.
             var responseLookup = reusableResponseLookup;
@@ -1073,7 +1064,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            ProcessResponseBatches(batches, count, responseLookup, requestStartTime,
+            ProcessResponseBatches(batches, count, responseLookup,
                 carryOver, cancellationToken);
 
             // Clear for reuse on next response (avoids per-response dictionary allocation)
@@ -1096,7 +1087,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         ReadyBatch[] batches,
         int count,
         Dictionary<(string Topic, int Partition), ProduceResponsePartitionData>? responseLookup,
-        long requestStartTime,
         PartitionCarryOver carryOver,
         CancellationToken cancellationToken)
     {
@@ -1150,8 +1140,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         UnmutePartition(batch.TopicPartition);
                     try { CompleteInflightEntry(batch); }
                     catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-                    _statisticsCollector.RecordBatchFailed(expectedTopic, expectedPartition,
-                        batch.CompletionSourcesCount);
                     try
                     {
                         batch.Fail(failureException);
@@ -1180,8 +1168,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (_muteOnSend)
                     UnmutePartition(batch.TopicPartition);
                 LogBatchCompleted(_brokerId, expectedTopic, expectedPartition, partitionResponse.BaseOffset);
-                _statisticsCollector.RecordBatchDelivered(expectedTopic, expectedPartition,
-                    batch.CompletionSourcesCount);
                 var timestamp = partitionResponse.LogAppendTimeMs > 0
                     ? DateTimeOffset.FromUnixTimeMilliseconds(partitionResponse.LogAppendTimeMs)
                     : DateTimeOffset.UtcNow;
@@ -1429,7 +1415,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 _options.RetryBackoffTicks;
         }
 
-        _statisticsCollector.RecordRetry();
         Diagnostics.DekafMetrics.Retries.Add(1,
             new System.Diagnostics.TagList { { Diagnostics.DekafDiagnostics.MessagingDestinationName, batch.TopicPartition.Topic } });
 
@@ -1565,7 +1550,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             var request = scratch.Build(batches, count);
 
             var requestStartTime = Stopwatch.GetTimestamp();
-            _statisticsCollector.RecordRequestSent();
 
             // Handle Acks.None (fire-and-forget)
             if (_options.Acks == Acks.None)
@@ -1583,10 +1567,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 for (var i = 0; i < count; i++)
                 {
                     var batch = batches[i];
-                    _statisticsCollector.RecordBatchDelivered(
-                        batch.TopicPartition.Topic,
-                        batch.TopicPartition.Partition,
-                        batch.CompletionSourcesCount);
                     CompleteInflightEntry(batch);
                     batch.CompleteSend(-1, fireAndForgetTimestamp);
                     try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, fireAndForgetTimestamp, batch.CompletionSourcesCount, null); }
@@ -1731,7 +1711,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         batch.RetryNotBefore = Stopwatch.GetTimestamp() +
                             _options.RetryBackoffTicks;
                         _sendFailedRetries.Add(batch);
-                        _statisticsCollector.RecordRetry();
                     }
                 }
                 catch (Exception batchEx)
@@ -2040,11 +2019,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // leaking their completion sources and causing producer hangs (deadlocks).
         try { CompleteInflightEntry(batch); }
         catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-        try { _statisticsCollector.RecordBatchFailed(
-            batch.TopicPartition.Topic,
-            batch.TopicPartition.Partition,
-            batch.CompletionSourcesCount); }
-        catch (Exception statsEx) { LogBatchCleanupStepFailed(statsEx, _brokerId); }
         try { batch.Fail(ex); }
         catch (Exception failEx) { LogBatchCleanupStepFailed(failEx, _brokerId); }
         try { _onAcknowledgement?.Invoke(batch.TopicPartition, -1, DateTimeOffset.UtcNow,

@@ -2,7 +2,6 @@ using Dekaf.Compression;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Producer;
-using Dekaf.Statistics;
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -32,7 +31,7 @@ public sealed class BrokerSenderTests
         var options = CreateDefaultOptions();
         var accumulator = new RecordAccumulator(options);
         var metadataManager = new MetadataManager(connectionPool, options.BootstrapServers);
-        var statisticsCollector = new ProducerStatisticsCollector();
+
 
         var sender = new BrokerSender(
             brokerId: 1,
@@ -42,7 +41,7 @@ public sealed class BrokerSenderTests
             options,
             new CompressionCodecRegistry(),
             inflightTracker: new PartitionInflightTracker(),
-            statisticsCollector,
+
             getProduceApiVersion: () => -1,
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
@@ -70,7 +69,7 @@ public sealed class BrokerSenderTests
         var options = CreateDefaultOptions();
         var accumulator = new RecordAccumulator(options);
         var metadataManager = new MetadataManager(connectionPool, options.BootstrapServers);
-        var statisticsCollector = new ProducerStatisticsCollector();
+
 
         var sender = new BrokerSender(
             brokerId: 1,
@@ -80,7 +79,7 @@ public sealed class BrokerSenderTests
             options,
             new CompressionCodecRegistry(),
             inflightTracker: new PartitionInflightTracker(),
-            statisticsCollector,
+
             getProduceApiVersion: () => -1,
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
@@ -110,7 +109,7 @@ public sealed class BrokerSenderTests
         var options = CreateDefaultOptions();
         var accumulator = new RecordAccumulator(options);
         var metadataManager = new MetadataManager(connectionPool, options.BootstrapServers);
-        var statisticsCollector = new ProducerStatisticsCollector();
+
         var tracker = new PartitionInflightTracker();
 
         var sender = new BrokerSender(
@@ -121,7 +120,7 @@ public sealed class BrokerSenderTests
             options,
             new CompressionCodecRegistry(),
             inflightTracker: tracker,
-            statisticsCollector,
+
             getProduceApiVersion: () => 9,
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
@@ -144,7 +143,7 @@ public sealed class BrokerSenderTests
         var options = CreateDefaultOptions();
         var accumulator = new RecordAccumulator(options);
         var metadataManager = new MetadataManager(connectionPool, options.BootstrapServers);
-        var statisticsCollector = new ProducerStatisticsCollector();
+
 
         var transactionCalled = false;
         var sender = new BrokerSender(
@@ -155,7 +154,7 @@ public sealed class BrokerSenderTests
             options,
             new CompressionCodecRegistry(),
             inflightTracker: new PartitionInflightTracker(),
-            statisticsCollector,
+
             getProduceApiVersion: () => 9,
             setProduceApiVersion: _ => { },
             isTransactional: () => true,

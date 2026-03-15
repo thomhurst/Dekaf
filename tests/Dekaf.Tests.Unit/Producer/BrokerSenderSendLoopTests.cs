@@ -6,7 +6,7 @@ using Dekaf.Protocol;
 using Dekaf.Producer;
 using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
-using Dekaf.Statistics;
+
 using NSubstitute;
 
 namespace Dekaf.Tests.Unit.Producer;
@@ -136,7 +136,6 @@ public sealed class BrokerSenderSendLoopTests
             accumulator, options,
             new CompressionCodecRegistry(),
             inflightTracker: new PartitionInflightTracker(),
-            new ProducerStatisticsCollector(),
             getProduceApiVersion: () => 9,
             setProduceApiVersion: _ => { },
             isTransactional: () => false,
