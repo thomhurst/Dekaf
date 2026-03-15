@@ -193,7 +193,7 @@ public sealed class ConnectionPoolTests
 
         // Launch many concurrent disposal calls to exercise the atomic guard
         var tasks = new Task[10];
-        var barrier = new Barrier(tasks.Length);
+        using var barrier = new Barrier(tasks.Length);
 
         for (var i = 0; i < tasks.Length; i++)
         {
