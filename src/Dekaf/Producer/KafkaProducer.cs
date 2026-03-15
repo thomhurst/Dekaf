@@ -2846,10 +2846,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         LogProducerDisposing();
 
         // Graceful shutdown: flush all pending messages to Kafka before closing.
-        // CloseTimeoutMs controls how long to wait (0 = no timeout, wait indefinitely).
+        // Use half of CloseTimeoutMs for the graceful flush phase, reserving the rest
+        // for forceful cleanup (BrokerSender cancellation, sender task teardown, etc.).
+        // Previously the entire CloseTimeoutMs was consumed by the flush, leaving no
+        // budget for the forceful path and causing 30s+ dispose times under load.
         var hasTimeout = _options.CloseTimeoutMs > 0;
+        var gracefulMs = hasTimeout ? _options.CloseTimeoutMs / 2 : 0;
         using var shutdownCts = hasTimeout
-            ? new CancellationTokenSource(TimeSpan.FromMilliseconds(_options.CloseTimeoutMs))
+            ? new CancellationTokenSource(TimeSpan.FromMilliseconds(gracefulMs))
             : new CancellationTokenSource();
         var gracefulShutdown = true;
 
@@ -2873,7 +2877,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         {
             // Graceful shutdown timed out - fall back to forceful shutdown
             gracefulShutdown = false;
-            LogGracefulShutdownTimedOut(_options.CloseTimeoutMs);
+            LogGracefulShutdownTimedOut(gracefulMs);
         }
         catch
         {
@@ -2898,10 +2902,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             _senderCts.Cancel();
 
+            // Force-fail all in-flight batches IMMEDIATELY after cancelling senders.
+            // This unblocks any FlushAsync waiter (which polls _inFlightBatchCount)
+            // and lets the sender loop's HasPendingWork() return false promptly,
+            // so _senderTask exits without waiting for broker responses that will
+            // never arrive. Previously this was done only after BrokerSender disposal,
+            // meaning the sender task could hang for 5s waiting for in-flight work
+            // that was already doomed.
+            _accumulator.ForceFailAllInFlightBatches();
+
             try
             {
                 await _senderTask
-                    .WaitAsync(TimeSpan.FromSeconds(5))
+                    .WaitAsync(TimeSpan.FromSeconds(2))
                     .ConfigureAwait(false);
             }
             catch
@@ -2939,13 +2952,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             try
             {
-                // 10s wall-clock safety net: each BrokerSender.DisposeAsync has its own 5s
+                // 7s wall-clock safety net: each BrokerSender.DisposeAsync has its own 5s
                 // per-sender timeout, so under normal parallel disposal the aggregate completes
-                // in ~5s. The 10s outer deadline only fires if something beyond the per-sender
+                // in ~5s. The 7s outer deadline only fires if something beyond the per-sender
                 // timeout hangs (e.g., CancelAsync blocking on a slow callback). When it does
                 // fire, the individual dispose Tasks are still running in the background.
                 await Task.WhenAll(disposeTasks)
-                    .WaitAsync(TimeSpan.FromSeconds(10))
+                    .WaitAsync(TimeSpan.FromSeconds(7))
                     .ConfigureAwait(false);
             }
             catch (TimeoutException)
@@ -2960,11 +2973,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         } while (_brokerSenders.Count > previousCount);
         _brokerSenders.Clear();
 
-        // Orphan sweep: fail any batches still tracked as in-flight after all BrokerSenders
-        // have been disposed. These are batches that entered the pipeline but were never
-        // cleaned up by any BrokerSender — their references were dropped due to edge-case
-        // races between send loop death and batch enqueue. This prevents FlushAsync from
-        // hanging indefinitely during disposal.
+        // Final orphan sweep: fail any batches still tracked as in-flight after all
+        // BrokerSenders have been disposed. The earlier ForceFailAllInFlightBatches call
+        // (in the forceful path) handles the common case; this second sweep catches batches
+        // that entered the pipeline between the first sweep and BrokerSender disposal.
         _accumulator.ForceFailAllInFlightBatches();
 
         _senderCts.Dispose();
