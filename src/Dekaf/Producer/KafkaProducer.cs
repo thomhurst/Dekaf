@@ -2792,16 +2792,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _disposed = true;
         LogProducerDisposing();
 
-        // Graceful shutdown: flush all pending messages to Kafka before closing.
-        // Use half of CloseTimeoutMs for the graceful flush phase, reserving the rest
-        // for forceful cleanup (BrokerSender cancellation, sender task teardown, etc.).
-        // Previously the entire CloseTimeoutMs was consumed by the flush, leaving no
-        // budget for the forceful path and causing 30s+ dispose times under load.
+        // Time budget allocation within CloseTimeoutMs:
+        //   40% → graceful flush (accumulator close + sender drain)
+        //   ~48% → BrokerSender disposal (remaining minus cleanup reservation)
+        //   ~12% → post-disposal cleanup (statistics, accumulator, pool, network)
+        //
+        // Previously the split was 50/50 and post-disposal cleanup had NO time budget,
+        // so internal timeouts in the accumulator (10s) and connection pool (30s) could
+        // cause DisposeAsync to far exceed CloseTimeoutMs.
         var hasTimeout = _options.CloseTimeoutMs > 0;
         var totalDeadline = hasTimeout
             ? DateTimeOffset.UtcNow.AddMilliseconds(_options.CloseTimeoutMs)
             : DateTimeOffset.MaxValue;
-        var gracefulMs = hasTimeout ? _options.CloseTimeoutMs / 2 : 0;
+        var gracefulMs = hasTimeout ? _options.CloseTimeoutMs * 2 / 5 : 0;
 
         // Local helper: milliseconds remaining until totalDeadline, floored at zero.
         int RemainingMs() => Math.Max(0, (int)(totalDeadline - DateTimeOffset.UtcNow).TotalMilliseconds);
@@ -2911,8 +2914,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 disposeTasks.Add(DisposeOneSenderAsync(sender));
             }
 
-            // Derive broker disposal timeout from remaining time budget.
-            var brokerDisposeMs = Math.Max(500, RemainingMs());
+            // Derive broker disposal timeout from remaining time budget, reserving 20%
+            // (min 2s) for post-disposal resource cleanup (accumulator, connection pool).
+            var remaining = RemainingMs();
+            var reservedForCleanup = Math.Max(2000, remaining / 5);
+            var brokerDisposeMs = Math.Max(500, remaining - reservedForCleanup);
 
             try
             {
@@ -2948,14 +2954,32 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _transactionLock.Dispose();
         _initLock.Dispose();
 
-        // Dispose accumulator - this will fail any remaining batches if graceful shutdown failed
-        await _accumulator.DisposeAsync().ConfigureAwait(false);
+        // Post-disposal cleanup: dispose remaining resources with bounded timeouts.
+        // Previously these disposals had no time budget, so their internal timeouts
+        // (e.g., accumulator's 10s worker+batch wait, connection pool's 30s connection
+        // timeout) could cause DisposeAsync to far exceed CloseTimeoutMs. Now each step
+        // is capped by the remaining time budget so the total dispose time stays bounded.
 
-        // Dispose ValueTaskSource pool - prevents resource leaks
-        await _valueTaskSourcePool.DisposeAsync().ConfigureAwait(false);
+        // Dispose accumulator — fails any remaining batches if graceful shutdown failed.
+        // Has internal 5s+5s timeouts for workers and in-flight batches, but at this point
+        // BrokerSenders are already disposed so it should complete quickly.
+        // Reserve half the remaining budget for subsequent disposals (pool, network).
+        await DisposeWithBudgetAsync(
+            _accumulator.DisposeAsync(), Math.Max(500, RemainingMs() / 2), "accumulator");
 
-        await _metadataManager.DisposeAsync().ConfigureAwait(false);
-        await _connectionPool.DisposeAsync().ConfigureAwait(false);
+        // Dispose ValueTaskSource pool — prevents resource leaks (usually fast).
+        await DisposeWithBudgetAsync(
+            _valueTaskSourcePool.DisposeAsync(), Math.Max(200, RemainingMs() / 10), "valueTaskSourcePool");
+
+        // Dispose metadata manager and connection pool in parallel.
+        // Connection pool disposal waits up to ConnectionTimeout (30s default) per connection,
+        // which can single-handedly exceed CloseTimeoutMs. Cap with remaining budget.
+        await DisposeWithBudgetAsync(
+            new ValueTask(Task.WhenAll(
+                _metadataManager.DisposeAsync().AsTask(),
+                _connectionPool.DisposeAsync().AsTask())),
+            Math.Max(500, RemainingMs()),
+            "network");
     }
 
     /// <summary>
@@ -2972,6 +2996,29 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         catch (Exception ex)
         {
             LogDisposeBrokerSenderFailed(ex);
+        }
+    }
+
+    /// <summary>
+    /// Awaits a disposal ValueTask with a wall-clock timeout, swallowing all exceptions.
+    /// Used during producer shutdown to prevent any single resource disposal from exceeding
+    /// the remaining time budget.
+    /// </summary>
+    private async ValueTask DisposeWithBudgetAsync(ValueTask disposeTask, int budgetMs, string step)
+    {
+        try
+        {
+            await disposeTask.AsTask()
+                .WaitAsync(TimeSpan.FromMilliseconds(budgetMs))
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            LogPostDisposalStepTimedOut(step);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException and not TimeoutException)
+        {
+            LogDisposalStepFailed(ex, step);
         }
     }
 
@@ -3037,6 +3084,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     [LoggerMessage(Level = LogLevel.Warning, Message = "Parallel BrokerSender disposal timed out for {Count} senders")]
     private partial void LogBrokerSenderParallelDisposeTimedOut(int count);
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Post-disposal {Step} cleanup timed out, proceeding with remaining cleanup")]
+    private partial void LogPostDisposalStepTimedOut(string step);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender for broker {BrokerId} send loop exited — replacing with fresh sender")]
     private partial void LogBrokerSenderReplaced(int brokerId);
 
@@ -3066,6 +3116,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Non-fatal exception during batch cleanup step (suppressed)")]
     private partial void LogBatchCleanupStepFailed(Exception exception);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Non-fatal exception during {Step} disposal (suppressed)")]
+    private partial void LogDisposalStepFailed(Exception exception, string step);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Sender loop failed with unexpected exception")]
     private partial void LogSenderLoopFailed(Exception ex);
