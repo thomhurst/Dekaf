@@ -27,26 +27,48 @@ jobs:
         include:
           - scenario: producer
             client: dekaf
+            brokers: 1
             name: Dekaf Producer
           - scenario: producer
             client: confluent
+            brokers: 1
             name: Confluent Producer
           - scenario: producer-idempotent
             client: dekaf
+            brokers: 1
             name: Dekaf Producer (Idempotent)
           - scenario: producer-idempotent
             client: confluent
+            brokers: 1
             name: Confluent Producer (Idempotent)
           - scenario: consumer
             client: dekaf
+            brokers: 1
             name: Dekaf Consumer
           - scenario: consumer
             client: confluent
+            brokers: 1
             name: Confluent Consumer
+          - scenario: producer
+            client: dekaf
+            brokers: 3
+            name: Dekaf Producer (3 Brokers)
+          - scenario: producer
+            client: confluent
+            brokers: 3
+            name: Confluent Producer (3 Brokers)
+          - scenario: producer-idempotent
+            client: dekaf
+            brokers: 3
+            name: Dekaf Producer Idempotent (3 Brokers)
+          - scenario: producer-idempotent
+            client: confluent
+            brokers: 3
+            name: Confluent Producer Idempotent (3 Brokers)
 
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.brokers > 1 && 75 || 60 }}
 
     steps:
       - name: Checkout
@@ -61,6 +83,7 @@ jobs:
         run: dotnet build tools/Dekaf.StressTests --configuration Release
 
       - name: Start Kafka
+        if: matrix.brokers == 1
         run: |
           docker run -d --name kafka \
             -p 9092:9092 \
@@ -96,7 +119,7 @@ jobs:
 
       - name: Run ${{ matrix.name }} Stress Test
         env:
-          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+          KAFKA_BOOTSTRAP_SERVERS: ${{ matrix.brokers == 1 && 'localhost:9092' || '' }}
         run: |
           cd tools/Dekaf.StressTests
           dotnet run --configuration Release --no-build -- \
@@ -104,17 +127,18 @@ jobs:
             --message-size ${{ github.event.inputs.message_size || '1000' }} \
             --scenario ${{ matrix.scenario }} \
             --client ${{ matrix.client }} \
+            --brokers ${{ matrix.brokers }} \
             --output ./results
 
       - name: Upload Results
         uses: actions/upload-artifact@v7
         with:
-          name: results-${{ matrix.client }}-${{ matrix.scenario }}
+          name: results-${{ matrix.client }}-${{ matrix.scenario }}-${{ matrix.brokers }}brokers
           path: tools/Dekaf.StressTests/results/
           retention-days: 90
 
       - name: Stop Kafka
-        if: always()
+        if: always() && matrix.brokers == 1
         run: docker rm -f kafka || true
 
   # Collect all results and generate summary
