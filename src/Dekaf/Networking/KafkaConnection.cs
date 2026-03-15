@@ -2045,7 +2045,7 @@ internal sealed class PooledPendingRequest : IValueTaskSource<PooledResponseBuff
     /// </summary>
     private const int MaxReasonableTagCount = 1000;
 
-    private ManualResetValueTaskSourceCore<PooledResponseBuffer> _core;
+    private ManualResetValueTaskSourceCore<PooledResponseBuffer> _core = new() { RunContinuationsAsynchronously = true };
     private short _responseHeaderVersion;
     private CancellationTokenRegistration _cancellationRegistration;
     private int _state; // 0 = pending, 1 = completing, 2 = completed
