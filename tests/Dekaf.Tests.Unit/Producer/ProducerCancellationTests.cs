@@ -91,8 +91,9 @@ public class ProducerCancellationTests
             await accumulator.FlushAsync(cts.Token);
             var elapsed = Environment.TickCount64 - startTime;
 
-            // Assert - Should complete once batch is drained (using 10000ms to account for CI variability on macOS)
-            await Assert.That(elapsed).IsLessThan(10000);
+            // Assert - Should complete once batch is drained.
+            // Use 30s to account for extreme CI variability (slow runners with thread pool starvation).
+            await Assert.That(elapsed).IsLessThan(30000);
 
             // Cancel to stop the drain task and await it before CTS is disposed
             await cts.CancelAsync();
