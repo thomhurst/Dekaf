@@ -353,8 +353,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     // Interceptors - stored as typed array for zero-allocation iteration
     private readonly IConsumerInterceptor<TKey, TValue>[]? _interceptors;
 
-    // OTel consumer lag callback — registered with DekafMetrics shared gauge
-
     // Cached partition grouping by broker to avoid allocations on every fetch
     // Invalidated whenever _assignment or _paused changes
     // Access to _cachedPartitionsByBroker must be synchronized via _partitionCacheLock
@@ -2859,8 +2857,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             // _committed is a plain Dictionary and not safe to read from the OTel callback thread.
             var consumedPosition = _positions.GetValueOrDefault(tp, 0);
 
-            var lag = highWatermark - consumedPosition;
-            if (lag < 0) lag = 0;
+            var lag = Math.Max(0, highWatermark - consumedPosition);
 
             yield return new Measurement<long>(lag,
                 new System.Diagnostics.TagList
