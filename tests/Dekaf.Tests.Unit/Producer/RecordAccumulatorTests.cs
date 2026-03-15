@@ -1600,4 +1600,29 @@ public class RecordAccumulatorTests
     }
 
     #endregion
+
+    #region ComputePoolSize Tests
+
+    [Test]
+    [Arguments(1073741824UL, 1048576, 256)]  // 1GB buffer, 1MB batch → 1024/4=256 (default)
+    [Arguments(1073741824UL, 16384, 2048)]   // 1GB buffer, 16KB batch → 65536/4=16384, capped at 2048
+    [Arguments(1073741824UL, 262144, 1024)]  // 1GB buffer, 256KB batch → 4096/4=1024
+    [Arguments(16777216UL, 16384, 256)]      // 16MB buffer, 16KB batch → 1024/4=256 (default floor)
+    [Arguments(1073741824UL, 1073741824, 256)] // 1GB buffer, 1GB batch → 1/4=0, clamped to 256
+    public async Task ComputePoolSize_ScalesWithBufferAndBatchSize(
+        ulong bufferMemory, int batchSize, int expectedPoolSize)
+    {
+        var options = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            BufferMemory = bufferMemory,
+            BatchSize = batchSize
+        };
+
+        var poolSize = RecordAccumulator.ComputePoolSize(options);
+
+        await Assert.That(poolSize).IsEqualTo(expectedPoolSize);
+    }
+
+    #endregion
 }

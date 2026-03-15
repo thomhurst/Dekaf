@@ -97,6 +97,7 @@ internal sealed class InflightEntryPool
 {
     private readonly ConcurrentStack<InflightEntry> _pool = new();
     private readonly int _maxPoolSize;
+    private int _poolCount;
 
     public InflightEntryPool(int maxPoolSize = 128)
     {
@@ -108,6 +109,7 @@ internal sealed class InflightEntryPool
     {
         if (_pool.TryPop(out var entry))
         {
+            Interlocked.Decrement(ref _poolCount);
             return entry;
         }
 
@@ -118,9 +120,14 @@ internal sealed class InflightEntryPool
     public void Return(InflightEntry entry)
     {
         entry.Reset();
-        if (_pool.Count < _maxPoolSize)
+        // Use Interlocked counter instead of ConcurrentStack.Count (which is O(n)).
+        if (Interlocked.Increment(ref _poolCount) <= _maxPoolSize)
         {
             _pool.Push(entry);
+        }
+        else
+        {
+            Interlocked.Decrement(ref _poolCount);
         }
     }
 }
