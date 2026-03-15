@@ -2750,11 +2750,21 @@ internal sealed class PartitionBatch
     private RecordAccumulator? _accumulator;
 
     /// <summary>
+    /// Divisor for computing the arena overflow margin from BatchSize.
+    /// A divisor of 8 gives a 12.5% margin (BatchSize / 8) above BatchSize,
+    /// reducing per-message ArrayPool fallback when batches near capacity.
+    /// </summary>
+    private const int ArenaOverflowMarginDivisor = 8;
+
+    /// <summary>
     /// Returns the effective arena capacity: explicit ArenaCapacity if set,
     /// otherwise BatchSize + 12.5% margin to reduce per-message ArrayPool fallback.
+    /// Uses long arithmetic to avoid integer overflow when BatchSize is large.
     /// </summary>
     private static int GetEffectiveArenaCapacity(ProducerOptions options) =>
-        options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize + options.BatchSize / 8;
+        options.ArenaCapacity > 0
+            ? options.ArenaCapacity
+            : (int)Math.Min((long)options.BatchSize + options.BatchSize / ArenaOverflowMarginDivisor, int.MaxValue);
 
     public PartitionBatch(TopicPartition topicPartition, ProducerOptions options)
     {
