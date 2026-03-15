@@ -432,10 +432,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Uses synchronous Cancel() because this is a fire-and-forget context where we cannot await.
     /// Safe to call multiple times: TryComplete and Cancel are both idempotent.
     /// </summary>
+    /// <remarks>
+    /// Wrapped in try/catch because <c>Cancel()</c> invokes registered callbacks synchronously.
+    /// If a callback ever throws, the exception must not prevent cancellation of remaining senders
+    /// in the caller's foreach loop.
+    /// </remarks>
     internal void RequestCancellation()
     {
         _eventChannel.Writer.TryComplete();
-        _cts.Cancel();
+        try { _cts.Cancel(); }
+        catch (ObjectDisposedException) { /* CTS already disposed by a concurrent DisposeAsync */ }
     }
 
     /// <summary>

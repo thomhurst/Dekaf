@@ -2877,16 +2877,22 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             try
             {
+                // 10s wall-clock safety net: each BrokerSender.DisposeAsync has its own 5s
+                // per-sender timeout, so under normal parallel disposal the aggregate completes
+                // in ~5s. The 10s outer deadline only fires if something beyond the per-sender
+                // timeout hangs (e.g., CancelAsync blocking on a slow callback). When it does
+                // fire, the individual dispose Tasks are still running in the background.
                 await Task.WhenAll(disposeTasks)
                     .WaitAsync(TimeSpan.FromSeconds(10))
                     .ConfigureAwait(false);
             }
             catch (TimeoutException)
             {
-                // This is a wall-clock safety net only — it prevents DisposeAsync from
-                // hanging indefinitely if a BrokerSender's send loop is stuck. Per-sender
-                // exceptions are already swallowed and logged inside DisposeOneSenderAsync,
-                // so this catch only fires when the aggregate WaitAsync deadline expires.
+                // Per-sender exceptions are already swallowed and logged inside
+                // DisposeOneSenderAsync, so this catch only fires when the aggregate
+                // WaitAsync deadline expires. Senders may still be disposing in the
+                // background — _brokerSenders.Clear() below drops our references,
+                // accepting that their cleanup will finish asynchronously.
                 LogBrokerSenderParallelDisposeTimedOut(_brokerSenders.Count);
             }
         } while (_brokerSenders.Count > previousCount);
