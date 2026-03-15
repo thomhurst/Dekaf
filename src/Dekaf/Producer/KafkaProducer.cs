@@ -3023,8 +3023,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Dispose accumulator — fails any remaining batches if graceful shutdown failed.
         // Has internal 5s+5s timeouts for workers and in-flight batches, but at this point
         // BrokerSenders are already disposed so it should complete quickly.
+        // Reserve half the remaining budget for subsequent disposals (pool, network).
         await DisposeWithBudgetAsync(
-            _accumulator.DisposeAsync(), Math.Max(500, RemainingMs()), "accumulator");
+            _accumulator.DisposeAsync(), Math.Max(500, RemainingMs() / 2), "accumulator");
 
         // Dispose ValueTaskSource pool — prevents resource leaks (usually fast).
         await DisposeWithBudgetAsync(
@@ -3033,25 +3034,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Dispose metadata manager and connection pool in parallel.
         // Connection pool disposal waits up to ConnectionTimeout (30s default) per connection,
         // which can single-handedly exceed CloseTimeoutMs. Cap with remaining budget.
-        {
-            var budget = Math.Max(500, RemainingMs());
-            var metadataTask = _metadataManager.DisposeAsync().AsTask();
-            var connectionTask = _connectionPool.DisposeAsync().AsTask();
-            try
-            {
-                await Task.WhenAll(metadataTask, connectionTask)
-                    .WaitAsync(TimeSpan.FromMilliseconds(budget))
-                    .ConfigureAwait(false);
-            }
-            catch (TimeoutException)
-            {
-                LogPostDisposalStepTimedOut("network");
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException and not TimeoutException)
-            {
-                LogDisposalStepFailed(ex, "network");
-            }
-        }
+        await DisposeWithBudgetAsync(
+            new ValueTask(Task.WhenAll(
+                _metadataManager.DisposeAsync().AsTask(),
+                _connectionPool.DisposeAsync().AsTask())),
+            Math.Max(500, RemainingMs()),
+            "network");
     }
 
     /// <summary>
@@ -3076,7 +3064,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// Used during producer shutdown to prevent any single resource disposal from exceeding
     /// the remaining time budget.
     /// </summary>
-    private async ValueTask DisposeWithBudgetAsync(ValueTask disposeTask, int budgetMs, string step = "resource")
+    private async ValueTask DisposeWithBudgetAsync(ValueTask disposeTask, int budgetMs, string step)
     {
         try
         {
