@@ -3065,18 +3065,19 @@ internal sealed class PartitionBatch
         // GetAndIncrementSequence on the same shared counter.
         var baseSequence = -1;
 
-        var batch = new RecordBatch
-        {
-            BaseOffset = 0,
-            BaseTimestamp = _baseTimestamp,
-            MaxTimestamp = _baseTimestamp + (_recordCount > 0 ? pooledRecordsArray[_recordCount - 1].TimestampDelta : 0),
-            LastOffsetDelta = _recordCount - 1,
-            ProducerId = _producerId,
-            ProducerEpoch = _producerEpoch,
-            BaseSequence = baseSequence,
-            Attributes = attributes,
-            Records = new RecordListWrapper(pooledRecordsArray, _recordCount)
-        };
+        // Rent from pool to eliminate per-batch RecordBatch class allocation.
+        // The batch lives through the send pipeline (1-10ms) and would otherwise
+        // survive Gen0 collection, contributing to high Gen1/Gen0 promotion rate.
+        var batch = RecordBatch.RentFromPool();
+        batch.BaseOffset = 0;
+        batch.BaseTimestamp = _baseTimestamp;
+        batch.MaxTimestamp = _baseTimestamp + (_recordCount > 0 ? pooledRecordsArray[_recordCount - 1].TimestampDelta : 0);
+        batch.LastOffsetDelta = _recordCount - 1;
+        batch.ProducerId = _producerId;
+        batch.ProducerEpoch = _producerEpoch;
+        batch.BaseSequence = baseSequence;
+        batch.Attributes = attributes;
+        batch.Records = new RecordListWrapper(pooledRecordsArray, _recordCount);
         _records = null!;
 
         // Rent ReadyBatch from pool or create new if no pool available
@@ -3722,9 +3723,14 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             ArrayPool<Action<RecordMetadata, Exception?>?>.Shared.Return(_callbacks, clearArray: true);
         }
 
-        // Pre-compressed buffer cleanup is handled by RecordBatch.Dispose() which calls
-        // ReturnPreCompressedBuffer(). No need to call it explicitly here — consolidating
-        // ownership in RecordBatch avoids double-return risk.
+        // Return pre-compressed buffer and RecordBatch to pool.
+        // ReturnPreCompressedBuffer() releases the ArrayPool buffer, then ReturnToPool()
+        // clears all references and returns the RecordBatch object for reuse.
+        if (_recordBatch is not null)
+        {
+            _recordBatch.ReturnPreCompressedBuffer();
+            _recordBatch.ReturnToPool();
+        }
     }
 }
 
