@@ -1,4 +1,5 @@
 using System.IO.Pipelines;
+using System.Net.Sockets;
 
 namespace Dekaf.Networking;
 
@@ -10,13 +11,16 @@ namespace Dekaf.Networking;
 /// <see cref="Stream"/> abstraction. Plain TCP connections use <see cref="SocketPipe"/> instead.
 /// Writing is handled directly by <see cref="KafkaConnection"/> via <c>PipeWriter.Create(stream)</c>.
 /// <para/>
-/// <b>Ownership:</b> This class takes ownership of the <see cref="Stream"/> and disposes it on disposal.
-/// The caller must not dispose the stream separately. The caller remains responsible for disposing
-/// any underlying <see cref="System.Net.Sockets.Socket"/> that the stream does not own.
+/// <b>Ownership:</b> This class takes full ownership of both the <see cref="Stream"/> (typically
+/// <see cref="System.Net.Security.SslStream"/>) and the underlying <see cref="System.Net.Sockets.Socket"/>.
+/// It disposes the stream (which cascades to the inner <see cref="System.Net.Sockets.NetworkStream"/>
+/// via <c>leaveInnerStreamOpen: false</c>) and then disposes the socket.
+/// The caller must not dispose either resource separately.
 /// </summary>
 internal sealed class DuplexPipe : IAsyncDisposable
 {
     private readonly Stream _stream;
+    private readonly Socket _socket;
     private readonly Pipe _inputPipe;
     private readonly Task _readPumpTask;
     private readonly int _readBufferSize;
@@ -28,9 +32,10 @@ internal sealed class DuplexPipe : IAsyncDisposable
     /// </summary>
     public PipeReader Input => _inputPipe.Reader;
 
-    public DuplexPipe(Stream stream, PipeOptions inputPipeOptions, int readBufferSize = 65536)
+    public DuplexPipe(Stream stream, Socket socket, PipeOptions inputPipeOptions, int readBufferSize = 65536)
     {
         _stream = stream;
+        _socket = socket;
         _inputPipe = new Pipe(inputPipeOptions);
         _readBufferSize = readBufferSize;
 
@@ -95,5 +100,10 @@ internal sealed class DuplexPipe : IAsyncDisposable
         {
             // Read pump exceptions are expected during shutdown (e.g. stream disposed)
         }
+
+        // Dispose the socket. The SslStream disposal above cascaded to the NetworkStream
+        // (via leaveInnerStreamOpen: false), but NetworkStream was created with ownsSocket: false,
+        // so the socket must be disposed separately.
+        _socket.Dispose();
     }
 }

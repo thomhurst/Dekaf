@@ -12,8 +12,9 @@ public sealed class DuplexPipeTests
 
     /// <summary>
     /// Creates a pair of connected streams using TCP loopback for testing.
+    /// Returns the client socket alongside the streams so DuplexPipe can take ownership.
     /// </summary>
-    private static async Task<(Stream Client, Stream Server)> CreateConnectedStreamsAsync()
+    private static async Task<(Socket ClientSocket, Stream ClientStream, Stream ServerStream)> CreateConnectedStreamsAsync()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -27,15 +28,15 @@ public sealed class DuplexPipeTests
 
         listener.Stop();
 
-        return (client.GetStream(), server.GetStream());
+        return (client.Client, client.GetStream(), server.GetStream());
     }
 
     [Test]
     public async Task DataWrittenToStream_IsReadableFromInput()
     {
-        var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
+        var (clientSocket, clientStream, serverStream) = await CreateConnectedStreamsAsync();
 
-        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions);
+        await using var pipe = new DuplexPipe(clientStream, clientSocket, DefaultPipeOptions);
 
         var expected = "hello from broker"u8.ToArray();
         await serverStream.WriteAsync(expected);
@@ -53,9 +54,9 @@ public sealed class DuplexPipeTests
     [Test]
     public async Task StreamEof_SetsIsCompletedOnInput()
     {
-        var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
+        var (clientSocket, clientStream, serverStream) = await CreateConnectedStreamsAsync();
 
-        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions);
+        await using var pipe = new DuplexPipe(clientStream, clientSocket, DefaultPipeOptions);
 
         // Close the server side to signal EOF
         await serverStream.DisposeAsync();
@@ -70,13 +71,13 @@ public sealed class DuplexPipeTests
     [Test]
     public async Task StreamReadError_PropagatesFromInput()
     {
-        var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
+        var (clientSocket, clientStream, serverStream) = await CreateConnectedStreamsAsync();
 
         // Dispose the client stream before wrapping to cause immediate read failure
         await serverStream.DisposeAsync();
         await clientStream.DisposeAsync();
 
-        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions);
+        await using var pipe = new DuplexPipe(clientStream, clientSocket, DefaultPipeOptions);
 
         await Assert.That(async () =>
         {
@@ -88,9 +89,9 @@ public sealed class DuplexPipeTests
     [Test]
     public async Task StreamErrorDuringActiveRead_PropagatesFromInput()
     {
-        var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
+        var (clientSocket, clientStream, serverStream) = await CreateConnectedStreamsAsync();
 
-        await using var pipe = new DuplexPipe(clientStream, DefaultPipeOptions);
+        await using var pipe = new DuplexPipe(clientStream, clientSocket, DefaultPipeOptions);
 
         // Successfully exchange data first
         var data = "hello"u8.ToArray();
@@ -113,9 +114,9 @@ public sealed class DuplexPipeTests
     [Test]
     public async Task DisposeAsync_StopsPumpAndDisposesStream()
     {
-        var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
+        var (clientSocket, clientStream, serverStream) = await CreateConnectedStreamsAsync();
 
-        var pipe = new DuplexPipe(clientStream, DefaultPipeOptions);
+        var pipe = new DuplexPipe(clientStream, clientSocket, DefaultPipeOptions);
 
         await pipe.DisposeAsync();
 
@@ -131,9 +132,9 @@ public sealed class DuplexPipeTests
     [Test]
     public async Task DoubleDispose_DoesNotThrow()
     {
-        var (clientStream, serverStream) = await CreateConnectedStreamsAsync();
+        var (clientSocket, clientStream, serverStream) = await CreateConnectedStreamsAsync();
 
-        var pipe = new DuplexPipe(clientStream, DefaultPipeOptions);
+        var pipe = new DuplexPipe(clientStream, clientSocket, DefaultPipeOptions);
 
         await pipe.DisposeAsync();
 
