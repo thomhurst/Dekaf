@@ -2820,7 +2820,20 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         if (!gracefulShutdown)
         {
-            // Forceful shutdown: cancel everything and fail pending batches
+            // Forceful shutdown: cancel everything and fail pending batches.
+            // Cancel BrokerSender loops FIRST so they start exiting immediately
+            // while we wait for the main sender task — otherwise the sender task
+            // can exit quickly but BrokerSender disposal still takes 5s each.
+            //
+            // Note: senders created by RerouteBatchToCurrentLeader between this
+            // iteration and the disposal loop below won't have RequestCancellation
+            // called. This is benign — they proceed directly to DisposeAsync which
+            // performs the same cancellation internally. The do/while disposal loop
+            // below will also discover senders added during earlier iterations,
+            // since it re-checks _brokerSenders.Count after each round.
+            foreach (var (_, sender) in _brokerSenders)
+                sender.RequestCancellation();
+
             _senderCts.Cancel();
 
             try
@@ -2845,7 +2858,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // Ignore
         }
 
-        // Dispose all per-broker senders (drains channels, waits for in-flight responses).
+        // Dispose all per-broker senders in parallel to avoid O(N * timeout) sequential waits.
+        // Each BrokerSender.DisposeAsync waits up to 5s for its send loop — with multiple brokers,
+        // sequential disposal can exceed the caller's overall dispose budget.
         // Loop until no new senders were created during the iteration — a retry's
         // RerouteBatchToCurrentLeader callback could race with the _disposed guard and
         // create a new sender after we've started iterating.
@@ -2854,16 +2869,31 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         do
         {
             previousCount = _brokerSenders.Count;
+            var disposeTasks = new List<Task>(_brokerSenders.Count);
             foreach (var (_, sender) in _brokerSenders)
             {
-                try
-                {
-                    await sender.DisposeAsync().ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    LogDisposeBrokerSenderFailed(ex);
-                }
+                disposeTasks.Add(DisposeOneSenderAsync(sender));
+            }
+
+            try
+            {
+                // 10s wall-clock safety net: each BrokerSender.DisposeAsync has its own 5s
+                // per-sender timeout, so under normal parallel disposal the aggregate completes
+                // in ~5s. The 10s outer deadline only fires if something beyond the per-sender
+                // timeout hangs (e.g., CancelAsync blocking on a slow callback). When it does
+                // fire, the individual dispose Tasks are still running in the background.
+                await Task.WhenAll(disposeTasks)
+                    .WaitAsync(TimeSpan.FromSeconds(10))
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // Per-sender exceptions are already swallowed and logged inside
+                // DisposeOneSenderAsync, so this catch only fires when the aggregate
+                // WaitAsync deadline expires. Senders may still be disposing in the
+                // background — _brokerSenders.Clear() below drops our references,
+                // accepting that their cleanup will finish asynchronously.
+                LogBrokerSenderParallelDisposeTimedOut(_brokerSenders.Count);
             }
         } while (_brokerSenders.Count > previousCount);
         _brokerSenders.Clear();
@@ -2894,6 +2924,23 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Disposes a single BrokerSender, swallowing and logging all exceptions by design.
+    /// Individual sender failures must not prevent disposal of remaining senders or the
+    /// producer itself — the caller runs these in parallel via Task.WhenAll.
+    /// </summary>
+    private async Task DisposeOneSenderAsync(BrokerSender sender)
+    {
+        try
+        {
+            await sender.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            LogDisposeBrokerSenderFailed(ex);
+        }
     }
 
     #region Logging
@@ -2954,6 +3001,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Failed to dispose broker sender")]
     private partial void LogDisposeBrokerSenderFailed(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Parallel BrokerSender disposal timed out for {Count} senders")]
+    private partial void LogBrokerSenderParallelDisposeTimedOut(int count);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender for broker {BrokerId} send loop exited — replacing with fresh sender")]
     private partial void LogBrokerSenderReplaced(int brokerId);

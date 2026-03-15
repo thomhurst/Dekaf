@@ -426,6 +426,25 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     internal bool IsAlive => !_sendLoopTask.IsCompleted;
 
     /// <summary>
+    /// Requests cancellation of this BrokerSender's send loop without waiting for it to exit.
+    /// Called during forceful shutdown so all BrokerSender loops begin exiting concurrently
+    /// before DisposeAsync awaits each one.
+    /// Uses synchronous Cancel() because this is a fire-and-forget context where we cannot await.
+    /// Safe to call multiple times: TryComplete and Cancel are both idempotent.
+    /// </summary>
+    /// <remarks>
+    /// Wrapped in try/catch because <c>Cancel()</c> invokes registered callbacks synchronously.
+    /// If a callback ever throws, the exception must not prevent cancellation of remaining senders
+    /// in the caller's foreach loop.
+    /// </remarks>
+    internal void RequestCancellation()
+    {
+        _eventChannel.Writer.TryComplete();
+        try { _cts.Cancel(); }
+        catch (ObjectDisposedException) { /* CTS already disposed by a concurrent DisposeAsync */ }
+    }
+
+    /// <summary>
     /// Enqueues a batch for sending to this broker.
     /// TryWrite on the unbounded event channel always succeeds unless the channel is completed
     /// (send loop exited). BufferMemory provides the backpressure — the channel does not need bounding.
@@ -2039,9 +2058,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         LogDisposing(_brokerId);
 
+        // Complete the channel so no new events are accepted, then cancel the CTS so
+        // WaitToReadAsync is interrupted promptly. We use CancelAsync here (rather than
+        // synchronous Cancel) because CTS cancellation callbacks may perform I/O and we
+        // are already in an async context that can await them without blocking a thread.
         _eventChannel.Writer.TryComplete();
-
-        // Cancel CTS FIRST so WaitToReadAsync is interrupted promptly.
         await _cts.CancelAsync().ConfigureAwait(false);
 
         // Wait for send loop to finish (should exit quickly now that CTS is cancelled).
