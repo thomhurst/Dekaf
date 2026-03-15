@@ -338,9 +338,9 @@ internal sealed class BatchArena
     // up to ~256MB on the POH for the pool's lifetime. This is a static/process-wide pool
     // shared across all RecordAccumulator instances (i.e., all producers in the process).
     // POH buffers are reclaimable by the GC when evicted from the pool (references dropped).
-    // Keep in sync with PartitionBatchPool default maxPoolSize — each pooled batch
-    // retains a BatchArena, so the arena pool should be at least as large.
-    private const int MaxPoolSize = 256;
+    // Each pooled PartitionBatch retains a BatchArena, so the arena pool should be at least
+    // as large as PartitionBatchPool (which references this constant as its default).
+    internal const int MaxPoolSize = 256;
     private static int s_poolCount;
 
     private byte[] _buffer;
@@ -359,7 +359,7 @@ internal sealed class BatchArena
 
     /// <summary>
     /// Rents an arena from the pool or creates a new one.
-    /// Pooled arenas retain their buffers permanently - no ArrayPool rent/return overhead.
+    /// Pooled arenas retain their POH buffers for the pool's lifetime - no ArrayPool rent/return overhead.
     /// </summary>
     public static BatchArena RentOrCreate(int capacity)
     {
@@ -373,8 +373,8 @@ internal sealed class BatchArena
     }
 
     /// <summary>
-    /// Returns an arena to the pool for reuse, or lets GC collect it if the pool is full.
-    /// The buffer is kept permanently - it is never returned to ArrayPool.
+    /// Returns an arena to the pool for reuse, or drops the reference for GC collection if the pool is full.
+    /// The POH buffer is never returned to ArrayPool.
     /// </summary>
     public static void ReturnToPool(BatchArena arena)
     {
@@ -2647,10 +2647,9 @@ internal sealed class PartitionBatchPool
     /// Creates a new PartitionBatchPool.
     /// </summary>
     /// <param name="options">Producer options for configuring new batches.</param>
-    /// <param name="maxPoolSize">Maximum number of batches to keep pooled. Default is 256.
-    /// Each pooled batch retains a BatchArena (~1MB), so this bounds retained memory.
-    /// Keep in sync with <see cref="BatchArena"/> MaxPoolSize to avoid pool size mismatches.</param>
-    public PartitionBatchPool(ProducerOptions options, int maxPoolSize = 256)
+    /// <param name="maxPoolSize">Maximum number of batches to keep pooled.
+    /// Defaults to <see cref="BatchArena.MaxPoolSize"/> since each pooled batch retains a BatchArena (~1MB).</param>
+    public PartitionBatchPool(ProducerOptions options, int maxPoolSize = BatchArena.MaxPoolSize)
     {
         _options = options;
         _maxPoolSize = maxPoolSize;
