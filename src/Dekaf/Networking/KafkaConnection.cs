@@ -1664,18 +1664,31 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (_writer is not null)
             await _writer.CompleteAsync().ConfigureAwait(false);
 
+        // Complete the PipeReader BEFORE disposing the socket/duplex pipe.
+        // The read pump writes socket data into the pipe and may be paused on
+        // PipeWriter.FlushAsync() due to backpressure (pipe buffer full, no reader consuming).
+        // Completing the reader unblocks FlushAsync (returns IsCompleted=true), allowing the
+        // read pump to exit promptly. Without this, SocketPipe/DuplexPipe.DisposeAsync hangs
+        // waiting for the read pump task — socket/stream disposal only unblocks ReceiveAsync/
+        // ReadAsync, not the pipe's FlushAsync.
+        if (_reader is not null)
+            await _reader.CompleteAsync().ConfigureAwait(false);
+
+        // Dispose the socket and stream BEFORE disposing the pipe. SocketPipe.DisposeAsync
+        // calls Socket.Shutdown(SocketShutdown.Receive) to signal EOF, but on Windows this
+        // does NOT abort an already-posted ReceiveAsync (IOCP operations are not cancelled by
+        // Shutdown — only by closing the socket handle). Disposing the socket first aborts
+        // the pending ReceiveAsync with a SocketException, allowing the read pump to exit
+        // promptly instead of waiting for the remote peer to close the connection.
+        // For TLS (DuplexPipe), disposing the stream similarly aborts a pending ReadAsync.
+        _stream?.Dispose();
+        _socket?.Dispose();
+
         if (_socketPipe is not null)
             await _socketPipe.DisposeAsync().ConfigureAwait(false);
 
         if (_duplexPipe is not null)
             await _duplexPipe.DisposeAsync().ConfigureAwait(false);
-
-        // For plain TCP, _stream is a NetworkStream with ownsSocket: false — disposing it
-        // releases the managed stream object but not the socket (handled by _socket.Dispose below).
-        // For TLS, DuplexPipe.DisposeAsync already disposed the stream.
-        _stream?.Dispose();
-
-        _socket?.Dispose();
 
         _reauthTimer?.Dispose();
         _reauthLock.Dispose();
