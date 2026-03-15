@@ -138,7 +138,21 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             startTasks.Add(container.StartAsync());
         }
 
-        await Task.WhenAll(startTasks).ConfigureAwait(false);
+        try
+        {
+            await Task.WhenAll(startTasks).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Clean up already-started containers and network on partial startup failure
+            foreach (var c in containers)
+            {
+                try { await c.DisposeAsync().ConfigureAwait(false); } catch { }
+            }
+
+            await network.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
 
         // Bootstrap servers = all external ports
         var bootstrapServers = string.Join(",",
