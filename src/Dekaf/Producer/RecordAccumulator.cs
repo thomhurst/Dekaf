@@ -2580,7 +2580,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             while (channel.Reader.TryRead(out var workItem))
             {
                 CleanupWorkItemResources(in workItem);
-                workItem.Completion.TrySetException(disposedException);
+                workItem.Completion?.TrySetException(disposedException);
             }
         }
 
