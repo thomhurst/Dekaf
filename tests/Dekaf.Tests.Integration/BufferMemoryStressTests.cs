@@ -1,3 +1,4 @@
+using Dekaf.Consumer;
 using Dekaf.Errors;
 using Dekaf.Producer;
 
@@ -192,5 +193,59 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
             await Assert.That(task.IsCompletedSuccessfully).IsTrue();
             await Assert.That(task.Result.Offset).IsGreaterThanOrEqualTo(0);
         }
+    }
+
+    /// <summary>
+    /// Regression test: Send() in a tight loop to a topic the producer hasn't seen before
+    /// must not throw KafkaTimeoutException. Previously, each Send() launched an async task
+    /// when metadata wasn't cached, creating a thundering herd that exhausted BufferMemory.
+    /// </summary>
+    [Test]
+    [NotInParallel]
+    public async Task Send_TightLoopToNewTopic_DoesNotTimeout()
+    {
+        // Arrange: create topic before producer so it exists in Kafka but not in producer cache
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
+
+        // Small buffer to make the test fail fast if backpressure breaks
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("send-metadata-test")
+            .WithAcks(Acks.Leader)
+            .WithBufferMemory(16777216) // 16 MB
+            .WithMaxBlock(TimeSpan.FromSeconds(10)) // Fast failure if backpressure breaks
+            .BuildAsync();
+
+        var messageValue = new string('x', 1000); // 1 KB messages
+
+        // Act: tight Send() loop without intermediate flushes — this is the exact
+        // pattern that caused KafkaTimeoutException in the consumer stress test.
+        // 50K messages x 1KB = 50MB total, exceeding 16MB buffer.
+        for (var i = 0; i < 50_000; i++)
+        {
+            producer.Send(topic, $"key-{i % 100}", messageValue);
+        }
+
+        await producer.FlushAsync(CancellationToken.None);
+
+        // Assert: consume messages to verify they were all delivered
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithGroupId($"verify-{Guid.NewGuid():N}")
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .BuildAsync();
+
+        consumer.Subscribe(topic);
+
+        var received = 0;
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            received++;
+            if (received >= 50_000)
+                break;
+        }
+
+        await Assert.That(received).IsEqualTo(50_000);
     }
 }
