@@ -92,8 +92,11 @@ internal sealed class DuplexPipe : IAsyncDisposable
             // Dispose the stream to abort any pending _stream.ReadAsync in the read pump.
             // The read pump's finally block then calls _inputPipe.Writer.CompleteAsync.
             await _stream.DisposeAsync().ConfigureAwait(false);
-
-            // Wait for the read pump to finish (observe exceptions from stream abort)
+        }
+        finally
+        {
+            // Await the pump regardless of whether stream disposal succeeded.
+            // This ensures the pump's exception is observed and the pipe writer is completed.
             try
             {
                 await _readPumpTask.ConfigureAwait(false);
@@ -102,9 +105,7 @@ internal sealed class DuplexPipe : IAsyncDisposable
             {
                 // Read pump exceptions are expected during shutdown (e.g. stream disposed)
             }
-        }
-        finally
-        {
+
             // Dispose the socket. The SslStream disposal above cascaded to the NetworkStream
             // (via leaveInnerStreamOpen: false), but NetworkStream was created with ownsSocket: false,
             // so the socket must be disposed separately.
