@@ -761,18 +761,27 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         try
         {
+            // Rent a single pooled CTS for the entire loop lifetime and register the
+            // connection's cancellation token once. Each iteration reuses the same CTS
+            // via TryReset + CancelAfter, eliminating the per-iteration
+            // CancellationTokenRegistration allocation (see #507).
+            using var timeoutCts = _timeoutCtsPool.Rent();
+            using var reg = cancellationToken.CanBeCanceled
+                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
+                : default;
+
             while (!cancellationToken.IsCancellationRequested)
             {
-                // Apply RequestTimeout to each read operation using pooled CTS
-                using var timeoutCts = _timeoutCtsPool.Rent();
-
                 ReadResult result;
                 try
                 {
-                    timeoutCts.CancelAfter(_options.RequestTimeout);
-                    using var reg = cancellationToken.CanBeCanceled
-                        ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
-                        : default;
+                    // Apply RequestTimeout to each read operation.
+                    // TryReset clears any pending CancelAfter timer from the previous iteration.
+                    // It returns false if the outer cancellationToken fired (via the registration),
+                    // in which case ReadAsync will throw immediately and the while-condition
+                    // will exit before the next iteration.
+                    if (timeoutCts.TryReset())
+                        timeoutCts.CancelAfter(_options.RequestTimeout);
 
                     // ReadResult state machine (System.IO.Pipelines):
                     //
