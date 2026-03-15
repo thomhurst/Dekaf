@@ -2135,7 +2135,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     {
         try
         {
-            await _metadataManager.RefreshMetadataAsync([topic], cancellationToken).ConfigureAwait(false);
+            await _metadataManager.RefreshMetadataAsync([topic], forceRefresh: true, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch
         {

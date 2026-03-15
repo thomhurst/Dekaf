@@ -133,7 +133,7 @@ public sealed class AdminClient : IAdminClient
 
         for (var attempt = 0; attempt < leaderWaitRetries; attempt++)
         {
-            await _metadataManager.RefreshMetadataAsync(topicNames, cancellationToken).ConfigureAwait(false);
+            await _metadataManager.RefreshMetadataAsync(topicNames, forceRefresh: true, cancellationToken: cancellationToken).ConfigureAwait(false);
 
             var allReady = true;
             foreach (var topicName in topicNames)
@@ -256,7 +256,7 @@ public sealed class AdminClient : IAdminClient
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
 
         // Refresh metadata for specific topics
-        await _metadataManager.RefreshMetadataAsync(topicNames, cancellationToken).ConfigureAwait(false);
+        await _metadataManager.RefreshMetadataAsync(topicNames, forceRefresh: true, cancellationToken: cancellationToken).ConfigureAwait(false);
 
         var result = new Dictionary<string, TopicDescription>();
 

@@ -1153,17 +1153,12 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await Task.Delay(3000).ConfigureAwait(false);
 
-        // Verify using a fresh admin client (avoids stale metadata cache)
-        await using var admin2 = Kafka.CreateAdminClient()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .Build();
-
-        var descriptions = await admin2.DescribeTopicsAsync([topic1, topic2]).ConfigureAwait(false);
+        var descriptions = await admin.DescribeTopicsAsync([topic1, topic2]).ConfigureAwait(false);
         await Assert.That(descriptions[topic1].Partitions).Count().IsEqualTo(4);
         await Assert.That(descriptions[topic2].Partitions).Count().IsEqualTo(6);
 
         // Cleanup
-        await admin2.DeleteTopicsAsync([topic1, topic2]).ConfigureAwait(false);
+        await admin.DeleteTopicsAsync([topic1, topic2]).ConfigureAwait(false);
     }
 
     [Test]
