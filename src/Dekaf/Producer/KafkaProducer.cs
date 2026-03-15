@@ -2451,7 +2451,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private void EnsureTopicMetadataSync(string topic)
     {
         var topicInfo = _metadataManager.WaitForTopicMetadataSync(
-            topic, _options.MaxBlockMs, _senderCts.Token);
+            topic, _options.MaxBlockMs);
 
         if (topicInfo is not null)
         {

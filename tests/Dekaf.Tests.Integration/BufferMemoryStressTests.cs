@@ -202,7 +202,8 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
     /// </summary>
     [Test]
     [NotInParallel]
-    public async Task Send_TightLoopToNewTopic_DoesNotTimeout()
+    [Timeout(120_000)] // 2 minutes — bounded failure if FlushAsync hangs
+    public async Task Send_TightLoopToNewTopic_DoesNotTimeout(CancellationToken testTimeout)
     {
         // Arrange: create topic before producer so it exists in Kafka but not in producer cache
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 1);
@@ -214,7 +215,7 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("send-metadata-test")
             .WithAcks(Acks.Leader)
-            .BuildAsync();
+            .BuildAsync(testTimeout);
 
         var messageValue = new string('x', 1000); // 1 KB messages
 
@@ -228,24 +229,30 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
             producer.Send(topic, $"key-{i % 100}", messageValue);
         }
 
-        await producer.FlushAsync(CancellationToken.None);
+        await producer.FlushAsync(testTimeout);
 
         // Assert: consume messages to verify they were all delivered
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .BuildAsync(testTimeout);
 
         consumer.Subscribe(topic);
 
         var received = 0;
-        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        try
         {
-            received++;
-            if (received >= messageCount)
-                break;
+            await foreach (var msg in consumer.ConsumeAsync(testTimeout))
+            {
+                received++;
+                if (received >= messageCount)
+                    break;
+            }
+        }
+        catch (OperationCanceledException) when (received < messageCount)
+        {
+            // Test timeout while consuming — will fail the assertion below
         }
 
         await Assert.That(received).IsEqualTo(messageCount);

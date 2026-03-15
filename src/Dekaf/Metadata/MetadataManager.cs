@@ -186,11 +186,16 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// concurrent GetOrAdd calls (ConcurrentDictionary may invoke the factory speculatively,
     /// but Lazy defers execution until .Value is accessed).
     /// </remarks>
-    internal TopicInfo? WaitForTopicMetadataSync(string topicName, int timeoutMs, CancellationToken disposalToken)
+    internal TopicInfo? WaitForTopicMetadataSync(string topicName, int timeoutMs)
     {
         if (TryGetCachedTopicMetadata(topicName, out var topic))
             return topic;
 
+        // Coalesce: all callers for the same topic share one fetch task.
+        // The inner task uses _disposalCts so it is cancelled promptly on disposal,
+        // regardless of the caller's timeout. This is intentional — the underlying
+        // network operation should continue running even if one waiter times out,
+        // so that other waiters (or retry callers) can benefit from the result.
         var sharedTask = _pendingTopicFetches.GetOrAdd(topicName,
             static (t, self) => new Lazy<Task<TopicInfo?>>(
                 () => self.GetTopicMetadataSlowAsync(t, self._disposalCts.Token).AsTask()),
@@ -198,11 +203,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
         try
         {
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(disposalToken);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(_disposalCts.Token);
             timeoutCts.CancelAfter(timeoutMs);
             return sharedTask.Value.WaitAsync(timeoutCts.Token).GetAwaiter().GetResult();
         }
-        catch (OperationCanceledException) when (disposalToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (_disposalCts.IsCancellationRequested)
         {
             throw new ObjectDisposedException(nameof(MetadataManager));
         }
@@ -224,13 +229,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
             else if (sharedTask.IsValueCreated)
             {
                 // We timed out but the inner task is still running.
-                // Attach cleanup so a faulted/cancelled task doesn't linger forever
-                // and block future metadata fetches for this topic.
+                // Remove unconditionally on completion so callers always get a fresh
+                // fetch — a successful-but-late result would otherwise leave a stale
+                // entry permanently in the dictionary.
                 sharedTask.Value.ContinueWith(static (t, state) =>
                 {
                     var (dict, key) = ((ConcurrentDictionary<string, Lazy<Task<TopicInfo?>>>, string))state!;
-                    if (t.IsFaulted || t.IsCanceled)
-                        dict.TryRemove(key, out _);
+                    dict.TryRemove(key, out _);
                 }, (_pendingTopicFetches, topicName),
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
