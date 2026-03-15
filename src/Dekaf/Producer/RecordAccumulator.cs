@@ -333,10 +333,12 @@ internal readonly struct AppendWorkItem
 internal sealed class BatchArena
 {
     private static readonly ConcurrentQueue<BatchArena> s_pool = new();
-    // Memory tradeoff: at the default 1MB batch size, pooling up to 128 arenas holds
-    // up to ~128MB permanently on the LOH. This is acceptable for high-throughput
+    // Memory tradeoff: at the default 1MB batch size, pooling up to 256 arenas holds
+    // up to ~256MB permanently on the POH. This is acceptable for high-throughput
     // workloads where these arenas are in active use and would be reallocated anyway.
-    private const int MaxPoolSize = 128;
+    // Using pinned: true places buffers on the Pinned Object Heap, avoiding LOH
+    // fragmentation and Gen2 GC pressure entirely.
+    private const int MaxPoolSize = 256;
     private static int s_poolCount;
 
     private byte[] _buffer;
@@ -346,10 +348,10 @@ internal sealed class BatchArena
     /// Creates a new arena with the specified capacity.
     /// The arena does not grow - when full, the batch should be rotated.
     /// </summary>
-    /// <param name="capacity">Buffer size. Allocated permanently (not from ArrayPool) to avoid LOH fragmentation.</param>
+    /// <param name="capacity">Buffer size. Pinned on the POH permanently (not from ArrayPool) to avoid LOH fragmentation and Gen2 GC pressure.</param>
     public BatchArena(int capacity)
     {
-        _buffer = GC.AllocateUninitializedArray<byte>(capacity, pinned: false);
+        _buffer = GC.AllocateUninitializedArray<byte>(capacity, pinned: true);
         _position = 0;
     }
 
@@ -404,7 +406,7 @@ internal sealed class BatchArena
 
         // Buffer too small (or null) - allocate a new permanent buffer.
         // The old buffer (if any) will be collected by GC.
-        _buffer = GC.AllocateUninitializedArray<byte>(capacity, pinned: false);
+        _buffer = GC.AllocateUninitializedArray<byte>(capacity, pinned: true);
         _position = 0;
     }
 
@@ -2643,9 +2645,9 @@ internal sealed class PartitionBatchPool
     /// Creates a new PartitionBatchPool.
     /// </summary>
     /// <param name="options">Producer options for configuring new batches.</param>
-    /// <param name="maxPoolSize">Maximum number of batches to keep pooled. Default is 128.
+    /// <param name="maxPoolSize">Maximum number of batches to keep pooled. Default is 256.
     /// Each pooled batch retains a BatchArena (~1MB), so this bounds retained memory.</param>
-    public PartitionBatchPool(ProducerOptions options, int maxPoolSize = 128)
+    public PartitionBatchPool(ProducerOptions options, int maxPoolSize = 256)
     {
         _options = options;
         _maxPoolSize = maxPoolSize;
