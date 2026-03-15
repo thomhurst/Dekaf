@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 
 namespace Dekaf.Diagnostics;
@@ -64,12 +65,54 @@ internal static class DekafMetrics
             unit: "s",
             description: "Round-trip time of fetch requests to Kafka brokers.");
 
+    // Consumer lag — single static gauge with shared callback registry.
+    // Each KafkaConsumer instance registers/unregisters its callback, avoiding
+    // duplicate instrument registration and ensuring disposed consumers stop reporting.
+
+    private static readonly ConcurrentDictionary<Func<IEnumerable<Measurement<long>>>, byte> ConsumerLagCallbacks = new();
+
+    internal static readonly ObservableGauge<long> ConsumerLagGauge =
+        DekafDiagnostics.Meter.CreateObservableGauge(
+            "messaging.consumer.lag",
+            observeValues: ObserveAllConsumerLag,
+            unit: "{message}",
+            description: "Difference between high watermark and consumed position per partition.");
+
     /// <summary>
-    /// Observable gauge for consumer lag is created per-consumer instance via
-    /// <see cref="DekafDiagnostics.Meter"/>.<see cref="Meter.CreateObservableGauge{T}(string, Func{T}, string?, string?)"/>.
-    /// See <c>KafkaConsumer</c> constructor for registration.
+    /// Registers a consumer lag observation callback. Called from <c>KafkaConsumer</c> constructor.
     /// </summary>
-    internal const string ConsumerLagName = "messaging.consumer.lag";
-    internal const string ConsumerLagUnit = "{message}";
-    internal const string ConsumerLagDescription = "Difference between high watermark and committed offset per partition.";
+    internal static void RegisterConsumerLagCallback(Func<IEnumerable<Measurement<long>>> callback)
+    {
+        ConsumerLagCallbacks.TryAdd(callback, 0);
+    }
+
+    /// <summary>
+    /// Unregisters a consumer lag observation callback. Called from <c>KafkaConsumer.DisposeAsync</c>.
+    /// </summary>
+    internal static void UnregisterConsumerLagCallback(Func<IEnumerable<Measurement<long>>> callback)
+    {
+        ConsumerLagCallbacks.TryRemove(callback, out _);
+    }
+
+    private static IEnumerable<Measurement<long>> ObserveAllConsumerLag()
+    {
+        foreach (var (callback, _) in ConsumerLagCallbacks)
+        {
+            IEnumerable<Measurement<long>> measurements;
+            try
+            {
+                measurements = callback();
+            }
+            catch
+            {
+                // Skip callbacks that throw (e.g., consumer mid-disposal)
+                continue;
+            }
+
+            foreach (var measurement in measurements)
+            {
+                yield return measurement;
+            }
+        }
+    }
 }

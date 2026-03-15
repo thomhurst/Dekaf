@@ -353,8 +353,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     // Interceptors - stored as typed array for zero-allocation iteration
     private readonly IConsumerInterceptor<TKey, TValue>[]? _interceptors;
 
-    // OTel consumer lag observable gauge (per-instance, callback invoked during collection only)
-    private readonly ObservableGauge<long> _consumerLagGauge;
+    // OTel consumer lag callback — registered with DekafMetrics shared gauge
 
     // Cached partition grouping by broker to avoid allocations on every fetch
     // Invalidated whenever _assignment or _paused changes
@@ -437,13 +436,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             FullMode = BoundedChannelFullMode.Wait
         });
 
-        // Register observable gauge for consumer lag per partition.
+        // Register this instance's lag callback with the shared static gauge.
         // The callback is invoked only during metric collection (~every 5-60s), not on the hot path.
-        _consumerLagGauge = Diagnostics.DekafDiagnostics.Meter.CreateObservableGauge(
-            Diagnostics.DekafMetrics.ConsumerLagName,
-            observeValues: ObserveConsumerLag,
-            unit: Diagnostics.DekafMetrics.ConsumerLagUnit,
-            description: Diagnostics.DekafMetrics.ConsumerLagDescription);
+        Diagnostics.DekafMetrics.RegisterConsumerLagCallback(ObserveConsumerLag);
     }
 
     public IReadOnlySet<string> Subscription => _subscription;
@@ -985,7 +980,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         // Record fetch round-trip duration (~3ns no-op when no listener)
         Diagnostics.DekafMetrics.FetchDuration.Record(
-            System.Diagnostics.Stopwatch.GetElapsedTime(fetchStarted).TotalSeconds);
+            System.Diagnostics.Stopwatch.GetElapsedTime(fetchStarted).TotalSeconds,
+            new System.Diagnostics.TagList { { "messaging.kafka.broker.id", brokerId } });
 
         // Take ownership of pooled memory from the response (if zero-copy was used)
         var memoryOwner = response.PooledMemoryOwner;
@@ -2172,7 +2168,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         // Record fetch round-trip duration (~3ns no-op when no listener)
         Diagnostics.DekafMetrics.FetchDuration.Record(
-            System.Diagnostics.Stopwatch.GetElapsedTime(fetchStarted).TotalSeconds);
+            System.Diagnostics.Stopwatch.GetElapsedTime(fetchStarted).TotalSeconds,
+            new System.Diagnostics.TagList { { "messaging.kafka.broker.id", brokerId } });
 
         // Take ownership of pooled memory from the response (if zero-copy was used)
         var memoryOwner = response.PooledMemoryOwner;
@@ -2771,6 +2768,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         _disposed = true;
         LogConsumerDisposing();
+
+        // Unregister lag callback so the OTel SDK no longer invokes it on this disposed instance
+        Diagnostics.DekafMetrics.UnregisterConsumerLagCallback(ObserveConsumerLag);
 
         // If not already closed, perform graceful close first
         // Use 30 seconds to allow CommitAsync (which may take up to RequestTimeoutMs=30s) to complete
