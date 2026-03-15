@@ -349,9 +349,11 @@ public sealed partial class MetadataManager : IAsyncDisposable
         {
             // Re-check cache after acquiring lock — another thread may have refreshed
             // the metadata we need while we were waiting for the lock, avoiding a
-            // redundant network request.
+            // redundant network request. When topics is null, this is an explicit
+            // full-cluster refresh (background/init) that should always hit the network.
             if (topics is not null && AllTopicsCached(topics))
             {
+                LogMetadataRefreshSkippedCacheHit();
                 return;
             }
 
@@ -815,6 +817,9 @@ public sealed partial class MetadataManager : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Trace, Message = "Metadata refresh requested")]
     private partial void LogMetadataRefreshRequested();
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Metadata refresh skipped — all requested topics already cached")]
+    private partial void LogMetadataRefreshSkippedCacheHit();
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Background metadata refresh loop started with interval {IntervalMs}ms")]
     private partial void LogBackgroundRefreshStarted(int intervalMs);
