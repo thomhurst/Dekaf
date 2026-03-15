@@ -278,9 +278,10 @@ public sealed class ProducerOptions
     /// <summary>
     /// Maximum size of the internal ValueTaskSource pool.
     /// Higher values reduce allocations in high-throughput scenarios but use more memory.
-    /// Default is 4096.
+    /// Default is 0, which auto-calculates from <see cref="BufferMemory"/> / <see cref="BatchSize"/>
+    /// to scale with the expected concurrency level. Set an explicit positive value to override.
     /// </summary>
-    public int ValueTaskSourcePoolSize { get; init; } = ValueTaskSourcePool<RecordMetadata>.DefaultMaxPoolSize;
+    public int ValueTaskSourcePoolSize { get; init; }
 
     /// <summary>
     /// Capacity of the arena buffer for zero-copy serialization in bytes.

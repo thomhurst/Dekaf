@@ -205,8 +205,56 @@ public class ValueTaskSourcePoolTests
     [Test]
     public async Task DefaultMaxPoolSize_Is4096()
     {
-        var defaultSize = ValueTaskSourcePool<int>.DefaultMaxPoolSize;
+        var defaultSize = ValueTaskSourcePool.DefaultMaxPoolSize;
         await Assert.That(defaultSize).IsEqualTo(4096);
+    }
+
+    [Test]
+    public async Task CalculatePoolSize_ScalesWithBufferMemoryAndBatchSize()
+    {
+        // 1 GB buffer / 1 MB batch = 1024 batches
+        var poolSize = ValueTaskSourcePool.CalculatePoolSize(1073741824UL, 1048576);
+        await Assert.That(poolSize).IsEqualTo(1024);
+    }
+
+    [Test]
+    public async Task CalculatePoolSize_ClampsToMinimum()
+    {
+        // 1 MB buffer / 1 MB batch = 1 batch, should clamp to MinAutoPoolSize
+        var poolSize = ValueTaskSourcePool.CalculatePoolSize(1048576UL, 1048576);
+        await Assert.That(poolSize).IsEqualTo(ValueTaskSourcePool.MinAutoPoolSize);
+    }
+
+    [Test]
+    public async Task CalculatePoolSize_ClampsToMaximum()
+    {
+        // 100 GB buffer / 16 KB batch = ~6.5M batches, should clamp to MaxAutoPoolSize
+        var poolSize = ValueTaskSourcePool.CalculatePoolSize(107374182400UL, 16384);
+        await Assert.That(poolSize).IsEqualTo(ValueTaskSourcePool.MaxAutoPoolSize);
+    }
+
+    [Test]
+    public async Task CalculatePoolSize_ThrowsForInvalidBatchSize()
+    {
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+        {
+            ValueTaskSourcePool.CalculatePoolSize(1073741824UL, 0);
+            return Task.CompletedTask;
+        });
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+        {
+            ValueTaskSourcePool.CalculatePoolSize(1073741824UL, -1);
+            return Task.CompletedTask;
+        });
+    }
+
+    [Test]
+    public async Task CalculatePoolSize_SmallBufferLargeBatch_ClampsToMin()
+    {
+        // 256 KB buffer / 1 MB batch = 0 batches (integer division), should clamp to min
+        var poolSize = ValueTaskSourcePool.CalculatePoolSize(262144UL, 1048576);
+        await Assert.That(poolSize).IsEqualTo(ValueTaskSourcePool.MinAutoPoolSize);
     }
 
     [Test]
@@ -337,7 +385,7 @@ public class ValueTaskSourcePoolTests
     {
         var pool = new ValueTaskSourcePool<int>();
 
-        await Assert.That(pool.MaxPoolSize).IsEqualTo(ValueTaskSourcePool<int>.DefaultMaxPoolSize);
+        await Assert.That(pool.MaxPoolSize).IsEqualTo(ValueTaskSourcePool.DefaultMaxPoolSize);
     }
 
     [Test]
