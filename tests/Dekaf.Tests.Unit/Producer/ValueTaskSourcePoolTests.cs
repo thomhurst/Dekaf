@@ -258,11 +258,11 @@ public class ValueTaskSourcePoolTests
     }
 
     [Test]
-    public async Task CalculatePoolSize_SmallBufferLargeBatch_ClampsToMin()
+    public async Task CalculatePoolSize_SingleBatchBuffer_ClampsToMin()
     {
-        // 256 KB buffer / 1 MB batch = 0 batches (integer division), should clamp to min
-        var poolSize = ValueTaskSourcePool.CalculatePoolSize(262144UL, 1048576);
-        await Assert.That(poolSize).IsEqualTo(ValueTaskSourcePool.MinAutoPoolSize);
+        // 1 MB buffer / 1 MB batch = 1 batch * 1024 msgs = 1024, still above min (256)
+        var poolSize = ValueTaskSourcePool.CalculatePoolSize(1048576UL, 1048576);
+        await Assert.That(poolSize).IsEqualTo(1024);
     }
 
     [Test]
