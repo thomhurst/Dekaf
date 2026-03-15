@@ -43,6 +43,25 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         return stats.FirstOrDefault(predicate);
     }
 
+    /// <summary>
+    /// Consumes all available messages until cancellation. Used to keep the consumer
+    /// active (and stats firing) while another task checks for a stats predicate.
+    /// </summary>
+    private static async Task ConsumeAllAsync(IKafkaConsumer<string, string> consumer, CancellationToken ct)
+    {
+        try
+        {
+            await foreach (var _ in consumer.ConsumeAsync(ct))
+            {
+                // Drain — stats are tracked internally by the consumer.
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected when caller cancels.
+        }
+    }
+
     [Test]
     public async Task ProducerMetrics_MessageCount_ReflectsProducedMessages()
     {
@@ -290,47 +309,51 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         await Assert.That(matchingProducerStats.MessagesDelivered).IsGreaterThanOrEqualTo(messageCount);
         await Assert.That(matchingProducerStats.BytesProduced).IsGreaterThan(0);
 
-        // Consume all messages and verify consumer stats
+        // Consume all messages and verify consumer stats.
+        // Use a TaskCompletionSource signalled from the stats handler so we detect the
+        // predicate while the consumer is still actively consuming. Stats are recorded at
+        // fetch-batch granularity — if the consumer exits mid-fetch via cancellation, the
+        // partial batch's messages are never counted, which caused flaky failures on slow
+        // CI runners when checking stats after the consume loop.
+        var consumerStatsTcs = new TaskCompletionSource<ConsumerStatistics>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithStatisticsInterval(TimeSpan.FromSeconds(1))
-            .WithStatisticsHandler(s => consumerStats.Add(s))
+            .WithStatisticsHandler(s =>
+            {
+                consumerStats.Add(s);
+                if (s.MessagesConsumed >= messageCount)
+                    consumerStatsTcs.TrySetResult(s);
+            })
             .BuildAsync();
 
         consumer.Subscribe(topic);
 
-        var consumed = 0;
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        // Consume in background — keep the consumer active so stats keep firing.
+        using var consumeCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        var consumeTask = ConsumeAllAsync(consumer, consumeCts.Token);
+
+        // Wait for stats to reach threshold while consumer is still actively consuming.
+        ConsumerStatistics? matchingConsumerStats;
         try
         {
-            await foreach (var msg in consumer.ConsumeAsync(cts.Token))
-            {
-                consumed++;
-                if (consumed >= messageCount)
-                {
-                    // Allow batch stats to be recorded.
-                    // Use a longer delay to ensure the stats interval (1s) has time to
-                    // fire at least once on slow CI runners.
-                    cts.CancelAfter(TimeSpan.FromSeconds(5));
-                }
-            }
+            matchingConsumerStats = await consumerStatsTcs.Task
+                .WaitAsync(TimeSpan.FromSeconds(90));
         }
-        catch (OperationCanceledException)
+        catch (TimeoutException)
         {
-            // Expected
+            matchingConsumerStats = null;
         }
-
-        // Wait for consumer stats reflecting all consumed messages.
-        // With 100 messages across 3 partitions and multiple fetches,
-        // at least the majority of messages should be recorded in stats.
-        // Use a generous timeout because on slow CI runners, the consumer group
-        // rebalance, fetching across partitions, and stats interval tick can take
-        // significantly longer than expected.
-        var matchingConsumerStats = await WaitForStatsAsync(consumerStats,
-            s => s.MessagesConsumed >= messageCount,
-            TimeSpan.FromSeconds(60));
+        finally
+        {
+            // Stop consuming now that we have (or timed out on) the stats.
+            consumeCts.Cancel();
+            try { await consumeTask; } catch (OperationCanceledException) { }
+        }
 
         await Assert.That(matchingConsumerStats).IsNotNull();
         await Assert.That(matchingConsumerStats!.MessagesConsumed).IsGreaterThanOrEqualTo(messageCount);
