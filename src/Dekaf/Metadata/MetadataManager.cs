@@ -669,10 +669,15 @@ public sealed partial class MetadataManager : IAsyncDisposable
             var endpoints = new List<(string Host, int Port)>(
                 currentBrokers.Count + _bootstrapEndpoints.Count);
 
-            // First try known brokers
+            // First try known brokers, tracking seen endpoints for O(1) dedup
+            var seen = new HashSet<(string Host, int Port)>(
+                currentBrokers.Count + _bootstrapEndpoints.Count);
+
             foreach (var broker in currentBrokers)
             {
-                endpoints.Add((broker.Host, broker.Port));
+                var ep = (broker.Host, broker.Port);
+                seen.Add(ep);
+                endpoints.Add(ep);
             }
 
             // Then bootstrap servers (skip duplicates — common in single-broker setups
@@ -680,7 +685,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             // redundant 30s request timeouts against the same endpoint)
             foreach (var endpoint in _bootstrapEndpoints)
             {
-                if (!endpoints.Contains(endpoint))
+                if (seen.Add(endpoint))
                 {
                     endpoints.Add(endpoint);
                 }
