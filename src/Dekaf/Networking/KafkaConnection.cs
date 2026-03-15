@@ -761,18 +761,29 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         try
         {
+            // Rent a single pooled CTS for the entire loop lifetime and register the
+            // connection's cancellation token once. Each iteration reuses the same CTS
+            // via TryReset + CancelAfter, eliminating the per-iteration
+            // CancellationTokenRegistration allocation (see #507).
+            using var timeoutCts = _timeoutCtsPool.Rent();
+            using var reg = cancellationToken.CanBeCanceled
+                ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
+                : default;
+
             while (!cancellationToken.IsCancellationRequested)
             {
-                // Apply RequestTimeout to each read operation using pooled CTS
-                using var timeoutCts = _timeoutCtsPool.Rent();
-
                 ReadResult result;
                 try
                 {
+                    // Apply RequestTimeout to each read operation.
+                    // TryReset clears any pending CancelAfter timer from the previous iteration.
+                    // It returns false only if the CTS was already cancelled, which can only happen
+                    // if cancellationToken fired between iterations — in that case the while-loop
+                    // condition will exit on the next check. We still call CancelAfter so the
+                    // token is armed for this read; on an already-cancelled CTS this is a no-op
+                    // and ReadAsync will throw immediately, which is the desired behavior.
+                    timeoutCts.TryReset();
                     timeoutCts.CancelAfter(_options.RequestTimeout);
-                    using var reg = cancellationToken.CanBeCanceled
-                        ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
-                        : default;
 
                     // ReadResult state machine (System.IO.Pipelines):
                     //
