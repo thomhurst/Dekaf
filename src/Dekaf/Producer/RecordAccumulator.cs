@@ -705,6 +705,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // skip enumeration when this counter is non-zero.
     private int _pendingAwaitedProduceCount;
 
+    // Push-based notification queue for partitions with sealed batches ready to send.
+    // Populated by SealCurrentBatchUnderLock, SealBatchesAsync, and Reenqueue when a batch
+    // enters a partition deque. Drained by Ready() instead of scanning all _partitionDeques,
+    // converting O(n_partitions) to O(n_ready_partitions) per sender cycle.
+    // ConcurrentQueue is lock-free and safe for multi-producer (append workers, linger timer)
+    // single-consumer (sender thread) usage.
+    private readonly ConcurrentQueue<TopicPartition> _readyPartitions = new();
+
     // Coordination lock between FlushAsyncCore and ExpireLingerAsyncCore.
     // Ensures linger and flush don't both seal batches simultaneously,
     // which could cause ordering or double-seal issues.
@@ -870,10 +878,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         => _partitionDeques.GetOrAdd(tp, static _ => new PartitionDeque());
 
     /// <summary>
-    /// Checks all partition deques for sendable data, matching Java's RecordAccumulator.ready().
+    /// Drains the push-based notification queue to find partitions with sendable data.
     /// Populates the caller-provided readyNodes set with broker IDs that have at least one
     /// partition whose head batch is sendable (batch is complete, linger expired, or flush in progress).
     /// Only called from the sender thread.
+    ///
+    /// Complexity is O(n_ready_partitions) instead of O(n_all_partitions) because only partitions
+    /// that had a batch sealed or reenqueued are in the notification queue.
     /// </summary>
     internal (int NextCheckDelayMs, bool UnknownLeadersExist) Ready(
         MetadataManager metadataManager, long nowMs, HashSet<int> readyNodes)
@@ -881,12 +892,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var nextCheckDelayMs = int.MaxValue;
         var unknownLeadersExist = false;
 
-        foreach (var kvp in _partitionDeques)
+        // Snapshot the current queue length to avoid infinite loop: partitions that need
+        // re-enqueue (backoff, unknown leader) are added back during the loop, but we only
+        // process items that were present at the start of this call.
+        var count = _readyPartitions.Count;
+
+        for (var i = 0; i < count; i++)
         {
-            var tp = kvp.Key;
-            var pd = kvp.Value;
+            if (!_readyPartitions.TryDequeue(out var tp))
+                break;
 
             if (_mutedPartitions.ContainsKey(tp))
+                continue;
+
+            var pd = _partitionDeques.GetValueOrDefault(tp);
+            if (pd is null)
                 continue;
 
             ReadyBatch? head;
@@ -906,6 +926,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     var backoffMs = (int)(backoffRemaining * 1000 / Stopwatch.Frequency);
                     nextCheckDelayMs = Math.Min(nextCheckDelayMs, backoffMs);
+
+                    // Re-enqueue so the sender loop picks this partition up on the next cycle
+                    // after the backoff expires.
+                    _readyPartitions.Enqueue(tp);
                     continue;
                 }
             }
@@ -918,6 +942,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 // Signal the sender to trigger a metadata refresh, matching Java's
                 // RecordAccumulator.ready() unknownLeadersExist behavior.
                 unknownLeadersExist = true;
+
+                // Re-enqueue so the sender loop retries after metadata refresh.
+                _readyPartitions.Enqueue(tp);
                 continue;
             }
 
@@ -1045,6 +1072,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             else
                 pd.AddFirst(batch);
         }
+
+        // Push notification so Ready() can drain O(n_ready) instead of scanning O(n_all).
+        _readyPartitions.Enqueue(batch.TopicPartition);
         SignalWakeup();
     }
 
@@ -1053,6 +1083,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal void UnmutePartition(TopicPartition tp)
     {
         _mutedPartitions.TryRemove(tp, out _);
+
+        // Re-notify so Ready() picks up any sealed batches that were skipped while muted.
+        if (_partitionDeques.TryGetValue(tp, out var pd))
+        {
+            bool hasBatches;
+            {
+                using var guard = new SpinLockGuard(ref pd.Lock);
+                hasBatches = pd.PeekFirst() is not null;
+            }
+            if (hasBatches)
+                _readyPartitions.Enqueue(tp);
+        }
+
         SignalWakeup(); // Wake sender loop so it can drain the newly-unmuted partition
     }
     internal bool IsMuted(TopicPartition tp) => _mutedPartitions.ContainsKey(tp);
@@ -1710,6 +1753,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             OnBatchEntersPipeline(readyBatch);
             pd.AddLast(readyBatch);
             ProducerDebugCounters.RecordBatchQueuedToReady();
+
+            // Push notification so Ready() can drain O(n_ready) instead of scanning O(n_all).
+            _readyPartitions.Enqueue(readyBatch.TopicPartition);
         }
         _batchPool.Return(currentBatch);
         pd.CurrentBatch = null;
@@ -2198,6 +2244,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             OnBatchEntersPipeline(readyBatch);
                             pd.AddLast(readyBatch);
                             ProducerDebugCounters.RecordBatchQueuedToReady();
+
+                            // Push notification so Ready() can drain O(n_ready) instead of scanning O(n_all).
+                            _readyPartitions.Enqueue(readyBatch.TopicPartition);
                             sealedBatch = readyBatch;
                         }
                         _batchPool.Return(pd.CurrentBatch);
