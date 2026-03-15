@@ -1117,12 +1117,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// At high throughput, batches cycle through: create → fill → seal → send → response → cleanup → pool.
     /// The pool must cover peak in-flight batch count to avoid heap allocations.
     /// </summary>
-    private static int ComputePoolSize(ProducerOptions options)
+    internal static int ComputePoolSize(ProducerOptions options)
     {
         // BufferMemory / BatchSize gives the max batch count the buffer can hold.
-        // Divide by 4 (empirical, validated via stress tests): at steady state only a fraction
-        // of buffer memory is in sealed/in-flight batches — most is in unsealed batches or
-        // waiting for send. The MaxPoolSizeCap provides a backstop regardless.
+        // Divide by 4 (empirical, validated via stress tests): at steady state, batches are
+        // in one of four phases — filling, sealed/queued, in-flight to broker, awaiting ack.
+        // Only the sealed+in-flight phases need pool coverage; the filling phase reuses the
+        // current batch in-place. The MaxPoolSizeCap provides a backstop regardless.
         var batchCapacity = (int)Math.Min(options.BufferMemory / (ulong)Math.Max(options.BatchSize, 1), int.MaxValue);
         return Math.Clamp(batchCapacity / 4, BatchArena.DefaultPoolSize, BatchArena.MaxPoolSizeCap);
     }
@@ -2769,6 +2770,7 @@ internal sealed class PartitionBatchPool
     public void Clear()
     {
         _pool.Clear();
+        Volatile.Write(ref _poolCount, 0);
     }
 }
 
