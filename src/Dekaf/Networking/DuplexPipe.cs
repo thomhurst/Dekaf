@@ -87,23 +87,29 @@ internal sealed class DuplexPipe : IAsyncDisposable
         // FlushAsync returns with IsCompleted=true, allowing the pump to break out of its loop.
         await _inputPipe.Reader.CompleteAsync().ConfigureAwait(false);
 
-        // Dispose the stream to abort any pending _stream.ReadAsync in the read pump.
-        // The read pump's finally block then calls _inputPipe.Writer.CompleteAsync.
-        await _stream.DisposeAsync().ConfigureAwait(false);
-
-        // Wait for the read pump to finish (observe exceptions from stream abort)
         try
         {
-            await _readPumpTask.ConfigureAwait(false);
-        }
-        catch
-        {
-            // Read pump exceptions are expected during shutdown (e.g. stream disposed)
-        }
+            // Dispose the stream to abort any pending _stream.ReadAsync in the read pump.
+            // The read pump's finally block then calls _inputPipe.Writer.CompleteAsync.
+            await _stream.DisposeAsync().ConfigureAwait(false);
 
-        // Dispose the socket. The SslStream disposal above cascaded to the NetworkStream
-        // (via leaveInnerStreamOpen: false), but NetworkStream was created with ownsSocket: false,
-        // so the socket must be disposed separately.
-        _socket.Dispose();
+            // Wait for the read pump to finish (observe exceptions from stream abort)
+            try
+            {
+                await _readPumpTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Read pump exceptions are expected during shutdown (e.g. stream disposed)
+            }
+        }
+        finally
+        {
+            // Dispose the socket. The SslStream disposal above cascaded to the NetworkStream
+            // (via leaveInnerStreamOpen: false), but NetworkStream was created with ownsSocket: false,
+            // so the socket must be disposed separately.
+            // Wrapped in finally to ensure the socket is disposed even if stream disposal throws.
+            _socket.Dispose();
+        }
     }
 }
