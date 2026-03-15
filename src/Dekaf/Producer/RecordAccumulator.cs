@@ -1778,6 +1778,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </remarks>
     internal void WaitForBufferSpace()
     {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(RecordAccumulator));
+
         // Fast path: buffer has space — the common case.
         if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
             return;
