@@ -16,15 +16,22 @@ namespace Dekaf.Protocol.Records;
 internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposable
 {
     /// <summary>
-    /// Maximum buffer size to retain across reuses (4MB). Buffers that grow beyond this
+    /// Maximum buffer size to retain across reuses (1MB). Buffers that grow beyond this
     /// threshold are replaced with a fresh initial-size buffer on Clear() to prevent
     /// thread-local memory from growing unbounded in long-running producers.
     /// </summary>
-    private const int MaxRetainedBufferSize = 4 * 1024 * 1024;
+    private const int MaxRetainedBufferSize = 1 * 1024 * 1024;
+
+    /// <summary>
+    /// Number of Clear() calls between shrink checks. Must be a power of two for fast modulo.
+    /// </summary>
+    private const int ShrinkCheckInterval = 64;
 
     private byte[] _buffer;
     private int _written;
     private readonly int _initialCapacity;
+    private int _highWaterMark;
+    private int _clearCount;
 
     public PooledReusableBufferWriter(int initialCapacity)
     {
@@ -45,15 +52,39 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
     /// Resets the write position without zeroing the buffer.
     /// If the buffer has grown beyond <see cref="MaxRetainedBufferSize"/>, it is returned
     /// to the pool and replaced with a fresh initial-size buffer to prevent unbounded growth.
+    /// Additionally, every <see cref="ShrinkCheckInterval"/> clears, if the high-water mark
+    /// is less than half the buffer size, the buffer is shrunk to 2x the high-water mark
+    /// to reclaim memory from transient spikes.
     /// </summary>
     public void Clear()
     {
+        // Track peak usage since last shrink check
+        if (_written > _highWaterMark)
+            _highWaterMark = _written;
+
         _written = 0;
 
         if (_buffer.Length > MaxRetainedBufferSize)
         {
             ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
             _buffer = ArrayPool<byte>.Shared.Rent(_initialCapacity);
+            _highWaterMark = 0;
+            _clearCount = 0;
+            return;
+        }
+
+        // Generation-based shrink: every 64 clears, check if buffer is oversized for actual usage
+        if ((++_clearCount & (ShrinkCheckInterval - 1)) == 0)
+        {
+            var bufferLength = _buffer.Length;
+            if (_highWaterMark < bufferLength / 2 && bufferLength > _initialCapacity)
+            {
+                var targetSize = Math.Max(_initialCapacity, _highWaterMark * 2);
+                ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
+                _buffer = ArrayPool<byte>.Shared.Rent(targetSize);
+            }
+
+            _highWaterMark = 0;
         }
     }
 
@@ -312,7 +343,8 @@ public sealed class RecordBatch : IDisposable
     // Eliminates per-batch class allocation (~120 bytes) that survives Gen0 due to
     // its lifetime spanning the send pipeline (1-10ms), contributing to high Gen1/Gen0 ratio.
     private static readonly ConcurrentStack<RecordBatch> s_pool = new();
-    private const int MaxPoolSize = 512;
+    private static int s_poolCount;
+    private const int MaxPoolSize = 2048;
 
     /// <summary>
     /// Rents a RecordBatch from the pool or creates a new one.
@@ -322,7 +354,10 @@ public sealed class RecordBatch : IDisposable
     internal static RecordBatch RentFromPool()
     {
         if (s_pool.TryPop(out var batch))
+        {
+            Interlocked.Decrement(ref s_poolCount);
             return batch;
+        }
         return new RecordBatch();
     }
 
@@ -353,8 +388,11 @@ public sealed class RecordBatch : IDisposable
         ProducerEpoch = -1;
         BaseSequence = -1;
 
-        if (s_pool.Count < MaxPoolSize)
+        if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
+        {
             s_pool.Push(this);
+            Interlocked.Increment(ref s_poolCount);
+        }
     }
 
     /// <summary>
