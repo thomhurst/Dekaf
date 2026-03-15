@@ -2851,6 +2851,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Previously the entire CloseTimeoutMs was consumed by the flush, leaving no
         // budget for the forceful path and causing 30s+ dispose times under load.
         var hasTimeout = _options.CloseTimeoutMs > 0;
+        var totalDeadline = hasTimeout
+            ? DateTimeOffset.UtcNow.AddMilliseconds(_options.CloseTimeoutMs)
+            : DateTimeOffset.MaxValue;
         var gracefulMs = hasTimeout ? _options.CloseTimeoutMs / 2 : 0;
         using var shutdownCts = hasTimeout
             ? new CancellationTokenSource(TimeSpan.FromMilliseconds(gracefulMs))
@@ -2911,10 +2914,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             // that was already doomed.
             _accumulator.ForceFailAllInFlightBatches();
 
+            // Derive sender wait timeout from remaining time budget rather than hardcoding,
+            // so the total dispose time never exceeds CloseTimeoutMs.
+            var remainingMs = Math.Max(0, (int)(totalDeadline - DateTimeOffset.UtcNow).TotalMilliseconds);
+            var senderWaitMs = Math.Max(500, remainingMs / 3);
+
             try
             {
                 await _senderTask
-                    .WaitAsync(TimeSpan.FromSeconds(2))
+                    .WaitAsync(TimeSpan.FromMilliseconds(senderWaitMs))
                     .ConfigureAwait(false);
             }
             catch
@@ -2923,14 +2931,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
         }
 
-        // Wait for linger task to exit (it should be quick after cancellation)
-        try
+        // Wait for linger task to exit (it should be quick after cancellation).
+        // Use a small slice of the remaining budget (capped at 1s).
         {
-            await _lingerTask.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
-        }
-        catch
-        {
-            // Ignore
+            var remainingMs = Math.Max(0, (int)(totalDeadline - DateTimeOffset.UtcNow).TotalMilliseconds);
+            var lingerWaitMs = Math.Min(1000, Math.Max(250, remainingMs / 4));
+            try
+            {
+                await _lingerTask.WaitAsync(TimeSpan.FromMilliseconds(lingerWaitMs)).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore
+            }
         }
 
         // Dispose all per-broker senders in parallel to avoid O(N * timeout) sequential waits.
@@ -2950,15 +2963,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 disposeTasks.Add(DisposeOneSenderAsync(sender));
             }
 
+            // Derive broker disposal timeout from remaining time budget.
+            var remainingMs = Math.Max(0, (int)(totalDeadline - DateTimeOffset.UtcNow).TotalMilliseconds);
+            var brokerDisposeMs = Math.Max(500, remainingMs);
+
             try
             {
-                // 7s wall-clock safety net: each BrokerSender.DisposeAsync has its own 5s
-                // per-sender timeout, so under normal parallel disposal the aggregate completes
-                // in ~5s. The 7s outer deadline only fires if something beyond the per-sender
-                // timeout hangs (e.g., CancelAsync blocking on a slow callback). When it does
-                // fire, the individual dispose Tasks are still running in the background.
+                // Wall-clock safety net derived from the remaining time budget.
+                // Each BrokerSender.DisposeAsync has its own internal per-sender timeout,
+                // so under normal parallel disposal the aggregate completes quickly.
+                // This outer deadline only fires if something beyond the per-sender
+                // timeout hangs (e.g., CancelAsync blocking on a slow callback).
                 await Task.WhenAll(disposeTasks)
-                    .WaitAsync(TimeSpan.FromSeconds(7))
+                    .WaitAsync(TimeSpan.FromMilliseconds(brokerDisposeMs))
                     .ConfigureAwait(false);
             }
             catch (TimeoutException)
