@@ -221,17 +221,4 @@ public class ConsumerOptionsDefaultsTests
         await Assert.That(options.EnablePartitionEof).IsFalse();
     }
 
-    [Test]
-    public async Task StatisticsInterval_DefaultsTo_Null()
-    {
-        var options = CreateOptions();
-        await Assert.That(options.StatisticsInterval).IsNull();
-    }
-
-    [Test]
-    public async Task StatisticsHandler_DefaultsTo_Null()
-    {
-        var options = CreateOptions();
-        await Assert.That(options.StatisticsHandler).IsNull();
-    }
 }

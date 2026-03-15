@@ -40,8 +40,6 @@ public sealed class ProducerBuilder<TKey, TValue>
     private ISerializer<TKey>? _keySerializer;
     private ISerializer<TValue>? _valueSerializer;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
-    private TimeSpan? _statisticsInterval;
-    private Action<Statistics.ProducerStatistics>? _statisticsHandler;
     private ulong? _bufferMemory;
     private int? _maxBlockMs;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
@@ -374,37 +372,6 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
-    /// Sets the interval for emitting statistics events.
-    /// </summary>
-    /// <param name="interval">The interval between statistics events. Must be positive.</param>
-    public ProducerBuilder<TKey, TValue> WithStatisticsInterval(TimeSpan interval)
-    {
-        if (interval <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(interval), "Statistics interval must be positive");
-
-        _statisticsInterval = interval;
-        return this;
-    }
-
-    /// <summary>
-    /// Sets the handler for statistics events.
-    /// </summary>
-    /// <param name="handler">The handler to invoke when statistics are emitted.</param>
-    public ProducerBuilder<TKey, TValue> WithStatisticsHandler(Action<Statistics.ProducerStatistics> handler)
-    {
-        _statisticsHandler = handler ?? throw new ArgumentNullException(nameof(handler));
-        return this;
-    }
-
-    /// <summary>
-    /// Sets the handler for statistics events.
-    /// </summary>
-    /// <param name="handler">The handler to invoke when statistics are emitted.</param>
-    [Obsolete("Use WithStatisticsHandler instead.")]
-    public ProducerBuilder<TKey, TValue> OnStatistics(Action<Statistics.ProducerStatistics> handler)
-        => WithStatisticsHandler(handler);
-
-    /// <summary>
     /// Sets the metadata recovery strategy for when all known brokers become unavailable.
     /// </summary>
     /// <param name="strategy">The recovery strategy to use.</param>
@@ -665,8 +632,6 @@ public sealed class ProducerBuilder<TKey, TValue>
             GssapiConfig = _gssapiConfig,
             OAuthBearerConfig = _oauthConfig,
             OAuthBearerTokenProvider = _oauthTokenProvider,
-            StatisticsInterval = _statisticsInterval,
-            StatisticsHandler = _statisticsHandler,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
@@ -754,8 +719,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
     private IRebalanceListener? _rebalanceListener;
     private Microsoft.Extensions.Logging.ILoggerFactory? _loggerFactory;
     private bool _enablePartitionEof;
-    private TimeSpan? _statisticsInterval;
-    private Action<Statistics.ConsumerStatistics>? _statisticsHandler;
     private int _queuedMinMessages = 100000;
     private MetadataRecoveryStrategy _metadataRecoveryStrategy = MetadataRecoveryStrategy.Rebootstrap;
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
@@ -1183,37 +1146,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
     }
 
     /// <summary>
-    /// Sets the interval for emitting statistics events.
-    /// </summary>
-    /// <param name="interval">The interval between statistics events. Must be positive.</param>
-    public ConsumerBuilder<TKey, TValue> WithStatisticsInterval(TimeSpan interval)
-    {
-        if (interval <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(interval), "Statistics interval must be positive");
-
-        _statisticsInterval = interval;
-        return this;
-    }
-
-    /// <summary>
-    /// Sets the handler for statistics events.
-    /// </summary>
-    /// <param name="handler">The handler to invoke when statistics are emitted.</param>
-    public ConsumerBuilder<TKey, TValue> WithStatisticsHandler(Action<Statistics.ConsumerStatistics> handler)
-    {
-        _statisticsHandler = handler ?? throw new ArgumentNullException(nameof(handler));
-        return this;
-    }
-
-    /// <summary>
-    /// Sets the handler for statistics events.
-    /// </summary>
-    /// <param name="handler">The handler to invoke when statistics are emitted.</param>
-    [Obsolete("Use WithStatisticsHandler instead.")]
-    public ConsumerBuilder<TKey, TValue> OnStatistics(Action<Statistics.ConsumerStatistics> handler)
-        => WithStatisticsHandler(handler);
-
-    /// <summary>
     /// Sets the metadata recovery strategy for when all known brokers become unavailable.
     /// </summary>
     /// <param name="strategy">The recovery strategy to use.</param>
@@ -1379,8 +1311,6 @@ public sealed class ConsumerBuilder<TKey, TValue>
             OAuthBearerTokenProvider = _oauthTokenProvider,
             RebalanceListener = _rebalanceListener,
             EnablePartitionEof = _enablePartitionEof,
-            StatisticsInterval = _statisticsInterval,
-            StatisticsHandler = _statisticsHandler,
             QueuedMinMessages = _queuedMinMessages,
             IsolationLevel = _isolationLevel,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,

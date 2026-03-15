@@ -36,38 +36,6 @@ public sealed class ProducerBuilderEdgeCaseTests
 
     #endregion
 
-    #region WithStatisticsInterval Validation
-
-    [Test]
-    public async Task WithStatisticsInterval_Zero_ThrowsArgumentOutOfRangeException()
-    {
-        var builder = Kafka.CreateProducer<string, string>();
-
-        var act = () => builder.WithStatisticsInterval(TimeSpan.Zero);
-
-        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
-    }
-
-    [Test]
-    public async Task WithStatisticsInterval_Negative_ThrowsArgumentOutOfRangeException()
-    {
-        var builder = Kafka.CreateProducer<string, string>();
-
-        var act = () => builder.WithStatisticsInterval(TimeSpan.FromSeconds(-1));
-
-        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
-    }
-
-    [Test]
-    public async Task WithStatisticsInterval_Positive_ReturnsSameBuilder()
-    {
-        var builder = Kafka.CreateProducer<string, string>();
-        var result = builder.WithStatisticsInterval(TimeSpan.FromSeconds(5));
-        await Assert.That(result).IsSameReferenceAs(builder);
-    }
-
-    #endregion
-
     #region WithMetadataMaxAge Validation
 
     [Test]
@@ -138,20 +106,6 @@ public sealed class ProducerBuilderEdgeCaseTests
 
     #endregion
 
-    #region WithStatisticsHandler Validation
-
-    [Test]
-    public async Task WithStatisticsHandler_Null_ThrowsArgumentNullException()
-    {
-        var builder = Kafka.CreateProducer<string, string>();
-
-        var act = () => builder.WithStatisticsHandler(null!);
-
-        await Assert.That(act).Throws<ArgumentNullException>();
-    }
-
-    #endregion
-
     #region AddInterceptor Validation
 
     [Test]
@@ -169,30 +123,6 @@ public sealed class ProducerBuilderEdgeCaseTests
 
 public sealed class ConsumerBuilderEdgeCaseTests
 {
-    #region WithStatisticsInterval Validation
-
-    [Test]
-    public async Task WithStatisticsInterval_Zero_ThrowsArgumentOutOfRangeException()
-    {
-        var builder = Kafka.CreateConsumer<string, string>();
-
-        var act = () => builder.WithStatisticsInterval(TimeSpan.Zero);
-
-        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
-    }
-
-    [Test]
-    public async Task WithStatisticsInterval_Negative_ThrowsArgumentOutOfRangeException()
-    {
-        var builder = Kafka.CreateConsumer<string, string>();
-
-        var act = () => builder.WithStatisticsInterval(TimeSpan.FromSeconds(-1));
-
-        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
-    }
-
-    #endregion
-
     #region WithMetadataMaxAge Validation
 
     [Test]
@@ -249,20 +179,6 @@ public sealed class ConsumerBuilderEdgeCaseTests
         var builder = Kafka.CreateConsumer<string, string>();
 
         var act = () => builder.WithOAuthBearer((Func<CancellationToken, ValueTask<OAuthBearerToken>>)null!);
-
-        await Assert.That(act).Throws<ArgumentNullException>();
-    }
-
-    #endregion
-
-    #region WithStatisticsHandler Validation
-
-    [Test]
-    public async Task WithStatisticsHandler_Null_ThrowsArgumentNullException()
-    {
-        var builder = Kafka.CreateConsumer<string, string>();
-
-        var act = () => builder.WithStatisticsHandler(null!);
 
         await Assert.That(act).Throws<ArgumentNullException>();
     }

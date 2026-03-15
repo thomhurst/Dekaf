@@ -194,20 +194,6 @@ public class ProducerOptionsDefaultsTests
     }
 
     [Test]
-    public async Task StatisticsInterval_DefaultsTo_Null()
-    {
-        var options = CreateOptions();
-        await Assert.That(options.StatisticsInterval).IsNull();
-    }
-
-    [Test]
-    public async Task StatisticsHandler_DefaultsTo_Null()
-    {
-        var options = CreateOptions();
-        await Assert.That(options.StatisticsHandler).IsNull();
-    }
-
-    [Test]
     public async Task MaxBlockMs_DefaultsTo_60000()
     {
         var options = CreateOptions();

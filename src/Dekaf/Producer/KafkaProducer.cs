@@ -11,7 +11,6 @@ using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Retry;
 using Dekaf.Serialization;
-using Dekaf.Statistics;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Producer;
@@ -74,11 +73,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     // In-flight batch tracker for coordinated retry with multiple in-flight batches per partition.
     // Always initialized since idempotence is always enabled (sequence numbers guarantee ordering at broker).
     private readonly PartitionInflightTracker _inflightTracker;
-
-    // Statistics collection - only tracks per-message counters when a handler is configured
-    private readonly ProducerStatisticsCollector _statisticsCollector = new();
-    private readonly StatisticsEmitter<ProducerStatistics>? _statisticsEmitter;
-    private readonly bool _statisticsEnabled;
 
     // Pool for PooledValueTaskSource to avoid per-message allocations
     // Unlike TaskCompletionSource, these can be reset and reused
@@ -229,17 +223,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             TaskScheduler.Default).Unwrap();
         _accumulator.StartAppendWorkers(_senderCts.Token);
 
-        // Start statistics emitter if configured
-        if (options.StatisticsInterval.HasValue &&
-            options.StatisticsInterval.Value > TimeSpan.Zero &&
-            options.StatisticsHandler is not null)
-        {
-            _statisticsEnabled = true;
-            _statisticsEmitter = new StatisticsEmitter<ProducerStatistics>(
-                options.StatisticsInterval.Value,
-                CollectStatistics,
-                options.StatisticsHandler);
-        }
     }
 
     private static CompressionCodecRegistry CreateCompressionCodecRegistry(ProducerOptions options)
@@ -265,26 +248,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         return registry;
-    }
-
-    private ProducerStatistics CollectStatistics()
-    {
-        var stats = _statisticsCollector.GetGlobalStats();
-
-        return new ProducerStatistics
-        {
-            Timestamp = DateTimeOffset.UtcNow,
-            MessagesProduced = stats.MessagesProduced,
-            MessagesDelivered = stats.MessagesDelivered,
-            MessagesFailed = stats.MessagesFailed,
-            BytesProduced = stats.BytesProduced,
-            QueuedMessages = (int)(stats.MessagesProduced - stats.MessagesDelivered - stats.MessagesFailed),
-            RequestsSent = stats.RequestsSent,
-            ResponsesReceived = stats.ResponsesReceived,
-            Retries = stats.Retries,
-            AvgRequestLatencyMs = stats.AvgLatencyMs,
-            Topics = _statisticsCollector.GetTopicStatistics()
-        };
     }
 
     /// <summary>
@@ -892,11 +855,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Step 5: Append to accumulator (under deque lock for ordering safety)
         AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, pooledHeaderArray);
-
-        if (_statisticsEnabled)
-        {
-            _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
-        }
     }
 
     /// <summary>
@@ -1062,12 +1020,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 throw new BufferFullException();
             }
 
-            // Track message produced
-            if (_statisticsEnabled)
-            {
-                var messageBytes = key.Length + value.Length;
-                _statisticsCollector.RecordMessageProduced(message.Topic, partition, messageBytes);
-            }
         }
         catch (Exception ex) when (ex is not ObjectDisposedException and not BufferFullException)
         {
@@ -1296,11 +1248,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Step 5: Append to accumulator with callback (under deque lock for ordering safety)
         AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, pooledHeaderArray, callback);
-
-        if (_statisticsEnabled)
-        {
-            _statisticsCollector.RecordMessageProducedFast(keyLength + valueLength);
-        }
     }
 
     private async ValueTask ProduceInternalAsync(
@@ -1360,13 +1307,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         if (message.Headers is not null && message.Headers.Count > 0)
         {
             recordHeaders = ConvertHeaders(message.Headers, out pooledHeaderArray);
-        }
-
-        // Track message produced (key + value bytes) on caller thread before enqueue
-        if (_statisticsEnabled)
-        {
-            var messageBytes = key.Length + value.Length;
-            _statisticsCollector.RecordMessageProduced(message.Topic, partition, messageBytes);
         }
 
         // Enqueue to per-partition-affine worker instead of calling AppendAsync inline.
@@ -2282,7 +2222,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             _options,
             _compressionCodecs,
             _inflightTracker,
-            _statisticsCollector,
             () => _produceApiVersion,
             version => Interlocked.CompareExchange(ref _produceApiVersion, version, -1),
             () => _accumulator.IsTransactional,
@@ -3008,12 +2947,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         _lingerTimer.Dispose();
         _transactionLock.Dispose();
         _initLock.Dispose();
-
-        // Dispose statistics emitter
-        if (_statisticsEmitter is not null)
-        {
-            await _statisticsEmitter.DisposeAsync().ConfigureAwait(false);
-        }
 
         // Dispose accumulator - this will fail any remaining batches if graceful shutdown failed
         await _accumulator.DisposeAsync().ConfigureAwait(false);

@@ -276,16 +276,6 @@ public sealed class ProducerOptions
     public int SocketReceiveBufferBytes { get; init; }
 
     /// <summary>
-    /// Interval at which statistics events are emitted. Set to null or TimeSpan.Zero to disable.
-    /// </summary>
-    public TimeSpan? StatisticsInterval { get; init; }
-
-    /// <summary>
-    /// Handler for statistics events. Called periodically based on StatisticsInterval.
-    /// </summary>
-    public Action<Statistics.ProducerStatistics>? StatisticsHandler { get; init; }
-
-    /// <summary>
     /// Maximum size of the internal ValueTaskSource pool.
     /// Higher values reduce allocations in high-throughput scenarios but use more memory.
     /// Default is 4096.

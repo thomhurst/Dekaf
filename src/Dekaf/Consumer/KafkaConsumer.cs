@@ -11,7 +11,6 @@ using Dekaf.Protocol.Messages;
 using Dekaf.Protocol.Records;
 using Dekaf.Producer;
 using Dekaf.Serialization;
-using Dekaf.Statistics;
 using Microsoft.Extensions.Logging;
 
 namespace Dekaf.Consumer;
@@ -54,12 +53,12 @@ internal sealed class PendingFetchData : IDisposable
     public long LastYieldedOffset { get; private set; } = -1;
 
     /// <summary>
-    /// Tracks total bytes consumed for batch statistics update.
+    /// Tracks total bytes consumed in this pending fetch.
     /// </summary>
     public long TotalBytesConsumed { get; private set; }
 
     /// <summary>
-    /// Tracks message count for batch statistics update.
+    /// Tracks the number of messages yielded from this pending fetch.
     /// Using long to prevent overflow in long-running scenarios with large fetches.
     /// </summary>
     public long MessageCount { get; private set; }
@@ -102,7 +101,7 @@ internal sealed class PendingFetchData : IDisposable
     public Record CurrentRecord => _batches[_batchIndex].Records[_recordIndex];
 
     /// <summary>
-    /// Updates tracking for batch-level position and statistics updates.
+    /// Updates tracking for batch-level position.
     /// Called after yielding each record.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -350,10 +349,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     // CancellationTokenSource pool to avoid allocations in hot paths
     private readonly CancellationTokenSourcePool _ctsPool = new();
 
-    // Statistics collection
-    private readonly ConsumerStatisticsCollector _statisticsCollector = new();
-    private readonly StatisticsEmitter<ConsumerStatistics>? _statisticsEmitter;
-
     // Interceptors - stored as typed array for zero-allocation iteration
     private readonly IConsumerInterceptor<TKey, TValue>[]? _interceptors;
 
@@ -438,75 +433,12 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             FullMode = BoundedChannelFullMode.Wait
         });
 
-        // Start statistics emitter if configured
-        if (options.StatisticsInterval.HasValue &&
-            options.StatisticsInterval.Value > TimeSpan.Zero &&
-            options.StatisticsHandler is not null)
-        {
-            _statisticsEmitter = new StatisticsEmitter<ConsumerStatistics>(
-                options.StatisticsInterval.Value,
-                CollectStatistics,
-                options.StatisticsHandler);
-        }
     }
 
     public IReadOnlySet<string> Subscription => _subscription;
     public IReadOnlySet<TopicPartition> Assignment => _assignment;
     public string? MemberId => _coordinator?.MemberId;
     public IReadOnlySet<TopicPartition> Paused => _paused;
-
-    private ConsumerStatistics CollectStatistics()
-    {
-        var stats = _statisticsCollector.GetGlobalStats();
-
-        // Calculate total lag
-        long? totalLag = null;
-        var topicStats = _statisticsCollector.GetTopicStatistics(GetPartitionInfo);
-        foreach (var topicStat in topicStats.Values)
-        {
-            foreach (var partitionStat in topicStat.Partitions.Values)
-            {
-                if (partitionStat.HighWatermark.HasValue && partitionStat.Position.HasValue)
-                {
-                    var lag = partitionStat.HighWatermark.Value - partitionStat.Position.Value;
-                    totalLag = (totalLag ?? 0) + Math.Max(0, lag);
-                }
-            }
-        }
-
-        return new ConsumerStatistics
-        {
-            Timestamp = DateTimeOffset.UtcNow,
-            MessagesConsumed = stats.MessagesConsumed,
-            BytesConsumed = stats.BytesConsumed,
-            TotalRebalances = stats.TotalRebalances,
-            LastRebalanceDurationMs = stats.LastRebalanceDurationMs,
-            TotalRebalanceDurationMs = stats.TotalRebalanceDurationMs,
-            AssignedPartitions = _assignment.Count,
-            PausedPartitions = _paused.Count,
-            TotalLag = totalLag,
-            PrefetchedMessages = _pendingFetches.Count,
-            PrefetchedBytes = Interlocked.Read(ref _prefetchedBytes),
-            FetchRequestsSent = stats.FetchRequestsSent,
-            FetchResponsesReceived = stats.FetchResponsesReceived,
-            AvgFetchLatencyMs = stats.AvgFetchLatencyMs,
-            GroupId = _options.GroupId,
-            MemberId = _coordinator?.MemberId,
-            GenerationId = _coordinator?.GenerationId,
-            IsLeader = _coordinator?.IsLeader,
-            Topics = topicStats
-        };
-    }
-
-    private (long? Position, long? CommittedOffset, bool IsPaused) GetPartitionInfo((string Topic, int Partition) key)
-    {
-        var tp = new TopicPartition(key.Topic, key.Partition);
-        return (
-            _positions.TryGetValue(tp, out var pos) && pos >= 0 ? pos : null,
-            _committed.GetValueOrDefault(tp, -1) >= 0 ? _committed[tp] : null,
-            _paused.Contains(tp)
-        );
-    }
 
     /// <summary>
     /// Gets the consumer group metadata for use with transactional producers.
@@ -843,16 +775,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     _fetchPositions[pending.TopicPartition] = pending.LastYieldedOffset + 1;
                 }
 
-                // Batch-level statistics update (once per partition-fetch, not per message)
-                if (pending.MessageCount > 0)
-                {
-                    _statisticsCollector.RecordMessagesConsumedBatch(
-                        pending.Topic,
-                        pending.PartitionIndex,
-                        pending.MessageCount,
-                        pending.TotalBytesConsumed);
-                }
-
                 // This pending fetch is exhausted, remove and dispose it
                 // Disposing releases the pooled network buffer memory
                 _pendingFetches.Dequeue().Dispose();
@@ -1043,18 +965,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             Topics = topicData
         };
 
-        // Track fetch request sent
-        _statisticsCollector.RecordFetchRequestSent();
-        var requestStartTime = DateTimeOffset.UtcNow;
-
         var response = await connection.SendAsync<FetchRequest, FetchResponse>(
             request,
             (short)apiVersion,
             cancellationToken).ConfigureAwait(false);
-
-        // Track fetch response received with latency
-        var latencyMs = (long)(DateTimeOffset.UtcNow - requestStartTime).TotalMilliseconds;
-        _statisticsCollector.RecordFetchResponseReceived(latencyMs);
 
         // Take ownership of pooled memory from the response (if zero-copy was used)
         var memoryOwner = response.PooledMemoryOwner;
@@ -1109,15 +1023,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                 // Update high watermark from response (thread-safe with ConcurrentDictionary)
                 _highWatermarks[tp] = partitionResponse.HighWatermark;
-
-                // Update high watermark for statistics
-                if (partitionResponse.HighWatermark >= 0)
-                {
-                    _statisticsCollector.UpdatePartitionHighWatermark(
-                        topic,
-                        partitionResponse.PartitionIndex,
-                        partitionResponse.HighWatermark);
-                }
 
                 var hasRecords = partitionResponse.Records is not null && partitionResponse.Records.Count > 0;
 
@@ -1752,10 +1657,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
             if (_subscription.Count > 0 && _coordinator is not null)
             {
-                // Capture timestamp before group coordination so we can measure
-                // rebalance duration if an assignment change actually occurs.
-                _statisticsCollector.RecordRebalanceStarted();
-
                 await _coordinator.EnsureActiveGroupAsync(_subscription, cancellationToken).ConfigureAwait(false);
 
                 // Check for new partitions that need initialization
@@ -1811,16 +1712,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     {
                         _eofEmitted.Remove(partition);
                     }
-                }
-
-                // Track rebalance duration or cancel the timer
-                if (assignmentChanged)
-                {
-                    _statisticsCollector.RecordRebalanceCompleted();
-                }
-                else
-                {
-                    _statisticsCollector.CancelRebalanceStarted();
                 }
 
                 // Initialize positions for new partitions
@@ -2255,18 +2146,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             Topics = topicData
         };
 
-        // Track fetch request sent
-        _statisticsCollector.RecordFetchRequestSent();
-        var requestStartTime = DateTimeOffset.UtcNow;
-
         var response = await connection.SendAsync<FetchRequest, FetchResponse>(
             request,
             (short)apiVersion,
             cancellationToken).ConfigureAwait(false);
-
-        // Track fetch response received with latency
-        var latencyMs = (long)(DateTimeOffset.UtcNow - requestStartTime).TotalMilliseconds;
-        _statisticsCollector.RecordFetchResponseReceived(latencyMs);
 
         // Take ownership of pooled memory from the response (if zero-copy was used)
         var memoryOwner = response.PooledMemoryOwner;
@@ -2295,15 +2178,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                 // Update high watermark from response (thread-safe with ConcurrentDictionary)
                 _highWatermarks[tp] = partitionResponse.HighWatermark;
-
-                // Update high watermark for statistics
-                if (partitionResponse.HighWatermark >= 0)
-                {
-                    _statisticsCollector.UpdatePartitionHighWatermark(
-                        topic,
-                        partitionResponse.PartitionIndex,
-                        partitionResponse.HighWatermark);
-                }
 
                 var hasRecords = partitionResponse.Records is not null && partitionResponse.Records.Count > 0;
 
@@ -2939,12 +2813,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         _assignmentLock.Dispose();
         _initLock.Dispose();
-
-        // Dispose statistics emitter
-        if (_statisticsEmitter is not null)
-        {
-            await _statisticsEmitter.DisposeAsync().ConfigureAwait(false);
-        }
 
         if (_coordinator is not null)
             await _coordinator.DisposeAsync().ConfigureAwait(false);
