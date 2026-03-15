@@ -777,12 +777,10 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 {
                     // Apply RequestTimeout to each read operation.
                     // TryReset clears any pending CancelAfter timer from the previous iteration.
-                    // It returns false only if the CTS was already cancelled, which can only happen
-                    // if cancellationToken fired between iterations — in that case the while-loop
-                    // condition will exit on the next check. We still call CancelAfter so the
-                    // token is armed for this read; on an already-cancelled CTS this is a no-op
-                    // and ReadAsync will throw immediately, which is the desired behavior.
-                    timeoutCts.TryReset();
+                    // It can only return false if cancellationToken fired between iterations,
+                    // but the while-loop condition prevents us from reaching here in that case.
+                    // We still call CancelAfter so the token is armed for this read.
+                    _ = timeoutCts.TryReset();
                     timeoutCts.CancelAfter(_options.RequestTimeout);
 
                     // ReadResult state machine (System.IO.Pipelines):
