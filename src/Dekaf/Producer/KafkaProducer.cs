@@ -299,22 +299,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
-        // Start tracing activity (~2ns no-op when no listener attached)
-        var activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
-            $"{message.Topic} publish", ActivityKind.Producer);
-        if (activity is not null)
-        {
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, message.Topic);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "publish");
-            if (_options.ClientId is not null)
-                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
-            if (message.Key is string stringKey)
-                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, stringKey);
-            else if (message.Key is not null and not byte[])
-                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, message.Key.ToString());
-            message = message with { Headers = Diagnostics.TraceContextPropagator.InjectTraceContext(message.Headers, activity) };
-        }
+        var activity = StartPublishActivity(ref message);
 
         // Fast path: Try synchronous produce if metadata is initialized and cached.
         // This bypasses channel overhead for 99%+ of calls after warmup.
@@ -577,22 +562,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Apply OnSend interceptors before serialization
         message = ApplyOnSendInterceptors(message);
 
-        // Start tracing activity (~2ns no-op when no listener attached)
-        var activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
-            $"{message.Topic} publish", ActivityKind.Producer);
-        if (activity is not null)
-        {
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, message.Topic);
-            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "publish");
-            if (_options.ClientId is not null)
-                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
-            if (message.Key is string stringKey)
-                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, stringKey);
-            else if (message.Key is not null and not byte[])
-                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, message.Key.ToString());
-            message = message with { Headers = Diagnostics.TraceContextPropagator.InjectTraceContext(message.Headers, activity) };
-        }
+        var activity = StartPublishActivity(ref message);
 
         try
         {
@@ -1094,6 +1064,35 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 LogInterceptorOnAcknowledgementFailed(ex, interceptor.GetType().Name);
             }
         }
+    }
+
+    /// <summary>
+    /// Starts a publish activity for tracing, guarded by HasListeners() to avoid
+    /// string interpolation allocation when no diagnostic listener is attached.
+    /// Sets standard OTel messaging tags and injects trace context into headers.
+    /// </summary>
+    private Activity? StartPublishActivity(ref ProducerMessage<TKey, TValue> message)
+    {
+        if (!Diagnostics.DekafDiagnostics.Source.HasListeners())
+            return null;
+
+        var activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
+            $"{message.Topic} publish", ActivityKind.Producer);
+        if (activity is not null)
+        {
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, message.Topic);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "publish");
+            if (_options.ClientId is not null)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
+            if (message.Key is string stringKey)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, stringKey);
+            else if (message.Key is not null and not byte[])
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageKey, message.Key.ToString());
+            message = message with { Headers = Diagnostics.TraceContextPropagator.InjectTraceContext(message.Headers, activity) };
+        }
+
+        return activity;
     }
 
     /// <summary>

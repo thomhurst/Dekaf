@@ -1743,9 +1743,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ? currentTicks + _options.MaxBlockMs
             : long.MaxValue;
 
-        // Link caller's cancellation token with disposal token for unified cancellation
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposalCts.Token);
-
+        // Avoid CreateLinkedTokenSource allocation by using the caller's token directly
+        // and checking disposal manually on each wake-up. The caller's token handles user
+        // cancellation; disposal is checked explicitly at the top of each iteration.
         while (!TryReserveMemory(recordSize))
         {
             // Check disposal first
@@ -1759,14 +1759,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (remainingMs <= 0)
                 ThrowBufferMemoryTimeout(recordSize, currentTicks);
 
-            // Wait for signal from ReleaseMemory, with timeout and cancellation.
+            // Wait for signal from ReleaseMemory, with timeout and caller's cancellation.
             // SemaphoreSlim.WaitAsync provides true async signal-based wake-up — no polling needed.
             // The semaphore acts as an async auto-reset event: ReleaseMemory releases, we acquire.
+            // Disposal responsiveness: DisposeAsync signals _asyncBufferSpaceSignal (via
+            // ReleaseMemory or direct Release) so waiters wake up and hit the _disposed check above.
             try
             {
                 await _asyncBufferSpaceSignal.WaitAsync(
                     (int)Math.Min(remainingMs, int.MaxValue),
-                    linkedCts.Token
+                    cancellationToken
                 ).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_disposed)
@@ -1816,18 +1818,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (remainingMs <= 0)
                 ThrowBufferMemoryTimeout(recordSize, currentTicks);
 
-            // Wait for signal from ReleaseMemory or disposal cancellation.
+            // Wait for signal from ReleaseMemory with timeout only (no CancellationToken).
             // SemaphoreSlim.Wait wakes ONE waiter (no thundering herd).
-            // Passing _disposalCts.Token ensures all sync waiters are interrupted on disposal,
-            // mirroring how ReserveMemoryAsync uses a linked CTS with WaitAsync.
-            try
-            {
-                _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, int.MaxValue), _disposalCts.Token);
-            }
-            catch (OperationCanceledException) when (_disposed)
-            {
-                throw new ObjectDisposedException(nameof(RecordAccumulator));
-            }
+            // Avoiding the CancellationToken overload eliminates internal timer/callback
+            // allocation that SemaphoreSlim creates to register cancellation.
+            // Disposal is checked at the top of the loop on each wake-up instead.
+            // Cap at 100ms to ensure prompt disposal detection when multiple threads
+            // are blocked (only one gets woken by TryReleaseSemaphore in DisposeAsync).
+            _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100));
 
             // Intentionally not resetting spinWait here. After the first blocking wait,
             // the spin budget is exhausted so subsequent iterations go straight to the
@@ -1866,8 +1864,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// of Tasks, saturating the thread pool and preventing the sender loop from draining batches.
     /// </summary>
     /// <remarks>
-    /// Uses <c>_disposalCts.Token</c> (same as <see cref="ReserveMemorySync"/>) so that
-    /// <see cref="DisposeAsync"/> promptly unblocks any thread waiting here.
+    /// <see cref="DisposeAsync"/> promptly unblocks any thread waiting here by releasing
+    /// <c>_syncBufferSpaceSignal</c>; the waiter then hits the <c>_disposed</c> check.
     /// <para/>
     /// Note: this gate shares <c>_syncBufferSpaceSignal</c> with <see cref="ReserveMemorySync"/>.
     /// Both are woken by <see cref="ReleaseMemory"/> when batches complete. A gate waiter may
@@ -1902,19 +1900,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 continue;
             }
 
+            // Wait with timeout only (no CancellationToken) to avoid internal timer/callback
+            // allocation. Disposal wakes this semaphore via TryReleaseSemaphore in DisposeAsync,
+            // so waiters check _disposed at the top of the loop.
             var remainingMs = _options.MaxBlockMs - elapsed;
-            try
-            {
-                _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100), _disposalCts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                // Re-check _disposed unconditionally: there is a race where _disposalCts fires
-                // before _disposed is set, so the `when (_disposed)` guard could miss it.
-                if (_disposed)
-                    throw new ObjectDisposedException(nameof(RecordAccumulator));
-                throw;
-            }
+            _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100));
         }
 
         // Chain-wake: if space still remains, signal the next sync waiter so concurrent
@@ -2511,8 +2501,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         TryReleaseSemaphore(_syncBufferSpaceSignal);
         TryReleaseSemaphore(_asyncBufferSpaceSignal);
 
-        // Cancel the disposal token to interrupt any blocked operations
-        // (e.g., workers stuck in ReserveMemorySync/Async). Do this AFTER graceful shutdown attempt
+        // Cancel the disposal token to interrupt any remaining blocked operations
+        // (e.g., append workers, metadata waits). Do this AFTER graceful shutdown attempt
         // so FlushAsync can complete normally.
         try
         {
@@ -2524,7 +2514,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         // Wait for append workers to exit now that disposal token has been cancelled.
-        // Workers blocked in ReserveMemorySync/Async will be interrupted by the cancellation above.
+        // Workers blocked in ReserveMemorySync/Async will be woken by the semaphore
+        // releases above and exit via the _disposed check.
         if (_appendWorkerTasks is not null)
         {
             try
