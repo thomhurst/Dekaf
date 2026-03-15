@@ -1604,6 +1604,22 @@ public class RecordAccumulatorTests
     #region ComputePoolSize Tests
 
     [Test]
+    public async Task ComputePoolSize_DefaultConfig_EqualsDefaultPoolSize()
+    {
+        // Guard against silent drift: if default BufferMemory or BatchSize change,
+        // DefaultPoolSize must be updated to match ComputePoolSize for defaults.
+        var defaultOptions = new ProducerOptions
+        {
+            BootstrapServers = new[] { "localhost:9092" },
+            // Uses default BufferMemory (1GB) and default BatchSize (1MB)
+        };
+
+        var computed = RecordAccumulator.ComputePoolSize(defaultOptions);
+
+        await Assert.That(computed).IsEqualTo(BatchArena.DefaultPoolSize);
+    }
+
+    [Test]
     [Arguments(1073741824UL, 1048576, 512)]  // 1GB buffer, 1MB batch → 1024/2=512 (default)
     [Arguments(1073741824UL, 16384, 2048)]   // 1GB buffer, 16KB batch → 65536/2=32768, capped at 2048
     [Arguments(1073741824UL, 262144, 2048)]  // 1GB buffer, 256KB batch → 4096/2=2048

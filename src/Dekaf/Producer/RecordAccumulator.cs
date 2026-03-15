@@ -347,6 +347,7 @@ internal sealed class BatchArena
     internal const int DefaultPoolSize = 512;
     // Upper bound on pool size. Worst-case POH retention: MaxPoolSizeCap × arena capacity.
     // With 16KB batches (the smallest that triggers scaling): 2048 × ~18KB ≈ 36MB.
+    // With 256KB batches and 1GB buffer: 2048 × ~280KB ≈ 560MB POH retention.
     // With 1MB batches: ComputePoolSize returns 512 (not 2048), so 512 × ~1.1MB ≈ 560MB.
     internal const int MaxPoolSizeCap = 2048;
     private static int s_maxPoolSize = DefaultPoolSize;
@@ -360,6 +361,9 @@ internal sealed class BatchArena
     /// Note: in multi-producer scenarios, a disposed small-batch producer leaves the raised
     /// cap in place. This is acceptable because re-creating POH buffers on demand is costlier
     /// than retaining the pool headroom, and most applications use a single producer config.
+    /// Worst-case amplification: if a transient small-batch producer (e.g., 256KB batches)
+    /// ratchets the cap to 2048, then a 1MB-batch producer can retain up to
+    /// 2048 × ~1.1MB ≈ 2.2GB of POH memory instead of the normal 512 × ~1.1MB ≈ 560MB.
     /// </summary>
     internal static void RatchetPoolSize(int newSize)
     {
