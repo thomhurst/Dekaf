@@ -12,6 +12,18 @@ namespace Dekaf.StressTests.Infrastructure;
 /// </summary>
 internal sealed class KafkaEnvironment : IAsyncDisposable
 {
+    // Aggressive retention limits to prevent disk filling during stress tests
+    // Limits: 64MB per partition, 5-second retention, 1-second cleanup checks
+    private static readonly Dictionary<string, string> RetentionConfig = new()
+    {
+        ["KAFKA_LOG_RETENTION_MS"] = "5000",
+        ["KAFKA_LOG_RETENTION_BYTES"] = "67108864",
+        ["KAFKA_LOG_SEGMENT_BYTES"] = "16777216",
+        ["KAFKA_LOG_SEGMENT_DELETE_DELAY_MS"] = "100",
+        ["KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS"] = "1000",
+        ["KAFKA_LOG_CLEANUP_POLICY"] = "delete",
+    };
+
     public string BootstrapServers { get; }
     private readonly KafkaContainer? _container;
     private readonly List<IContainer>? _clusterContainers;
@@ -50,17 +62,15 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     private static async Task<KafkaEnvironment> CreateSingleBrokerAsync()
     {
         Console.WriteLine("Starting Kafka container via Testcontainers...");
-        var container = new KafkaBuilder("confluentinc/cp-kafka:7.5.0")
-            .WithPortBinding(9092, true)
-            // Aggressive retention limits to prevent disk filling during stress tests
-            // Limits: 64MB per partition, 5-second retention, 1-second cleanup checks
-            .WithEnvironment("KAFKA_LOG_RETENTION_MS", "5000")                    // 5 seconds
-            .WithEnvironment("KAFKA_LOG_RETENTION_BYTES", "67108864")             // 64MB
-            .WithEnvironment("KAFKA_LOG_SEGMENT_BYTES", "16777216")               // 16MB segments
-            .WithEnvironment("KAFKA_LOG_SEGMENT_DELETE_DELAY_MS", "100")          // 100ms delete delay
-            .WithEnvironment("KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS", "1000")     // 1 second check interval
-            .WithEnvironment("KAFKA_LOG_CLEANUP_POLICY", "delete")
-            .Build();
+        var builder = new KafkaBuilder("confluentinc/cp-kafka:7.5.0")
+            .WithPortBinding(9092, true);
+
+        foreach (var (key, value) in RetentionConfig)
+        {
+            builder = builder.WithEnvironment(key, value);
+        }
+
+        var container = builder.Build();
 
         await container.StartAsync().ConfigureAwait(false);
 
@@ -100,7 +110,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             var hostname = $"kafka-{nodeId}";
             var externalPort = 29091 + nodeId; // 29092, 29093, 29094
 
-            var container = new ContainerBuilder("apache/kafka:4.1.0")
+            var containerBuilder = new ContainerBuilder("apache/kafka:4.1.0")
                 .WithName($"{hostname}-{Guid.NewGuid():N}")
                 .WithHostname(hostname)
                 .WithNetwork(network)
@@ -115,15 +125,14 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
                 .WithEnvironment("KAFKA_LISTENER_SECURITY_PROTOCOL_MAP", "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT")
                 .WithEnvironment("KAFKA_INTER_BROKER_LISTENER_NAME", "PLAINTEXT")
                 .WithEnvironment("KAFKA_CONTROLLER_LISTENER_NAMES", "CONTROLLER")
-                .WithEnvironment("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", Math.Min(brokerCount, 3).ToString())
-                // Aggressive retention limits to prevent disk filling during stress tests
-                .WithEnvironment("KAFKA_LOG_RETENTION_MS", "5000")
-                .WithEnvironment("KAFKA_LOG_RETENTION_BYTES", "67108864")
-                .WithEnvironment("KAFKA_LOG_SEGMENT_BYTES", "16777216")
-                .WithEnvironment("KAFKA_LOG_SEGMENT_DELETE_DELAY_MS", "100")
-                .WithEnvironment("KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS", "1000")
-                .WithEnvironment("KAFKA_LOG_CLEANUP_POLICY", "delete")
-                .Build();
+                .WithEnvironment("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", Math.Min(brokerCount, 3).ToString());
+
+            foreach (var (key, value) in RetentionConfig)
+            {
+                containerBuilder = containerBuilder.WithEnvironment(key, value);
+            }
+
+            var container = containerBuilder.Build();
 
             containers.Add(container);
             startTasks.Add(container.StartAsync());
@@ -179,59 +188,45 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
     {
         if (_container is not null)
         {
-            // Single-broker: cp-kafka uses kafka-topics on PATH
-            var result = await _container.ExecAsync([
-                "kafka-topics",
-                "--bootstrap-server", "localhost:9092",
-                "--create",
-                "--topic", topic,
-                "--partitions", partitions.ToString(),
-                "--replication-factor", replicationFactor.ToString(),
-                "--if-not-exists"
-            ]).ConfigureAwait(false);
-
-            if (result.ExitCode == 0)
-            {
-                Console.WriteLine($"Created topic: {topic} (partitions={partitions}, replication={replicationFactor})");
-            }
-            else
-            {
-                Console.WriteLine($"Warning: Topic creation returned exit code {result.ExitCode}: {result.Stderr}");
-            }
-
-            await Task.Delay(1000).ConfigureAwait(false);
+            await ExecCreateTopicAsync(_container, "kafka-topics", "localhost:9092",
+                topic, partitions, replicationFactor).ConfigureAwait(false);
             return;
         }
 
         if (_clusterContainers is { Count: > 0 })
         {
-            // Multi-broker: apache/kafka uses /opt/kafka/bin/kafka-topics.sh
-            // Use internal bootstrap address via the first broker
-            var firstContainer = _clusterContainers[0];
-            var result = await firstContainer.ExecAsync([
-                "/opt/kafka/bin/kafka-topics.sh",
-                "--bootstrap-server", "kafka-1:9092",
-                "--create",
-                "--topic", topic,
-                "--partitions", partitions.ToString(),
-                "--replication-factor", replicationFactor.ToString(),
-                "--if-not-exists"
-            ]).ConfigureAwait(false);
-
-            if (result.ExitCode == 0)
-            {
-                Console.WriteLine($"Created topic: {topic} (partitions={partitions}, replication={replicationFactor})");
-            }
-            else
-            {
-                Console.WriteLine($"Warning: Topic creation returned exit code {result.ExitCode}: {result.Stderr}");
-            }
-
-            await Task.Delay(1000).ConfigureAwait(false);
+            await ExecCreateTopicAsync(_clusterContainers[0], "/opt/kafka/bin/kafka-topics.sh", "kafka-1:9092",
+                topic, partitions, replicationFactor).ConfigureAwait(false);
             return;
         }
 
         Console.WriteLine($"Using external Kafka - assuming topic {topic} exists or will be auto-created");
+    }
+
+    private static async Task ExecCreateTopicAsync(
+        IContainer container, string executablePath, string bootstrapServer,
+        string topic, int partitions, int replicationFactor)
+    {
+        var result = await container.ExecAsync([
+            executablePath,
+            "--bootstrap-server", bootstrapServer,
+            "--create",
+            "--topic", topic,
+            "--partitions", partitions.ToString(),
+            "--replication-factor", replicationFactor.ToString(),
+            "--if-not-exists"
+        ]).ConfigureAwait(false);
+
+        if (result.ExitCode == 0)
+        {
+            Console.WriteLine($"Created topic: {topic} (partitions={partitions}, replication={replicationFactor})");
+        }
+        else
+        {
+            Console.WriteLine($"Warning: Topic creation returned exit code {result.ExitCode}: {result.Stderr}");
+        }
+
+        await Task.Delay(1000).ConfigureAwait(false);
     }
 
     public async ValueTask DisposeAsync()

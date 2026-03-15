@@ -133,8 +133,7 @@ public static class Program
             RunCompletedAtUtc = runCompletedAt,
             MachineName = Environment.MachineName,
             ProcessorCount = Environment.ProcessorCount,
-            Results = results,
-            BrokerCount = options.Brokers
+            Results = results
         };
 
         var outputDir = options.OutputPath;

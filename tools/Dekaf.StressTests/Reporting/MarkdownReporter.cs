@@ -15,45 +15,42 @@ internal static class MarkdownReporter
         sb.AppendLine($"**Total Duration:** {(results.RunCompletedAtUtc - results.RunStartedAtUtc).TotalMinutes:F1} minutes");
         sb.AppendLine();
 
-        var scenarioGroups = results.Results
-            .GroupBy(r => (r.Scenario, r.BrokerCount))
-            .OrderBy(g => g.Key.Scenario)
-            .ThenBy(g => g.Key.BrokerCount);
+        var scenarioGroups = GroupByScenarioAndBrokers(results.Results);
 
         foreach (var group in scenarioGroups)
         {
-            var brokerSuffix = group.Key.BrokerCount > 1 ? $", {group.Key.BrokerCount} Brokers" : "";
-            var title = FormatScenarioTitle(group.Key.Scenario) + brokerSuffix;
+            var title = FormatGroupTitle(FormatScenarioTitle(group.Key.Scenario), group.Key.BrokerCount);
             GenerateThroughputTable(sb, title, group.ToList());
         }
 
-        var latencyGroups = results.Results
-            .Where(r => r.Latency is not null)
-            .GroupBy(r => (r.Scenario, r.BrokerCount))
-            .OrderBy(g => g.Key.Scenario)
-            .ThenBy(g => g.Key.BrokerCount);
-
-        foreach (var group in latencyGroups)
+        foreach (var group in scenarioGroups)
         {
-            var brokerSuffix = group.Key.BrokerCount > 1 ? $", {group.Key.BrokerCount} Brokers" : "";
-            var latencyTitle = FormatScenarioTitle(group.Key.Scenario) + brokerSuffix;
-            GenerateLatencyTable(sb, group.ToList(), latencyTitle);
+            var resultsWithLatency = group.Where(r => r.Latency is not null).ToList();
+            if (resultsWithLatency.Count > 0)
+            {
+                var title = FormatGroupTitle(FormatScenarioTitle(group.Key.Scenario), group.Key.BrokerCount);
+                GenerateLatencyTable(sb, resultsWithLatency, title);
+            }
         }
 
-        var gcGroups = results.Results
-            .GroupBy(r => (r.Scenario, r.BrokerCount))
-            .OrderBy(g => g.Key.Scenario)
-            .ThenBy(g => g.Key.BrokerCount);
-
-        foreach (var group in gcGroups)
+        foreach (var group in scenarioGroups)
         {
-            var brokerSuffix = group.Key.BrokerCount > 1 ? $", {group.Key.BrokerCount} Brokers" : "";
-            var gcTitle = "GC Statistics - " + FormatScenarioTitle(group.Key.Scenario) + brokerSuffix;
-            GenerateGcTable(sb, group.ToList(), gcTitle);
+            var title = FormatGroupTitle("GC Statistics - " + FormatScenarioTitle(group.Key.Scenario), group.Key.BrokerCount);
+            GenerateGcTable(sb, group.ToList(), title);
         }
 
         return sb.ToString();
     }
+
+    private static IOrderedEnumerable<IGrouping<(string Scenario, int BrokerCount), StressTestResult>>
+        GroupByScenarioAndBrokers(IEnumerable<StressTestResult> results) =>
+        results
+            .GroupBy(r => (r.Scenario, r.BrokerCount))
+            .OrderBy(g => g.Key.Scenario)
+            .ThenBy(g => g.Key.BrokerCount);
+
+    private static string FormatGroupTitle(string title, int brokerCount) =>
+        brokerCount > 1 ? $"{title}, {brokerCount} Brokers" : title;
 
     private static void GenerateThroughputTable(StringBuilder sb, string title, List<StressTestResult> results)
     {

@@ -38,7 +38,6 @@ internal sealed class StressTestResults
     public required string MachineName { get; init; }
     public required int ProcessorCount { get; init; }
     public required List<StressTestResult> Results { get; init; }
-    public int BrokerCount { get; init; } = 1;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

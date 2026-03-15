@@ -49,6 +49,8 @@ jobs:
             client: confluent
             brokers: 1
             name: Confluent Consumer
+          # Multi-broker: producer scenarios only — consumer throughput is unaffected by
+          # replication factor since Acks only applies to producers.
           - scenario: producer
             client: dekaf
             brokers: 3
