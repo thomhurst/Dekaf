@@ -15,11 +15,20 @@ namespace Dekaf.Protocol.Records;
 /// </summary>
 internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposable
 {
+    /// <summary>
+    /// Maximum buffer size to retain across reuses (4MB). Buffers that grow beyond this
+    /// threshold are replaced with a fresh initial-size buffer on Clear() to prevent
+    /// thread-local memory from growing unbounded in long-running producers.
+    /// </summary>
+    private const int MaxRetainedBufferSize = 4 * 1024 * 1024;
+
     private byte[] _buffer;
     private int _written;
+    private readonly int _initialCapacity;
 
     public PooledReusableBufferWriter(int initialCapacity)
     {
+        _initialCapacity = initialCapacity;
         _buffer = ArrayPool<byte>.Shared.Rent(initialCapacity);
         _written = 0;
     }
@@ -34,11 +43,18 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
 
     /// <summary>
     /// Resets the write position without zeroing the buffer.
-    /// The buffer is retained for reuse, avoiding both allocation and zero-initialization.
+    /// If the buffer has grown beyond <see cref="MaxRetainedBufferSize"/>, it is returned
+    /// to the pool and replaced with a fresh initial-size buffer to prevent unbounded growth.
     /// </summary>
     public void Clear()
     {
         _written = 0;
+
+        if (_buffer.Length > MaxRetainedBufferSize)
+        {
+            ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
+            _buffer = ArrayPool<byte>.Shared.Rent(_initialCapacity);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -296,7 +312,7 @@ public sealed class RecordBatch : IDisposable
     // Eliminates per-batch class allocation (~120 bytes) that survives Gen0 due to
     // its lifetime spanning the send pipeline (1-10ms), contributing to high Gen1/Gen0 ratio.
     private static readonly ConcurrentStack<RecordBatch> s_pool = new();
-    private const int MaxPoolSize = 128;
+    private const int MaxPoolSize = 512;
 
     /// <summary>
     /// Rents a RecordBatch from the pool or creates a new one.

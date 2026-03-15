@@ -327,7 +327,7 @@ internal readonly struct AppendWorkItem
 internal sealed class BatchArena
 {
     private static readonly ConcurrentQueue<BatchArena> s_pool = new();
-    private const int MaxPoolSize = 64;
+    private const int MaxPoolSize = 128;
     private static int s_poolCount;
 
     private byte[] _buffer;
@@ -742,6 +742,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         /// <summary>Sealed batches waiting to drain. Front = oldest (drain target).</summary>
         private readonly LinkedList<ReadyBatch> _deque = new();
 
+        /// <summary>O(1) containment check for the orphan sweep diagnostic path.
+        /// Without this, Contains() performs an O(n) LinkedList scan under SpinLock,
+        /// blocking the hot append/seal path as deque size grows.</summary>
+        private readonly HashSet<ReadyBatch> _dequeSet = new(ReferenceEqualityComparer.Instance);
+
         /// <summary>Per-partition lock for deque access (matches Java's synchronized(deque)).
         /// SpinLock avoids kernel transitions for the brief critical sections in append/drain paths.</summary>
         public SpinLock Lock = new(enableThreadOwnerTracking: false);
@@ -757,6 +762,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             if (_deque.First is not { } first) return null;
             _deque.RemoveFirst();
+            _dequeSet.Remove(first.Value);
             return first.Value;
         }
 
@@ -767,13 +773,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         /// <summary>Add to back of deque (normal seal path).</summary>
-        public void AddLast(ReadyBatch batch) => _deque.AddLast(batch);
+        public void AddLast(ReadyBatch batch)
+        {
+            _deque.AddLast(batch);
+            _dequeSet.Add(batch);
+        }
 
         /// <summary>Add to front of deque (retry/reenqueue — Java's addFirst).</summary>
-        public void AddFirst(ReadyBatch batch) => _deque.AddFirst(batch);
+        public void AddFirst(ReadyBatch batch)
+        {
+            _deque.AddFirst(batch);
+            _dequeSet.Add(batch);
+        }
 
-        /// <summary>Whether the deque contains the specified batch (diagnostic path only).</summary>
-        public bool Contains(ReadyBatch batch) => _deque.Contains(batch);
+        /// <summary>Whether the deque contains the specified batch. O(1) via HashSet.</summary>
+        public bool Contains(ReadyBatch batch) => _dequeSet.Contains(batch);
 
         /// <summary>
         /// Insert a batch in ascending sequence order for idempotent reenqueue.
@@ -785,6 +799,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (batch.RecordBatch.BaseSequence < 0)
             {
                 _deque.AddFirst(batch);
+                _dequeSet.Add(batch);
                 return;
             }
 
@@ -798,6 +813,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             if (node is null) _deque.AddLast(batch);
             else _deque.AddBefore(node, batch);
+            _dequeSet.Add(batch);
         }
     }
 
@@ -2607,8 +2623,9 @@ internal sealed class PartitionBatchPool
     /// Creates a new PartitionBatchPool.
     /// </summary>
     /// <param name="options">Producer options for configuring new batches.</param>
-    /// <param name="maxPoolSize">Maximum number of batches to keep pooled. Default is 64.</param>
-    public PartitionBatchPool(ProducerOptions options, int maxPoolSize = 64)
+    /// <param name="maxPoolSize">Maximum number of batches to keep pooled. Default is 128.
+    /// Each pooled batch retains a BatchArena (~1MB), so this bounds retained memory.</param>
+    public PartitionBatchPool(ProducerOptions options, int maxPoolSize = 128)
     {
         _options = options;
         _maxPoolSize = maxPoolSize;
@@ -3318,7 +3335,7 @@ internal sealed class ReadyBatchPool
     private readonly ConcurrentStack<ReadyBatch> _pool = new();
     private readonly int _maxPoolSize;
 
-    public ReadyBatchPool(int maxPoolSize = 128)
+    public ReadyBatchPool(int maxPoolSize = 512)
     {
         _maxPoolSize = maxPoolSize;
     }
