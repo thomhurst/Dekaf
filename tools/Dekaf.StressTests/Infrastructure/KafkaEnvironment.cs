@@ -119,6 +119,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
                 .WithEnvironment("KAFKA_NODE_ID", nodeId.ToString())
                 .WithEnvironment("KAFKA_PROCESS_ROLES", "broker,controller")
                 .WithEnvironment("KAFKA_CONTROLLER_QUORUM_VOTERS", quorumVoters)
+                // All KRaft nodes must share the same cluster ID to form a quorum
                 .WithEnvironment("CLUSTER_ID", "MkU3OEVBNTcwNTJENDM2Qg")
                 .WithEnvironment("KAFKA_LISTENERS", $"PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092")
                 .WithEnvironment("KAFKA_ADVERTISED_LISTENERS", $"PLAINTEXT://{hostname}:9092,EXTERNAL://localhost:{externalPort}")
@@ -267,12 +268,13 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
 
             if (_network is not null)
             {
-                await _network.DisposeAsync().ConfigureAwait(false);
+                try { await _network.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception ex) { exceptions.Add(ex); }
             }
 
             if (exceptions.Count > 0)
             {
-                throw new AggregateException("One or more broker containers failed to stop", exceptions!);
+                throw new AggregateException("One or more cluster resources failed to stop", exceptions!);
             }
         }
     }
