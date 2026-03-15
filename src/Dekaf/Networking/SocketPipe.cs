@@ -12,10 +12,16 @@ namespace Dekaf.Networking;
 /// indefinitely when concurrent reads and writes target the same underlying socket.
 /// Used for plain TCP connections. TLS connections use <see cref="DuplexPipe"/> instead
 /// (because <see cref="System.Net.Security.SslStream"/> requires the <see cref="Stream"/> abstraction).
+/// <para/>
+/// <b>Ownership:</b> This class takes full ownership of both the <see cref="Socket"/> and the
+/// <see cref="System.Net.Sockets.NetworkStream"/> wrapper. It closes the socket via
+/// <see cref="Socket.Close(int)"/> and disposes the stream on disposal.
+/// The caller must not dispose either resource separately.
 /// </summary>
 internal sealed class SocketPipe : IAsyncDisposable
 {
     private readonly Socket _socket;
+    private readonly NetworkStream _networkStream;
     private readonly Pipe _inputPipe;
     private readonly Task _readPumpTask;
     private readonly int _readBufferSize;
@@ -27,9 +33,10 @@ internal sealed class SocketPipe : IAsyncDisposable
     /// </summary>
     public PipeReader Input => _inputPipe.Reader;
 
-    public SocketPipe(Socket socket, PipeOptions inputPipeOptions, int readBufferSize = 65536)
+    public SocketPipe(Socket socket, NetworkStream networkStream, PipeOptions inputPipeOptions, int readBufferSize = 65536)
     {
         _socket = socket;
+        _networkStream = networkStream;
         _inputPipe = new Pipe(inputPipeOptions);
         _readBufferSize = readBufferSize;
 
@@ -103,5 +110,9 @@ internal sealed class SocketPipe : IAsyncDisposable
         {
             // Read pump exceptions are expected during shutdown
         }
+
+        // Dispose the NetworkStream wrapper. Since ownsSocket: false was used when creating
+        // the NetworkStream, this does not close the socket (already handled above).
+        _networkStream.Dispose();
     }
 }

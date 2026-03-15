@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Security;
@@ -266,16 +267,18 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         var readBufferSize = _options.ReceiveBufferSize > 0 ? _options.ReceiveBufferSize : 65536;
 
-        if (_stream is NetworkStream)
+        if (_stream is NetworkStream plainStream)
         {
             // Plain TCP: read directly from the Socket, bypassing the Stream abstraction.
-            _socketPipe = new SocketPipe(_socket!, inputPipeOptions, readBufferSize);
+            // SocketPipe takes full ownership of both the socket and the NetworkStream.
+            _socketPipe = new SocketPipe(_socket!, plainStream, inputPipeOptions, readBufferSize);
             _reader = _socketPipe.Input;
         }
         else
         {
             // TLS: SslStream requires the Stream abstraction for decryption.
-            _duplexPipe = new DuplexPipe(_stream, inputPipeOptions, readBufferSize);
+            // DuplexPipe takes full ownership of the SslStream and the socket.
+            _duplexPipe = new DuplexPipe(_stream, _socket!, inputPipeOptions, readBufferSize);
             _reader = _duplexPipe.Input;
         }
 
@@ -1673,19 +1676,27 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (_writer is not null)
             await _writer.CompleteAsync().ConfigureAwait(false);
 
-        // SocketPipe/DuplexPipe.DisposeAsync handles reader completion, socket/stream
-        // closure, and read pump teardown internally — see those classes for details.
+        // Invariant: at most one pipe type is created per connection (plain TCP or TLS, never both).
+        Debug.Assert(_socketPipe is null || _duplexPipe is null,
+            "Both _socketPipe and _duplexPipe are non-null — this should never happen.");
+
+        // Each pipe takes full ownership of all underlying resources (socket, streams).
+        // DisposeAsync handles reader completion, socket/stream closure, and read pump teardown.
         if (_socketPipe is not null)
+        {
             await _socketPipe.DisposeAsync().ConfigureAwait(false);
-
-        if (_duplexPipe is not null)
+        }
+        else if (_duplexPipe is not null)
+        {
             await _duplexPipe.DisposeAsync().ConfigureAwait(false);
-
-        // For plain TCP, the socket is closed by SocketPipe.DisposeAsync (Socket.Close).
-        // For TLS, the stream is disposed by DuplexPipe.DisposeAsync.
-        // Dispose again here for safety — both are idempotent.
-        _stream?.Dispose();
-        _socket?.Dispose();
+        }
+        else
+        {
+            // No pipe was created (e.g., connection failed during setup).
+            // Dispose both as a fallback since no pipe took ownership.
+            _stream?.Dispose();
+            _socket?.Dispose();
+        }
 
         _reauthTimer?.Dispose();
         _reauthLock.Dispose();
