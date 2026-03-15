@@ -333,6 +333,9 @@ internal readonly struct AppendWorkItem
 internal sealed class BatchArena
 {
     private static readonly ConcurrentQueue<BatchArena> s_pool = new();
+    // Memory tradeoff: at the default 1MB batch size, pooling up to 128 arenas holds
+    // up to ~128MB permanently on the LOH. This is acceptable for high-throughput
+    // workloads where these arenas are in active use and would be reallocated anyway.
     private const int MaxPoolSize = 128;
     private static int s_poolCount;
 
@@ -470,13 +473,14 @@ internal sealed class BatchArena
 
     /// <summary>
     /// Releases the arena's buffer reference.
-    /// Thread-safe: uses Interlocked.Exchange to prevent double-release.
+    /// Defensive nulling to prevent use-after-return — the arena is single-owner
+    /// at this point so a plain write is sufficient (no atomic exchange needed).
     /// The buffer is permanently allocated (not from ArrayPool), so it is simply
     /// released for GC collection.
     /// </summary>
     public void Return()
     {
-        Interlocked.Exchange(ref _buffer, null!);
+        _buffer = null!;
     }
 }
 
