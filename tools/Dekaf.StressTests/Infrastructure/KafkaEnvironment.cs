@@ -100,7 +100,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             var hostname = $"kafka-{nodeId}";
             var externalPort = 29091 + nodeId; // 29092, 29093, 29094
 
-            var container = new ContainerBuilder("apache/kafka:latest")
+            var container = new ContainerBuilder("apache/kafka:3.9.0")
                 .WithName($"{hostname}-{Guid.NewGuid():N}")
                 .WithHostname(hostname)
                 .WithNetwork(network)
@@ -109,6 +109,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
                 .WithEnvironment("KAFKA_NODE_ID", nodeId.ToString())
                 .WithEnvironment("KAFKA_PROCESS_ROLES", "broker,controller")
                 .WithEnvironment("KAFKA_CONTROLLER_QUORUM_VOTERS", quorumVoters)
+                .WithEnvironment("CLUSTER_ID", "MkU3OEVBNTcwNTJENDM2Qg")
                 .WithEnvironment("KAFKA_LISTENERS", $"PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092")
                 .WithEnvironment("KAFKA_ADVERTISED_LISTENERS", $"PLAINTEXT://{hostname}:9092,EXTERNAL://localhost:{externalPort}")
                 .WithEnvironment("KAFKA_LISTENER_SECURITY_PROTOCOL_MAP", "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT")
@@ -244,10 +245,7 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
         if (_clusterContainers is not null)
         {
             Console.WriteLine($"Stopping {_clusterContainers.Count}-broker cluster...");
-            foreach (var container in _clusterContainers)
-            {
-                await container.DisposeAsync().ConfigureAwait(false);
-            }
+            await Task.WhenAll(_clusterContainers.Select(c => c.DisposeAsync().AsTask())).ConfigureAwait(false);
         }
 
         if (_network is not null)

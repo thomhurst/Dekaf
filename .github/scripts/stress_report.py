@@ -29,6 +29,11 @@ def scenario_title(scenario, fallback_prefix=''):
     """Get the display title for a scenario key."""
     if scenario in SCENARIO_TITLES:
         return SCENARIO_TITLES[scenario]
+    # Handle broker-suffixed keys like "producer (3 Brokers)"
+    base_scenario = scenario.split(' (')[0] if ' (' in scenario else scenario
+    suffix = scenario[len(base_scenario):] if base_scenario != scenario else ''
+    if base_scenario in SCENARIO_TITLES:
+        return SCENARIO_TITLES[base_scenario] + suffix
     return f"{fallback_prefix}({scenario})" if fallback_prefix else scenario
 
 
