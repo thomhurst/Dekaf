@@ -2637,7 +2637,7 @@ internal sealed class PartitionBatchPool
     private readonly ProducerOptions _options;
     private readonly int _maxPoolSize;
     private ReadyBatchPool? _readyBatchPool;
-    private readonly BatchArrayReuseQueue _arrayReuseQueue = new();
+    private readonly BatchArrayReuseQueue _arrayReuseQueue;
 
     /// <summary>
     /// Creates a new PartitionBatchPool.
@@ -2649,6 +2649,7 @@ internal sealed class PartitionBatchPool
     {
         _options = options;
         _maxPoolSize = maxPoolSize;
+        _arrayReuseQueue = new BatchArrayReuseQueue(maxSize: maxPoolSize);
     }
 
     /// <summary>
@@ -2669,6 +2670,7 @@ internal sealed class PartitionBatchPool
         {
             batch.Reset(topicPartition);
             batch.SetReadyBatchPool(_readyBatchPool);
+            batch.SetArrayReuseQueue(_arrayReuseQueue);
             return batch;
         }
 
@@ -3422,10 +3424,9 @@ internal sealed class ReadyBatchPool
 internal sealed class BatchArrayReuseQueue
 {
     private readonly ConcurrentQueue<ReusableArrays> _queue = new();
-    private int _count; // Approximate count to limit queue growth
     private readonly int _maxSize;
 
-    public BatchArrayReuseQueue(int maxSize = 256)
+    public BatchArrayReuseQueue(int maxSize = 128)
     {
         _maxSize = maxSize;
     }
@@ -3459,14 +3460,13 @@ internal sealed class BatchArrayReuseQueue
         byte[][] pooledDataArrays,
         Header[][] pooledHeaderArrays)
     {
-        if (Interlocked.Increment(ref _count) <= _maxSize)
+        if (_queue.Count < _maxSize)
         {
             _queue.Enqueue(new ReusableArrays(records, completionSources, pooledDataArrays, pooledHeaderArrays));
         }
         else
         {
             // Queue is full - fall back to returning arrays to ArrayPool
-            Interlocked.Decrement(ref _count);
             ArrayPool<Record>.Shared.Return(records, clearArray: false);
             ArrayPool<PooledValueTaskSource<RecordMetadata>>.Shared.Return(completionSources, clearArray: false);
             ArrayPool<byte[]>.Shared.Return(pooledDataArrays, clearArray: false);
@@ -3479,12 +3479,7 @@ internal sealed class BatchArrayReuseQueue
     /// </summary>
     public bool TryDequeue(out ReusableArrays arrays)
     {
-        if (_queue.TryDequeue(out arrays))
-        {
-            Interlocked.Decrement(ref _count);
-            return true;
-        }
-        return false;
+        return _queue.TryDequeue(out arrays);
     }
 }
 
@@ -3958,7 +3953,11 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             && _pooledDataArrays is not null
             && _pooledHeaderArrays is not null)
         {
-            // Enqueue all 4 working arrays for reuse by PartitionBatch.PrepareForPooling()
+            // Enqueue all 4 working arrays for reuse by PartitionBatch.PrepareForPooling().
+            // Safety: clearArray: false is intentional. Array slots past _recordCount may contain stale
+            // PooledValueTaskSource references, but these are never accessed because counters reset to 0
+            // on reuse. PooledValueTaskSource instances auto-return to their pool via GetResult(),
+            // so stale references don't prevent pool recycling. This matches ArrayPool behavior.
             _arrayReuseQueue.TryEnqueue(_pooledRecordsArray, _completionSourcesArray, _pooledDataArrays, _pooledHeaderArrays);
         }
         else
