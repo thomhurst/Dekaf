@@ -324,20 +324,22 @@ internal readonly struct AppendWorkItem
 /// reducing GC pressure in high-throughput scenarios.
 /// </para>
 /// <para>
-/// Arena buffers are permanently allocated (not rented from ArrayPool) to avoid LOH
-/// fragmentation. Arrays >85KB land on the LOH, which is only collected during Gen2 GC.
-/// By keeping buffers alive for the lifetime of the arena pool, we eliminate the
-/// rent/return churn that causes LOH fragmentation and escalating GC pressure.
+/// Arena buffers are allocated on the Pinned Object Heap (POH) via
+/// <c>GC.AllocateUninitializedArray(pinned: true)</c>, avoiding the Large Object Heap
+/// entirely. POH buffers are not subject to Gen0/1/2 collection or compaction, eliminating
+/// the GC pressure that LOH-allocated buffers would cause during batch rotation churn.
+/// Buffers are reclaimable by the GC once all references are dropped (e.g. pool eviction).
 /// </para>
 /// </remarks>
 internal sealed class BatchArena
 {
     private static readonly ConcurrentQueue<BatchArena> s_pool = new();
-    // Memory tradeoff: at the default 1MB batch size, pooling up to 256 arenas holds
-    // up to ~256MB permanently on the POH. This is acceptable for high-throughput
-    // workloads where these arenas are in active use and would be reallocated anyway.
-    // Using pinned: true places buffers on the Pinned Object Heap, avoiding LOH
-    // fragmentation and Gen2 GC pressure entirely.
+    // Memory tradeoff: at the default 1MB batch size, pooling up to 256 arenas retains
+    // up to ~256MB on the POH for the pool's lifetime. This is a static/process-wide pool
+    // shared across all RecordAccumulator instances (i.e., all producers in the process).
+    // POH buffers are reclaimable by the GC when evicted from the pool (references dropped).
+    // Keep in sync with PartitionBatchPool default maxPoolSize — each pooled batch
+    // retains a BatchArena, so the arena pool should be at least as large.
     private const int MaxPoolSize = 256;
     private static int s_poolCount;
 
@@ -385,8 +387,8 @@ internal sealed class BatchArena
         else
         {
             Interlocked.Decrement(ref s_poolCount);
-            // Buffer is permanently allocated - just null it out and let GC collect.
-            // No ArrayPool return needed since we never rented from it.
+            // POH buffer — drop the reference so the GC can reclaim the POH segment
+            // once all objects on it are dead. No ArrayPool return needed.
             arena._buffer = null!;
         }
     }
@@ -2646,7 +2648,8 @@ internal sealed class PartitionBatchPool
     /// </summary>
     /// <param name="options">Producer options for configuring new batches.</param>
     /// <param name="maxPoolSize">Maximum number of batches to keep pooled. Default is 256.
-    /// Each pooled batch retains a BatchArena (~1MB), so this bounds retained memory.</param>
+    /// Each pooled batch retains a BatchArena (~1MB), so this bounds retained memory.
+    /// Keep in sync with <see cref="BatchArena"/> MaxPoolSize to avoid pool size mismatches.</param>
     public PartitionBatchPool(ProducerOptions options, int maxPoolSize = 256)
     {
         _options = options;
