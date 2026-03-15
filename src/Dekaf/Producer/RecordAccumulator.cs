@@ -2754,6 +2754,23 @@ internal sealed class PartitionBatch
     private bool _isTransactional;
     private RecordAccumulator? _accumulator;
 
+    /// <summary>
+    /// Divisor for computing the arena overflow margin from BatchSize.
+    /// A divisor of 8 gives a 12.5% margin (BatchSize / 8) above BatchSize,
+    /// reducing per-message ArrayPool fallback when batches near capacity.
+    /// </summary>
+    private const int ArenaOverflowMarginDivisor = 8;
+
+    /// <summary>
+    /// Returns the effective arena capacity: explicit ArenaCapacity if set,
+    /// otherwise BatchSize + 12.5% margin to reduce per-message ArrayPool fallback.
+    /// Uses long arithmetic to avoid integer overflow when BatchSize is large.
+    /// </summary>
+    private static int GetEffectiveArenaCapacity(ProducerOptions options) =>
+        options.ArenaCapacity > 0
+            ? options.ArenaCapacity
+            : (int)Math.Min((long)options.BatchSize + options.BatchSize / ArenaOverflowMarginDivisor, int.MaxValue);
+
     public PartitionBatch(TopicPartition topicPartition, ProducerOptions options)
     {
         _topicPartition = topicPartition;
@@ -2765,9 +2782,7 @@ internal sealed class PartitionBatch
             : ComputeInitialRecordCapacity(options.BatchSize);
 
         // Create arena for zero-copy serialization
-        // Use ArenaCapacity if set, otherwise fall back to BatchSize
-        var arenaCapacity = options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize;
-        _arena = new BatchArena(arenaCapacity);
+        _arena = new BatchArena(GetEffectiveArenaCapacity(options));
 
         // Rent arrays from pool - eliminates List allocations
         _records = ArrayPool<Record>.Shared.Rent(_initialRecordCapacity);
@@ -2861,8 +2876,7 @@ internal sealed class PartitionBatch
         _arena?.Return();
 
         // Rent or create arena for the pooled batch
-        var arenaCapacity = options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize;
-        _arena = BatchArena.RentOrCreate(arenaCapacity);
+        _arena = BatchArena.RentOrCreate(GetEffectiveArenaCapacity(options));
 
         // Arrays were transferred to ReadyBatch by Complete() and are now null.
         // Try to reclaim arrays from the reuse queue first (returned by ReadyBatch.Cleanup()),
