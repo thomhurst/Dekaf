@@ -2623,8 +2623,9 @@ internal sealed class PartitionBatchPool
     /// Creates a new PartitionBatchPool.
     /// </summary>
     /// <param name="options">Producer options for configuring new batches.</param>
-    /// <param name="maxPoolSize">Maximum number of batches to keep pooled. Default is 256.</param>
-    public PartitionBatchPool(ProducerOptions options, int maxPoolSize = 256)
+    /// <param name="maxPoolSize">Maximum number of batches to keep pooled. Default is 128.
+    /// Each pooled batch retains a BatchArena (~1MB), so this bounds retained memory.</param>
+    public PartitionBatchPool(ProducerOptions options, int maxPoolSize = 128)
     {
         _options = options;
         _maxPoolSize = maxPoolSize;
