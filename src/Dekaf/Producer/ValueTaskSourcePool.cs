@@ -19,13 +19,26 @@ public static class ValueTaskSourcePool
     public const int MaxAutoPoolSize = 65536;
 
     /// <summary>
-    /// Default maximum number of pooled instances when no auto-calculation is performed.
+    /// Fallback maximum pool size used when no producer options are available (e.g. parameterless constructor).
     /// </summary>
-    public const int DefaultMaxPoolSize = 4096;
+    public const int FallbackMaxPoolSize = 4096;
 
     /// <summary>
-    /// Calculates an appropriate pool size based on the maximum number of concurrent in-flight batches.
-    /// The pool size is <c>BufferMemory / BatchSize</c>, clamped to
+    /// Conservative estimate of the number of messages per batch, used as a multiplier
+    /// when calculating pool size. Each in-flight message holds a rented pool source,
+    /// so the pool must be sized per message, not per batch.
+    /// </summary>
+    /// <remarks>
+    /// With the default 1 MB batch size and typical ~1 KB messages, a batch holds ~1024 messages.
+    /// This matches the estimate documented in CLAUDE.md ("Batch = 1MB default = ~1000 messages at 1KB each").
+    /// </remarks>
+    internal const int EstimatedMessagesPerBatch = 1024;
+
+    /// <summary>
+    /// Calculates an appropriate pool size based on the estimated number of concurrent in-flight messages.
+    /// The pool is rented per <c>ProduceAsync</c> call (per message), so the formula accounts for
+    /// both the number of in-flight batches and the estimated messages per batch:
+    /// <c>(BufferMemory / BatchSize) * EstimatedMessagesPerBatch</c>, clamped to
     /// [<see cref="MinAutoPoolSize"/>, <see cref="MaxAutoPoolSize"/>].
     /// </summary>
     /// <param name="bufferMemory">Total producer buffer memory in bytes.</param>
@@ -37,8 +50,9 @@ public static class ValueTaskSourcePool
             throw new ArgumentOutOfRangeException(nameof(batchSize), "Batch size must be positive.");
 
         var maxBatches = bufferMemory / (ulong)batchSize;
+        var estimatedSources = maxBatches * EstimatedMessagesPerBatch;
 
-        return (int)Math.Clamp(maxBatches, MinAutoPoolSize, MaxAutoPoolSize);
+        return (int)Math.Clamp(estimatedSources, MinAutoPoolSize, MaxAutoPoolSize);
     }
 }
 
@@ -75,7 +89,7 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
     /// <summary>
     /// Creates a new pool with the default maximum size.
     /// </summary>
-    public ValueTaskSourcePool() : this(ValueTaskSourcePool.DefaultMaxPoolSize)
+    public ValueTaskSourcePool() : this(ValueTaskSourcePool.FallbackMaxPoolSize)
     {
     }
 
