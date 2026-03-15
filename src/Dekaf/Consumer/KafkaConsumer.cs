@@ -2847,7 +2847,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// <summary>
     /// Callback for the observable consumer lag gauge. Invoked only during metric collection
     /// (typically every 5-60s by an OTel exporter), not on the hot path.
-    /// Returns one measurement per assigned partition: highWatermark - committedOffset.
+    /// Returns one measurement per assigned partition: highWatermark - consumedPosition.
     /// </summary>
     private IEnumerable<Measurement<long>> ObserveConsumerLag()
     {

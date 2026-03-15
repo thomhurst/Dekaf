@@ -89,6 +89,9 @@ public sealed class DekafDiagnosticsTests
         DekafMetrics.Retries.Add(0);
         DekafMetrics.MessagesReceived.Add(0);
         DekafMetrics.BytesReceived.Add(0);
+        DekafMetrics.RebalanceDuration.Record(0);
+        DekafMetrics.FetchDuration.Record(0);
+        // ConsumerLag is an observable gauge — auto-registered when the meter is listened to
 
         await Assert.That(instrumentNames).Contains("messaging.client.sent.messages");
         await Assert.That(instrumentNames).Contains("messaging.client.sent.bytes");
@@ -97,6 +100,9 @@ public sealed class DekafDiagnosticsTests
         await Assert.That(instrumentNames).Contains("messaging.client.sent.retries");
         await Assert.That(instrumentNames).Contains("messaging.client.consumed.messages");
         await Assert.That(instrumentNames).Contains("messaging.client.consumed.bytes");
+        await Assert.That(instrumentNames).Contains("messaging.consumer.rebalance.duration");
+        await Assert.That(instrumentNames).Contains("messaging.consumer.fetch.duration");
+        await Assert.That(instrumentNames).Contains("messaging.consumer.lag");
     }
 
     [Test]
