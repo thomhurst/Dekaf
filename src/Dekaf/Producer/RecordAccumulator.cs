@@ -2754,8 +2754,16 @@ internal sealed class PartitionBatchPool
         // Use Interlocked counter instead of ConcurrentStack.Count (which is O(n)).
         if (Interlocked.Increment(ref _poolCount) <= _maxPoolSize)
         {
-            batch.PrepareForPooling(_options, _arrayReuseQueue);
-            _pool.Push(batch);
+            try
+            {
+                batch.PrepareForPooling(_options, _arrayReuseQueue);
+                _pool.Push(batch);
+            }
+            catch
+            {
+                Interlocked.Decrement(ref _poolCount);
+                throw;
+            }
         }
         else
         {
