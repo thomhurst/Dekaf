@@ -34,6 +34,7 @@ public static class DekafDiagnostics
     internal const string MessagingMessageKey = "messaging.kafka.message.key";
     internal const string MessagingClientId = "messaging.client.id";
     internal const string MessagingMessageBodySize = "messaging.message.body.size";
+    internal const string MessagingKafkaBrokerId = "messaging.kafka.broker.id";
 
     internal const string MessagingSystemValue = "kafka";
 

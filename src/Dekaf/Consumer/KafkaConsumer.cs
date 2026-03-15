@@ -981,7 +981,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Record fetch round-trip duration (~3ns no-op when no listener)
         Diagnostics.DekafMetrics.FetchDuration.Record(
             System.Diagnostics.Stopwatch.GetElapsedTime(fetchStarted).TotalSeconds,
-            new System.Diagnostics.TagList { { "messaging.kafka.broker.id", brokerId } });
+            new System.Diagnostics.TagList { { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, brokerId } });
 
         // Take ownership of pooled memory from the response (if zero-copy was used)
         var memoryOwner = response.PooledMemoryOwner;
@@ -2169,7 +2169,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Record fetch round-trip duration (~3ns no-op when no listener)
         Diagnostics.DekafMetrics.FetchDuration.Record(
             System.Diagnostics.Stopwatch.GetElapsedTime(fetchStarted).TotalSeconds,
-            new System.Diagnostics.TagList { { "messaging.kafka.broker.id", brokerId } });
+            new System.Diagnostics.TagList { { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, brokerId } });
 
         // Take ownership of pooled memory from the response (if zero-copy was used)
         var memoryOwner = response.PooledMemoryOwner;
