@@ -15,26 +15,42 @@ internal static class MarkdownReporter
         sb.AppendLine($"**Total Duration:** {(results.RunCompletedAtUtc - results.RunStartedAtUtc).TotalMinutes:F1} minutes");
         sb.AppendLine();
 
-        var scenarioGroups = results.Results
-            .GroupBy(r => r.Scenario)
-            .OrderBy(g => g.Key);
+        var scenarioGroups = GroupByScenarioAndBrokers(results.Results).ToList();
 
         foreach (var group in scenarioGroups)
         {
-            var title = FormatScenarioTitle(group.Key);
+            var title = FormatGroupTitle(FormatScenarioTitle(group.Key.Scenario), group.Key.BrokerCount);
             GenerateThroughputTable(sb, title, group.ToList());
         }
 
-        var resultsWithLatency = results.Results.Where(r => r.Latency is not null).ToList();
-        if (resultsWithLatency.Count > 0)
+        foreach (var group in scenarioGroups)
         {
-            GenerateLatencyTable(sb, resultsWithLatency);
+            var resultsWithLatency = group.Where(r => r.Latency is not null).ToList();
+            if (resultsWithLatency.Count > 0)
+            {
+                var title = FormatGroupTitle("Latency - " + FormatScenarioLabel(group.Key.Scenario), group.Key.BrokerCount);
+                GenerateLatencyTable(sb, resultsWithLatency, title);
+            }
         }
 
-        GenerateGcTable(sb, results.Results);
+        foreach (var group in scenarioGroups)
+        {
+            var title = FormatGroupTitle("GC Statistics - " + FormatScenarioLabel(group.Key.Scenario), group.Key.BrokerCount);
+            GenerateGcTable(sb, group.ToList(), title);
+        }
 
         return sb.ToString();
     }
+
+    private static IOrderedEnumerable<IGrouping<(string Scenario, int BrokerCount), StressTestResult>>
+        GroupByScenarioAndBrokers(IEnumerable<StressTestResult> results) =>
+        results
+            .GroupBy(r => (r.Scenario, r.BrokerCount))
+            .OrderBy(g => g.Key.Scenario)
+            .ThenBy(g => g.Key.BrokerCount);
+
+    private static string FormatGroupTitle(string title, int brokerCount) =>
+        brokerCount > 1 ? $"{title}, {brokerCount} Brokers" : title;
 
     private static void GenerateThroughputTable(StringBuilder sb, string title, List<StressTestResult> results)
     {
@@ -75,9 +91,9 @@ internal static class MarkdownReporter
         }
     }
 
-    private static void GenerateLatencyTable(StringBuilder sb, List<StressTestResult> results)
+    private static void GenerateLatencyTable(StringBuilder sb, List<StressTestResult> results, string title = "Latency Percentiles")
     {
-        sb.AppendLine("## Latency Percentiles");
+        sb.AppendLine($"## {title}");
         sb.AppendLine();
         sb.AppendLine("| Client    | Scenario         | p50    | p95    | p99    | Max    |");
         sb.AppendLine("|-----------|------------------|--------|--------|--------|--------|");
@@ -92,9 +108,9 @@ internal static class MarkdownReporter
         sb.AppendLine();
     }
 
-    private static void GenerateGcTable(StringBuilder sb, List<StressTestResult> results)
+    private static void GenerateGcTable(StringBuilder sb, List<StressTestResult> results, string title = "GC Statistics")
     {
-        sb.AppendLine("## GC Statistics");
+        sb.AppendLine($"## {title}");
         sb.AppendLine();
         sb.AppendLine("| Client    | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated |");
         sb.AppendLine("|-----------|----------|------|------|------|-----------------|");

@@ -144,6 +144,7 @@ internal sealed class ProducerStressTest : IStressTestScenario
             Scenario = Name,
             Client = Client,
             DurationMinutes = options.DurationMinutes,
+            BrokerCount = options.BrokerCount,
             MessageSizeBytes = options.MessageSizeBytes,
             StartedAtUtc = startedAt,
             CompletedAtUtc = completedAt,

@@ -12,21 +12,25 @@ SCENARIO_TITLES = {
 
 
 def group_by_scenario(results):
-    """Group results by exact scenario name, split into producer and consumer."""
+    """Group results by (scenario, broker_count) tuple, split into producer and consumer."""
     scenario_groups = defaultdict(list)
     for r in results:
-        scenario_groups[r.get('scenario', 'unknown')].append(r)
+        broker_count = r.get('brokerCount', 1)
+        key = (r.get('scenario', 'unknown'), broker_count)
+        scenario_groups[key].append(r)
 
-    producer = {k: v for k, v in scenario_groups.items() if 'producer' in k}
-    consumer = {k: v for k, v in scenario_groups.items() if 'consumer' in k}
+    producer = {k: v for k, v in scenario_groups.items() if 'producer' in k[0]}
+    consumer = {k: v for k, v in scenario_groups.items() if 'consumer' in k[0]}
     return producer, consumer
 
 
-def scenario_title(scenario, fallback_prefix=''):
-    """Get the display title for a scenario key."""
-    if scenario in SCENARIO_TITLES:
-        return SCENARIO_TITLES[scenario]
-    return f"{fallback_prefix}({scenario})" if fallback_prefix else scenario
+def scenario_title(scenario_key, fallback_prefix=''):
+    """Get the display title for a (scenario_name, broker_count) tuple key."""
+    scenario, broker_count = scenario_key
+    base_title = SCENARIO_TITLES.get(scenario, f"{fallback_prefix}({scenario})" if fallback_prefix else scenario)
+    if broker_count > 1:
+        return f"{base_title}, {broker_count} Brokers"
+    return base_title
 
 
 def format_bytes(num_bytes):
