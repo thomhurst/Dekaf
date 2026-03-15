@@ -334,14 +334,36 @@ internal readonly struct AppendWorkItem
 internal sealed class BatchArena
 {
     private static readonly ConcurrentQueue<BatchArena> s_pool = new();
-    // Memory tradeoff: at the default 1MB batch size, pooling up to 256 arenas retains
-    // up to ~256MB on the POH for the pool's lifetime. This is a static/process-wide pool
-    // shared across all RecordAccumulator instances (i.e., all producers in the process).
+    // Memory tradeoff: pooling arenas retains POH memory for the pool's lifetime.
+    // This is a static/process-wide pool shared across all RecordAccumulator instances.
     // POH buffers are reclaimable by the GC when evicted from the pool (references dropped).
     // Each pooled PartitionBatch retains a BatchArena, so the arena pool should be at least
-    // as large as PartitionBatchPool (which references this constant as its default).
-    internal const int MaxPoolSize = 256;
+    // as large as PartitionBatchPool.
+    //
+    // Pool size scales with BufferMemory/BatchSize to handle high batch churn rates
+    // (e.g., 16KB batches create ~6,250 batches/sec at 100K msg/sec vs ~100 for 1MB batches).
+    // The default (256) works well for 1MB batches; smaller batches ratchet it up automatically.
+    internal const int DefaultPoolSize = 256;
+    internal const int MaxPoolSizeCap = 2048;
+    private static int s_maxPoolSize = DefaultPoolSize;
     private static int s_poolCount;
+
+    /// <summary>
+    /// Increases the static pool size limit if the new value is larger.
+    /// Called when a new RecordAccumulator is created with a higher pool size requirement.
+    /// Thread-safe via CAS ratchet — the pool size only ever increases because arenas are
+    /// expensive POH allocations; shrinking would discard them only to re-allocate later.
+    /// </summary>
+    internal static void RatchetPoolSize(int newSize)
+    {
+        int current;
+        do
+        {
+            current = Volatile.Read(ref s_maxPoolSize);
+            if (newSize <= current) return;
+        }
+        while (Interlocked.CompareExchange(ref s_maxPoolSize, newSize, current) != current);
+    }
 
     private byte[] _buffer;
     private int _position;
@@ -380,7 +402,7 @@ internal sealed class BatchArena
     {
         arena._position = 0;
 
-        if (Interlocked.Increment(ref s_poolCount) <= MaxPoolSize)
+        if (Interlocked.Increment(ref s_poolCount) <= Volatile.Read(ref s_maxPoolSize))
         {
             s_pool.Enqueue(arena);
         }
@@ -594,6 +616,10 @@ internal ref struct ArenaBufferWriter : IBufferWriter<byte>
 /// </summary>
 public sealed partial class RecordAccumulator : IAsyncDisposable
 {
+    // ReadyBatch lifecycle (seal→send→response→cleanup) is longer than PartitionBatch
+    // (create→fill→seal), so its pool needs proportionally more capacity.
+    private const int ReadyBatchPoolSizeRatio = 2;
+
     private readonly ProducerOptions _options;
     private readonly CompressionCodecRegistry? _compressionCodecs;
 
@@ -1055,8 +1081,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance;
         _options = options;
         _compressionCodecs = compressionCodecs;
-        _readyBatchPool = new ReadyBatchPool();
-        _batchPool = new PartitionBatchPool(options);
+
+        // Scale pool sizes with BufferMemory/BatchSize to prevent pool exhaustion.
+        // Small batches (e.g., 16KB) create high batch churn (~6,250/sec at 100K msg/sec)
+        // and need larger pools than the default 256 designed for 1MB batches.
+        var poolSize = ComputePoolSize(options);
+        BatchArena.RatchetPoolSize(poolSize);
+        // ReadyBatch lifecycle spans seal→send→response→cleanup (longer than PartitionBatch),
+        // so its pool needs to be larger to avoid exhaustion under sustained throughput.
+        _readyBatchPool = new ReadyBatchPool(maxPoolSize: poolSize * ReadyBatchPoolSizeRatio);
+        _batchPool = new PartitionBatchPool(options, maxPoolSize: poolSize);
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = options.BufferMemory;
 
@@ -1069,6 +1103,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             _appendWorkerChannels[i] = Channel.CreateUnbounded<AppendWorkItem>(
                 new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
         }
+    }
+
+    /// <summary>
+    /// Computes the recommended pool size based on producer options.
+    /// Scales with BufferMemory/BatchSize to prevent pool exhaustion under high batch churn.
+    /// At high throughput, batches cycle through: create → fill → seal → send → response → cleanup → pool.
+    /// The pool must cover peak in-flight batch count to avoid heap allocations.
+    /// </summary>
+    private static int ComputePoolSize(ProducerOptions options)
+    {
+        // BufferMemory / BatchSize gives the max batch count the buffer can hold.
+        // Divide by 4: not all buffer memory is simultaneously in sealed batches —
+        // most is in unsealed batches or waiting for send.
+        var batchCapacity = (int)Math.Min(options.BufferMemory / (ulong)Math.Max(options.BatchSize, 1), int.MaxValue);
+        return Math.Clamp(batchCapacity / 4, BatchArena.DefaultPoolSize, BatchArena.MaxPoolSizeCap);
     }
 
     /// <summary>
@@ -2650,8 +2699,9 @@ internal sealed class PartitionBatchPool
     /// </summary>
     /// <param name="options">Producer options for configuring new batches.</param>
     /// <param name="maxPoolSize">Maximum number of batches to keep pooled.
-    /// Defaults to <see cref="BatchArena.MaxPoolSize"/> since each pooled batch retains a BatchArena (~1MB).</param>
-    public PartitionBatchPool(ProducerOptions options, int maxPoolSize = BatchArena.MaxPoolSize)
+    /// Defaults to <see cref="BatchArena.DefaultPoolSize"/> since each pooled batch retains a BatchArena.
+    /// Callers should use <see cref="RecordAccumulator.ComputePoolSize"/> for dynamic sizing.</param>
+    public PartitionBatchPool(ProducerOptions options, int maxPoolSize = BatchArena.DefaultPoolSize)
     {
         _options = options;
         _maxPoolSize = maxPoolSize;
