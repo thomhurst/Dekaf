@@ -650,12 +650,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private readonly Dictionary<int, int> _drainIndex = new();
 
     /// <summary>
-    /// Reusable list for <see cref="MetadataManager.GetPartitionsForNode"/> to avoid per-call allocations
-    /// in the drain loop. Single-threaded: only accessed by the sender loop.
-    /// </summary>
-    private readonly List<TopicPartition> _reusablePartitionList = new();
-
-    /// <summary>
     /// Signaled when new data is available for the sender loop to drain.
     /// Set by seal paths and reenqueue. Sender loop resets after wake.
     /// </summary>
@@ -665,9 +659,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // appends for a subset of partitions (partition % workerCount). This reduces
     // contention on ConcurrentDictionary lookups when many threads fall through
     // to the slow (async) append path.
+    // Workers are started lazily on first EnqueueAppend call to avoid creating
+    // dedicated threads for fire-and-forget producers that never use the async path.
     private readonly Channel<AppendWorkItem>[] _appendWorkerChannels;
     private readonly int _appendWorkerCount;
-    private Task[]? _appendWorkerTasks;
+    private volatile Task[]? _appendWorkerTasks;
+    private CancellationToken _appendWorkerCancellationToken;
+    private int _appendWorkersReady;
+    private int _appendWorkersStarted;
 
     private readonly PartitionBatchPool _batchPool;
     private readonly ReadyBatchPool _readyBatchPool; // Pool for ReadyBatch objects to eliminate per-batch allocations
@@ -971,11 +970,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         int maxRequestSize,
         List<ReadyBatch> ready)
     {
-        metadataManager.GetPartitionsForNode(nodeId, _reusablePartitionList);
-        if (_reusablePartitionList.Count == 0)
+        var partitions = metadataManager.GetPartitionsForNode(nodeId);
+        if (partitions.Count == 0)
             return;
-
-        var partitions = _reusablePartitionList;
 
         if (!_drainIndex.TryGetValue(nodeId, out var startIndex))
             startIndex = 0;
@@ -1176,16 +1173,50 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     internal void StartAppendWorkers(CancellationToken cancellationToken)
     {
-        _appendWorkerTasks = new Task[_appendWorkerCount];
+        // Store the token for lazy start. Workers are created on first EnqueueAppend call
+        // to avoid allocating dedicated threads for fire-and-forget producers.
+        // CancellationToken is a struct containing a single CancellationTokenSource reference;
+        // its copy is a pointer-width write, atomic on all .NET platforms.
+        // Volatile.Write on _appendWorkersReady provides a release fence, ensuring the token
+        // store is visible to threads that read _appendWorkersReady via Volatile.Read (acquire).
+        _appendWorkerCancellationToken = cancellationToken;
+        Volatile.Write(ref _appendWorkersReady, 1);
+    }
+
+    private void EnsureAppendWorkersStarted()
+    {
+        if (Volatile.Read(ref _appendWorkersStarted) != 0)
+            return;
+
+        // Ensure StartAppendWorkers has been called (token is stored).
+        // Without workers, items sit in the channel forever and the caller's
+        // completion source never resolves, causing ProduceAsync to hang.
+        // Skip check if disposed — the channel is closed and TryWrite will fail
+        // with ObjectDisposedException, which is the expected post-disposal behavior.
+        if (Volatile.Read(ref _appendWorkersReady) == 0)
+        {
+            if (_disposed)
+                return; // Let TryWrite fail with ObjectDisposedException
+            throw new InvalidOperationException("EnqueueAppend called before StartAppendWorkers");
+        }
+
+        if (Interlocked.CompareExchange(ref _appendWorkersStarted, 1, 0) != 0)
+            return;
+
+        // Build the array locally, then publish atomically so DisposeAsync
+        // never observes a partially-populated array with null Task entries.
+        // The field is volatile, so the assignment is a release-fence store.
+        var tasks = new Task[_appendWorkerCount];
         for (var i = 0; i < _appendWorkerCount; i++)
         {
             var workerIndex = i;
-            _appendWorkerTasks[i] = Task.Factory.StartNew(
-                () => ProcessAppendWorkerAsync(workerIndex, cancellationToken),
+            tasks[i] = Task.Factory.StartNew(
+                () => ProcessAppendWorkerAsync(workerIndex, _appendWorkerCancellationToken),
                 CancellationToken.None,
                 TaskCreationOptions.LongRunning,
                 TaskScheduler.Default).Unwrap();
         }
+        _appendWorkerTasks = tasks;
     }
 
     /// <summary>
@@ -1261,6 +1292,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken)
     {
+        EnsureAppendWorkersStarted();
         var workerIndex = (int)((uint)partition % (uint)_appendWorkerCount);
         var workItem = new AppendWorkItem(topic, partition, timestamp, key, value,
             headers, pooledHeaderArray, completion, cancellationToken);
