@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Dekaf.Compression;
@@ -433,6 +434,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             FullMode = BoundedChannelFullMode.Wait
         });
 
+        // Register this instance's lag callback with the shared static gauge.
+        // The callback is invoked only during metric collection (~every 5-60s), not on the hot path.
+        Diagnostics.DekafMetrics.RegisterConsumerLagCallback(ObserveConsumerLag);
     }
 
     public IReadOnlySet<string> Subscription => _subscription;
@@ -965,10 +969,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             Topics = topicData
         };
 
+        var fetchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+
         var response = await connection.SendAsync<FetchRequest, FetchResponse>(
             request,
             (short)apiVersion,
             cancellationToken).ConfigureAwait(false);
+
+        // Record fetch round-trip duration (~3ns no-op when no listener)
+        Diagnostics.DekafMetrics.FetchDuration.Record(
+            System.Diagnostics.Stopwatch.GetElapsedTime(fetchStarted).TotalSeconds,
+            new System.Diagnostics.TagList { { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, brokerId } });
 
         // Take ownership of pooled memory from the response (if zero-copy was used)
         var memoryOwner = response.PooledMemoryOwner;
@@ -2146,10 +2157,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             Topics = topicData
         };
 
+        var fetchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+
         var response = await connection.SendAsync<FetchRequest, FetchResponse>(
             request,
             (short)apiVersion,
             cancellationToken).ConfigureAwait(false);
+
+        // Record fetch round-trip duration (~3ns no-op when no listener)
+        Diagnostics.DekafMetrics.FetchDuration.Record(
+            System.Diagnostics.Stopwatch.GetElapsedTime(fetchStarted).TotalSeconds,
+            new System.Diagnostics.TagList { { Diagnostics.DekafDiagnostics.MessagingKafkaBrokerId, brokerId } });
 
         // Take ownership of pooled memory from the response (if zero-copy was used)
         var memoryOwner = response.PooledMemoryOwner;
@@ -2749,6 +2767,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _disposed = true;
         LogConsumerDisposing();
 
+        // Unregister lag callback so the OTel SDK no longer invokes it on this disposed instance
+        Diagnostics.DekafMetrics.UnregisterConsumerLagCallback(ObserveConsumerLag);
+
         // If not already closed, perform graceful close first
         // Use 30 seconds to allow CommitAsync (which may take up to RequestTimeoutMs=30s) to complete
         if (!_closed)
@@ -2820,6 +2841,35 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         await _metadataManager.DisposeAsync().ConfigureAwait(false);
         await _connectionPool.DisposeAsync().ConfigureAwait(false);
     }
+
+    #region Metrics
+
+    /// <summary>
+    /// Callback for the observable consumer lag gauge. Invoked only during metric collection
+    /// (typically every 5-60s by an OTel exporter), not on the hot path.
+    /// Returns one measurement per assigned partition: highWatermark - consumedPosition.
+    /// </summary>
+    private IEnumerable<Measurement<long>> ObserveConsumerLag()
+    {
+        foreach (var (tp, highWatermark) in _highWatermarks)
+        {
+            // Use consumed position (ConcurrentDictionary — safe for cross-thread reads).
+            // _committed is a plain Dictionary and not safe to read from the OTel callback thread.
+            var consumedPosition = _positions.GetValueOrDefault(tp, 0);
+
+            var lag = Math.Max(0, highWatermark - consumedPosition);
+
+            yield return new Measurement<long>(lag,
+                new System.Diagnostics.TagList
+                {
+                    { Diagnostics.DekafDiagnostics.MessagingDestinationName, tp.Topic },
+                    { Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, tp.Partition },
+                    { Diagnostics.DekafDiagnostics.MessagingConsumerGroupName, _options.GroupId }
+                });
+        }
+    }
+
+    #endregion
 
     #region Logging
 
