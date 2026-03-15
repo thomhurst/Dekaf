@@ -8,10 +8,11 @@ using Dekaf.Compression;
 namespace Dekaf.Protocol.Records;
 
 /// <summary>
-/// A reusable buffer writer backed by ArrayPool to avoid zero-initialization overhead.
-/// Unlike ArrayBufferWriter&lt;byte&gt; which allocates via <c>new byte[]</c> (zero-initialized),
-/// this uses ArrayPool.Rent (not zero-initialized) and returns buffers with clearArray: false.
-/// Designed for thread-local reuse in serialization hot paths.
+/// Reusable buffer writer backed by ArrayPool. Two memory management mechanisms:
+/// 1. Hard cap: buffers exceeding MaxRetainedBufferSize (1MB) are returned to the pool
+///    and replaced with a fresh initial-size buffer on every Clear().
+/// 2. Adaptive shrink: every ShrinkCheckInterval (64) clears, if peak usage was below
+///    half the buffer size, the buffer is downsized to 2x peak (minimum _initialCapacity).
 /// </summary>
 internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposable
 {
@@ -79,11 +80,14 @@ internal sealed class PooledReusableBufferWriter : IBufferWriter<byte>, IDisposa
             var bufferLength = _buffer.Length;
             if (_highWaterMark < bufferLength / 2 && bufferLength > _initialCapacity)
             {
-                var targetSize = Math.Max(_initialCapacity, _highWaterMark * 2);
+                // Target size floors at _initialCapacity when _highWaterMark is 0
+            // (buffer had no writes in the last ShrinkCheckInterval clears).
+            var targetSize = Math.Max(_initialCapacity, _highWaterMark * 2);
                 ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
                 _buffer = ArrayPool<byte>.Shared.Rent(targetSize);
             }
 
+            // Always reset to start a fresh tracking window, regardless of whether shrink occurred.
             _highWaterMark = 0;
         }
     }
@@ -388,6 +392,9 @@ public sealed class RecordBatch : IDisposable
         ProducerEpoch = -1;
         BaseSequence = -1;
 
+        // Soft limit: the check-then-act is intentionally non-atomic.
+        // Under high concurrency, the pool may briefly exceed MaxPoolSize by a few items.
+        // This is acceptable — avoiding a CAS loop keeps the return path lock-free.
         if (Volatile.Read(ref s_poolCount) < MaxPoolSize)
         {
             s_pool.Push(this);
