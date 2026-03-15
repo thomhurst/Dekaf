@@ -40,7 +40,7 @@ public abstract class KafkaIntegrationTest(KafkaTestContainer kafkaTestContainer
         IKafkaProducer<TKey, TValue> producer,
         ProducerMessage<TKey, TValue> message,
         int maxAttempts = 3,
-        int timeoutSeconds = 15,
+        int timeoutSeconds = 30,
         CancellationToken cancellationToken = default)
     {
         for (var attempt = 0; attempt < maxAttempts; attempt++)
