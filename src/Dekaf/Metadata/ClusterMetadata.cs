@@ -51,25 +51,22 @@ internal sealed class ClusterMetadataSnapshot
     private static Dictionary<int, IReadOnlyList<TopicPartition>> BuildPartitionsByBroker(
         Dictionary<string, TopicInfo> topics)
     {
-        // First pass: build mutable lists
-        var builder = new Dictionary<int, List<TopicPartition>>();
+        // Accumulate into List<T> values cast as IReadOnlyList<T>, then freeze in-place.
+        // Single dictionary avoids a second allocation + copy loop.
+        var result = new Dictionary<int, IReadOnlyList<TopicPartition>>();
         foreach (var topic in topics.Values)
         {
             foreach (var partition in topic.Partitions)
             {
-                if (!builder.TryGetValue(partition.LeaderId, out var list))
-                {
-                    list = new List<TopicPartition>();
-                    builder[partition.LeaderId] = list;
-                }
-                list.Add(new TopicPartition(topic.Name, partition.PartitionIndex));
+                if (!result.TryGetValue(partition.LeaderId, out var existing))
+                    result[partition.LeaderId] = existing = new List<TopicPartition>();
+                ((List<TopicPartition>)existing).Add(new TopicPartition(topic.Name, partition.PartitionIndex));
             }
         }
 
-        // Freeze lists into arrays for the immutable snapshot
-        var result = new Dictionary<int, IReadOnlyList<TopicPartition>>(builder.Count);
-        foreach (var kvp in builder)
-            result[kvp.Key] = kvp.Value.ToArray();
+        // Freeze mutable lists into arrays to prevent mutation of the immutable snapshot
+        foreach (var key in result.Keys)
+            result[key] = ((List<TopicPartition>)result[key]).ToArray();
         return result;
     }
 }

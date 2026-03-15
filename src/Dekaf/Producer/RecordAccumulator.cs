@@ -1189,12 +1189,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return;
 
         // Ensure StartAppendWorkers has been called (token is stored).
-        // If this fires, EnqueueAppend was called before StartAppendWorkers —
-        // items would sit in the channel with no consumer.
-        Debug.Assert(Volatile.Read(ref _appendWorkersReady) != 0,
-            "EnqueueAppend called before StartAppendWorkers");
+        // Without workers, items sit in the channel forever and the caller's
+        // completion source never resolves, causing ProduceAsync to hang.
+        // Skip check if disposed — the channel is closed and TryWrite will fail
+        // with ObjectDisposedException, which is the expected post-disposal behavior.
         if (Volatile.Read(ref _appendWorkersReady) == 0)
-            return;
+        {
+            if (_disposed)
+                return; // Let TryWrite fail with ObjectDisposedException
+            throw new InvalidOperationException("EnqueueAppend called before StartAppendWorkers");
+        }
 
         if (Interlocked.CompareExchange(ref _appendWorkersStarted, 1, 0) != 0)
             return;
