@@ -2855,6 +2855,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             ? DateTimeOffset.UtcNow.AddMilliseconds(_options.CloseTimeoutMs)
             : DateTimeOffset.MaxValue;
         var gracefulMs = hasTimeout ? _options.CloseTimeoutMs / 2 : 0;
+
+        // Local helper: milliseconds remaining until totalDeadline, floored at zero.
+        int RemainingMs() => Math.Max(0, (int)(totalDeadline - DateTimeOffset.UtcNow).TotalMilliseconds);
         using var shutdownCts = hasTimeout
             ? new CancellationTokenSource(TimeSpan.FromMilliseconds(gracefulMs))
             : new CancellationTokenSource();
@@ -2916,8 +2919,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
             // Derive sender wait timeout from remaining time budget rather than hardcoding,
             // so the total dispose time never exceeds CloseTimeoutMs.
-            var remainingMs = Math.Max(0, (int)(totalDeadline - DateTimeOffset.UtcNow).TotalMilliseconds);
-            var senderWaitMs = Math.Max(500, remainingMs / 3);
+            var senderWaitMs = Math.Max(500, RemainingMs() / 3);
 
             try
             {
@@ -2934,8 +2936,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // Wait for linger task to exit (it should be quick after cancellation).
         // Use a small slice of the remaining budget (capped at 1s).
         {
-            var remainingMs = Math.Max(0, (int)(totalDeadline - DateTimeOffset.UtcNow).TotalMilliseconds);
-            var lingerWaitMs = Math.Min(1000, Math.Max(250, remainingMs / 4));
+            var lingerWaitMs = Math.Min(1000, Math.Max(250, RemainingMs() / 4));
             try
             {
                 await _lingerTask.WaitAsync(TimeSpan.FromMilliseconds(lingerWaitMs)).ConfigureAwait(false);
@@ -2964,8 +2965,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             }
 
             // Derive broker disposal timeout from remaining time budget.
-            var remainingMs = Math.Max(0, (int)(totalDeadline - DateTimeOffset.UtcNow).TotalMilliseconds);
-            var brokerDisposeMs = Math.Max(500, remainingMs);
+            var brokerDisposeMs = Math.Max(500, RemainingMs());
 
             try
             {
