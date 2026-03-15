@@ -22,7 +22,7 @@ public class BatchArrayReuseQueueTests
         var queue = new BatchArrayReuseQueue(maxSize: 4);
         var arrays = CreateTestArrays();
 
-        queue.TryEnqueue(arrays.Records, arrays.CompletionSources, arrays.PooledDataArrays, arrays.PooledHeaderArrays);
+        queue.EnqueueOrReturn(arrays.Records, arrays.CompletionSources, arrays.PooledDataArrays, arrays.PooledHeaderArrays);
 
         var success = queue.TryDequeue(out var dequeued);
 
@@ -41,12 +41,12 @@ public class BatchArrayReuseQueueTests
         // Fill the queue to capacity
         var arrays1 = CreateTestArrays();
         var arrays2 = CreateTestArrays();
-        queue.TryEnqueue(arrays1.Records, arrays1.CompletionSources, arrays1.PooledDataArrays, arrays1.PooledHeaderArrays);
-        queue.TryEnqueue(arrays2.Records, arrays2.CompletionSources, arrays2.PooledDataArrays, arrays2.PooledHeaderArrays);
+        queue.EnqueueOrReturn(arrays1.Records, arrays1.CompletionSources, arrays1.PooledDataArrays, arrays1.PooledHeaderArrays);
+        queue.EnqueueOrReturn(arrays2.Records, arrays2.CompletionSources, arrays2.PooledDataArrays, arrays2.PooledHeaderArrays);
 
         // This one should be returned to ArrayPool (queue is full)
         var overflow = CreateTestArrays();
-        queue.TryEnqueue(overflow.Records, overflow.CompletionSources, overflow.PooledDataArrays, overflow.PooledHeaderArrays);
+        queue.EnqueueOrReturn(overflow.Records, overflow.CompletionSources, overflow.PooledDataArrays, overflow.PooledHeaderArrays);
 
         // Should only be able to dequeue the 2 that fit
         var success1 = queue.TryDequeue(out _);
@@ -88,7 +88,7 @@ public class BatchArrayReuseQueueTests
                 for (var j = 0; j < operationsPerThread; j++)
                 {
                     var arrays = CreateTestArrays();
-                    queue.TryEnqueue(arrays.Records, arrays.CompletionSources, arrays.PooledDataArrays, arrays.PooledHeaderArrays);
+                    queue.EnqueueOrReturn(arrays.Records, arrays.CompletionSources, arrays.PooledDataArrays, arrays.PooledHeaderArrays);
                     Interlocked.Increment(ref enqueueCount);
                 }
             });
@@ -132,7 +132,7 @@ public class BatchArrayReuseQueueTests
 
         // First cycle
         var arrays1 = CreateTestArrays();
-        queue.TryEnqueue(arrays1.Records, arrays1.CompletionSources, arrays1.PooledDataArrays, arrays1.PooledHeaderArrays);
+        queue.EnqueueOrReturn(arrays1.Records, arrays1.CompletionSources, arrays1.PooledDataArrays, arrays1.PooledHeaderArrays);
         var success1 = queue.TryDequeue(out var dequeued1);
 
         await Assert.That(success1).IsTrue();
@@ -140,7 +140,7 @@ public class BatchArrayReuseQueueTests
 
         // Second cycle - queue should accept new items after draining
         var arrays2 = CreateTestArrays();
-        queue.TryEnqueue(arrays2.Records, arrays2.CompletionSources, arrays2.PooledDataArrays, arrays2.PooledHeaderArrays);
+        queue.EnqueueOrReturn(arrays2.Records, arrays2.CompletionSources, arrays2.PooledDataArrays, arrays2.PooledHeaderArrays);
         var success2 = queue.TryDequeue(out var dequeued2);
 
         await Assert.That(success2).IsTrue();

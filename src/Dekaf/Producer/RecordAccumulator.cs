@@ -2867,7 +2867,7 @@ internal sealed class PartitionBatch
         // Arrays were transferred to ReadyBatch by Complete() and are now null.
         // Try to reclaim arrays from the reuse queue first (returned by ReadyBatch.Cleanup()),
         // avoiding 4 ArrayPool Rent operations per batch cycle.
-        if (arrayReuseQueue is not null && arrayReuseQueue.TryDequeue(out var reusable))
+        if (_arrayReuseQueue is not null && _arrayReuseQueue.TryDequeue(out var reusable))
         {
             _records = reusable.Records;
             _completionSources = reusable.CompletionSources;
@@ -3431,30 +3431,16 @@ internal sealed class BatchArrayReuseQueue
         _maxSize = maxSize;
     }
 
-    internal readonly struct ReusableArrays
-    {
-        public readonly Record[] Records;
-        public readonly PooledValueTaskSource<RecordMetadata>[] CompletionSources;
-        public readonly byte[][] PooledDataArrays;
-        public readonly Header[][] PooledHeaderArrays;
-
-        public ReusableArrays(
-            Record[] records,
-            PooledValueTaskSource<RecordMetadata>[] completionSources,
-            byte[][] pooledDataArrays,
-            Header[][] pooledHeaderArrays)
-        {
-            Records = records;
-            CompletionSources = completionSources;
-            PooledDataArrays = pooledDataArrays;
-            PooledHeaderArrays = pooledHeaderArrays;
-        }
-    }
+    internal readonly record struct ReusableArrays(
+        Record[] Records,
+        PooledValueTaskSource<RecordMetadata>[] CompletionSources,
+        byte[][] PooledDataArrays,
+        Header[][] PooledHeaderArrays);
 
     /// <summary>
-    /// Enqueues a set of reusable arrays. If the queue is full, falls back to ArrayPool return.
+    /// Enqueues arrays for reuse, or returns them to ArrayPool if the queue is full.
     /// </summary>
-    public void TryEnqueue(
+    public void EnqueueOrReturn(
         Record[] records,
         PooledValueTaskSource<RecordMetadata>[] completionSources,
         byte[][] pooledDataArrays,
@@ -3958,7 +3944,7 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
             // PooledValueTaskSource references, but these are never accessed because counters reset to 0
             // on reuse. PooledValueTaskSource instances auto-return to their pool via GetResult(),
             // so stale references don't prevent pool recycling. This matches ArrayPool behavior.
-            _arrayReuseQueue.TryEnqueue(_pooledRecordsArray, _completionSourcesArray, _pooledDataArrays, _pooledHeaderArrays);
+            _arrayReuseQueue.EnqueueOrReturn(_pooledRecordsArray, _completionSourcesArray, _pooledDataArrays, _pooledHeaderArrays);
         }
         else
         {
