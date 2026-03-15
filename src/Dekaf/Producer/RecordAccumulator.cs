@@ -1806,11 +1806,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             {
                 _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100), _disposalCts.Token);
             }
-            catch (OperationCanceledException) when (_disposed)
+            catch (OperationCanceledException)
             {
-                throw new ObjectDisposedException(nameof(RecordAccumulator));
+                // Re-check _disposed unconditionally: there is a race where _disposalCts fires
+                // before _disposed is set, so the `when (_disposed)` guard could miss it.
+                if (_disposed)
+                    throw new ObjectDisposedException(nameof(RecordAccumulator));
+                throw;
             }
         }
+
+        // Chain-wake: if space still remains, signal the next sync waiter so concurrent
+        // ReserveMemorySync callers aren't delayed up to 100ms waiting for their own signal.
+        if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+            TryReleaseSemaphore(_syncBufferSpaceSignal);
     }
 
     private void ThrowBufferFullTimeout(long startTicks)
@@ -1888,6 +1897,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         batch = null;
         return false;
+    }
+
+    /// <summary>
+    /// Clears the current unsealed batch for the given partition, preventing double-release
+    /// during disposal. Used by tests that manually call <see cref="ReleaseMemory"/>.
+    /// </summary>
+    internal void ClearCurrentBatch(string topic, int partition)
+    {
+        if (_partitionDeques.TryGetValue(new TopicPartition(topic, partition), out var pd))
+        {
+            using var guard = new SpinLockGuard(ref pd.Lock);
+            if (pd.CurrentBatch is not null)
+            {
+                Interlocked.Decrement(ref _unsealedBatchCount);
+                pd.CurrentBatch = null;
+            }
+        }
     }
 
     /// <remarks>
