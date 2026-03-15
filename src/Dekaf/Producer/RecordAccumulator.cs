@@ -342,11 +342,13 @@ internal sealed class BatchArena
     //
     // Pool size scales with BufferMemory/BatchSize to handle high batch churn rates
     // (e.g., 16KB batches create ~6,250 batches/sec at 100K msg/sec vs ~100 for 1MB batches).
-    // The default (256) works well for 1MB batches; smaller batches ratchet it up automatically.
-    internal const int DefaultPoolSize = 256;
+    // The default (512) covers sustained load with 1MB batches; smaller batches ratchet up automatically.
+    // Profiling showed 256 caused pool overflow and ~3.9GB of POH allocation churn in 2-min stress tests.
+    internal const int DefaultPoolSize = 512;
     // Upper bound on pool size. Worst-case POH retention: MaxPoolSizeCap × arena capacity.
     // With 16KB batches (the smallest that triggers scaling): 2048 × ~18KB ≈ 36MB.
-    // With 1MB batches: ComputePoolSize returns 256 (not 2048), so 256 × ~1.1MB ≈ 280MB.
+    // With 256KB batches and 1GB buffer: 2048 × ~280KB ≈ 560MB POH retention.
+    // With 1MB batches: ComputePoolSize returns 512 (not 2048), so 512 × ~1.1MB ≈ 560MB.
     internal const int MaxPoolSizeCap = 2048;
     private static int s_maxPoolSize = DefaultPoolSize;
     private static int s_poolCount;
@@ -359,6 +361,9 @@ internal sealed class BatchArena
     /// Note: in multi-producer scenarios, a disposed small-batch producer leaves the raised
     /// cap in place. This is acceptable because re-creating POH buffers on demand is costlier
     /// than retaining the pool headroom, and most applications use a single producer config.
+    /// Worst-case amplification: if a transient small-batch producer (e.g., 256KB batches)
+    /// ratchets the cap to 2048, then a 1MB-batch producer can retain up to
+    /// 2048 × ~1.1MB ≈ 2.2GB of POH memory instead of the normal 512 × ~1.1MB ≈ 560MB.
     /// </summary>
     internal static void RatchetPoolSize(int newSize)
     {
@@ -1117,12 +1122,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal static int ComputePoolSize(ProducerOptions options)
     {
         // BufferMemory / BatchSize gives the max batch count the buffer can hold.
-        // Divide by 4 (empirical, validated via stress tests): at steady state, batches are
-        // in one of four phases — filling, sealed/queued, in-flight to broker, awaiting ack.
-        // Only the sealed+in-flight phases need pool coverage; the filling phase reuses the
-        // current batch in-place. The MaxPoolSizeCap provides a backstop regardless.
+        // Divide by 2: under sustained load, batches span multiple lifecycle phases
+        // (filling, sealed/queued, in-flight, awaiting ack, cleanup). Profiling showed
+        // that /4 caused pool overflow with default settings (1GB/1MB = 256), leading to
+        // ~3.9GB POH allocation churn and 15 Gen2 GCs in 2-minute stress tests.
+        // /2 provides sufficient headroom for peak in-flight counts without excessive retention.
         var batchCapacity = (int)Math.Min(options.BufferMemory / (ulong)Math.Max(options.BatchSize, 1), int.MaxValue);
-        return Math.Clamp(batchCapacity / 4, BatchArena.DefaultPoolSize, BatchArena.MaxPoolSizeCap);
+        return Math.Clamp(batchCapacity / 2, BatchArena.DefaultPoolSize, BatchArena.MaxPoolSizeCap);
     }
 
     /// <summary>
@@ -2578,7 +2584,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             while (channel.Reader.TryRead(out var workItem))
             {
                 CleanupWorkItemResources(in workItem);
-                workItem.Completion.TrySetException(disposedException);
+                workItem.Completion?.TrySetException(disposedException);
             }
         }
 
