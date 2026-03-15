@@ -331,7 +331,11 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
             })
             .BuildAsync();
 
-        consumer.Subscribe(topic);
+        // Use manual partition assignment instead of Subscribe to skip consumer group
+        // rebalance, which can take 30+ seconds on slow CI runners and eat into the
+        // stats timeout budget. This test is about metrics accuracy, not group semantics.
+        for (var p = 0; p < 3; p++)
+            consumer.Assign(new TopicPartition(topic, p));
 
         // Consume in background — keep the consumer active so stats keep firing.
         using var consumeCts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
