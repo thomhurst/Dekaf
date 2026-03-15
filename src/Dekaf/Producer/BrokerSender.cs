@@ -524,26 +524,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var pollCtsRegistration = cancellationToken.Register(
             static state => ((CancellationTokenSource)state!).Cancel(), _pollTimeoutCts);
 
-        async ValueTask WaitForAnyResponseAsync()
-        {
-            _pollTimeoutCts.CancelAfter(100);
-            try
-            {
-                await _anyResponseCompleted.WaitAsync(_pollTimeoutCts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                // Poll timeout fired — not an error, just re-check loop conditions.
-            }
-            finally
-            {
-                // TryReset() returns false if the outer cancellationToken cancelled the CTS
-                // (via the registered callback). This is safe — the loop will exit on the
-                // next iteration via cancellationToken.ThrowIfCancellationRequested().
-                _pollTimeoutCts.TryReset();
-            }
-        }
-
         try
         {
             while (true)
@@ -680,7 +660,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // timeouts for zombie entries that expire while we're waiting.
                             // Signal may be missed if multiple responses complete between
                             // iterations; 100ms fallback ensures we don't wait indefinitely.
-                            await WaitForAnyResponseAsync().ConfigureAwait(false);
+                            _pollTimeoutCts.CancelAfter(100);
+                            try
+                            {
+                                await _anyResponseCompleted.WaitAsync(_pollTimeoutCts.Token).ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                            {
+                                // Poll timeout fired — not an error, just re-check loop conditions.
+                            }
+                            finally
+                            {
+                                _pollTimeoutCts.TryReset();
+                            }
                         }
                     }
 
@@ -813,7 +805,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // response completes (which may unmute a partition).
                     // Signal may be missed if multiple responses complete between
                     // iterations; 100ms fallback ensures we don't wait indefinitely.
-                    await WaitForAnyResponseAsync().ConfigureAwait(false);
+                    _pollTimeoutCts.CancelAfter(100);
+                    try
+                    {
+                        await _anyResponseCompleted.WaitAsync(_pollTimeoutCts.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        // Poll timeout fired — not an error, just re-check loop conditions.
+                    }
+                    finally
+                    {
+                        _pollTimeoutCts.TryReset();
+                    }
                 }
                 else if (carryOver.Count > 0)
                 {
