@@ -1211,6 +1211,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         return batch;
     }
 
+    // Single thread-local cache consolidating all per-thread deque lookup state.
+    // Reduces 3 separate [ThreadStatic] lookups to 1.
     // Per-thread one-slot cache for GetOrCreateDeque to avoid ConcurrentDictionary hash+lookup
     // on every message. The cache stores (accumulator instance, TopicPartition, PartitionDeque).
     // Hit rate is high in partition-affine append workers and single-partition scenarios.
@@ -1219,11 +1221,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // IMPORTANT: This cache is only valid because _partitionDeques never removes entries.
     // If partition eviction is ever added, the cache must be invalidated on removal.
     [ThreadStatic]
-    private static RecordAccumulator? t_cachedAccumulator;
-    [ThreadStatic]
-    private static TopicPartition t_cachedTopicPartition;
-    [ThreadStatic]
-    private static PartitionDeque? t_cachedDeque;
+    private static AccumulatorThreadCache? t_cache;
+
+    /// <summary>
+    /// Holds per-thread cached state for partition deque lookups.
+    /// Consolidating into a single class reduces thread-static lookup overhead from 3 to 1.
+    /// </summary>
+    private sealed class AccumulatorThreadCache
+    {
+        public RecordAccumulator? CachedAccumulator;
+        public TopicPartition CachedTopicPartition;
+        public PartitionDeque? CachedDeque;
+    }
 
     /// <summary>
     /// Gets or creates the PartitionDeque for a topic-partition pair.
@@ -1236,21 +1245,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         var tp = new TopicPartition(topic, partition);
 
         // Fast path: check thread-local cache (skip if disposed to avoid serving stale data)
-        if (t_cachedAccumulator == this && !_disposed && t_cachedTopicPartition == tp && t_cachedDeque is { } cached)
+        var cache = t_cache ??= new AccumulatorThreadCache();
+        if (cache.CachedAccumulator == this && !_disposed && cache.CachedTopicPartition == tp && cache.CachedDeque is { } cached)
             return cached;
 
-        return GetOrCreateDequeSlow(tp);
+        return GetOrCreateDequeSlow(tp, cache);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private PartitionDeque GetOrCreateDequeSlow(TopicPartition tp)
+    private PartitionDeque GetOrCreateDequeSlow(TopicPartition tp, AccumulatorThreadCache cache)
     {
         var deque = _partitionDeques.GetOrAdd(tp, static _ => new PartitionDeque());
 
         // Update thread-local cache
-        t_cachedAccumulator = this;
-        t_cachedTopicPartition = tp;
-        t_cachedDeque = deque;
+        cache.CachedAccumulator = this;
+        cache.CachedTopicPartition = tp;
+        cache.CachedDeque = deque;
 
         return deque;
     }

@@ -90,48 +90,52 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     // Application-level retry policy (null = no retries, zero overhead on fast path)
     private readonly IRetryPolicy? _retryPolicy;
 
-    // Thread-local reusable SerializationContext to avoid per-message allocations
-    // Since SerializationContext contains reference types (Topic, Headers), copying it
-    // involves copying those references. Using ThreadStatic avoids repeated struct creation.
-    //
-    // ThreadStatic initialization: Default struct initialization (all fields = null/default) is safe.
-    // The struct is updated via property setters before each use, so initial null values don't matter.
-    // Reference type fields (string Topic, Headers? Headers) start as null and are explicitly set
-    // before passing to serializers, avoiding any uninitialized state issues.
+    // Single thread-local cache consolidating all per-thread producer state.
+    // Reduces 9 separate [ThreadStatic] lookups (each hitting GetGCThreadStaticsByIndexSlow)
+    // to a single lookup per method entry point.
     [ThreadStatic]
-    private static SerializationContext t_serializationContext;
+    private static ProducerThreadCache? t_cache;
 
-    // Thread-local cached timestamp for fire-and-forget produces.
-    // DateTimeOffset.UtcNow is expensive (~15-30ns). By caching the timestamp and refreshing
-    // it approximately every millisecond, we can reduce overhead in high-throughput scenarios.
-    // For fire-and-forget, precise per-message timestamps aren't critical since:
-    // 1. Records store timestamp deltas from batch base timestamp
-    // 2. Batches are sent within LingerMs (typically 0-5ms)
-    [ThreadStatic]
-    private static long t_cachedTimestampMs;
-    [ThreadStatic]
-    private static long t_cachedTimestampTicks;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ProducerThreadCache GetOrCreateCache() => t_cache ??= new ProducerThreadCache();
 
-    // Thread-local cached topic metadata for fire-and-forget produces.
-    // Avoids MetadataManager dictionary lookups for consecutive messages to the same topic.
-    // Cache validity is time-bounded (~1 second) to pick up background metadata refreshes.
-    [ThreadStatic]
-    private static string? t_cachedTopicName;
-    [ThreadStatic]
-    private static TopicInfo? t_cachedTopicInfo;
-    [ThreadStatic]
-    private static long t_cachedTopicValidUntilTicks;
-    [ThreadStatic]
-    private static MetadataManager? t_cachedMetadataManager;
+    /// <summary>
+    /// Holds all per-thread cached state for the producer hot path.
+    /// Consolidating into a single class reduces thread-static lookup overhead from 9 to 1.
+    /// </summary>
+    private sealed class ProducerThreadCache
+    {
+        // Reusable SerializationContext to avoid per-message allocations.
+        // Since SerializationContext contains reference types (Topic, Headers), copying it
+        // involves copying those references. Using ThreadStatic avoids repeated struct creation.
+        // Default struct initialization (all fields = null/default) is safe.
+        // The struct is updated via property setters before each use.
+        public SerializationContext SerializationContext;
 
-    // Thread-local reusable serialization buffers to avoid PooledBufferWriter creation per message.
-    // These buffers grow as needed and are reused across messages on the same thread.
-    // After serialization, data is copied to a right-sized pooled buffer for the batch.
-    // This trades a small copy for eliminating buffer allocation overhead.
-    [ThreadStatic]
-    private static byte[]? t_keySerializationBuffer;
-    [ThreadStatic]
-    private static byte[]? t_valueSerializationBuffer;
+        // Cached timestamp for fire-and-forget produces.
+        // DateTimeOffset.UtcNow is expensive (~15-30ns). By caching the timestamp and refreshing
+        // it approximately every millisecond, we can reduce overhead in high-throughput scenarios.
+        // For fire-and-forget, precise per-message timestamps aren't critical since:
+        // 1. Records store timestamp deltas from batch base timestamp
+        // 2. Batches are sent within LingerMs (typically 0-5ms)
+        public long CachedTimestampMs;
+        public long CachedTimestampTicks;
+
+        // Cached topic metadata for fire-and-forget produces.
+        // Avoids MetadataManager dictionary lookups for consecutive messages to the same topic.
+        // Cache validity is time-bounded (~1 second) to pick up background metadata refreshes.
+        public string? CachedTopicName;
+        public TopicInfo? CachedTopicInfo;
+        public long CachedTopicValidUntilTicks;
+        public MetadataManager? CachedMetadataManager;
+
+        // Reusable serialization buffers to avoid PooledBufferWriter creation per message.
+        // These buffers grow as needed and are reused across messages on the same thread.
+        // After serialization, data is copied to a right-sized pooled buffer for the batch.
+        // This trades a small copy for eliminating buffer allocation overhead.
+        public byte[]? KeySerializationBuffer;
+        public byte[]? ValueSerializationBuffer;
+    }
 
     // Default sizes match typical key/value sizes to avoid growth in common cases
     private const int DefaultKeyBufferSize = 512;
@@ -784,13 +788,14 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Check if cache is for this metadata manager, topic, and still valid
         // Use signed comparison to handle TickCount64 wraparound (every ~292 million years)
+        var cache = GetOrCreateCache();
         var currentTicks = Environment.TickCount64;
-        if (t_cachedMetadataManager == _metadataManager &&
-            t_cachedTopicName == topic &&
-            t_cachedTopicInfo is not null &&
-            (t_cachedTopicValidUntilTicks - currentTicks) > 0)
+        if (cache.CachedMetadataManager == _metadataManager &&
+            cache.CachedTopicName == topic &&
+            cache.CachedTopicInfo is not null &&
+            (cache.CachedTopicValidUntilTicks - currentTicks) > 0)
         {
-            topicInfo = t_cachedTopicInfo;
+            topicInfo = cache.CachedTopicInfo;
             return true;
         }
 
@@ -805,12 +810,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void UpdateCachedTopicInfo(string topic, TopicInfo topicInfo)
     {
-        t_cachedMetadataManager = _metadataManager;
-        t_cachedTopicName = topic;
-        t_cachedTopicInfo = topicInfo;
+        var cache = GetOrCreateCache();
+        cache.CachedMetadataManager = _metadataManager;
+        cache.CachedTopicName = topic;
+        cache.CachedTopicInfo = topicInfo;
         // Cache valid for ~1 second (1000 ticks) - enough for high-throughput bursts
         // while still detecting stale metadata reasonably quickly
-        t_cachedTopicValidUntilTicks = Environment.TickCount64 + 1000;
+        cache.CachedTopicValidUntilTicks = Environment.TickCount64 + 1000;
     }
 
     /// <summary>
@@ -831,17 +837,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         TopicInfo topicInfo)
     {
         // Step 1: Serialize to thread-local buffers (no allocation, reused across messages)
+        var cache = GetOrCreateCache();
         var keyIsNull = keyObj is null;
         int keyLength = 0;
 
         if (!keyIsNull)
         {
-            var keyWriter = new ReusableBufferWriter(ref t_keySerializationBuffer, DefaultKeyBufferSize);
-            t_serializationContext.Topic = topic;
-            t_serializationContext.Component = SerializationComponent.Key;
-            t_serializationContext.Headers = headers;
-            _keySerializer.Serialize(keyObj!, ref keyWriter, t_serializationContext);
-            keyWriter.UpdateBufferRef(ref t_keySerializationBuffer);
+            var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
+            cache.SerializationContext.Topic = topic;
+            cache.SerializationContext.Component = SerializationComponent.Key;
+            cache.SerializationContext.Headers = headers;
+            _keySerializer.Serialize(keyObj!, ref keyWriter, cache.SerializationContext);
+            keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
             keyLength = keyWriter.WrittenCount;
         }
 
@@ -850,17 +857,17 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         if (!valueIsNull)
         {
-            var valueWriter = new ReusableBufferWriter(ref t_valueSerializationBuffer, DefaultValueBufferSize);
-            t_serializationContext.Topic = topic;
-            t_serializationContext.Component = SerializationComponent.Value;
-            t_serializationContext.Headers = headers;
-            _valueSerializer.Serialize(value!, ref valueWriter, t_serializationContext);
-            valueWriter.UpdateBufferRef(ref t_valueSerializationBuffer);
+            var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
+            cache.SerializationContext.Topic = topic;
+            cache.SerializationContext.Component = SerializationComponent.Value;
+            cache.SerializationContext.Headers = headers;
+            _valueSerializer.Serialize(value!, ref valueWriter, cache.SerializationContext);
+            valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
             valueLength = valueWriter.WrittenCount;
         }
 
         // Step 2: Compute partition using serialized key bytes
-        var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : t_keySerializationBuffer.AsSpan(0, keyLength);
+        var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
         var partition = partitionOverride
             ?? _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
 
@@ -903,12 +910,13 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         // Pass raw spans from thread-local buffers directly to the accumulator.
         // The accumulator will try arena allocation first, falling back to ArrayPool.
+        var cache = GetOrCreateCache();
         var keySpan = !keyIsNull && keyLength > 0
-            ? t_keySerializationBuffer.AsSpan(0, keyLength)
+            ? cache.KeySerializationBuffer.AsSpan(0, keyLength)
             : ReadOnlySpan<byte>.Empty;
 
         var valueSpan = !valueIsNull && valueLength > 0
-            ? t_valueSerializationBuffer.AsSpan(0, valueLength)
+            ? cache.ValueSerializationBuffer.AsSpan(0, valueLength)
             : ReadOnlySpan<byte>.Empty;
 
         if (!_accumulator.AppendFromSpans(
@@ -1233,17 +1241,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         Action<RecordMetadata, Exception?> callback)
     {
         // Step 1: Serialize to thread-local buffers (no allocation, reused across messages)
+        var cache = GetOrCreateCache();
         var keyIsNull = keyObj is null;
         int keyLength = 0;
 
         if (!keyIsNull)
         {
-            var keyWriter = new ReusableBufferWriter(ref t_keySerializationBuffer, DefaultKeyBufferSize);
-            t_serializationContext.Topic = topic;
-            t_serializationContext.Component = SerializationComponent.Key;
-            t_serializationContext.Headers = headers;
-            _keySerializer.Serialize(keyObj!, ref keyWriter, t_serializationContext);
-            keyWriter.UpdateBufferRef(ref t_keySerializationBuffer);
+            var keyWriter = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
+            cache.SerializationContext.Topic = topic;
+            cache.SerializationContext.Component = SerializationComponent.Key;
+            cache.SerializationContext.Headers = headers;
+            _keySerializer.Serialize(keyObj!, ref keyWriter, cache.SerializationContext);
+            keyWriter.UpdateBufferRef(ref cache.KeySerializationBuffer);
             keyLength = keyWriter.WrittenCount;
         }
 
@@ -1252,17 +1261,17 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         if (!valueIsNull)
         {
-            var valueWriter = new ReusableBufferWriter(ref t_valueSerializationBuffer, DefaultValueBufferSize);
-            t_serializationContext.Topic = topic;
-            t_serializationContext.Component = SerializationComponent.Value;
-            t_serializationContext.Headers = headers;
-            _valueSerializer.Serialize(value!, ref valueWriter, t_serializationContext);
-            valueWriter.UpdateBufferRef(ref t_valueSerializationBuffer);
+            var valueWriter = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
+            cache.SerializationContext.Topic = topic;
+            cache.SerializationContext.Component = SerializationComponent.Value;
+            cache.SerializationContext.Headers = headers;
+            _valueSerializer.Serialize(value!, ref valueWriter, cache.SerializationContext);
+            valueWriter.UpdateBufferRef(ref cache.ValueSerializationBuffer);
             valueLength = valueWriter.WrittenCount;
         }
 
         // Step 2: Compute partition using serialized key bytes
-        var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : t_keySerializationBuffer.AsSpan(0, keyLength);
+        var keySpan = keyIsNull ? ReadOnlySpan<byte>.Empty : cache.KeySerializationBuffer.AsSpan(0, keyLength);
         var partition = partitionOverride
             ?? _partitioner.Partition(topic, keySpan, keyIsNull, topicInfo.PartitionCount);
 
@@ -2731,17 +2740,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// </summary>
     private PooledMemory SerializeKeyToPooled(TKey key, string topic, Headers? headers)
     {
+        var cache = GetOrCreateCache();
+
         // Use thread-local buffer to avoid per-message allocation
-        var writer = new ReusableBufferWriter(ref t_keySerializationBuffer, DefaultKeyBufferSize);
+        var writer = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
 
         // Reuse thread-local context by updating fields (zero-allocation)
-        t_serializationContext.Topic = topic;
-        t_serializationContext.Component = SerializationComponent.Key;
-        t_serializationContext.Headers = headers;
-        _keySerializer.Serialize(key, ref writer, t_serializationContext);
+        cache.SerializationContext.Topic = topic;
+        cache.SerializationContext.Component = SerializationComponent.Key;
+        cache.SerializationContext.Headers = headers;
+        _keySerializer.Serialize(key, ref writer, cache.SerializationContext);
 
         // Update buffer ref in case it grew during serialization
-        writer.UpdateBufferRef(ref t_keySerializationBuffer);
+        writer.UpdateBufferRef(ref cache.KeySerializationBuffer);
 
         // Copy to right-sized pooled buffer for batch storage
         return writer.ToPooledMemory();
@@ -2754,17 +2765,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// </summary>
     private PooledMemory SerializeValueToPooled(TValue value, string topic, Headers? headers)
     {
+        var cache = GetOrCreateCache();
+
         // Use thread-local buffer to avoid per-message allocation
-        var writer = new ReusableBufferWriter(ref t_valueSerializationBuffer, DefaultValueBufferSize);
+        var writer = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
 
         // Reuse thread-local context by updating fields (zero-allocation)
-        t_serializationContext.Topic = topic;
-        t_serializationContext.Component = SerializationComponent.Value;
-        t_serializationContext.Headers = headers;
-        _valueSerializer.Serialize(value, ref writer, t_serializationContext);
+        cache.SerializationContext.Topic = topic;
+        cache.SerializationContext.Component = SerializationComponent.Value;
+        cache.SerializationContext.Headers = headers;
+        _valueSerializer.Serialize(value, ref writer, cache.SerializationContext);
 
         // Update buffer ref in case it grew during serialization
-        writer.UpdateBufferRef(ref t_valueSerializationBuffer);
+        writer.UpdateBufferRef(ref cache.ValueSerializationBuffer);
 
         // Copy to right-sized pooled buffer for batch storage
         return writer.ToPooledMemory();
@@ -2778,19 +2791,21 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static long GetFastTimestampMs()
     {
+        var cache = GetOrCreateCache();
+
         // Use Environment.TickCount64 (cheap counter) to determine if we need to refresh.
         // TickCount64 increments every ~15.6ms on Windows, ~1ms on Linux, but checking
         // the difference is still much cheaper than calling DateTimeOffset.UtcNow.
         var currentTicks = Environment.TickCount64;
 
-        // Refresh if more than ~1ms has passed (or on first call when t_cachedTimestampTicks is 0)
-        if (currentTicks - t_cachedTimestampTicks > 1 || t_cachedTimestampTicks == 0)
+        // Refresh if more than ~1ms has passed (or on first call when CachedTimestampTicks is 0)
+        if (currentTicks - cache.CachedTimestampTicks > 1 || cache.CachedTimestampTicks == 0)
         {
-            t_cachedTimestampMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            t_cachedTimestampTicks = currentTicks;
+            cache.CachedTimestampMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            cache.CachedTimestampTicks = currentTicks;
         }
 
-        return t_cachedTimestampMs;
+        return cache.CachedTimestampMs;
     }
 
     /// <summary>

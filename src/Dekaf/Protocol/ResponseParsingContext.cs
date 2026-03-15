@@ -19,10 +19,13 @@ namespace Dekaf.Protocol;
 internal static class ResponseParsingContext
 {
     [ThreadStatic]
-    private static IPooledMemory? t_pooledMemory;
+    private static ParsingContextState? t_state;
 
-    [ThreadStatic]
-    private static bool t_memoryUsed;
+    private sealed class ParsingContextState
+    {
+        public IPooledMemory? PooledMemory;
+        public bool MemoryUsed;
+    }
 
     /// <summary>
     /// Sets the pooled memory for the current parsing operation.
@@ -30,14 +33,15 @@ internal static class ResponseParsingContext
     /// </summary>
     public static void SetPooledMemory(IPooledMemory memory)
     {
-        t_pooledMemory = memory;
-        t_memoryUsed = false;
+        var state = t_state ??= new ParsingContextState();
+        state.PooledMemory = memory;
+        state.MemoryUsed = false;
     }
 
     /// <summary>
     /// Returns true if pooled memory is available for zero-copy parsing.
     /// </summary>
-    public static bool HasPooledMemory => t_pooledMemory is not null;
+    public static bool HasPooledMemory => t_state?.PooledMemory is not null;
 
     /// <summary>
     /// Marks the pooled memory as being used by at least one batch.
@@ -45,9 +49,10 @@ internal static class ResponseParsingContext
     /// </summary>
     public static void MarkMemoryUsed()
     {
-        if (t_pooledMemory is not null)
+        var state = t_state;
+        if (state?.PooledMemory is not null)
         {
-            t_memoryUsed = true;
+            state.MemoryUsed = true;
         }
     }
 
@@ -58,17 +63,18 @@ internal static class ResponseParsingContext
     /// </summary>
     public static IPooledMemory? TakePooledMemory()
     {
-        if (!t_memoryUsed || t_pooledMemory is null)
+        var state = t_state;
+        if (state is null || !state.MemoryUsed || state.PooledMemory is null)
             return null;
 
-        return t_pooledMemory;
+        return state.PooledMemory;
     }
 
     /// <summary>
     /// Returns true if the pooled memory was used during parsing.
     /// If true, the caller should transfer ownership to PendingFetchData.
     /// </summary>
-    public static bool WasMemoryUsed => t_memoryUsed;
+    public static bool WasMemoryUsed => t_state?.MemoryUsed ?? false;
 
     /// <summary>
     /// Resets the context after parsing completes.
@@ -76,7 +82,11 @@ internal static class ResponseParsingContext
     /// </summary>
     public static void Reset()
     {
-        t_pooledMemory = null;
-        t_memoryUsed = false;
+        var state = t_state;
+        if (state is not null)
+        {
+            state.PooledMemory = null;
+            state.MemoryUsed = false;
+        }
     }
 }
