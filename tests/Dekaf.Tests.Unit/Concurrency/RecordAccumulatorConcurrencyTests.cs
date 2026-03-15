@@ -58,7 +58,7 @@ public class RecordAccumulatorConcurrencyTests
                         key,
                         value,
                         null,
-                        null,
+                        0,
                         completion,
                         null);
 
@@ -112,7 +112,7 @@ public class RecordAccumulatorConcurrencyTests
                         key,
                         value,
                         null,
-                        null,
+                        0,
                         completion,
                         null);
 
@@ -162,7 +162,7 @@ public class RecordAccumulatorConcurrencyTests
                         key,
                         value,
                         null,
-                        null,
+                        0,
                         completion);
 
                     if (appended)
@@ -289,7 +289,7 @@ public class RecordAccumulatorConcurrencyTests
                             key,
                             value,
                             null,
-                            null,
+                            0,
                             completion,
                             null);
 
@@ -391,7 +391,7 @@ public class RecordAccumulatorConcurrencyTests
                         key,
                         value,
                         null,
-                        null,
+                        0,
                         completion,
                         null);
 
@@ -455,7 +455,7 @@ public class RecordAccumulatorConcurrencyTests
                             key,
                             value,
                             null,
-                            null,
+                            0,
                             completion,
                             null);
 
@@ -536,7 +536,7 @@ public class RecordAccumulatorConcurrencyTests
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     new PooledMemory(null, 0, isNull: true),
                     new PooledMemory(null, 0, isNull: true),
-                    null, null, completion, null);
+                    null, 0, completion, null);
             }
 
             // Run flush and more appends concurrently
@@ -555,7 +555,7 @@ public class RecordAccumulatorConcurrencyTests
                             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                             new PooledMemory(null, 0, isNull: true),
                             new PooledMemory(null, 0, isNull: true),
-                            null, null, completion, null);
+                            null, 0, completion, null);
                     }
                     catch (ObjectDisposedException)
                     {

@@ -190,7 +190,7 @@ public class ProducerConcurrencyTests
                             new PooledMemory(null, 0, isNull: true),
                             new PooledMemory(null, 0, isNull: true),
                             null,
-                            null,
+                            0,
                             completion,
                             CancellationToken.None);
 

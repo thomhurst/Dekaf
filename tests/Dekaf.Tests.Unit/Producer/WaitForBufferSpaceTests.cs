@@ -98,7 +98,7 @@ public sealed class WaitForBufferSpaceTests
 
         accumulator.Append(
             "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            pooledKey, pooledValue, null, null, null, null);
+            pooledKey, pooledValue, null, 0, null, null);
     }
 
     /// <summary>
