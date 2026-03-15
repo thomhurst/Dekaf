@@ -1664,17 +1664,18 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (_writer is not null)
             await _writer.CompleteAsync().ConfigureAwait(false);
 
+        // SocketPipe/DuplexPipe.DisposeAsync handles reader completion, socket/stream
+        // closure, and read pump teardown internally — see those classes for details.
         if (_socketPipe is not null)
             await _socketPipe.DisposeAsync().ConfigureAwait(false);
 
         if (_duplexPipe is not null)
             await _duplexPipe.DisposeAsync().ConfigureAwait(false);
 
-        // For plain TCP, _stream is a NetworkStream with ownsSocket: false — disposing it
-        // releases the managed stream object but not the socket (handled by _socket.Dispose below).
-        // For TLS, DuplexPipe.DisposeAsync already disposed the stream.
+        // For plain TCP, the socket is closed by SocketPipe.DisposeAsync (Socket.Close).
+        // For TLS, the stream is disposed by DuplexPipe.DisposeAsync.
+        // Dispose again here for safety — both are idempotent.
         _stream?.Dispose();
-
         _socket?.Dispose();
 
         _reauthTimer?.Dispose();
