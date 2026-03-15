@@ -878,10 +878,11 @@ public class BufferMemoryTests
                 return sw.ElapsedMilliseconds;
             });
 
-            // Wait for the reserve task to start
+            // Wait for the reserve task to start, then yield to let it enter the wait.
+            // Using Task.Yield instead of Task.Delay(50) for deterministic synchronization;
+            // the completion timeout below guards correctness regardless of scheduling.
             await reserveStarted.Task;
-            // Give it time to enter the wait
-            await Task.Delay(50);
+            await Task.Yield();
 
             // Release memory — this signals the semaphore
             accumulator.ClearCurrentBatch("test-topic", 0);

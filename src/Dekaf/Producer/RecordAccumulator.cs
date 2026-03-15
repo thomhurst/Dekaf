@@ -1867,10 +1867,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Cap at 100ms so that all blocked threads detect disposal promptly —
             // TryReleaseSemaphore in DisposeAsync wakes only one waiter, so the remaining
             // N-1 threads poll out within 100ms each.
-            _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100));
+            var signaled = _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100));
 
-            // Reset spin budget after waking from the semaphore. The signal means
-            // ReleaseMemory just freed space — spinning again is worthwhile because:
+            // Only reset spin budget when the semaphore was actually signaled (true),
+            // not on timeout (false). On timeout no space was freed, so spinning again
+            // would just waste CPU before re-entering the kernel wait.
+            // When signaled, ReleaseMemory just freed space — spinning is worthwhile because:
             // 1. Batch completions often free space in bursts (multiple batches land
             //    within microseconds), so a fresh spin round catches the next burst.
             // 2. Without reset, we immediately re-enter the kernel wait even when
@@ -1878,7 +1880,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             //    variance seen in profiling (40K-85K msg/sec).
             // 3. The spin cost is bounded: SpinWait yields after ~10 iterations on
             //    multi-core, so worst case is ~1us of CPU before re-blocking.
-            spinWait.Reset();
+            if (signaled)
+                spinWait.Reset();
         }
 
         // Chain-wake: if space still remains after this reservation, signal the next sync waiter.
@@ -1953,10 +1956,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // not a user-facing wait. Disposal wakes this semaphore via TryReleaseSemaphore
             // in DisposeAsync; waiters detect it at the _disposed check at loop top.
             var remainingMs = _options.MaxBlockMs - elapsed;
-            _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100));
+            var signaled = _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100));
 
-            // Reset spin budget after wake-up — same rationale as ReserveMemorySync.
-            spinWait.Reset();
+            // Only reset spin budget on real signal, not timeout — same rationale as ReserveMemorySync.
+            if (signaled)
+                spinWait.Reset();
         }
 
         // Chain-wake: if space still remains, signal the next sync waiter so concurrent
