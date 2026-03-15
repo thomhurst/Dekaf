@@ -173,8 +173,19 @@ public sealed class ProducerOptions
     public int TransactionTimeoutMs { get; init; } = 60000;
 
     /// <summary>
-    /// Maximum time in milliseconds to wait for pending messages to be delivered during close/dispose.
-    /// All pending messages are flushed to Kafka before the producer closes.
+    /// Maximum total time in milliseconds for producer disposal (close).
+    /// The budget is split into two phases:
+    /// <list type="bullet">
+    ///   <item><description>
+    ///     <b>Graceful phase</b> (first half): flushes pending messages to Kafka and waits
+    ///     for the sender to drain remaining batches.
+    ///   </description></item>
+    ///   <item><description>
+    ///     <b>Forceful phase</b> (remaining time): cancels in-flight work and disposes
+    ///     broker senders, with sub-phase timeouts derived from the remaining budget so
+    ///     the total dispose time does not exceed this value.
+    ///   </description></item>
+    /// </list>
     /// Set to 0 for no timeout (wait indefinitely). Default is 30 seconds.
     /// </summary>
     public int CloseTimeoutMs { get; init; } = 30000;
