@@ -18,6 +18,7 @@ namespace Dekaf.StressTests;
 ///   --scenario &lt;name&gt;       Run specific scenario: producer, producer-idempotent, producer-async, producer-async-idempotent, consumer, all (default: all)
 ///   --client &lt;name&gt;         Run specific client: dekaf, confluent, all (default: all)
 ///   --output &lt;path&gt;         Output directory for results (default: ./results)
+///   --brokers &lt;count&gt;      Number of Kafka brokers (default: 1, use 3 for multi-broker)
 ///   report --input &lt;path&gt;   Generate report from existing results
 ///
 /// Environment Variables:
@@ -77,15 +78,17 @@ public static class Program
         Console.WriteLine($"Scenario: {options.Scenario}");
         Console.WriteLine($"Client: {options.Client}");
         Console.WriteLine($"Compression: {options.Compression}");
+        Console.WriteLine($"Brokers: {options.Brokers}");
         Console.WriteLine(new string('-', 50));
 
-        await using var kafka = await KafkaEnvironment.CreateAsync().ConfigureAwait(false);
+        await using var kafka = await KafkaEnvironment.CreateAsync(options.Brokers).ConfigureAwait(false);
 
         var producerTopic = $"stress-producer-{Guid.NewGuid():N}";
         var consumerTopic = $"stress-consumer-{Guid.NewGuid():N}";
 
-        await kafka.CreateTopicAsync(producerTopic, options.Partitions).ConfigureAwait(false);
-        await kafka.CreateTopicAsync(consumerTopic, options.Partitions).ConfigureAwait(false);
+        var replicationFactor = Math.Min(options.Brokers, 3);
+        await kafka.CreateTopicAsync(producerTopic, options.Partitions, replicationFactor).ConfigureAwait(false);
+        await kafka.CreateTopicAsync(consumerTopic, options.Partitions, replicationFactor).ConfigureAwait(false);
 
         if (options.Scenario is "consumer" or "all")
         {
@@ -293,6 +296,9 @@ public static class Program
                 case "--compression":
                     options.Compression = args[++i].ToLowerInvariant();
                     break;
+                case "--brokers":
+                    options.Brokers = int.Parse(args[++i]);
+                    break;
                 case "--help":
                 case "-h":
                     PrintHelp();
@@ -322,6 +328,7 @@ public static class Program
               --linger-ms <ms>        Producer linger time (default: 5)
               --batch-size <bytes>    Producer batch size (default: 1048576)
               --compression <type>   Compression type: none, lz4, snappy, zstd (default: none)
+              --brokers <count>      Number of Kafka brokers (default: 1, use 3 for multi-broker)
               report --input <path>   Generate report from existing results
 
             Environment Variables:
@@ -360,5 +367,6 @@ public static class Program
         public int LingerMs { get; set; } = 5;
         public int BatchSize { get; set; } = 1048576;
         public string Compression { get; set; } = "none";
+        public int Brokers { get; set; } = 1;
     }
 }
