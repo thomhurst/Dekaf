@@ -96,6 +96,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     [ThreadStatic]
     private static ProducerThreadCache? t_cache;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ProducerThreadCache GetOrCreateCache() => t_cache ??= new ProducerThreadCache();
+
     /// <summary>
     /// Holds all per-thread cached state for the producer hot path.
     /// Consolidating into a single class reduces thread-static lookup overhead from 9 to 1.
@@ -785,7 +788,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // Check if cache is for this metadata manager, topic, and still valid
         // Use signed comparison to handle TickCount64 wraparound (every ~292 million years)
-        var cache = t_cache ??= new ProducerThreadCache();
+        var cache = GetOrCreateCache();
         var currentTicks = Environment.TickCount64;
         if (cache.CachedMetadataManager == _metadataManager &&
             cache.CachedTopicName == topic &&
@@ -807,7 +810,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void UpdateCachedTopicInfo(string topic, TopicInfo topicInfo)
     {
-        var cache = t_cache ??= new ProducerThreadCache();
+        var cache = GetOrCreateCache();
         cache.CachedMetadataManager = _metadataManager;
         cache.CachedTopicName = topic;
         cache.CachedTopicInfo = topicInfo;
@@ -834,7 +837,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         TopicInfo topicInfo)
     {
         // Step 1: Serialize to thread-local buffers (no allocation, reused across messages)
-        var cache = t_cache ??= new ProducerThreadCache();
+        var cache = GetOrCreateCache();
         var keyIsNull = keyObj is null;
         int keyLength = 0;
 
@@ -907,7 +910,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         // Pass raw spans from thread-local buffers directly to the accumulator.
         // The accumulator will try arena allocation first, falling back to ArrayPool.
-        var cache = t_cache!; // Always initialized by caller (ProduceSyncCoreFireAndForgetDirect/WithCallback)
+        var cache = GetOrCreateCache();
         var keySpan = !keyIsNull && keyLength > 0
             ? cache.KeySerializationBuffer.AsSpan(0, keyLength)
             : ReadOnlySpan<byte>.Empty;
@@ -1238,7 +1241,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         Action<RecordMetadata, Exception?> callback)
     {
         // Step 1: Serialize to thread-local buffers (no allocation, reused across messages)
-        var cache = t_cache ??= new ProducerThreadCache();
+        var cache = GetOrCreateCache();
         var keyIsNull = keyObj is null;
         int keyLength = 0;
 
@@ -2737,7 +2740,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// </summary>
     private PooledMemory SerializeKeyToPooled(TKey key, string topic, Headers? headers)
     {
-        var cache = t_cache ??= new ProducerThreadCache();
+        var cache = GetOrCreateCache();
 
         // Use thread-local buffer to avoid per-message allocation
         var writer = new ReusableBufferWriter(ref cache.KeySerializationBuffer, DefaultKeyBufferSize);
@@ -2762,7 +2765,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// </summary>
     private PooledMemory SerializeValueToPooled(TValue value, string topic, Headers? headers)
     {
-        var cache = t_cache ??= new ProducerThreadCache();
+        var cache = GetOrCreateCache();
 
         // Use thread-local buffer to avoid per-message allocation
         var writer = new ReusableBufferWriter(ref cache.ValueSerializationBuffer, DefaultValueBufferSize);
@@ -2788,7 +2791,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static long GetFastTimestampMs()
     {
-        var cache = t_cache ??= new ProducerThreadCache();
+        var cache = GetOrCreateCache();
 
         // Use Environment.TickCount64 (cheap counter) to determine if we need to refresh.
         // TickCount64 increments every ~15.6ms on Windows, ~1ms on Linux, but checking
