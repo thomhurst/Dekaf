@@ -88,6 +88,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private const int SendCoalescedTimeoutMs = 5000;
 
+    /// <summary>
+    /// Micro-linger: when coalesced batch count is at or below this threshold,
+    /// briefly spin-wait for more batches before sending. Reduces per-request
+    /// overhead in multi-broker setups with few partitions per broker.
+    /// </summary>
+    private const int MicroLingerBatchThreshold = 2;
+
+    /// <summary>
+    /// Maximum SpinWait iterations for the micro-linger. Bounds the spin cost
+    /// regardless of channel activity.
+    /// </summary>
+    private const int MicroLingerMaxSpins = 10;
+
     private readonly int _brokerId;
     private readonly IConnectionPool _connectionPool;
     private readonly MetadataManager _metadataManager;
@@ -635,26 +648,27 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // A brief adaptive spin gives the sender coordinator time to post more batches,
                 // reducing per-request overhead. SpinWait adapts across core counts (spins on
                 // multi-core, yields on single-core) and avoids kernel transitions when possible.
-                if (coalescedCount > 0 && coalescedCount <= 2
+                // The iteration count caps total work (both spins and channel reads).
+                if (coalescedCount > 0 && coalescedCount <= MicroLingerBatchThreshold
                     && carryOver.Count == 0
                     && _pendingResponses.Count < _maxInFlight)
                 {
                     var spinWait = new SpinWait();
-                    for (var spin = 0; spin < 10; spin++)
+                    for (var spin = 0; spin < MicroLingerMaxSpins; spin++)
                     {
-                        if (eventReader.TryRead(out var evt))
+                        if (!eventReader.TryRead(out var evt))
                         {
-                            if (evt.Type == SendLoopEventType.NewBatch)
-                            {
-                                CoalesceBatch(evt.Batch!, coalescedBatches, ref coalescedCount,
-                                    coalescedPartitions, carryOver);
-                                if (coalescedCount > 2)
-                                    break;
-                            }
-                            // Non-batch events are signal-only — no data to process.
+                            spinWait.SpinOnce();
                             continue;
                         }
-                        spinWait.SpinOnce();
+
+                        if (evt.Type == SendLoopEventType.NewBatch)
+                        {
+                            CoalesceBatch(evt.Batch!, coalescedBatches, ref coalescedCount,
+                                coalescedPartitions, carryOver);
+                            if (coalescedCount > MicroLingerBatchThreshold)
+                                break;
+                        }
                     }
                 }
 

@@ -663,7 +663,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // dedicated threads for fire-and-forget producers that never use the async path.
     private readonly Channel<AppendWorkItem>[] _appendWorkerChannels;
     private readonly int _appendWorkerCount;
-    private Task[]? _appendWorkerTasks;
+    private volatile Task[]? _appendWorkerTasks;
     private CancellationToken _appendWorkerCancellationToken;
     private int _appendWorkersReady;
     private int _appendWorkersStarted;
@@ -1203,8 +1203,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (Interlocked.CompareExchange(ref _appendWorkersStarted, 1, 0) != 0)
             return;
 
-        // Build the array locally, then publish via Volatile.Write so DisposeAsync
+        // Build the array locally, then publish atomically so DisposeAsync
         // never observes a partially-populated array with null Task entries.
+        // The field is volatile, so the assignment is a release-fence store.
         var tasks = new Task[_appendWorkerCount];
         for (var i = 0; i < _appendWorkerCount; i++)
         {
@@ -1215,7 +1216,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 TaskCreationOptions.LongRunning,
                 TaskScheduler.Default).Unwrap();
         }
-        Volatile.Write(ref _appendWorkerTasks, tasks);
+        _appendWorkerTasks = tasks;
     }
 
     /// <summary>
