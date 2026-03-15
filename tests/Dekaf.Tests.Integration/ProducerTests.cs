@@ -796,7 +796,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             .BuildAsync();
 
         // Act - fire-and-forget send
-        producer.Send(new ProducerMessage<string, string>
+        producer.Produce(new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "sync-key",
@@ -840,7 +840,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             .BuildAsync();
 
         // Act - send with callback
-        producer.Send(
+        producer.Produce(
             new ProducerMessage<string, string>
             {
                 Topic = topic,
@@ -879,7 +879,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         // Act - fire-and-forget multiple messages
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
@@ -933,7 +933,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         {
             for (var i = 0; i < messagesPerThread; i++)
             {
-                producer.Send(
+                producer.Produce(
                     new ProducerMessage<string, string>
                     {
                         Topic = topic,

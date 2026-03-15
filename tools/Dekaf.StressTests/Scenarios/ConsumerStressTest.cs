@@ -33,7 +33,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         const int preseedCount = 500_000;
         for (var i = 0; i < preseedCount; i++)
         {
-            producer.Send(options.Topic, GetKey(i), messageValue);
+            producer.Produce(options.Topic, GetKey(i), messageValue);
         }
         await producer.FlushAsync(cancellationToken).ConfigureAwait(false);
         Console.WriteLine($"  Pre-seeded {preseedCount:N0} messages");
@@ -133,7 +133,7 @@ internal sealed class ConsumerStressTest : IStressTestScenario
         {
             try
             {
-                producer.Send(topic, GetKey(messageIndex), messageValue);
+                producer.Produce(topic, GetKey(messageIndex), messageValue);
                 messageIndex++;
 
                 // Yield periodically to avoid starving other tasks

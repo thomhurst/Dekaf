@@ -113,9 +113,9 @@ public sealed class ProducerExtensionsTests
         var producer = Substitute.For<IKafkaProducer<string, string>>();
         var headers = Headers.Create("h1", "v1");
 
-        producer.Send("my-topic", "key", "value", headers);
+        producer.Produce("my-topic", "key", "value", headers);
 
-        producer.Received(1).Send(
+        producer.Received(1).Produce(
             Arg.Is<ProducerMessage<string, string>>(m =>
                 m.Topic == "my-topic" &&
                 m.Key == "key" &&
@@ -130,7 +130,7 @@ public sealed class ProducerExtensionsTests
         IKafkaProducer<string, string>? producer = null;
         var headers = Headers.Create("h1", "v1");
 
-        var act = () => producer!.Send("topic", "key", "value", headers);
+        var act = () => producer!.Produce("topic", "key", "value", headers);
 
         await Assert.That(act).Throws<ArgumentNullException>();
     }
@@ -141,7 +141,7 @@ public sealed class ProducerExtensionsTests
         var producer = Substitute.For<IKafkaProducer<string, string>>();
         var headers = Headers.Create("h1", "v1");
 
-        var act = () => producer.Send(null!, "key", "value", headers);
+        var act = () => producer.Produce(null!, "key", "value", headers);
 
         await Assert.That(act).Throws<ArgumentNullException>();
     }

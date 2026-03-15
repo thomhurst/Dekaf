@@ -71,7 +71,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Act - Send multiple messages then flush
         for (int i = 0; i < 10; i++)
         {
-            producer.Send(topic, $"key{i}", $"value{i}");
+            producer.Produce(topic, $"key{i}", $"value{i}");
         }
 
         // Flush with explicit timeout to ensure it completes
@@ -169,7 +169,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         var messageValue = new string('x', 1000); // 1 KB messages
         for (int i = 0; i < 100; i++)
         {
-            producer.Send(topic, $"key{i}", messageValue);
+            producer.Produce(topic, $"key{i}", messageValue);
         }
 
         // Flush with timeout to ensure backpressure doesn't cause hang
@@ -287,7 +287,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
             .BuildAsync();
 
         // Send some messages
-        producer.Send(topic, "key1", "value1");
+        producer.Produce(topic, "key1", "value1");
 
         // Act & Assert - Pass pre-cancelled token to flush
         using var cts = new CancellationTokenSource();
@@ -404,7 +404,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Send initial messages
         for (int i = 0; i < 50; i++)
         {
-            producer.Send(topic, $"key{i}", $"value{i}");
+            producer.Produce(topic, $"key{i}", $"value{i}");
         }
 
         // Act - Flush and produce concurrently
@@ -714,7 +714,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Fire-and-forget to fill batch without triggering immediate flush
         for (int i = 0; i < 10; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key{i}",
@@ -904,7 +904,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         // Act - Send messages (no cancellation token parameter)
         for (int i = 0; i < 50; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key{i}",

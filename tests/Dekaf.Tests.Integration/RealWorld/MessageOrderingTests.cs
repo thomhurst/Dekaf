@@ -206,7 +206,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
         const int messageCount = 200;
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "ordered-key",
@@ -482,7 +482,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
             if (i % 2 == 0)
             {
                 // Fire-and-forget
-                producer.Send(new ProducerMessage<string, string>
+                producer.Produce(new ProducerMessage<string, string>
                 {
                     Topic = topic, Key = "mixed", Value = $"seq-{i:D4}"
                 });
@@ -542,7 +542,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
         for (var i = 0; i < messageCount; i++)
         {
             // Use Send() for maximum throughput pressure on the pipeline
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "stress",

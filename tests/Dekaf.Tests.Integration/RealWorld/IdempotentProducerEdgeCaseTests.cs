@@ -135,7 +135,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
         const int messageCount = 200;
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",

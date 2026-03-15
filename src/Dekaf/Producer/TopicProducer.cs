@@ -109,17 +109,17 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
     }
 
     /// <inheritdoc />
-    public void Send(TKey? key, TValue value)
+    public void Produce(TKey? key, TValue value)
     {
         ThrowIfDisposed();
-        _producer.Send(Topic, key, value);
+        _producer.Produce(Topic, key, value);
     }
 
     /// <inheritdoc />
-    public void Send(TKey? key, TValue value, Headers headers)
+    public void Produce(TKey? key, TValue value, Headers headers)
     {
         ThrowIfDisposed();
-        _producer.Send(new ProducerMessage<TKey, TValue>
+        _producer.Produce(new ProducerMessage<TKey, TValue>
         {
             Topic = Topic,
             Key = key,
@@ -129,10 +129,10 @@ internal sealed class TopicProducer<TKey, TValue> : ITopicProducer<TKey, TValue>
     }
 
     /// <inheritdoc />
-    public void Send(TKey? key, TValue value, Action<RecordMetadata, Exception?> deliveryHandler)
+    public void Produce(TKey? key, TValue value, Action<RecordMetadata, Exception?> deliveryHandler)
     {
         ThrowIfDisposed();
-        _producer.Send(new ProducerMessage<TKey, TValue>
+        _producer.Produce(new ProducerMessage<TKey, TValue>
         {
             Topic = Topic,
             Key = key,

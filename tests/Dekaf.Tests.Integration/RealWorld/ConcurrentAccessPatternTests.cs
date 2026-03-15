@@ -71,7 +71,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
         {
             for (var i = 0; i < fireAndForgetCount; i++)
             {
-                producer.Send(new ProducerMessage<string, string>
+                producer.Produce(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"ff-{i}",
@@ -295,7 +295,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
         // Send all messages with callbacks
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Send(
+            producer.Produce(
                 new ProducerMessage<string, string>
                 {
                     Topic = topic,

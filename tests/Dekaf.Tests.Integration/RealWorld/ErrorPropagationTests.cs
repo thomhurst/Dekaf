@@ -52,7 +52,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         // Act & Assert
         await Assert.That(() =>
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "key",
@@ -203,7 +203,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         // Send fire-and-forget messages
         for (var i = 0; i < 10; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",

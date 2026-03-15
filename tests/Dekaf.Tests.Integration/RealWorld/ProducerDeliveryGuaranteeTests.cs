@@ -93,7 +93,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         const int messageCount = 500;
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
@@ -137,7 +137,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         const int messageCount = 50;
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
@@ -184,7 +184,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
 
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",
@@ -229,7 +229,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         // Batch 1
         for (var i = 0; i < 10; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"batch1-key-{i}",
@@ -242,7 +242,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         // Batch 2
         for (var i = 0; i < 10; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"batch2-key-{i}",
@@ -288,7 +288,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         {
             for (var i = 0; i < 30; i++)
             {
-                producer.Send(new ProducerMessage<string, string>
+                producer.Produce(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"key-{i}",

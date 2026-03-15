@@ -160,7 +160,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         // Send fire-and-forget messages
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"flush-key-{i}",
@@ -215,7 +215,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         // Send messages via fire-and-forget
         for (var i = 0; i < 10; i++)
         {
-            producer.Send(new ProducerMessage<string, string>
+            producer.Produce(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{i}",

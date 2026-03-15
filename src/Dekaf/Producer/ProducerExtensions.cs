@@ -72,7 +72,7 @@ public static class ProducerExtensions
     }
 
     /// <summary>
-    /// Sends a message with headers without waiting for acknowledgment (fire-and-forget).
+    /// Produces a message with headers without waiting for acknowledgment (fire-and-forget).
     /// </summary>
     /// <typeparam name="TKey">Key type.</typeparam>
     /// <typeparam name="TValue">Value type.</typeparam>
@@ -81,7 +81,7 @@ public static class ProducerExtensions
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
     /// <param name="headers">The message headers.</param>
-    public static void Send<TKey, TValue>(
+    public static void Produce<TKey, TValue>(
         this IKafkaProducer<TKey, TValue> producer,
         string topic,
         TKey? key,
@@ -91,7 +91,7 @@ public static class ProducerExtensions
         ArgumentNullException.ThrowIfNull(producer);
         ArgumentNullException.ThrowIfNull(topic);
 
-        producer.Send(new ProducerMessage<TKey, TValue>
+        producer.Produce(new ProducerMessage<TKey, TValue>
         {
             Topic = topic,
             Key = key,

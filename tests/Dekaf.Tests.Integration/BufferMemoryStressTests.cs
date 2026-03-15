@@ -62,7 +62,7 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
             try
             {
                 // Fire-and-forget: Send returns immediately, delivery happens async
-                producer.Send(topic, "same-key", $"value-{messageCount}");
+                producer.Produce(topic, "same-key", $"value-{messageCount}");
             }
             catch (Exception ex) when (ex is TimeoutException or KafkaTimeoutException)
             {
@@ -226,7 +226,7 @@ public class BufferMemoryStressTests(KafkaTestContainer kafka) : KafkaIntegratio
         const int messageCount = 10_000;
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Send(topic, $"key-{i % 100}", messageValue);
+            producer.Produce(topic, $"key-{i % 100}", messageValue);
         }
 
         await producer.FlushAsync(testTimeout);

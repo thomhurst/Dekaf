@@ -92,7 +92,7 @@ public interface ITopicProducer<TKey, TValue> : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Sends a message without waiting for acknowledgment (fire-and-forget).
+    /// Produces a message without waiting for acknowledgment (fire-and-forget).
     /// </summary>
     /// <remarks>
     /// <para>When the internal buffer is full, this method applies backpressure by blocking the caller
@@ -103,10 +103,10 @@ public interface ITopicProducer<TKey, TValue> : IAsyncDisposable
     /// </remarks>
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
-    void Send(TKey? key, TValue value);
+    void Produce(TKey? key, TValue value);
 
     /// <summary>
-    /// Sends a message with headers without waiting for acknowledgment (fire-and-forget).
+    /// Produces a message with headers without waiting for acknowledgment (fire-and-forget).
     /// </summary>
     /// <remarks>
     /// <para>When the internal buffer is full, this method applies backpressure by blocking the caller
@@ -116,10 +116,10 @@ public interface ITopicProducer<TKey, TValue> : IAsyncDisposable
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
     /// <param name="headers">The message headers.</param>
-    void Send(TKey? key, TValue value, Headers headers);
+    void Produce(TKey? key, TValue value, Headers headers);
 
     /// <summary>
-    /// Sends a message with a delivery callback (fire-and-forget with notification).
+    /// Produces a message with a delivery callback (fire-and-forget with notification).
     /// </summary>
     /// <remarks>
     /// <para>When the internal buffer is full, this method applies backpressure by blocking the caller
@@ -129,7 +129,7 @@ public interface ITopicProducer<TKey, TValue> : IAsyncDisposable
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
     /// <param name="deliveryHandler">Callback invoked when delivery completes. The exception parameter is null on success.</param>
-    void Send(TKey? key, TValue value, Action<RecordMetadata, Exception?> deliveryHandler);
+    void Produce(TKey? key, TValue value, Action<RecordMetadata, Exception?> deliveryHandler);
 
     /// <summary>
     /// Produces multiple messages and waits for all acknowledgments.
