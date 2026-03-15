@@ -628,9 +628,19 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 return;
             }
 
-            // Topic cache miss — delegate to the async produce path which fetches
-            // metadata without blocking. The message enters the accumulator asynchronously
-            // and will be sent with the next batch. FlushAsync/DisposeAsync will wait for it.
+            // Topic cache miss — wait synchronously for metadata (like Java's waitOnMetadata).
+            // This avoids launching async tasks per message which causes thundering herd under load.
+            EnsureTopicMetadataSync(message.Topic);
+
+            // Retry with metadata now cached
+            if (TryProduceSyncFireAndForget(message))
+            {
+                activity?.SetStatus(ActivityStatusCode.Ok);
+                return;
+            }
+
+            // Final fallback: metadata fetch succeeded but topic is in a transient state.
+            // Use async path for this rare edge case.
             ProduceFireAndForgetAsync(message);
         }
         catch (Exception ex) when (activity is not null)
@@ -666,8 +676,20 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             return;
         }
 
-        // Topic cache miss — fall back to the message-based overload which delegates to async path.
-        Send(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
+        // Topic cache miss — wait synchronously for metadata (like Java's waitOnMetadata).
+        // This avoids launching async tasks per message which causes thundering herd under load.
+        EnsureTopicMetadataSync(topic);
+
+        // Retry with metadata now cached
+        if (TryProduceSyncFireAndForgetDirect(topic, key, value, partition: null, timestamp: null, headers: null))
+        {
+            return;
+        }
+
+        // Final fallback for edge cases (topic in transient state after metadata fetch).
+        // Call ProduceFireAndForgetAsync directly to avoid redundant EnsureTopicMetadataSync
+        // in the Send(ProducerMessage) overload.
+        ProduceFireAndForgetAsync(new ProducerMessage<TKey, TValue> { Topic = topic, Key = key, Value = value });
     }
 
     /// <summary>
@@ -2418,6 +2440,23 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     {
         throw new InvalidOperationException(
             "Call InitializeAsync() or use BuildAsync() before producing messages.");
+    }
+
+    /// <summary>
+    /// Synchronously waits for topic metadata to become available.
+    /// Kept out of the inlined fast path to avoid code bloat.
+    /// Coalesces concurrent requests for the same topic via MetadataManager.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void EnsureTopicMetadataSync(string topic)
+    {
+        var topicInfo = _metadataManager.WaitForTopicMetadataSync(
+            topic, _options.MaxBlockMs, _senderCts.Token);
+
+        if (topicInfo is not null)
+        {
+            UpdateCachedTopicInfo(topic, topicInfo);
+        }
     }
 
     /// <summary>
