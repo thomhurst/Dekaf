@@ -76,18 +76,25 @@ internal sealed class SocketPipe : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        // Shutdown the socket receive side to abort any pending ReceiveAsync in the pump.
-        // The pump will see 0 bytes (EOF) or get a SocketException, then complete the pipe writer.
+        // Complete the pipe reader to unblock the pump if it is paused on
+        // PipeWriter.FlushAsync() due to backpressure (pipe buffer full, no reader consuming).
+        // FlushAsync returns with IsCompleted=true, allowing the pump to break out of its loop.
+        await _inputPipe.Reader.CompleteAsync().ConfigureAwait(false);
+
+        // Close the socket to abort any pending ReceiveAsync in the pump.
+        // Socket.Shutdown(SocketShutdown.Receive) is insufficient on Windows — it only
+        // affects future receives, not already-posted IOCP operations. Closing the socket
+        // handle aborts the pending ReceiveAsync with a SocketException.
         try
         {
-            _socket.Shutdown(SocketShutdown.Receive);
+            _socket.Close(0);
         }
         catch
         {
             // Socket may already be closed
         }
 
-        // Wait for the read pump to finish (observe exceptions from socket shutdown)
+        // Wait for the read pump to finish (observe exceptions from socket closure)
         try
         {
             await _readPumpTask.ConfigureAwait(false);

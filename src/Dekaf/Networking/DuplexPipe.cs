@@ -73,6 +73,11 @@ internal sealed class DuplexPipe : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        // Complete the pipe reader to unblock the pump if it is paused on
+        // PipeWriter.FlushAsync() due to backpressure (pipe buffer full, no reader consuming).
+        // FlushAsync returns with IsCompleted=true, allowing the pump to break out of its loop.
+        await _inputPipe.Reader.CompleteAsync().ConfigureAwait(false);
+
         // Dispose the stream to abort any pending _stream.ReadAsync in the read pump.
         // The read pump's finally block then calls _inputPipe.Writer.CompleteAsync.
         await _stream.DisposeAsync().ConfigureAwait(false);
