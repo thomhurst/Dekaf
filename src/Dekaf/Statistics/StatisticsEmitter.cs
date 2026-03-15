@@ -2,13 +2,16 @@ namespace Dekaf.Statistics;
 
 /// <summary>
 /// Background timer that periodically emits statistics.
+/// Uses <see cref="PeriodicTimer"/> instead of <c>Task.Delay</c> to avoid
+/// timer allocations on each tick. The <c>PeriodicTimer.WaitForNextTickAsync</c>
+/// call is allocation-free after the timer is constructed.
 /// </summary>
 internal sealed class StatisticsEmitter<TStatistics> : IAsyncDisposable
 {
-    private readonly TimeSpan _interval;
     private readonly Func<TStatistics> _collectStatistics;
     private readonly Action<TStatistics> _handler;
     private readonly CancellationTokenSource _cts;
+    private readonly PeriodicTimer _timer;
     private readonly Task _emitTask;
     private volatile bool _disposed;
 
@@ -17,21 +20,19 @@ internal sealed class StatisticsEmitter<TStatistics> : IAsyncDisposable
         Func<TStatistics> collectStatistics,
         Action<TStatistics> handler)
     {
-        _interval = interval;
         _collectStatistics = collectStatistics;
         _handler = handler;
         _cts = new CancellationTokenSource();
+        _timer = new PeriodicTimer(interval);
         _emitTask = EmitLoopAsync(_cts.Token);
     }
 
     private async Task EmitLoopAsync(CancellationToken cancellationToken)
     {
-        while (!cancellationToken.IsCancellationRequested)
+        while (await _timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
         {
             try
             {
-                await Task.Delay(_interval, cancellationToken).ConfigureAwait(false);
-
                 var stats = _collectStatistics();
                 _handler(stats);
             }
@@ -54,6 +55,7 @@ internal sealed class StatisticsEmitter<TStatistics> : IAsyncDisposable
         _disposed = true;
 
         _cts.Cancel();
+        _timer.Dispose();
 
         try
         {

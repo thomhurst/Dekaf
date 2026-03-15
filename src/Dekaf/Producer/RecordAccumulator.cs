@@ -1119,9 +1119,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         for (var i = 0; i < _appendWorkerCount; i++)
         {
             var workerIndex = i;
-            _appendWorkerTasks[i] = Task.Run(
+            _appendWorkerTasks[i] = Task.Factory.StartNew(
                 () => ProcessAppendWorkerAsync(workerIndex, cancellationToken),
-                CancellationToken.None);
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default).Unwrap();
         }
     }
 
