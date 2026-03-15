@@ -651,9 +651,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 if (coalescedCount > 2)
                                     break;
                             }
-                            // Non-batch events are signal-only (no data). Don't count
-                            // against spin budget — try again immediately.
-                            spin--;
+                            // Non-batch events are signal-only — no data to process.
                             continue;
                         }
                         spinWait.SpinOnce();
