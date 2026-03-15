@@ -1672,11 +1672,30 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (_duplexPipe is not null)
             await _duplexPipe.DisposeAsync().ConfigureAwait(false);
 
-        // For plain TCP, the socket is closed by SocketPipe.DisposeAsync (Socket.Close).
-        // For TLS, the stream is disposed by DuplexPipe.DisposeAsync.
-        // Dispose again here for safety — both are idempotent.
-        _stream?.Dispose();
-        _socket?.Dispose();
+        // Ownership semantics:
+        // - Plain TCP: SocketPipe owns the socket (closes it via Socket.Close(0)).
+        //   KafkaConnection still owns the NetworkStream wrapper (ownsSocket: false).
+        // - TLS: DuplexPipe owns the SslStream (disposes it, which cascades to NetworkStream
+        //   via leaveInnerStreamOpen: false). KafkaConnection still owns the socket directly
+        //   since NetworkStream was created with ownsSocket: false.
+        if (_socketPipe is not null)
+        {
+            // SocketPipe closed the socket. Dispose only the NetworkStream wrapper.
+            _stream?.Dispose();
+        }
+        else if (_duplexPipe is not null)
+        {
+            // DuplexPipe disposed the SslStream (and its inner NetworkStream).
+            // Dispose only the socket, which NetworkStream doesn't own.
+            _socket?.Dispose();
+        }
+        else
+        {
+            // No pipe was created (e.g., connection failed during setup).
+            // Dispose both as a fallback.
+            _stream?.Dispose();
+            _socket?.Dispose();
+        }
 
         _reauthTimer?.Dispose();
         _reauthLock.Dispose();

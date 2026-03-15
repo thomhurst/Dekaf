@@ -12,6 +12,10 @@ namespace Dekaf.Networking;
 /// indefinitely when concurrent reads and writes target the same underlying socket.
 /// Used for plain TCP connections. TLS connections use <see cref="DuplexPipe"/> instead
 /// (because <see cref="System.Net.Security.SslStream"/> requires the <see cref="Stream"/> abstraction).
+/// <para/>
+/// <b>Ownership:</b> This class takes ownership of the <see cref="Socket"/> and closes it on disposal
+/// via <see cref="Socket.Close(int)"/>. The caller must not dispose the socket separately.
+/// The caller remains responsible for disposing any <see cref="Stream"/> wrapper (e.g., <see cref="System.Net.Sockets.NetworkStream"/>).
 /// </summary>
 internal sealed class SocketPipe : IAsyncDisposable
 {

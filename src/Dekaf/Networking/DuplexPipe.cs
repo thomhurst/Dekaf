@@ -9,6 +9,10 @@ namespace Dekaf.Networking;
 /// Used for TLS connections where <see cref="System.Net.Security.SslStream"/> requires the
 /// <see cref="Stream"/> abstraction. Plain TCP connections use <see cref="SocketPipe"/> instead.
 /// Writing is handled directly by <see cref="KafkaConnection"/> via <c>PipeWriter.Create(stream)</c>.
+/// <para/>
+/// <b>Ownership:</b> This class takes ownership of the <see cref="Stream"/> and disposes it on disposal.
+/// The caller must not dispose the stream separately. The caller remains responsible for disposing
+/// any underlying <see cref="System.Net.Sockets.Socket"/> that the stream does not own.
 /// </summary>
 internal sealed class DuplexPipe : IAsyncDisposable
 {
