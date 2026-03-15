@@ -655,24 +655,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // contain unread NewBatch events that cause immediate (synchronous)
                             // return, creating a spin loop that starves the thread pool and
                             // prevents I/O completion callbacks from running.
-                            // Uses a SemaphoreSlim signal that gets released when any response
-                            // completes, with a 100ms periodic wake-up to re-sweep delivery
-                            // timeouts for zombie entries that expire while we're waiting.
-                            // Signal may be missed if multiple responses complete between
-                            // iterations; 100ms fallback ensures we don't wait indefinitely.
-                            _pollTimeoutCts.CancelAfter(100);
-                            try
-                            {
-                                await _anyResponseCompleted.WaitAsync(_pollTimeoutCts.Token).ConfigureAwait(false);
-                            }
-                            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                            {
-                                // Poll timeout fired — not an error, just re-check loop conditions.
-                            }
-                            finally
-                            {
-                                _pollTimeoutCts.TryReset();
-                            }
+                            await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
                         }
                     }
 
@@ -801,23 +784,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // any response to complete. Cannot use eventReader.WaitToReadAsync here
                     // because the channel may contain stale NewBatch events that cause
                     // immediate return, creating a spin loop when all carry-over is muted.
-                    // Signal-based SemaphoreSlim bypasses the channel and wakes exactly when a
-                    // response completes (which may unmute a partition).
-                    // Signal may be missed if multiple responses complete between
-                    // iterations; 100ms fallback ensures we don't wait indefinitely.
-                    _pollTimeoutCts.CancelAfter(100);
-                    try
-                    {
-                        await _anyResponseCompleted.WaitAsync(_pollTimeoutCts.Token).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                    {
-                        // Poll timeout fired — not an error, just re-check loop conditions.
-                    }
-                    finally
-                    {
-                        _pollTimeoutCts.TryReset();
-                    }
+                    await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
                 }
                 else if (carryOver.Count > 0)
                 {
@@ -1469,6 +1436,29 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         batch.IsRetry = true;
         batch.AppendDiag('H'); // HandleRetriableBatch → carry-over
         carryOver.AddAfterRetries(batch);
+    }
+
+    /// <summary>
+    /// Waits for any pending response to complete using a SemaphoreSlim signal,
+    /// with a 100ms periodic wake-up to re-sweep delivery timeouts for zombie entries.
+    /// Signal may be missed if multiple responses complete between iterations;
+    /// the 100ms fallback ensures we don't wait indefinitely.
+    /// </summary>
+    private async ValueTask WaitForAnyResponseAsync(CancellationToken cancellationToken)
+    {
+        _pollTimeoutCts.CancelAfter(100);
+        try
+        {
+            await _anyResponseCompleted.WaitAsync(_pollTimeoutCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Poll timeout fired — not an error, just re-check loop conditions.
+        }
+        finally
+        {
+            _pollTimeoutCts.TryReset();
+        }
     }
 
     /// <summary>
