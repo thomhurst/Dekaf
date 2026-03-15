@@ -101,8 +101,16 @@ public class ConsumerGroupTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         var result1 = await consumer1.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts1.Token);
         await Assert.That(result1).IsNotNull();
 
-        // Consumer 1 should have all partitions initially
+        // Consumer 1 should have all partitions initially.
+        // Poll until assignment stabilizes — rebalance may still be propagating
+        // when ConsumeOneAsync returns the first message.
         var assignment1 = consumer1.Assignment;
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while (assignment1.Count < 4 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(250);
+            assignment1 = consumer1.Assignment;
+        }
         await Assert.That(assignment1).Count().IsEqualTo(4);
     }
 

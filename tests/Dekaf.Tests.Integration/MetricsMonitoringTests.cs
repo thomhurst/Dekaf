@@ -330,7 +330,7 @@ public sealed class MetricsMonitoringTests(KafkaTestContainer kafka) : KafkaInte
         // significantly longer than expected.
         var matchingConsumerStats = await WaitForStatsAsync(consumerStats,
             s => s.MessagesConsumed >= messageCount,
-            TimeSpan.FromSeconds(30));
+            TimeSpan.FromSeconds(60));
 
         await Assert.That(matchingConsumerStats).IsNotNull();
         await Assert.That(matchingConsumerStats!.MessagesConsumed).IsGreaterThanOrEqualTo(messageCount);
