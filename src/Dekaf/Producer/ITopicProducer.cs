@@ -95,6 +95,10 @@ public interface ITopicProducer<TKey, TValue> : IAsyncDisposable
     /// Sends a message without waiting for acknowledgment (fire-and-forget).
     /// </summary>
     /// <remarks>
+    /// <para>When the internal buffer is full, this method applies backpressure by blocking the caller
+    /// for up to <see cref="ProducerOptions.MaxBlockMs"/>. If the buffer does not drain within
+    /// that window, a <see cref="Errors.KafkaTimeoutException"/> is thrown.</para>
+    ///
     /// <para>To ensure all messages are delivered, call <see cref="FlushAsync"/> before disposing.</para>
     /// </remarks>
     /// <param name="key">The message key (can be null).</param>
@@ -104,6 +108,11 @@ public interface ITopicProducer<TKey, TValue> : IAsyncDisposable
     /// <summary>
     /// Sends a message with headers without waiting for acknowledgment (fire-and-forget).
     /// </summary>
+    /// <remarks>
+    /// <para>When the internal buffer is full, this method applies backpressure by blocking the caller
+    /// for up to <see cref="ProducerOptions.MaxBlockMs"/>. If the buffer does not drain within
+    /// that window, a <see cref="Errors.KafkaTimeoutException"/> is thrown.</para>
+    /// </remarks>
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
     /// <param name="headers">The message headers.</param>
@@ -112,6 +121,11 @@ public interface ITopicProducer<TKey, TValue> : IAsyncDisposable
     /// <summary>
     /// Sends a message with a delivery callback (fire-and-forget with notification).
     /// </summary>
+    /// <remarks>
+    /// <para>When the internal buffer is full, this method applies backpressure by blocking the caller
+    /// for up to <see cref="ProducerOptions.MaxBlockMs"/>. If the buffer does not drain within
+    /// that window, a <see cref="Errors.KafkaTimeoutException"/> is thrown.</para>
+    /// </remarks>
     /// <param name="key">The message key (can be null).</param>
     /// <param name="value">The message value.</param>
     /// <param name="deliveryHandler">Callback invoked when delivery completes. The exception parameter is null on success.</param>
