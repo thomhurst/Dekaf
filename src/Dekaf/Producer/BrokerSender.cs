@@ -524,6 +524,26 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var pollCtsRegistration = cancellationToken.Register(
             static state => ((CancellationTokenSource)state!).Cancel(), _pollTimeoutCts);
 
+        async ValueTask WaitForAnyResponseAsync()
+        {
+            _pollTimeoutCts.CancelAfter(100);
+            try
+            {
+                await _anyResponseCompleted.WaitAsync(_pollTimeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Poll timeout fired — not an error, just re-check loop conditions.
+            }
+            finally
+            {
+                // TryReset() returns false if the outer cancellationToken cancelled the CTS
+                // (via the registered callback). This is safe — the loop will exit on the
+                // next iteration via cancellationToken.ThrowIfCancellationRequested().
+                _pollTimeoutCts.TryReset();
+            }
+        }
+
         try
         {
             while (true)
@@ -660,23 +680,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // timeouts for zombie entries that expire while we're waiting.
                             // Signal may be missed if multiple responses complete between
                             // iterations; 100ms fallback ensures we don't wait indefinitely.
-                            // Reusable CTS avoids per-call Timer allocation from
-                            // SemaphoreSlim.WaitAsync(TimeSpan). TryReset() resets it
-                            // for the next iteration without allocating.
-                            _pollTimeoutCts.CancelAfter(100);
-                            try
-                            {
-                                await _anyResponseCompleted.WaitAsync(_pollTimeoutCts.Token)
-                                    .ConfigureAwait(false);
-                            }
-                            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                            {
-                                // Poll timeout fired — not an error, just re-check.
-                            }
-                            finally
-                            {
-                                _pollTimeoutCts.TryReset();
-                            }
+                            await WaitForAnyResponseAsync().ConfigureAwait(false);
                         }
                     }
 
@@ -809,23 +813,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // response completes (which may unmute a partition).
                     // Signal may be missed if multiple responses complete between
                     // iterations; 100ms fallback ensures we don't wait indefinitely.
-                    // Reusable CTS avoids per-call Timer allocation from
-                    // SemaphoreSlim.WaitAsync(TimeSpan). TryReset() resets it
-                    // for the next iteration without allocating.
-                    _pollTimeoutCts.CancelAfter(100);
-                    try
-                    {
-                        await _anyResponseCompleted.WaitAsync(_pollTimeoutCts.Token)
-                            .ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                    {
-                        // Poll timeout fired — not an error, just re-check.
-                    }
-                    finally
-                    {
-                        _pollTimeoutCts.TryReset();
-                    }
+                    await WaitForAnyResponseAsync().ConfigureAwait(false);
                 }
                 else if (carryOver.Count > 0)
                 {
