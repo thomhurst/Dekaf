@@ -34,7 +34,7 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
     private static int t_nextConnectionIndex;
 
     private readonly SemaphoreSlim _disposeLock = new(1, 1);
-    private volatile bool _disposed;
+    private int _disposed;
 
     public ConnectionPool(
         string? clientId = null,
@@ -57,7 +57,7 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
 
     public async ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken cancellationToken = default)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(ConnectionPool));
 
         // Multi-connection path: use connection groups with round-robin selection
@@ -251,7 +251,7 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
 
     public async ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken cancellationToken = default)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(ConnectionPool));
 
         var endpoint = new EndpointKey(host, port);
@@ -479,10 +479,9 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        _disposed = true;
         await CloseAllAsync().ConfigureAwait(false);
         _disposeLock.Dispose();
     }

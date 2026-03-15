@@ -117,4 +117,26 @@ public sealed class KafkaConnectionTests
 
         await Assert.That(act).Throws<ObjectDisposedException>();
     }
+
+    [Test]
+    public async Task DisposeAsync_ConcurrentCalls_DoesNotThrow()
+    {
+        var connection = new KafkaConnection("localhost", 9092);
+
+        // Launch many concurrent disposal calls to exercise the atomic guard
+        var tasks = new Task[10];
+        using var barrier = new Barrier(tasks.Length);
+
+        for (var i = 0; i < tasks.Length; i++)
+        {
+            tasks[i] = Task.Run(async () =>
+            {
+                barrier.SignalAndWait();
+                await connection.DisposeAsync();
+            });
+        }
+
+        // All concurrent disposals should complete without throwing
+        await Task.WhenAll(tasks);
+    }
 }

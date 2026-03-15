@@ -138,7 +138,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private Task? _receiveTask;
     private CancellationTokenSource? _receiveCts;
     private OAuthBearerTokenProvider? _ownedTokenProvider;
-    private volatile bool _disposed;
+    private int _disposed;
 
     // SASL re-authentication (KIP-368)
     private SaslSessionState? _saslSessionState;
@@ -157,7 +157,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     public int BrokerId { get; private set; } = -1;
     public string Host => _host;
     public int Port => _port;
-    public bool IsConnected => !_disposed && (_socket?.Connected ?? false) && _writer is not null;
+    public bool IsConnected => Volatile.Read(ref _disposed) == 0 && (_socket?.Connected ?? false) && _writer is not null;
 
     /// <summary>
     /// Gets the current SASL session state, if SASL authentication was performed.
@@ -199,7 +199,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
     public async ValueTask ConnectAsync(CancellationToken cancellationToken = default)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConnection));
 
         if (IsConnected)
@@ -295,7 +295,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConnection));
 
         if (!IsConnected)
@@ -382,7 +382,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConnection));
 
         if (!IsConnected)
@@ -445,7 +445,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(KafkaConnection));
 
         if (!IsConnected)
@@ -816,7 +816,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
                     LogReceiveTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
 
                     // Mark connection as failed to trigger reconnection
-                    _disposed = true;
+                    Volatile.Write(ref _disposed, 1);
 
                     throw new KafkaException(
                         $"Receive timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms - connection to broker {BrokerId} failed");
@@ -858,7 +858,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 if (result.IsCompleted)
                 {
                     LogReceiveLoopCompleted(_host, _port);
-                    _disposed = true; // Prevent new requests from being queued on a dead connection
+                    Volatile.Write(ref _disposed, 1); // Prevent new requests from being queued on a dead connection
                     FailAllPendingRequests(new KafkaException(
                         "Connection closed by remote peer (EOF)"));
                     break;
@@ -869,20 +869,20 @@ public sealed partial class KafkaConnection : IKafkaConnection
             // Two cases: cancellation between iterations, or EOF break (already handled above).
             if (cancellationToken.IsCancellationRequested)
             {
-                _disposed = true;
+                Volatile.Write(ref _disposed, 1);
                 FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // Expected during shutdown — fail any pending requests so callers don't hang
-            _disposed = true;
+            Volatile.Write(ref _disposed, 1);
             FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
         }
         catch (Exception ex)
         {
             LogReceiveLoopError(ex);
-            _disposed = true; // Prevent new requests from being queued on a dead connection
+            Volatile.Write(ref _disposed, 1); // Prevent new requests from being queued on a dead connection
             FailAllPendingRequests(ex);
         }
     }
@@ -943,12 +943,12 @@ public sealed partial class KafkaConnection : IKafkaConnection
     /// <summary>
     /// After adding a pending request, double-check that the connection hasn't been disposed.
     /// Closes the race where FailAllPendingRequests iterates the dictionary between our first
-    /// _disposed check and the dictionary add. If _disposed was set between the two checks,
+    /// _disposed check and the dictionary add. If _disposed was written between the two checks,
     /// FailAllPendingRequests may have already iterated past our entry.
     /// </summary>
     private void ThrowIfDisposedAfterAddingPendingRequest(int correlationId)
     {
-        if (_disposed)
+        if (Volatile.Read(ref _disposed) != 0)
         {
             if (_pendingRequests.TryRemove(correlationId, out var removed))
             {
@@ -971,7 +971,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         // Iterate twice to handle the ConcurrentDictionary race: a request added
         // by SendPipelinedAsync between the _disposed check and TryAdd may be missed
         // by the first foreach (ConcurrentDictionary enumerators are not strict snapshots).
-        // The second pass catches late arrivals, since _disposed is already true by this
+        // The second pass catches late arrivals, since _disposed is already set by this
         // point and prevents any NEW requests from being registered.
         for (var pass = 0; pass < 2; pass++)
         {
@@ -1376,7 +1376,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     /// </summary>
     internal async Task PerformReauthenticationAsync()
     {
-        if (_disposed || !IsConnected)
+        if (Volatile.Read(ref _disposed) != 0 || !IsConnected)
             return;
 
         if (_reauthenticating)
@@ -1403,7 +1403,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             // Schedule the next re-authentication
             ScheduleReauthentication(sessionLifetimeMs);
         }
-        catch (Exception ex) when (!_disposed)
+        catch (Exception ex) when (Volatile.Read(ref _disposed) == 0)
         {
             LogSaslReauthenticationFailed(ex, BrokerId);
 
@@ -1651,10 +1651,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        _disposed = true;
         LogConnectionDisposing(BrokerId, _pendingRequests.Count);
 
         _receiveCts?.Cancel();
