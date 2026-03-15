@@ -259,7 +259,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
         for (var attempt = 0; attempt < maxRetries; attempt++)
         {
             // Refresh metadata for this topic
-            await RefreshMetadataAsync([topicName], cancellationToken).ConfigureAwait(false);
+            await RefreshMetadataAsync([topicName], cancellationToken: cancellationToken).ConfigureAwait(false);
             topic = _metadata.GetTopic(topicName);
 
             if (topic is not null && topic.PartitionCount > 0 && topic.ErrorCode == ErrorCode.None)
@@ -305,7 +305,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
         }
 
         LogMetadataCacheMiss(topicName, partition);
-        await RefreshMetadataAsync([topicName], cancellationToken).ConfigureAwait(false);
+        await RefreshMetadataAsync([topicName], cancellationToken: cancellationToken).ConfigureAwait(false);
         return _metadata.GetPartitionLeader(topicName, partition);
     }
 
@@ -332,13 +332,13 @@ public sealed partial class MetadataManager : IAsyncDisposable
     /// </summary>
     public async ValueTask RefreshMetadataAsync(CancellationToken cancellationToken = default)
     {
-        await RefreshMetadataAsync(topics: null, cancellationToken).ConfigureAwait(false);
+        await RefreshMetadataAsync(topics: null, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Refreshes metadata for specific topics.
     /// </summary>
-    public async ValueTask RefreshMetadataAsync(IEnumerable<string>? topics, CancellationToken cancellationToken = default)
+    public async ValueTask RefreshMetadataAsync(IEnumerable<string>? topics, bool forceRefresh = false, CancellationToken cancellationToken = default)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(MetadataManager));
@@ -351,7 +351,7 @@ public sealed partial class MetadataManager : IAsyncDisposable
             // the metadata we need while we were waiting for the lock, avoiding a
             // redundant network request. When topics is null, this is an explicit
             // full-cluster refresh (background/init) that should always hit the network.
-            if (topics is not null && AllTopicsCached(topics))
+            if (!forceRefresh && topics is not null && AllTopicsCached(topics))
             {
                 LogMetadataRefreshSkippedCacheHit();
                 return;
