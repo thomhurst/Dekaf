@@ -2749,6 +2749,13 @@ internal sealed class PartitionBatch
     private bool _isTransactional;
     private RecordAccumulator? _accumulator;
 
+    /// <summary>
+    /// Returns the effective arena capacity: explicit ArenaCapacity if set,
+    /// otherwise BatchSize + 12.5% margin to reduce per-message ArrayPool fallback.
+    /// </summary>
+    private static int GetEffectiveArenaCapacity(ProducerOptions options) =>
+        options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize + options.BatchSize / 8;
+
     public PartitionBatch(TopicPartition topicPartition, ProducerOptions options)
     {
         _topicPartition = topicPartition;
@@ -2760,9 +2767,7 @@ internal sealed class PartitionBatch
             : ComputeInitialRecordCapacity(options.BatchSize);
 
         // Create arena for zero-copy serialization
-        // Use ArenaCapacity if set, otherwise fall back to BatchSize
-        var arenaCapacity = options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize;
-        _arena = new BatchArena(arenaCapacity);
+        _arena = new BatchArena(GetEffectiveArenaCapacity(options));
 
         // Rent arrays from pool - eliminates List allocations
         _records = ArrayPool<Record>.Shared.Rent(_initialRecordCapacity);
@@ -2846,8 +2851,7 @@ internal sealed class PartitionBatch
         _arena?.Return();
 
         // Rent or create arena for the pooled batch
-        var arenaCapacity = options.ArenaCapacity > 0 ? options.ArenaCapacity : options.BatchSize;
-        _arena = BatchArena.RentOrCreate(arenaCapacity);
+        _arena = BatchArena.RentOrCreate(GetEffectiveArenaCapacity(options));
 
         // Arrays were transferred to ReadyBatch by Complete() and are now null.
         // Allocate fresh arrays for the pooled batch.

@@ -296,8 +296,8 @@ public sealed class ProducerOptions
     /// Capacity of the arena buffer for zero-copy serialization in bytes.
     /// Larger arenas reduce fallback allocations when messages are larger than expected.
     /// Should be at least as large as BatchSize for optimal performance.
-    /// Default is 0, which uses BatchSize as the arena capacity (1 MB default).
-    /// This ensures arena buffer memory stays proportional to BufferMemory limits.
+    /// Default is 0, which uses BatchSize + 12.5% margin as the arena capacity.
+    /// The margin reduces per-message ArrayPool fallback when batches near capacity.
     /// For workloads with very large messages (approaching BatchSize), consider setting
     /// this to BatchSize * 2 to reduce slow-path fallbacks.
     /// </summary>
