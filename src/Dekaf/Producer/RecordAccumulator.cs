@@ -317,16 +317,25 @@ internal readonly struct AppendWorkItem
 /// <para>
 /// Instead of renting an array for each key/value, the arena provides a single large buffer.
 /// Messages are serialized directly into the arena, and only an offset+length are stored.
-/// When the batch completes, the entire arena buffer is returned to the pool at once.
+/// When the batch completes, the entire arena is returned to the pool for reuse.
 /// </para>
 /// <para>
 /// This reduces per-message allocations from 2 (key + value) to 0, significantly
 /// reducing GC pressure in high-throughput scenarios.
 /// </para>
+/// <para>
+/// Arena buffers are permanently allocated (not rented from ArrayPool) to avoid LOH
+/// fragmentation. Arrays >85KB land on the LOH, which is only collected during Gen2 GC.
+/// By keeping buffers alive for the lifetime of the arena pool, we eliminate the
+/// rent/return churn that causes LOH fragmentation and escalating GC pressure.
+/// </para>
 /// </remarks>
 internal sealed class BatchArena
 {
     private static readonly ConcurrentQueue<BatchArena> s_pool = new();
+    // Memory tradeoff: at the default 1MB batch size, pooling up to 128 arenas holds
+    // up to ~128MB permanently on the LOH. This is acceptable for high-throughput
+    // workloads where these arenas are in active use and would be reallocated anyway.
     private const int MaxPoolSize = 128;
     private static int s_poolCount;
 
@@ -337,15 +346,16 @@ internal sealed class BatchArena
     /// Creates a new arena with the specified capacity.
     /// The arena does not grow - when full, the batch should be rotated.
     /// </summary>
-    /// <param name="capacity">Buffer size (will be rented from ArrayPool).</param>
+    /// <param name="capacity">Buffer size. Allocated permanently (not from ArrayPool) to avoid LOH fragmentation.</param>
     public BatchArena(int capacity)
     {
-        _buffer = ArrayPool<byte>.Shared.Rent(capacity);
+        _buffer = GC.AllocateUninitializedArray<byte>(capacity, pinned: false);
         _position = 0;
     }
 
     /// <summary>
     /// Rents an arena from the pool or creates a new one.
+    /// Pooled arenas retain their buffers permanently - no ArrayPool rent/return overhead.
     /// </summary>
     public static BatchArena RentOrCreate(int capacity)
     {
@@ -359,7 +369,8 @@ internal sealed class BatchArena
     }
 
     /// <summary>
-    /// Returns an arena to the pool for reuse, or disposes it if the pool is full.
+    /// Returns an arena to the pool for reuse, or lets GC collect it if the pool is full.
+    /// The buffer is kept permanently - it is never returned to ArrayPool.
     /// </summary>
     public static void ReturnToPool(BatchArena arena)
     {
@@ -372,15 +383,15 @@ internal sealed class BatchArena
         else
         {
             Interlocked.Decrement(ref s_poolCount);
-            // Only return buffer to ArrayPool when arena is discarded
-            var buffer = Interlocked.Exchange(ref arena._buffer, null!);
-            if (buffer is not null)
-                ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
+            // Buffer is permanently allocated - just null it out and let GC collect.
+            // No ArrayPool return needed since we never rented from it.
+            arena._buffer = null!;
         }
     }
 
     /// <summary>
-    /// Resets the arena for reuse with a new buffer.
+    /// Resets the arena for reuse. Keeps the existing buffer if it's large enough,
+    /// otherwise allocates a new permanent buffer.
     /// </summary>
     private void Reset(int capacity)
     {
@@ -391,10 +402,9 @@ internal sealed class BatchArena
             return;
         }
 
-        if (_buffer is not null)
-            ArrayPool<byte>.Shared.Return(_buffer, clearArray: false);
-
-        _buffer = ArrayPool<byte>.Shared.Rent(capacity);
+        // Buffer too small (or null) - allocate a new permanent buffer.
+        // The old buffer (if any) will be collected by GC.
+        _buffer = GC.AllocateUninitializedArray<byte>(capacity, pinned: false);
         _position = 0;
     }
 
@@ -462,16 +472,15 @@ internal sealed class BatchArena
     public byte[] Buffer => _buffer;
 
     /// <summary>
-    /// Returns the buffer to the ArrayPool.
-    /// Thread-safe: uses Interlocked.Exchange to prevent double-return.
+    /// Releases the arena's buffer reference.
+    /// Defensive nulling to prevent use-after-return — the arena is single-owner
+    /// at this point so a plain write is sufficient (no atomic exchange needed).
+    /// The buffer is permanently allocated (not from ArrayPool), so it is simply
+    /// released for GC collection.
     /// </summary>
     public void Return()
     {
-        var buffer = Interlocked.Exchange(ref _buffer, null!);
-        if (buffer is not null)
-        {
-            ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
-        }
+        _buffer = null!;
     }
 }
 
