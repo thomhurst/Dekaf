@@ -217,16 +217,33 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             "--if-not-exists"
         ]).ConfigureAwait(false);
 
-        if (result.ExitCode == 0)
-        {
-            Console.WriteLine($"Created topic: {topic} (partitions={partitions}, replication={replicationFactor})");
-        }
-        else
+        if (result.ExitCode != 0)
         {
             Console.WriteLine($"Warning: Topic creation returned exit code {result.ExitCode}: {result.Stderr}");
+            return;
         }
 
-        await Task.Delay(1000).ConfigureAwait(false);
+        Console.WriteLine($"Created topic: {topic} (partitions={partitions}, replication={replicationFactor})");
+
+        // Wait for topic metadata to propagate
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            var check = await container.ExecAsync([
+                executablePath,
+                "--bootstrap-server", bootstrapServer,
+                "--describe",
+                "--topic", topic
+            ]).ConfigureAwait(false);
+
+            if (check.ExitCode == 0 && check.Stdout.Contains(topic))
+            {
+                return;
+            }
+
+            await Task.Delay(500).ConfigureAwait(false);
+        }
+
+        Console.WriteLine($"Warning: Topic {topic} not confirmed ready after creation");
     }
 
     public async ValueTask DisposeAsync()
