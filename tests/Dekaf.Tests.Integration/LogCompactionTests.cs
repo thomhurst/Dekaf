@@ -89,7 +89,9 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count >= 3) break; // warmup + 2 actual messages
+            // Count non-warmup messages, not total. ProduceWithRetryAsync may produce
+            // duplicate warmups on retry, so total count is unreliable.
+            if (messages.Count(m => m.Key != "warmup") >= 2) break;
         }
 
         var actual = messages.Where(m => m.Key != "warmup").ToList();
