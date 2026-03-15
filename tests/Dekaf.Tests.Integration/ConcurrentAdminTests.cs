@@ -211,11 +211,15 @@ public class ConcurrentAdminTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         // Partition count should be either 1 (before) or 4 (after)
         await Assert.That(partitionCount is 1 or 4).IsTrue();
 
-        // Wait for partition creation to fully propagate, then verify final state
+        // Wait for partition creation to fully propagate, then verify final state.
+        // Use a fresh admin client for each check to avoid stale metadata cache —
+        // the original admin client's MetadataManager may skip network refresh if the
+        // topic already exists in its cache (AllTopicsCached optimization).
         var finalDescription = await WaitForConditionAsync(
             async () =>
             {
-                var desc = await admin.DescribeTopicsAsync([topic]).ConfigureAwait(false);
+                await using var freshAdmin = CreateAdminClient();
+                var desc = await freshAdmin.DescribeTopicsAsync([topic]).ConfigureAwait(false);
                 return desc[topic];
             },
             desc => desc.Partitions.Count == 4,
