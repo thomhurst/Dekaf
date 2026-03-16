@@ -1,0 +1,593 @@
+using System.Diagnostics;
+using Dekaf.Metadata;
+using Dekaf.Producer;
+using Dekaf.Protocol;
+using Dekaf.Protocol.Messages;
+using Dekaf.Protocol.Records;
+
+namespace Dekaf.Tests.Unit.Producer;
+
+/// <summary>
+/// Tests for RecordAccumulator.Ready() push-based notification system.
+/// Verifies that Ready() drains only notified partitions (O(n_ready)) instead of
+/// scanning all partitions (O(n_all)).
+/// </summary>
+public class RecordAccumulatorReadyTests
+{
+    private static ProducerOptions CreateTestOptions(int batchSize = 1000, int lingerMs = 10)
+    {
+        return new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = ulong.MaxValue,
+            BatchSize = batchSize,
+            LingerMs = lingerMs
+        };
+    }
+
+    /// <summary>
+    /// Creates a MetadataManager with partition leader metadata populated.
+    /// </summary>
+    private static MetadataManager CreateMetadataManager(string topic, int partitionCount, int nodeId = 1)
+    {
+        var manager = new MetadataManager(connectionPool: null!, bootstrapServers: ["localhost:9092"]);
+
+        var partitions = new List<PartitionMetadata>();
+        for (var i = 0; i < partitionCount; i++)
+        {
+            partitions.Add(new PartitionMetadata
+            {
+                ErrorCode = ErrorCode.None,
+                PartitionIndex = i,
+                LeaderId = nodeId,
+                ReplicaNodes = [nodeId],
+                IsrNodes = [nodeId]
+            });
+        }
+
+        var response = new MetadataResponse
+        {
+            Brokers = [new BrokerMetadata { NodeId = nodeId, Host = "localhost", Port = 9092 }],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = topic,
+                    Partitions = partitions
+                }
+            ]
+        };
+
+        manager.Metadata.Update(response);
+        return manager;
+    }
+
+    [Test]
+    public async Task Ready_AfterSealingBatch_ReturnsReadyNode()
+    {
+        // Arrange: Create an accumulator with a small batch size so we can seal by filling it
+        var options = CreateTestOptions(batchSize: 50);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // Fill the first batch until seal
+            for (var i = 0; i < 10; i++)
+            {
+                var completion = pool.Rent();
+                accumulator.Append("test-topic", 0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, 0, completion, null);
+            }
+
+            // Act: Call Ready()
+            var readyNodes = new HashSet<int>();
+            var (nextCheckDelayMs, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
+
+            // Assert: Node 1 should be ready (partition 0's leader)
+            await Assert.That(readyNodes).Contains(1);
+            await Assert.That(unknownLeadersExist).IsFalse();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Ready_NoSealedBatches_ReturnsEmpty()
+    {
+        // Arrange: Large batch size so appending one record won't seal
+        var options = CreateTestOptions(batchSize: 100_000);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        try
+        {
+            // Append one record - batch should not seal (large batch size)
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+            var completion = pool.Rent();
+
+            accumulator.Append("test-topic", 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, 0, completion, null);
+
+            // Act: Call Ready()
+            var readyNodes = new HashSet<int>();
+            var (_, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
+
+            // Assert: No nodes should be ready (batch not sealed yet)
+            await Assert.That(readyNodes).IsEmpty();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Ready_MutedPartition_SkipsNotification()
+    {
+        // Arrange
+        var options = CreateTestOptions(batchSize: 50);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // Fill to seal
+            for (var i = 0; i < 10; i++)
+            {
+                var completion = pool.Rent();
+                accumulator.Append("test-topic", 0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, 0, completion, null);
+            }
+
+            // Mute the partition before calling Ready
+            accumulator.MutePartition(new TopicPartition("test-topic", 0));
+
+            // Act
+            var readyNodes = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes);
+
+            // Assert: No nodes should be ready (partition is muted)
+            await Assert.That(readyNodes).IsEmpty();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Ready_UnknownLeader_SetsUnknownLeadersExist()
+    {
+        // Arrange: Create metadata WITHOUT partition info so leader is unknown
+        var options = CreateTestOptions(batchSize: 50);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var metadataManager = new MetadataManager(connectionPool: null!, bootstrapServers: ["localhost:9092"]);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // Fill to seal
+            for (var i = 0; i < 10; i++)
+            {
+                var completion = pool.Rent();
+                accumulator.Append("test-topic", 0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, 0, completion, null);
+            }
+
+            // Act: Ready() with no metadata
+            var readyNodes = new HashSet<int>();
+            var (_, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
+
+            // Assert: No nodes ready, but unknownLeadersExist should be true
+            await Assert.That(readyNodes).IsEmpty();
+            await Assert.That(unknownLeadersExist).IsTrue();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Ready_CalledTwice_SecondCallReturnsEmpty()
+    {
+        // Verifies that draining the notification queue means subsequent Ready() calls
+        // don't re-process already-drained partitions.
+        var options = CreateTestOptions(batchSize: 50);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // Fill to seal
+            for (var i = 0; i < 10; i++)
+            {
+                var completion = pool.Rent();
+                accumulator.Append("test-topic", 0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, 0, completion, null);
+            }
+
+            // First Ready() - drains the notification
+            var readyNodes1 = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes1);
+            await Assert.That(readyNodes1).Contains(1);
+
+            // Second Ready() - no new notifications, should be empty
+            var readyNodes2 = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes2);
+            await Assert.That(readyNodes2).IsEmpty();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Ready_UnmutePartition_ReNotifiesReadyPartition()
+    {
+        // Verifies that unmuting a partition with sealed batches triggers a new notification.
+        var options = CreateTestOptions(batchSize: 50);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // Fill to seal
+            for (var i = 0; i < 10; i++)
+            {
+                var completion = pool.Rent();
+                accumulator.Append("test-topic", 0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, 0, completion, null);
+            }
+
+            // Mute the partition and drain the notification queue
+            var tp = new TopicPartition("test-topic", 0);
+            accumulator.MutePartition(tp);
+            var readyNodes1 = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes1);
+            await Assert.That(readyNodes1).IsEmpty();
+
+            // Unmute - this should re-enqueue the notification
+            accumulator.UnmutePartition(tp);
+
+            // Now Ready() should find the sealed batch
+            var readyNodes2 = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes2);
+            await Assert.That(readyNodes2).Contains(1);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Ready_MultiplePartitions_OnlyReportsReadyOnes()
+    {
+        // Verifies that with many partitions, only the ones with sealed batches are reported.
+        var options = CreateTestOptions(batchSize: 50);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var metadataManager = CreateMetadataManager("test-topic", 10, nodeId: 1);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // Only fill partition 3 enough to seal
+            for (var i = 0; i < 10; i++)
+            {
+                var completion = pool.Rent();
+                accumulator.Append("test-topic", 3,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, 0, completion, null);
+            }
+
+            // Append one record to partition 7 (not enough to seal)
+            var completion2 = pool.Rent();
+            accumulator.Append("test-topic", 7,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, 0, completion2, null);
+
+            // Act
+            var readyNodes = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes);
+
+            // Assert: Node 1 should be ready (partition 3 has sealed batch)
+            await Assert.That(readyNodes).Count().IsEqualTo(1);
+            await Assert.That(readyNodes).Contains(1);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Ready_BackoffBatch_ActiveBackoff_DoesNotReport()
+    {
+        // Arrange: Create, seal, drain a batch, then reenqueue it with a far-future backoff.
+        // Verify that Ready() does not report the node while backoff is active.
+        var options = CreateTestOptions(batchSize: 50);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // Fill to seal
+            for (var i = 0; i < 10; i++)
+            {
+                var completion = pool.Rent();
+                accumulator.Append("test-topic", 0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, 0, completion, null);
+            }
+
+            // Drain the sealed batch via Ready() + Drain()
+            var readyNodes = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes);
+            await Assert.That(readyNodes).Contains(1);
+
+            var drainResult = new Dictionary<int, List<ReadyBatch>>();
+            var batchListPool = new Stack<List<ReadyBatch>>();
+            accumulator.Drain(metadataManager, readyNodes, int.MaxValue, drainResult, batchListPool);
+            await Assert.That(drainResult).ContainsKey(1);
+
+            var batch = drainResult[1][0];
+
+            // Set backoff far in the future (10 seconds) and reenqueue
+            batch.RetryNotBefore = Stopwatch.GetTimestamp() + (Stopwatch.Frequency * 10);
+            accumulator.Reenqueue(batch, 0);
+
+            // Act: Ready() during backoff - should NOT report the node as ready.
+            var readyNodesDuringBackoff = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodesDuringBackoff);
+            await Assert.That(readyNodesDuringBackoff).IsEmpty();
+
+            // A second call should also be empty (no per-cycle churn).
+            var readyNodesDuringBackoff2 = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodesDuringBackoff2);
+            await Assert.That(readyNodesDuringBackoff2).IsEmpty();
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Ready_BackoffBatch_ExpiredBackoff_ReportsReady()
+    {
+        // Arrange: Create, seal, drain a batch, then reenqueue it with an already-expired backoff.
+        // Verify that Ready() reports the node immediately when backoff is in the past.
+        var options = CreateTestOptions(batchSize: 50);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // Fill to seal
+            for (var i = 0; i < 10; i++)
+            {
+                var completion = pool.Rent();
+                accumulator.Append("test-topic", 0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, 0, completion, null);
+            }
+
+            // Drain the sealed batch via Ready() + Drain()
+            var readyNodes = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes);
+            await Assert.That(readyNodes).Contains(1);
+
+            var drainResult = new Dictionary<int, List<ReadyBatch>>();
+            var batchListPool = new Stack<List<ReadyBatch>>();
+            accumulator.Drain(metadataManager, readyNodes, int.MaxValue, drainResult, batchListPool);
+            await Assert.That(drainResult).ContainsKey(1);
+
+            var batch = drainResult[1][0];
+
+            // Set backoff in the past (already expired) and reenqueue
+            batch.RetryNotBefore = Stopwatch.GetTimestamp() - Stopwatch.Frequency;
+            accumulator.Reenqueue(batch, 0);
+
+            // Act: Ready() should report the node immediately (backoff already expired).
+            var readyNodesAfterBackoff = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodesAfterBackoff);
+            await Assert.That(readyNodesAfterBackoff).Contains(1);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task ReadyPartitionsQueue_SealViaLinger_EnqueuesNotification()
+    {
+        // Tests that sealing via linger/flush also pushes to the notification queue.
+        // Use large batch size so only linger (not size) triggers seal, with LingerMs=0 for immediate seal.
+        var options = CreateTestOptions(batchSize: 100_000, lingerMs: 0);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // Append one record (batch won't seal from size)
+            var completion = pool.Rent();
+            accumulator.Append("test-topic", 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, 0, completion, null);
+
+            // Seal via linger expiry (doesn't wait for delivery like FlushAsync does)
+            await accumulator.ExpireLingerAsync(CancellationToken.None);
+
+            // Act: Ready() should find the sealed batch
+            var readyNodes = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodes);
+
+            // Assert
+            await Assert.That(readyNodes).Contains(1);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Drain_MaxRequestSizeExceeded_ReenqueuesSkippedPartitions()
+    {
+        // Regression test: when DrainBatchesForOneNode hits maxRequestSize and breaks,
+        // the skipped partitions' notifications were lost — their batches stayed in the deque
+        // forever because Ready() had already consumed the notifications.
+        var options = CreateTestOptions(batchSize: 50);
+        await using var accumulator = new RecordAccumulator(options);
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        // All 3 partitions on the same node
+        await using var metadataManager = CreateMetadataManager("test-topic", 3, nodeId: 1);
+
+        var pooledKey = new PooledMemory(null, 0, isNull: true);
+        var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+        // Seal batches on all 3 partitions
+        for (var p = 0; p < 3; p++)
+        {
+            for (var i = 0; i < 10; i++)
+            {
+                var completion = pool.Rent();
+                accumulator.Append("test-topic", p,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, 0, completion, null);
+            }
+        }
+
+        // Ready() consumes notifications for all 3 partitions
+        var readyNodes = new HashSet<int>();
+        accumulator.Ready(metadataManager, readyNodes);
+        await Assert.That(readyNodes).Contains(1);
+
+        // Drain with a tiny maxRequestSize so only 1 partition's batch fits.
+        // This should re-enqueue notifications for the other 2 partitions.
+        var drainResult = new Dictionary<int, List<ReadyBatch>>();
+        var batchListPool = new Stack<List<ReadyBatch>>();
+        accumulator.Drain(metadataManager, readyNodes, maxRequestSize: 1, drainResult, batchListPool);
+
+        // Verify only 1 batch was drained (maxRequestSize too small for more)
+        await Assert.That(drainResult).ContainsKey(1);
+        await Assert.That(drainResult[1]).Count().IsEqualTo(1);
+
+        // Key assertion: a subsequent Ready() call must find the remaining partitions
+        // because Drain re-enqueued their notifications.
+        var readyNodes2 = new HashSet<int>();
+        accumulator.Ready(metadataManager, readyNodes2);
+        await Assert.That(readyNodes2).Contains(1);
+    }
+
+    [Test]
+    public async Task Drain_MultipleBatchesSamePartition_ReenqueuesRemaining()
+    {
+        // Regression test: when PollFirst drains one batch from a partition that has
+        // multiple sealed batches, the remaining batches must get a re-notification.
+        // Without this, the sender sleeps with batches stuck in the deque.
+        var options = CreateTestOptions(batchSize: 50);
+        await using var accumulator = new RecordAccumulator(options);
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        await using var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        var pooledKey = new PooledMemory(null, 0, isNull: true);
+        var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+        // Seal multiple batches on partition 0 (each batch seals when full)
+        for (var i = 0; i < 30; i++)
+        {
+            var completion = pool.Rent();
+            accumulator.Append("test-topic", 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, 0, completion, null);
+        }
+
+        // Ready() consumes all notifications for partition 0
+        var readyNodes = new HashSet<int>();
+        accumulator.Ready(metadataManager, readyNodes);
+        await Assert.That(readyNodes).Contains(1);
+
+        // Drain takes ONE batch per partition
+        var drainResult = new Dictionary<int, List<ReadyBatch>>();
+        var batchListPool = new Stack<List<ReadyBatch>>();
+        accumulator.Drain(metadataManager, readyNodes, int.MaxValue, drainResult, batchListPool);
+        await Assert.That(drainResult[1]).Count().IsEqualTo(1);
+
+        // Key assertion: remaining batches must have a notification so the next
+        // Ready() call finds them. Without the PollFirst re-enqueue fix, this fails.
+        var readyNodes2 = new HashSet<int>();
+        accumulator.Ready(metadataManager, readyNodes2);
+        await Assert.That(readyNodes2).Contains(1);
+    }
+}
