@@ -714,8 +714,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     //
     // Duplicate entries for the same partition are harmless: Ready() dequeues and checks the
     // partition deque, so extra notifications for an already-drained partition are no-ops.
-    // The total duplicate count is bounded by the number of sealed batches, which is itself
-    // bounded by buffer memory (BufferMemory / BatchSize).
+    // The queue is bounded: each partition appears at most once per seal event, muted
+    // partitions are dropped (not re-enqueued), and UnmutePartition re-enqueues only if
+    // sealed batches exist. Total size <= number of sealed batches <= BufferMemory / BatchSize.
     private readonly ConcurrentQueue<TopicPartition> _readyPartitions = new();
 
     // Coordination lock between FlushAsyncCore and ExpireLingerAsyncCore.
@@ -885,7 +886,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Drains the push-based notification queue to find partitions with sendable data.
     /// Populates the caller-provided readyNodes set with broker IDs that have at least one
-    /// partition whose head batch is sendable (batch is complete, linger expired, or flush in progress).
+    /// partition whose head batch is sendable (sealed by append overflow, linger expiry, or flush).
     /// Only called from the sender thread.
     ///
     /// Complexity is O(n_ready_partitions) instead of O(n_all_partitions) because only partitions
@@ -909,9 +910,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             if (_mutedPartitions.ContainsKey(tp))
             {
-                // Re-enqueue so the notification isn't permanently lost. The partition
-                // will be checked again on the next sender cycle after unmuting.
-                _readyPartitions.Enqueue(tp);
+                // Drop the notification; UnmutePartition() will re-enqueue if the
+                // partition still has sealed batches. This avoids unbounded queue
+                // growth while a partition stays muted across many sender cycles.
                 continue;
             }
 
