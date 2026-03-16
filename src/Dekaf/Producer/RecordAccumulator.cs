@@ -903,7 +903,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 break;
 
             if (_mutedPartitions.ContainsKey(tp))
+            {
+                // Re-enqueue so the notification isn't permanently lost. The partition
+                // will be checked again on the next sender cycle after unmuting.
+                _readyPartitions.Enqueue(tp);
                 continue;
+            }
 
             var pd = _partitionDeques.GetValueOrDefault(tp);
             if (pd is null)
