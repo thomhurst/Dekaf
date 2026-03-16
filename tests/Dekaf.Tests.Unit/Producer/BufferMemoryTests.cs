@@ -861,7 +861,7 @@ public class BufferMemoryTests
 
             accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null, null, null);
+                pooledKey, pooledValue, null, 0, null, null);
 
             var bufferedBefore = accumulator.BufferedBytes;
 
