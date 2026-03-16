@@ -44,7 +44,7 @@ public readonly record struct Record
     /// <summary>
     /// Gets the effective header count, handling both exact-sized and pooled arrays.
     /// </summary>
-    private int EffectiveHeaderCount => HeaderCount > 0 ? HeaderCount : (Headers?.Length ?? 0);
+    private int EffectiveHeaderCount => Headers is null ? 0 : (HeaderCount > 0 ? HeaderCount : Headers.Length);
 
     /// <summary>
     /// Writes the record to the protocol writer.
@@ -145,7 +145,8 @@ public readonly record struct Record
             IsKeyNull = isKeyNull,
             Value = value,
             IsValueNull = isValueNull,
-            Headers = headers
+            Headers = headers,
+            HeaderCount = headers?.Length ?? 0
         };
     }
 

@@ -820,7 +820,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var headerCount = 0;
         if (headers is not null && headers.Count > 0)
         {
-            ConvertHeaders(headers, out pooledHeaderArray, out headerCount);
+            RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
         }
 
         // Step 5: Append to accumulator (under deque lock for ordering safety)
@@ -969,7 +969,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var headerCount = 0;
             if (message.Headers is not null && message.Headers.Count > 0)
             {
-                ConvertHeaders(message.Headers, out pooledHeaderArray, out headerCount);
+                RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
             }
 
             // Append to accumulator synchronously (non-blocking memory reservation).
@@ -1242,7 +1242,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var headerCount = 0;
         if (headers is not null && headers.Count > 0)
         {
-            ConvertHeaders(headers, out pooledHeaderArray, out headerCount);
+            RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
         }
 
         // Step 5: Append to accumulator with callback (under deque lock for ordering safety)
@@ -1305,7 +1305,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var headerCount = 0;
         if (message.Headers is not null && message.Headers.Count > 0)
         {
-            ConvertHeaders(message.Headers, out pooledHeaderArray, out headerCount);
+            RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
         }
 
         // Enqueue to per-partition-affine worker instead of calling AppendAsync inline.
@@ -2755,12 +2755,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <summary>
-    /// Converts Headers collection to a pooled Header array with minimal allocations.
+    /// Rents a Header array from the pool and fills it from the Headers collection.
     /// Always uses ArrayPool to avoid per-message heap allocations.
     /// Returns the raw array and count to avoid boxing a wrapper struct to IReadOnlyList.
     /// </summary>
+    /// <remarks>
+    /// Assumes headers is non-null and non-empty; callers must guard before invoking.
+    /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void ConvertHeaders(Headers headers, out Header[] pooledArray, out int headerCount)
+    private static void RentAndFillHeaders(Headers headers, out Header[] pooledArray, out int headerCount)
     {
         var count = headers.Count;
         headerCount = count;
