@@ -94,6 +94,9 @@ public class ObjectPoolTests
         pool.Return(item3); // Pool is full (max 2), this should be discarded
 
         await Assert.That(pool.ApproximateCount).IsEqualTo(2);
+        await Assert.That(item3.WasReset).IsFalse(); // Discarded items skip Reset
+        var rented = pool.Rent();
+        await Assert.That(rented).IsNotSameReferenceAs(item3); // Discarded item is not returned
     }
 
     [Test]

@@ -132,6 +132,7 @@ internal abstract class ObjectPool<T> where T : class
 
     /// <summary>
     /// Clears all pooled items.
+    /// Not thread-safe with concurrent Rent/Return — only call during single-threaded teardown.
     /// </summary>
     public void Clear()
     {

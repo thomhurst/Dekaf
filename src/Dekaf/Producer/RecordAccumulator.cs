@@ -2692,6 +2692,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var inFlightBatches = Volatile.Read(ref _inFlightBatchCount);
         LogDisposeStarted(_partitionDeques.Count, inFlightBatches);
+        // Note: BatchArena.Misses is process-scoped (shared across all producers),
+        // while _batchPool and _readyBatchPool misses are per-producer-instance.
         LogPoolMisses(_batchPool.Misses, _readyBatchPool.Misses, BatchArena.Misses);
         _disposed = true;
 
@@ -2963,8 +2965,6 @@ internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
     {
         var batch = Rent();
         batch.Reset(topicPartition);
-        batch.SetReadyBatchPool(_readyBatchPool);
-        batch.SetArrayReuseQueue(_arrayReuseQueue);
         return batch;
     }
 }
