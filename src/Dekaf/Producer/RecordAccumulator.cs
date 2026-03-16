@@ -1126,11 +1126,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <paramref name="delayMs"/> milliseconds. Uses a fire-and-forget <see cref="Task.Delay"/>
     /// so the sender loop is not churning on partitions still in retry backoff.
     /// One allocation per retry batch (not per message) — acceptable per allocation guidelines.
+    /// Respects <see cref="_disposalCts"/> so the timer cancels promptly on disposal,
+    /// preventing reference leaks from captured state keeping the accumulator alive.
     /// </summary>
     private void DeferReenqueue(TopicPartition tp, int delayMs)
     {
-        _ = Task.Delay(Math.Max(delayMs, 1)).ContinueWith(static (_, state) =>
+        _ = Task.Delay(Math.Max(delayMs, 1), _disposalCts.Token).ContinueWith(static (t, state) =>
         {
+            if (t.IsCanceled) return;
             var (self, partition) = ((RecordAccumulator, TopicPartition))state!;
             self._readyPartitions.Enqueue(partition);
             self.SignalWakeup();
