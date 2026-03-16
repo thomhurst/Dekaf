@@ -895,7 +895,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal (int NextCheckDelayMs, bool UnknownLeadersExist) Ready(
         MetadataManager metadataManager, HashSet<int> readyNodes)
     {
-        var nextCheckDelayMs = int.MaxValue;
         var unknownLeadersExist = false;
 
         // Snapshot the current queue length to avoid infinite loop: partitions that need
@@ -967,7 +966,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             readyNodes.Add(leader.NodeId);
         }
 
-        return (nextCheckDelayMs == int.MaxValue ? 100 : nextCheckDelayMs, unknownLeadersExist);
+        // With push-based notifications, the sender wakes on SignalWakeup() from batch
+        // sealing or DeferReenqueue timer expiry. The 100ms fallback is a safety-net poll
+        // in case a notification is missed (e.g., during disposal races).
+        return (100, unknownLeadersExist);
     }
 
     /// <summary>
