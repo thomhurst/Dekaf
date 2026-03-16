@@ -4,6 +4,61 @@ using System.Runtime.CompilerServices;
 namespace Dekaf.Producer;
 
 /// <summary>
+/// Non-generic companion providing constants and utility methods for <see cref="ValueTaskSourcePool{T}"/>.
+/// </summary>
+public static class ValueTaskSourcePool
+{
+    /// <summary>
+    /// Minimum pool size used as a floor when auto-calculating.
+    /// </summary>
+    public const int MinAutoPoolSize = 256;
+
+    /// <summary>
+    /// Maximum pool size used as a ceiling when auto-calculating.
+    /// </summary>
+    public const int MaxAutoPoolSize = 65536;
+
+    /// <summary>
+    /// Fallback maximum pool size used when no producer options are available (e.g. parameterless constructor).
+    /// </summary>
+    internal const int FallbackMaxPoolSize = 4096;
+
+    /// <summary>
+    /// Conservative estimate of the number of messages per batch, used as a multiplier
+    /// when calculating pool size. Each in-flight message holds a rented pool source,
+    /// so the pool must be sized per message, not per batch.
+    /// </summary>
+    /// <remarks>
+    /// With the default 1 MB batch size and typical ~1 KB messages, a batch holds ~1024 messages.
+    /// This matches the estimate documented in CLAUDE.md ("Batch = 1MB default = ~1000 messages at 1KB each").
+    /// </remarks>
+    internal const int EstimatedMessagesPerBatch = 1024;
+
+    /// <summary>
+    /// Calculates an appropriate pool size based on the estimated number of concurrent in-flight messages.
+    /// The pool is rented per <c>ProduceAsync</c> call (per message), so the formula accounts for
+    /// both the number of in-flight batches and the estimated messages per batch:
+    /// <c>(BufferMemory / BatchSize) * EstimatedMessagesPerBatch</c>, clamped to
+    /// [<see cref="MinAutoPoolSize"/>, <see cref="MaxAutoPoolSize"/>].
+    /// </summary>
+    /// <param name="bufferMemory">Total producer buffer memory in bytes.</param>
+    /// <param name="batchSize">Maximum batch size in bytes.</param>
+    /// <returns>A pool size scaled to the expected concurrency level.</returns>
+    public static int CalculatePoolSize(ulong bufferMemory, int batchSize)
+    {
+        if (batchSize <= 0)
+            throw new ArgumentOutOfRangeException(nameof(batchSize), "Batch size must be positive.");
+
+        // Clamp maxBatches before multiplying to prevent overflow for large bufferMemory values.
+        const ulong maxUsefulBatches = MaxAutoPoolSize / EstimatedMessagesPerBatch; // 64
+        var maxBatches = Math.Min(bufferMemory / (ulong)batchSize, maxUsefulBatches);
+        var estimatedSources = (int)(maxBatches * EstimatedMessagesPerBatch);
+
+        return Math.Clamp(estimatedSources, MinAutoPoolSize, MaxAutoPoolSize);
+    }
+}
+
+/// <summary>
 /// Thread-safe bounded pool for <see cref="PooledValueTaskSource{T}"/> instances.
 /// Uses lock-free operations via <see cref="ConcurrentStack{T}"/> for high throughput.
 /// </summary>
@@ -28,12 +83,6 @@ namespace Dekaf.Producer;
 /// <typeparam name="T">The result type of the value task sources.</typeparam>
 public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
 {
-    /// <summary>
-    /// Default maximum number of pooled instances.
-    /// Increased from 1024 to 4096 to reduce allocations in high-throughput scenarios.
-    /// </summary>
-    public const int DefaultMaxPoolSize = 4096;
-
     private readonly ConcurrentStack<PooledValueTaskSource<T>> _pool = new();
     private readonly int _maxPoolSize;
     private int _poolCount; // Approximate count for bounded pool management
@@ -42,7 +91,7 @@ public sealed class ValueTaskSourcePool<T> : IAsyncDisposable
     /// <summary>
     /// Creates a new pool with the default maximum size.
     /// </summary>
-    public ValueTaskSourcePool() : this(DefaultMaxPoolSize)
+    public ValueTaskSourcePool() : this(ValueTaskSourcePool.FallbackMaxPoolSize)
     {
     }
 

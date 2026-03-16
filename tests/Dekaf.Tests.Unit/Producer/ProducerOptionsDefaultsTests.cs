@@ -159,10 +159,10 @@ public class ProducerOptionsDefaultsTests
     }
 
     [Test]
-    public async Task ValueTaskSourcePoolSize_DefaultsTo_4096()
+    public async Task ValueTaskSourcePoolSize_DefaultsTo_0_AutoCalculate()
     {
         var options = CreateOptions();
-        await Assert.That(options.ValueTaskSourcePoolSize).IsEqualTo(4096);
+        await Assert.That(options.ValueTaskSourcePoolSize).IsEqualTo(0);
     }
 
     [Test]

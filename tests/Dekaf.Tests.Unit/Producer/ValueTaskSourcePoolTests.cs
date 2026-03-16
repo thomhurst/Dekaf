@@ -203,10 +203,64 @@ public class ValueTaskSourcePoolTests
     }
 
     [Test]
-    public async Task DefaultMaxPoolSize_Is4096()
+    public async Task FallbackMaxPoolSize_Is4096()
     {
-        var defaultSize = ValueTaskSourcePool<int>.DefaultMaxPoolSize;
-        await Assert.That(defaultSize).IsEqualTo(4096);
+        var fallbackSize = ValueTaskSourcePool.FallbackMaxPoolSize;
+        await Assert.That(fallbackSize).IsEqualTo(4096);
+    }
+
+    [Test]
+    public async Task CalculatePoolSize_ScalesWithBufferMemoryAndBatchSize()
+    {
+        // 64 MB buffer / 1 MB batch = 64 batches * 1024 msgs/batch = 65536, clamped to max
+        var poolSize = ValueTaskSourcePool.CalculatePoolSize(67108864UL, 1048576);
+        await Assert.That(poolSize).IsEqualTo(ValueTaskSourcePool.MaxAutoPoolSize);
+
+        // 2 MB buffer / 1 MB batch = 2 batches * 1024 msgs/batch = 2048
+        var poolSize2 = ValueTaskSourcePool.CalculatePoolSize(2097152UL, 1048576);
+        await Assert.That(poolSize2).IsEqualTo(2048);
+    }
+
+    [Test]
+    public async Task CalculatePoolSize_ClampsToMinimum()
+    {
+        // 256 KB buffer / 1 MB batch = 0 batches * 1024 = 0, should clamp to MinAutoPoolSize
+        var poolSize = ValueTaskSourcePool.CalculatePoolSize(262144UL, 1048576);
+        await Assert.That(poolSize).IsEqualTo(ValueTaskSourcePool.MinAutoPoolSize);
+    }
+
+    [Test]
+    public async Task CalculatePoolSize_ClampsToMaximum()
+    {
+        // 100 GB buffer / 16 KB batch = ~6.5M batches, should clamp to MaxAutoPoolSize
+        var poolSize = ValueTaskSourcePool.CalculatePoolSize(107374182400UL, 16384);
+        await Assert.That(poolSize).IsEqualTo(ValueTaskSourcePool.MaxAutoPoolSize);
+    }
+
+    [Test]
+    public async Task CalculatePoolSize_ThrowsForZeroBatchSize()
+    {
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(
+            () => ValueTaskSourcePool.CalculatePoolSize(1073741824UL, 0));
+
+        await Assert.That(exception).IsNotNull();
+    }
+
+    [Test]
+    public async Task CalculatePoolSize_ThrowsForNegativeBatchSize()
+    {
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(
+            () => ValueTaskSourcePool.CalculatePoolSize(1073741824UL, -1));
+
+        await Assert.That(exception).IsNotNull();
+    }
+
+    [Test]
+    public async Task CalculatePoolSize_SingleBatchBuffer_Returns1024()
+    {
+        // 1 MB buffer / 1 MB batch = 1 batch * 1024 msgs = 1024 (above MinAutoPoolSize, no clamping)
+        var poolSize = ValueTaskSourcePool.CalculatePoolSize(1048576UL, 1048576);
+        await Assert.That(poolSize).IsEqualTo(1024);
     }
 
     [Test]
@@ -215,11 +269,9 @@ public class ValueTaskSourcePoolTests
         var pool = new ValueTaskSourcePool<int>();
         await pool.DisposeAsync().ConfigureAwait(false);
 
-        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
-        {
-            pool.Rent();
-            return Task.CompletedTask;
-        });
+        var exception = Assert.Throws<ObjectDisposedException>(() => pool.Rent());
+
+        await Assert.That(exception).IsNotNull();
     }
 
     [Test]
@@ -243,17 +295,15 @@ public class ValueTaskSourcePoolTests
     [Test]
     public async Task Constructor_ThrowsForInvalidMaxSize()
     {
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
-        {
-            _ = new ValueTaskSourcePool<int>(maxPoolSize: 0);
-            return Task.CompletedTask;
-        });
+        var exception1 = Assert.Throws<ArgumentOutOfRangeException>(
+            () => _ = new ValueTaskSourcePool<int>(maxPoolSize: 0));
 
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
-        {
-            _ = new ValueTaskSourcePool<int>(maxPoolSize: -1);
-            return Task.CompletedTask;
-        });
+        await Assert.That(exception1).IsNotNull();
+
+        var exception2 = Assert.Throws<ArgumentOutOfRangeException>(
+            () => _ = new ValueTaskSourcePool<int>(maxPoolSize: -1));
+
+        await Assert.That(exception2).IsNotNull();
     }
 
     [Test]
@@ -337,7 +387,7 @@ public class ValueTaskSourcePoolTests
     {
         var pool = new ValueTaskSourcePool<int>();
 
-        await Assert.That(pool.MaxPoolSize).IsEqualTo(ValueTaskSourcePool<int>.DefaultMaxPoolSize);
+        await Assert.That(pool.MaxPoolSize).IsEqualTo(ValueTaskSourcePool.FallbackMaxPoolSize);
     }
 
     [Test]
