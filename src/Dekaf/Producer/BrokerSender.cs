@@ -1000,7 +1000,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return;
         }
 
-        // Ensure at most one batch per partition per coalesced request
+        // Kafka's LogValidator rejects multiple record batches per partition in v2 format:
+        // "Compressed outer record has more than one batch". This applies to ALL v2 batches
+        // (even uncompressed). The Java client also enforces this (RecordAccumulator.drain
+        // returns at most one batch per partition per node). Do not remove this constraint.
         if (!coalescedPartitions.Add(batch.TopicPartition))
         {
             batch.AppendDiag('O');
