@@ -33,10 +33,10 @@ public class ProducerOptionsDefaultsTests
     }
 
     [Test]
-    public async Task LingerMs_DefaultsTo_5()
+    public async Task LingerMs_DefaultsTo_0()
     {
         var options = CreateOptions();
-        await Assert.That(options.LingerMs).IsEqualTo(5);
+        await Assert.That(options.LingerMs).IsEqualTo(0);
     }
 
     [Test]
