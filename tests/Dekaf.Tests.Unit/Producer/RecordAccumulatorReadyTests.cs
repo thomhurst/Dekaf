@@ -500,4 +500,53 @@ public class RecordAccumulatorReadyTests
             await metadataManager.DisposeAsync();
         }
     }
+
+    [Test]
+    public async Task Drain_MaxRequestSizeExceeded_ReenqueuesSkippedPartitions()
+    {
+        // Regression test: when DrainBatchesForOneNode hits maxRequestSize and breaks,
+        // the skipped partitions' notifications were lost — their batches stayed in the deque
+        // forever because Ready() had already consumed the notifications.
+        var options = CreateTestOptions(batchSize: 50);
+        await using var accumulator = new RecordAccumulator(options);
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        // All 3 partitions on the same node
+        await using var metadataManager = CreateMetadataManager("test-topic", 3, nodeId: 1);
+
+        var pooledKey = new PooledMemory(null, 0, isNull: true);
+        var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+        // Seal batches on all 3 partitions
+        for (var p = 0; p < 3; p++)
+        {
+            for (var i = 0; i < 10; i++)
+            {
+                var completion = pool.Rent();
+                accumulator.Append("test-topic", p,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, 0, completion, null);
+            }
+        }
+
+        // Ready() consumes notifications for all 3 partitions
+        var readyNodes = new HashSet<int>();
+        accumulator.Ready(metadataManager, readyNodes);
+        await Assert.That(readyNodes).Contains(1);
+
+        // Drain with a tiny maxRequestSize so only 1 partition's batch fits.
+        // This should re-enqueue notifications for the other 2 partitions.
+        var drainResult = new Dictionary<int, List<ReadyBatch>>();
+        var batchListPool = new Stack<List<ReadyBatch>>();
+        accumulator.Drain(metadataManager, readyNodes, maxRequestSize: 1, drainResult, batchListPool);
+
+        // Verify only 1 batch was drained (maxRequestSize too small for more)
+        await Assert.That(drainResult).ContainsKey(1);
+        await Assert.That(drainResult[1]).Count().IsEqualTo(1);
+
+        // Key assertion: a subsequent Ready() call must find the remaining partitions
+        // because Drain re-enqueued their notifications.
+        var readyNodes2 = new HashSet<int>();
+        accumulator.Ready(metadataManager, readyNodes2);
+        await Assert.That(readyNodes2).Contains(1);
+    }
 }

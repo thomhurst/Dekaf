@@ -1053,7 +1053,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     continue;
 
                 if (ready.Count > 0 && size + batch.DataSize > maxRequestSize)
+                {
+                    // Ready() already consumed notifications for all partitions on this node.
+                    // Re-enqueue this and remaining partitions so they aren't orphaned.
+                    // No filtering needed: Ready()/Drain will re-validate on the next cycle,
+                    // and duplicate entries in _readyPartitions are harmless (documented invariant).
+                    ReenqueueSkippedPartitions(partitions, startIndex, i, count);
                     break;
+                }
 
                 batch = pd.PollFirst();
             }
@@ -1067,6 +1074,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
 
         _drainIndex[nodeId] = lastDrainIndex;
+    }
+
+    /// <summary>
+    /// Re-enqueues notifications for partitions skipped by <see cref="DrainBatchesForOneNode"/>
+    /// when the maxRequestSize limit is hit. Ready() already consumed their notifications, so
+    /// without re-enqueue these partitions' sealed batches would be orphaned — never drained
+    /// and never re-notified (they aren't muted, so UnmutePartition won't fire for them).
+    /// Blind re-enqueue without locking: Ready()/Drain re-validate all conditions on the next
+    /// cycle, and duplicate entries are harmless (documented ConcurrentQueue invariant).
+    /// </summary>
+    private void ReenqueueSkippedPartitions(
+        IReadOnlyList<TopicPartition> partitions, int startIndex, int fromOffset, int count)
+    {
+        for (var j = fromOffset; j < count; j++)
+            _readyPartitions.Enqueue(partitions[(startIndex + j) % count]);
     }
 
     /// <summary>
