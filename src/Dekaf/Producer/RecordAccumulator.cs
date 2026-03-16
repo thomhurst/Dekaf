@@ -399,14 +399,13 @@ internal sealed class BatchArena
 
             var arena = new BatchArena(capacity);
 
-            if (Interlocked.Increment(ref s_poolCount) <= Volatile.Read(ref s_maxPoolSize))
+            if (Interlocked.Increment(ref s_poolCount) <= maxPool)
             {
                 s_pool.Enqueue(arena);
             }
             else
             {
                 Interlocked.Decrement(ref s_poolCount);
-                arena._buffer = null!;
                 break;
             }
         }

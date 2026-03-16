@@ -74,21 +74,30 @@ internal abstract class ObjectPool<T> where T : class
     }
 
     /// <summary>
-    /// Returns an item to the pool for reuse. If the pool is full, the item is discarded.
+    /// Returns an item to the pool for reuse. If the pool is full, the item is discarded without reset.
+    /// Reset is only performed on items that will actually be pooled, avoiding wasted work on discards
+    /// and preserving exception safety (pool count is rolled back if Reset throws).
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Return(T item)
     {
-        Reset(item);
-
         if (Interlocked.Increment(ref _poolCount) <= MaxPoolSize)
         {
-            _pool.Push(item);
+            try
+            {
+                Reset(item);
+                _pool.Push(item);
+            }
+            catch
+            {
+                Interlocked.Decrement(ref _poolCount);
+                throw;
+            }
         }
         else
         {
             Interlocked.Decrement(ref _poolCount);
-            // Pool is full — item will be garbage collected
+            // Pool is full — item will be garbage collected without reset
         }
     }
 
