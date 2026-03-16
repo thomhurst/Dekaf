@@ -416,7 +416,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// <para>Settings applied:</para>
     /// <list type="bullet">
     /// <item><description>Acks: Leader (Build() overrides to All when idempotence is enabled)</description></item>
-    /// <item><description>LingerMs: 5ms (allows batching)</description></item>
+    /// <item><description>LingerMs: 100ms (matches Kafka Streams default for throughput)</description></item>
     /// <item><description>BatchSize: 2MB (larger batches for maximum throughput)</description></item>
     /// <item><description>Compression: LZ4 (fast compression)</description></item>
     /// </list>
@@ -426,7 +426,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     public ProducerBuilder<TKey, TValue> ForHighThroughput()
     {
         _acks = Acks.Leader;
-        _lingerMs = 5;
+        _lingerMs = 100;
         _batchSize = 2097152;
         _compressionType = Protocol.Records.CompressionType.Lz4;
         return this;
