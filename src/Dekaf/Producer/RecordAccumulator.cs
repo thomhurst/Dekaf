@@ -892,7 +892,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// that had a batch sealed or reenqueued are in the notification queue.
     /// </summary>
     internal (int NextCheckDelayMs, bool UnknownLeadersExist) Ready(
-        MetadataManager metadataManager, long nowMs, HashSet<int> readyNodes)
+        MetadataManager metadataManager, HashSet<int> readyNodes)
     {
         var nextCheckDelayMs = int.MaxValue;
         var unknownLeadersExist = false;

@@ -89,7 +89,7 @@ public class RecordAccumulatorReadyTests
 
             // Act: Call Ready()
             var readyNodes = new HashSet<int>();
-            var (nextCheckDelayMs, unknownLeadersExist) = accumulator.Ready(metadataManager, 0, readyNodes);
+            var (nextCheckDelayMs, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
 
             // Assert: Node 1 should be ready (partition 0's leader)
             await Assert.That(readyNodes).Contains(1);
@@ -125,7 +125,7 @@ public class RecordAccumulatorReadyTests
 
             // Act: Call Ready()
             var readyNodes = new HashSet<int>();
-            var (_, unknownLeadersExist) = accumulator.Ready(metadataManager, 0, readyNodes);
+            var (_, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
 
             // Assert: No nodes should be ready (batch not sealed yet)
             await Assert.That(readyNodes).IsEmpty();
@@ -166,7 +166,7 @@ public class RecordAccumulatorReadyTests
 
             // Act
             var readyNodes = new HashSet<int>();
-            accumulator.Ready(metadataManager, 0, readyNodes);
+            accumulator.Ready(metadataManager, readyNodes);
 
             // Assert: No nodes should be ready (partition is muted)
             await Assert.That(readyNodes).IsEmpty();
@@ -204,7 +204,7 @@ public class RecordAccumulatorReadyTests
 
             // Act: Ready() with no metadata
             var readyNodes = new HashSet<int>();
-            var (_, unknownLeadersExist) = accumulator.Ready(metadataManager, 0, readyNodes);
+            var (_, unknownLeadersExist) = accumulator.Ready(metadataManager, readyNodes);
 
             // Assert: No nodes ready, but unknownLeadersExist should be true
             await Assert.That(readyNodes).IsEmpty();
@@ -244,12 +244,12 @@ public class RecordAccumulatorReadyTests
 
             // First Ready() - drains the notification
             var readyNodes1 = new HashSet<int>();
-            accumulator.Ready(metadataManager, 0, readyNodes1);
+            accumulator.Ready(metadataManager, readyNodes1);
             await Assert.That(readyNodes1).Contains(1);
 
             // Second Ready() - no new notifications, should be empty
             var readyNodes2 = new HashSet<int>();
-            accumulator.Ready(metadataManager, 0, readyNodes2);
+            accumulator.Ready(metadataManager, readyNodes2);
             await Assert.That(readyNodes2).IsEmpty();
         }
         finally
@@ -287,7 +287,7 @@ public class RecordAccumulatorReadyTests
             var tp = new TopicPartition("test-topic", 0);
             accumulator.MutePartition(tp);
             var readyNodes1 = new HashSet<int>();
-            accumulator.Ready(metadataManager, 0, readyNodes1);
+            accumulator.Ready(metadataManager, readyNodes1);
             await Assert.That(readyNodes1).IsEmpty();
 
             // Unmute - this should re-enqueue the notification
@@ -295,7 +295,7 @@ public class RecordAccumulatorReadyTests
 
             // Now Ready() should find the sealed batch
             var readyNodes2 = new HashSet<int>();
-            accumulator.Ready(metadataManager, 0, readyNodes2);
+            accumulator.Ready(metadataManager, readyNodes2);
             await Assert.That(readyNodes2).Contains(1);
         }
         finally
@@ -337,7 +337,7 @@ public class RecordAccumulatorReadyTests
 
             // Act
             var readyNodes = new HashSet<int>();
-            accumulator.Ready(metadataManager, 0, readyNodes);
+            accumulator.Ready(metadataManager, readyNodes);
 
             // Assert: Node 1 should be ready (partition 3 has sealed batch)
             await Assert.That(readyNodes).Contains(1);
@@ -376,7 +376,7 @@ public class RecordAccumulatorReadyTests
 
             // Drain the sealed batch via Ready() + Drain()
             var readyNodes = new HashSet<int>();
-            accumulator.Ready(metadataManager, 0, readyNodes);
+            accumulator.Ready(metadataManager, readyNodes);
             await Assert.That(readyNodes).Contains(1);
 
             var drainResult = new Dictionary<int, List<ReadyBatch>>();
@@ -393,7 +393,7 @@ public class RecordAccumulatorReadyTests
             // Act 1: Ready() during backoff - should NOT report the node as ready,
             // but should re-enqueue the notification for the next cycle.
             var readyNodesDuringBackoff = new HashSet<int>();
-            var (nextCheckDelayMs, _) = accumulator.Ready(metadataManager, 0, readyNodesDuringBackoff);
+            var (nextCheckDelayMs, _) = accumulator.Ready(metadataManager, readyNodesDuringBackoff);
             await Assert.That(readyNodesDuringBackoff).IsEmpty();
             await Assert.That(nextCheckDelayMs).IsLessThanOrEqualTo(100);
 
@@ -401,7 +401,7 @@ public class RecordAccumulatorReadyTests
             await Task.Delay(150);
 
             var readyNodesAfterBackoff = new HashSet<int>();
-            accumulator.Ready(metadataManager, 0, readyNodesAfterBackoff);
+            accumulator.Ready(metadataManager, readyNodesAfterBackoff);
             await Assert.That(readyNodesAfterBackoff).Contains(1);
         }
         finally
@@ -438,7 +438,7 @@ public class RecordAccumulatorReadyTests
 
             // Act: Ready() should find the sealed batch
             var readyNodes = new HashSet<int>();
-            accumulator.Ready(metadataManager, 0, readyNodes);
+            accumulator.Ready(metadataManager, readyNodes);
 
             // Assert
             await Assert.That(readyNodes).Contains(1);

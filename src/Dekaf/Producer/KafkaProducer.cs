@@ -2018,7 +2018,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 // 1. Check which brokers have sendable data
                 readyNodes.Clear();
                 var (nextCheckDelayMs, unknownLeadersExist) = _accumulator.Ready(
-                    _metadataManager, Stopwatch.GetTimestamp(), readyNodes);
+                    _metadataManager, readyNodes);
 
                 if (readyNodes.Count > 0)
                 {
