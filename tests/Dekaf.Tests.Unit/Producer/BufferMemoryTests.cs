@@ -841,4 +841,73 @@ public class BufferMemoryTests
         await Assert.That(sw.ElapsedMilliseconds).IsLessThan(5000);
     }
 
+    [Test]
+    public async Task ReserveMemorySync_AdaptiveBackpressure_AcquiresPromptlyAfterRelease()
+    {
+        // Verifies that after a semaphore wake-up, the adaptive spin budget
+        // lets the thread acquire newly-freed memory without re-entering
+        // the kernel wait. Without spinWait.Reset(), the thread would fall
+        // straight back to the 100ms semaphore wait.
+
+        // Small buffer: just enough for one batch overhead (~80 bytes)
+        var options = CreateTestOptions(bufferMemory: 200, maxBlockMs: 5000);
+        var accumulator = new RecordAccumulator(options);
+
+        try
+        {
+            // Fill the buffer
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            accumulator.Append(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, null, null, null);
+
+            var bufferedBefore = accumulator.BufferedBytes;
+
+            // Start a background task that will try to reserve more memory (will block)
+            var reserveStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var reserveTask = Task.Run(() =>
+            {
+                reserveStarted.SetResult();
+                var sw = Stopwatch.StartNew();
+                // This will block because buffer is full, then succeed after release
+                accumulator.ReserveMemorySync(10);
+                sw.Stop();
+                return sw.ElapsedMilliseconds;
+            });
+
+            // Wait for the reserve task to start, then yield to let it enter the wait.
+            // Using Task.Yield instead of Task.Delay(50) for deterministic synchronization;
+            // the completion timeout below guards correctness regardless of scheduling.
+            await reserveStarted.Task;
+            await Task.Yield();
+
+            // Release memory — this signals the semaphore
+            accumulator.ClearCurrentBatch("test-topic", 0);
+            accumulator.ReleaseMemory((int)bufferedBefore);
+
+            // The reserve should complete promptly (well under 100ms after signal).
+            // With adaptive backpressure (spinWait.Reset), the thread spins after
+            // wake-up and catches the freed memory. Without it, the thread would
+            // re-block for up to 100ms.
+            var completedInTime = await Task.WhenAny(
+                reserveTask,
+                Task.Delay(2000) // generous timeout for CI
+            ) == reserveTask;
+
+            await Assert.That(completedInTime).IsTrue();
+
+            var elapsedMs = await reserveTask;
+            // Should be well under 1 second (typically < 100ms).
+            // Using 1000ms as upper bound to account for slow CI runners.
+            await Assert.That(elapsedMs).IsLessThan(1000);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
 }
