@@ -935,12 +935,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if (backoffRemaining > 0)
                 {
                     var backoffMs = (int)(backoffRemaining * 1000 / Stopwatch.Frequency);
-                    nextCheckDelayMs = Math.Min(nextCheckDelayMs, backoffMs);
 
-                    // Re-enqueue so the sender loop picks this partition up on the next cycle
-                    // after the backoff expires.
-                    // TODO: defer re-enqueue until backoff expires to avoid per-cycle churn
-                    _readyPartitions.Enqueue(tp);
+                    // Defer re-enqueue until backoff expires to avoid per-cycle churn.
+                    // The timer fires once, re-enqueues the partition, and wakes the sender.
+                    // One Task.Delay allocation per retry batch (not per message) is acceptable.
+                    DeferReenqueue(tp, backoffMs);
                     continue;
                 }
             }
@@ -1119,6 +1118,22 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     internal void SignalWakeup()
     {
         TryReleaseSemaphore(_wakeupSignal);
+    }
+
+    /// <summary>
+    /// Schedules a partition to be re-enqueued into <see cref="_readyPartitions"/> after
+    /// <paramref name="delayMs"/> milliseconds. Uses a fire-and-forget <see cref="Task.Delay"/>
+    /// so the sender loop is not churning on partitions still in retry backoff.
+    /// One allocation per retry batch (not per message) — acceptable per allocation guidelines.
+    /// </summary>
+    private void DeferReenqueue(TopicPartition tp, int delayMs)
+    {
+        _ = Task.Delay(Math.Max(delayMs, 1)).ContinueWith(static (_, state) =>
+        {
+            var (self, partition) = ((RecordAccumulator, TopicPartition))state!;
+            self._readyPartitions.Enqueue(partition);
+            self.SignalWakeup();
+        }, (this, tp), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
     /// <summary>

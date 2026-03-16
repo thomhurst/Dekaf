@@ -351,10 +351,11 @@ public class RecordAccumulatorReadyTests
     }
 
     [Test]
-    public async Task Ready_BackoffBatch_ReenqueuedThenBecomesReadyAfterExpiry()
+    public async Task Ready_BackoffBatch_DeferredReenqueueBecomesReadyAfterExpiry()
     {
         // Arrange: Create, seal, drain a batch, then reenqueue it with a short backoff.
-        // Verify that Ready() re-enqueues it during backoff, then reports it ready after expiry.
+        // Verify that Ready() defers re-enqueue during backoff (no per-cycle churn),
+        // and the partition becomes ready after the backoff timer fires.
         var options = CreateTestOptions(batchSize: 50);
         var accumulator = new RecordAccumulator(options);
         var pool = new ValueTaskSourcePool<RecordMetadata>();
@@ -390,15 +391,19 @@ public class RecordAccumulatorReadyTests
             batch.RetryNotBefore = Stopwatch.GetTimestamp() + (Stopwatch.Frequency / 10); // 100ms
             accumulator.Reenqueue(batch, 0);
 
-            // Act 1: Ready() during backoff - should NOT report the node as ready,
-            // but should re-enqueue the notification for the next cycle.
+            // Act 1: Ready() during backoff - should NOT report the node as ready.
+            // The partition is deferred via timer, not immediately re-enqueued.
             var readyNodesDuringBackoff = new HashSet<int>();
-            var (nextCheckDelayMs, _) = accumulator.Ready(metadataManager, readyNodesDuringBackoff);
+            accumulator.Ready(metadataManager, readyNodesDuringBackoff);
             await Assert.That(readyNodesDuringBackoff).IsEmpty();
-            await Assert.That(nextCheckDelayMs).IsLessThanOrEqualTo(100);
 
-            // Act 2: Wait for backoff to expire, then Ready() should report the node.
-            await Task.Delay(150);
+            // A second call should also be empty (no per-cycle churn).
+            var readyNodesDuringBackoff2 = new HashSet<int>();
+            accumulator.Ready(metadataManager, readyNodesDuringBackoff2);
+            await Assert.That(readyNodesDuringBackoff2).IsEmpty();
+
+            // Act 2: Wait for backoff + timer to fire, then Ready() should report the node.
+            await Task.Delay(200);
 
             var readyNodesAfterBackoff = new HashSet<int>();
             accumulator.Ready(metadataManager, readyNodesAfterBackoff);
