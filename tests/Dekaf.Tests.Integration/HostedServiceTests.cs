@@ -24,6 +24,19 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         var receivedMessages = new ConcurrentBag<string>();
         const int messageCount = 5;
 
+        // Create and initialize the producer BEFORE starting the host.
+        // This ensures the producer's connection and metadata are established
+        // before the consumer's background polling starts competing for
+        // thread pool and connection resources on resource-constrained CI runners.
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .BuildAsync();
+
+        // Warm up to ensure broker has initialized partition state
+        // (topic metadata is cached after this call)
+        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            { Topic = topic, Key = "warmup", Value = "warmup" });
+
         // Build host with consumer service
         var builder = Host.CreateApplicationBuilder();
 
@@ -45,17 +58,11 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         using var cts = new CancellationTokenSource();
         var hostTask = host.RunAsync(cts.Token);
 
-        // Give the consumer a moment to start and join the group
-        await Task.Delay(1000).ConfigureAwait(false);
-
-        // Produce messages
-        await using var producer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .BuildAsync();
-
-        // Warm up to ensure broker has initialized partition state
-        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
-            { Topic = topic, Key = "warmup", Value = "warmup" });
+        // Give the consumer service time to start and join the group.
+        // The consumer needs to subscribe, join the group, and receive its partition
+        // assignment before it can receive messages. On CI runners this can take longer
+        // than on local machines due to thread pool contention.
+        await Task.Delay(2000).ConfigureAwait(false);
 
         for (var i = 0; i < messageCount; i++)
         {
@@ -68,11 +75,9 @@ public sealed class HostedServiceTests(KafkaTestContainer kafka) : KafkaIntegrat
         }
 
         // Wait for messages to be processed
-        var deadline = DateTime.UtcNow.AddSeconds(30);
-        while (receivedMessages.Count < messageCount && DateTime.UtcNow < deadline)
-        {
-            await Task.Delay(500).ConfigureAwait(false);
-        }
+        await WaitForConditionAsync(
+            () => receivedMessages.Count >= messageCount,
+            TimeSpan.FromSeconds(30));
 
         await Assert.That(receivedMessages.Count).IsGreaterThanOrEqualTo(messageCount);
 
