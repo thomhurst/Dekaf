@@ -549,4 +549,45 @@ public class RecordAccumulatorReadyTests
         accumulator.Ready(metadataManager, readyNodes2);
         await Assert.That(readyNodes2).Contains(1);
     }
+
+    [Test]
+    public async Task Drain_MultipleBatchesSamePartition_ReenqueuesRemaining()
+    {
+        // Regression test: when PollFirst drains one batch from a partition that has
+        // multiple sealed batches, the remaining batches must get a re-notification.
+        // Without this, the sender sleeps with batches stuck in the deque.
+        var options = CreateTestOptions(batchSize: 50);
+        await using var accumulator = new RecordAccumulator(options);
+        await using var pool = new ValueTaskSourcePool<RecordMetadata>();
+        await using var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        var pooledKey = new PooledMemory(null, 0, isNull: true);
+        var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+        // Seal multiple batches on partition 0 (each batch seals when full)
+        for (var i = 0; i < 30; i++)
+        {
+            var completion = pool.Rent();
+            accumulator.Append("test-topic", 0,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, 0, completion, null);
+        }
+
+        // Ready() consumes all notifications for partition 0
+        var readyNodes = new HashSet<int>();
+        accumulator.Ready(metadataManager, readyNodes);
+        await Assert.That(readyNodes).Contains(1);
+
+        // Drain takes ONE batch per partition
+        var drainResult = new Dictionary<int, List<ReadyBatch>>();
+        var batchListPool = new Stack<List<ReadyBatch>>();
+        accumulator.Drain(metadataManager, readyNodes, int.MaxValue, drainResult, batchListPool);
+        await Assert.That(drainResult[1]).Count().IsEqualTo(1);
+
+        // Key assertion: remaining batches must have a notification so the next
+        // Ready() call finds them. Without the PollFirst re-enqueue fix, this fails.
+        var readyNodes2 = new HashSet<int>();
+        accumulator.Ready(metadataManager, readyNodes2);
+        await Assert.That(readyNodes2).Contains(1);
+    }
 }

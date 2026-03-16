@@ -1063,6 +1063,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 }
 
                 batch = pd.PollFirst();
+
+                // If more sealed batches remain, re-enqueue so they're drained on
+                // the next cycle. Ready() already consumed the notification for this
+                // partition. The mute/unmute cycle would eventually re-enqueue via
+                // UnmutePartition, but there is a timing gap between drain and mute
+                // where the sender could sleep with no pending notifications.
+                if (pd.PeekFirst() is not null)
+                    _readyPartitions.Enqueue(tp);
             }
 
             if (batch is not null)
