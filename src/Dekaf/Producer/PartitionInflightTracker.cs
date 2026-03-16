@@ -90,46 +90,14 @@ internal sealed class PartitionState
 }
 
 /// <summary>
-/// Lock-free pool for InflightEntry objects, following ReadyBatchPool pattern.
-/// Uses ConcurrentStack for thread-safe rent/return without locks.
+/// Lock-free pool for InflightEntry objects.
+/// Extends <see cref="ObjectPool{T}"/> for pre-warm support and miss tracking.
 /// </summary>
-internal sealed class InflightEntryPool
+internal sealed class InflightEntryPool(int maxPoolSize = 128)
+    : ObjectPool<InflightEntry>(maxPoolSize)
 {
-    private readonly ConcurrentStack<InflightEntry> _pool = new();
-    private readonly int _maxPoolSize;
-    private int _poolCount;
-
-    public InflightEntryPool(int maxPoolSize = 128)
-    {
-        _maxPoolSize = maxPoolSize;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public InflightEntry Rent()
-    {
-        if (_pool.TryPop(out var entry))
-        {
-            Interlocked.Decrement(ref _poolCount);
-            return entry;
-        }
-
-        return new InflightEntry();
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Return(InflightEntry entry)
-    {
-        entry.Reset();
-        // Use Interlocked counter instead of ConcurrentStack.Count (which is O(n)).
-        if (Interlocked.Increment(ref _poolCount) <= _maxPoolSize)
-        {
-            _pool.Push(entry);
-        }
-        else
-        {
-            Interlocked.Decrement(ref _poolCount);
-        }
-    }
+    protected override InflightEntry Create() => new();
+    protected override void Reset(InflightEntry item) => item.Reset();
 }
 
 /// <summary>

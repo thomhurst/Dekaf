@@ -352,6 +352,7 @@ internal sealed class BatchArena
     internal const int MaxPoolSizeCap = 2048;
     private static int s_maxPoolSize = DefaultPoolSize;
     private static int s_poolCount;
+    private static long s_misses;
 
     /// <summary>
     /// Increases the static pool size limit if the new value is larger.
@@ -374,6 +375,41 @@ internal sealed class BatchArena
             if (newSize <= current) return;
         }
         while (Interlocked.CompareExchange(ref s_maxPoolSize, newSize, current) != current);
+    }
+
+    /// <summary>
+    /// Number of times <see cref="RentOrCreate"/> found the pool empty and had to allocate a new arena.
+    /// Use this to diagnose pool sizing — sustained misses under load indicate the pool is too small.
+    /// </summary>
+    internal static long Misses => Volatile.Read(ref s_misses);
+
+    /// <summary>
+    /// Pre-allocates arenas into the static pool to eliminate ramp-up allocation bursts.
+    /// Call during producer initialization.
+    /// </summary>
+    /// <param name="count">Number of arenas to pre-allocate.</param>
+    /// <param name="capacity">Buffer capacity for each arena.</param>
+    internal static void PreWarm(int count, int capacity)
+    {
+        var maxPool = Volatile.Read(ref s_maxPoolSize);
+        for (var i = 0; i < count; i++)
+        {
+            if (Volatile.Read(ref s_poolCount) >= maxPool)
+                break;
+
+            var arena = new BatchArena(capacity);
+
+            if (Interlocked.Increment(ref s_poolCount) <= Volatile.Read(ref s_maxPoolSize))
+            {
+                s_pool.Enqueue(arena);
+            }
+            else
+            {
+                Interlocked.Decrement(ref s_poolCount);
+                arena._buffer = null!;
+                break;
+            }
+        }
     }
 
     private byte[] _buffer;
@@ -402,6 +438,7 @@ internal sealed class BatchArena
             arena.Reset(capacity);
             return arena;
         }
+        Interlocked.Increment(ref s_misses);
         return new BatchArena(capacity);
     }
 
@@ -1211,6 +1248,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _batchPool = new PartitionBatchPool(options, maxPoolSize: poolSize);
         _batchPool.SetReadyBatchPool(_readyBatchPool); // Wire up pools
         _maxBufferMemory = options.BufferMemory;
+
+        // Pre-warm pools to eliminate ramp-up allocation bursts.
+        // Lightweight pools (ReadyBatch, PartitionBatch) are fully warmed since they're cheap.
+        // BatchArena pre-warms a fraction (1/4) since each arena holds a ~BatchSize POH buffer.
+        _readyBatchPool.PreWarm(poolSize * ReadyBatchPoolSizeRatio);
+        _batchPool.PreWarm(poolSize);
+        BatchArena.PreWarm(poolSize / 4, options.BatchSize);
 
         // Create per-partition-affine append worker channels.
         // Each channel is SingleReader (one worker) but allows multiple writers (caller threads).
@@ -2649,6 +2693,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var inFlightBatches = Volatile.Read(ref _inFlightBatchCount);
         LogDisposeStarted(_partitionDeques.Count, inFlightBatches);
+        LogPoolMisses(_batchPool.Misses, _readyBatchPool.Misses, BatchArena.Misses);
         _disposed = true;
 
 
@@ -2855,6 +2900,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     [LoggerMessage(Level = LogLevel.Debug, Message = "Disposing accumulator: {PendingBatchCount} pending batches, {InFlightCount} in-flight")]
     private partial void LogDisposeStarted(int pendingBatchCount, long inFlightCount);
 
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Pool misses during lifetime: PartitionBatch={PartitionBatchMisses}, ReadyBatch={ReadyBatchMisses}, BatchArena={ArenaMisses}")]
+    private partial void LogPoolMisses(long partitionBatchMisses, long readyBatchMisses, long arenaMisses);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failing {RemainingBatchCount} batches during disposal")]
     private partial void LogDisposalFailingRemainingBatches(int remainingBatchCount);
 
@@ -2866,14 +2914,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
 /// <summary>
 /// Pool for reusing PartitionBatch instances to avoid ~40KB allocation per batch rotation.
-/// Uses a ConcurrentStack for lock-free push/pop operations.
+/// Extends <see cref="ObjectPool{T}"/> for pre-warm support and miss tracking.
 /// </summary>
-internal sealed class PartitionBatchPool
+internal sealed class PartitionBatchPool : ObjectPool<PartitionBatch>
 {
-    private readonly ConcurrentStack<PartitionBatch> _pool = new();
     private readonly ProducerOptions _options;
-    private readonly int _maxPoolSize;
-    private int _poolCount;
     private ReadyBatchPool? _readyBatchPool;
     private readonly BatchArrayReuseQueue _arrayReuseQueue;
 
@@ -2884,9 +2929,9 @@ internal sealed class PartitionBatchPool
     /// <param name="maxPoolSize">Maximum number of batches to keep pooled.
     /// Defaults to <see cref="BatchArena.DefaultPoolSize"/> since each pooled batch retains a BatchArena.</param>
     public PartitionBatchPool(ProducerOptions options, int maxPoolSize = BatchArena.DefaultPoolSize)
+        : base(maxPoolSize)
     {
         _options = options;
-        _maxPoolSize = maxPoolSize;
         _arrayReuseQueue = new BatchArrayReuseQueue(maxSize: maxPoolSize);
     }
 
@@ -2899,60 +2944,29 @@ internal sealed class PartitionBatchPool
         _readyBatchPool = pool;
     }
 
+    protected override PartitionBatch Create()
+    {
+        var batch = new PartitionBatch(default, _options);
+        batch.SetReadyBatchPool(_readyBatchPool);
+        batch.SetArrayReuseQueue(_arrayReuseQueue);
+        return batch;
+    }
+
+    protected override void Reset(PartitionBatch item)
+    {
+        item.PrepareForPooling(_options, _arrayReuseQueue);
+    }
+
     /// <summary>
-    /// Gets a batch from the pool or creates a new one.
+    /// Gets a batch from the pool or creates a new one, configured for the given partition.
     /// </summary>
     public PartitionBatch Rent(TopicPartition topicPartition)
     {
-        if (_pool.TryPop(out var batch))
-        {
-            Interlocked.Decrement(ref _poolCount);
-            batch.Reset(topicPartition);
-            batch.SetReadyBatchPool(_readyBatchPool);
-            batch.SetArrayReuseQueue(_arrayReuseQueue);
-            return batch;
-        }
-
-        var newBatch = new PartitionBatch(topicPartition, _options);
-        newBatch.SetReadyBatchPool(_readyBatchPool);
-        newBatch.SetArrayReuseQueue(_arrayReuseQueue);
-        return newBatch;
-    }
-
-    /// <summary>
-    /// Returns a batch to the pool for reuse.
-    /// The batch must have been prepared for pooling (arrays transferred to ReadyBatch).
-    /// </summary>
-    public void Return(PartitionBatch batch)
-    {
-        // Use Interlocked counter instead of ConcurrentStack.Count (which is O(n)).
-        if (Interlocked.Increment(ref _poolCount) <= _maxPoolSize)
-        {
-            try
-            {
-                batch.PrepareForPooling(_options, _arrayReuseQueue);
-                _pool.Push(batch);
-            }
-            catch
-            {
-                Interlocked.Decrement(ref _poolCount);
-                throw;
-            }
-        }
-        else
-        {
-            Interlocked.Decrement(ref _poolCount);
-            // Pool is full — batch will be garbage collected
-        }
-    }
-
-    /// <summary>
-    /// Clears all pooled batches (for disposal).
-    /// </summary>
-    public void Clear()
-    {
-        _pool.Clear();
-        Volatile.Write(ref _poolCount, 0);
+        var batch = Rent();
+        batch.Reset(topicPartition);
+        batch.SetReadyBatchPool(_readyBatchPool);
+        batch.SetArrayReuseQueue(_arrayReuseQueue);
+        return batch;
     }
 }
 
@@ -3642,50 +3656,13 @@ public readonly record struct RecordAppendResult(bool Success, int ActualSizeAdd
 
 /// <summary>
 /// Pool for ReadyBatch objects to eliminate per-batch class allocations.
-/// Uses ConcurrentStack for thread-safe lock-free operations.
+/// Extends <see cref="ObjectPool{T}"/> for pre-warm support and miss tracking.
 /// </summary>
-internal sealed class ReadyBatchPool
+internal sealed class ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSize * 2)
+    : ObjectPool<ReadyBatch>(maxPoolSize)
 {
-    private readonly ConcurrentStack<ReadyBatch> _pool = new();
-    private readonly int _maxPoolSize;
-    private int _poolCount;
-
-    public ReadyBatchPool(int maxPoolSize = BatchArena.DefaultPoolSize * 2)
-    {
-        _maxPoolSize = maxPoolSize;
-    }
-
-    /// <summary>
-    /// Rents a ReadyBatch from the pool or creates a new one.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public ReadyBatch Rent()
-    {
-        if (_pool.TryPop(out var batch))
-        {
-            Interlocked.Decrement(ref _poolCount);
-            return batch;
-        }
-        return new ReadyBatch();
-    }
-
-    /// <summary>
-    /// Returns a ReadyBatch to the pool after resetting it.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Return(ReadyBatch batch)
-    {
-        batch.Reset();
-        // Use Interlocked counter instead of ConcurrentStack.Count (which is O(n)).
-        if (Interlocked.Increment(ref _poolCount) <= _maxPoolSize)
-        {
-            _pool.Push(batch);
-        }
-        else
-        {
-            Interlocked.Decrement(ref _poolCount);
-        }
-    }
+    protected override ReadyBatch Create() => new();
+    protected override void Reset(ReadyBatch item) => item.Reset();
 }
 
 /// <summary>
