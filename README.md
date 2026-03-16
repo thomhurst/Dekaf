@@ -41,7 +41,7 @@ For high-throughput scenarios where you don't need to wait:
 
 ```csharp
 // Fire and forget - returns immediately
-producer.Send("my-topic", "key", "value");
+producer.Produce("my-topic", "key", "value");
 
 // Make sure everything's delivered before shutting down
 await producer.FlushAsync();
@@ -57,7 +57,7 @@ await using var producer = Kafka.CreateTopicProducer<string, string>(
 
 // No topic parameter needed
 await producer.ProduceAsync("order-123", orderJson);
-producer.Send("order-456", orderJson);
+producer.Produce("order-456", orderJson);
 ```
 
 You can also create multiple topic producers that share the same connection:

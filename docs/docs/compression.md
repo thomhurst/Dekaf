@@ -197,7 +197,7 @@ var producer = await Kafka.CreateProducer<string, string>()
 // Send many messages
 for (int i = 0; i < 1_000_000; i++)
 {
-    producer.Send("events", $"event-{i}", largeJsonPayload);
+    producer.Produce("events", $"event-{i}", largeJsonPayload);
 }
 
 await producer.FlushAsync();

@@ -6,13 +6,13 @@ sidebar_position: 3
 
 For high-throughput scenarios where you don't need to wait for acknowledgment, Dekaf provides fire-and-forget methods that return immediately.
 
-## The Send() Method
+## The Produce() Method
 
-`Send()` queues a message for delivery and returns immediately without waiting:
+`Produce()` queues a message for delivery and returns immediately without waiting:
 
 ```csharp
 // Returns immediately - doesn't wait for broker acknowledgment
-producer.Send("my-topic", "key", "value");
+producer.Produce("my-topic", "key", "value");
 ```
 
 Compare this to `ProduceAsync()`:
@@ -37,13 +37,13 @@ Fire-and-forget means you won't know if a message fails to deliver. Use it only 
 
 ## Ensuring Delivery
 
-Messages sent via `Send()` are buffered internally. To ensure all buffered messages are delivered:
+Messages sent via `Produce()` are buffered internally. To ensure all buffered messages are delivered:
 
 ```csharp
 // Send many messages quickly
 for (int i = 0; i < 10000; i++)
 {
-    producer.Send("events", $"event-{i}", eventData);
+    producer.Produce("events", $"event-{i}", eventData);
 }
 
 // Wait for all to be delivered
@@ -59,7 +59,7 @@ Always call `FlushAsync()` before disposing the producer, or use `await using` w
 If you need to know about delivery success/failure without blocking, use the callback overload:
 
 ```csharp
-producer.Send(
+producer.Produce(
     ProducerMessage<string, string>.Create("orders", orderId, orderJson),
     (metadata, error) =>
     {
@@ -94,7 +94,7 @@ var headers = Headers.Create()
     .Add("trace-id", traceId)
     .Add("source", "event-generator");
 
-producer.Send("events", eventKey, eventValue, headers);
+producer.Produce("events", eventKey, eventValue, headers);
 ```
 
 ## Performance Comparison
@@ -104,8 +104,8 @@ Here's how the different methods compare:
 | Method | Blocks? | Knows Result? | Throughput |
 |--------|---------|---------------|------------|
 | `await ProduceAsync()` | Yes | Immediately | Lower |
-| `Send()` | No | Never | Highest |
-| `Send(..., callback)` | No | Via callback | High |
+| `Produce()` | No | Never | Highest |
+| `Produce(..., callback)` | No | Via callback | High |
 
 ## Real-World Example: Event Streaming
 
@@ -137,7 +137,7 @@ public class EventPublisher : IAsyncDisposable
                 .Add("timestamp", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString())
         };
 
-        _producer.Send(message, (metadata, error) =>
+        _producer.Produce(message, (metadata, error) =>
         {
             if (error != null)
             {

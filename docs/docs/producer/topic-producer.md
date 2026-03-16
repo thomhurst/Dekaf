@@ -108,13 +108,13 @@ Send without waiting for acknowledgment:
 
 ```csharp
 // Basic fire-and-forget
-producer.Send("key", "value");
+producer.Produce("key", "value");
 
 // With headers
-producer.Send("key", "value", headers);
+producer.Produce("key", "value", headers);
 
 // With delivery callback
-producer.Send("key", "value", (metadata, error) =>
+producer.Produce("key", "value", (metadata, error) =>
 {
     if (error is not null)
         Console.WriteLine($"Failed: {error.Message}");

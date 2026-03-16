@@ -152,13 +152,13 @@ foreach (var batch in allMessages.Chunk(1000))
 
 ### Combining with Fire-and-Forget
 
-For maximum throughput when you don't need results, combine `Send()` with `FlushAsync()`:
+For maximum throughput when you don't need results, combine `Produce()` with `FlushAsync()`:
 
 ```csharp
 // Send all messages without waiting
 foreach (var msg in messages)
 {
-    producer.Send("topic", msg.Key, msg.Value);
+    producer.Produce("topic", msg.Key, msg.Value);
 }
 
 // Ensure all are delivered before continuing
