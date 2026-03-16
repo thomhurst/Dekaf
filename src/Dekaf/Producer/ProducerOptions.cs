@@ -280,6 +280,7 @@ public sealed class ProducerOptions
     /// Higher values reduce allocations in high-throughput scenarios but use more memory.
     /// Default is 0, which auto-calculates from <see cref="BufferMemory"/> / <see cref="BatchSize"/>
     /// to scale with the expected concurrency level. Set an explicit positive value to override.
+    /// For the default BufferMemory and BatchSize settings, the auto-calculated value is 65,536 (MaxAutoPoolSize).
     /// </summary>
     public int ValueTaskSourcePoolSize { get; init; }
 

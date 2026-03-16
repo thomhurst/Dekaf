@@ -240,21 +240,19 @@ public class ValueTaskSourcePoolTests
     [Test]
     public async Task CalculatePoolSize_ThrowsForZeroBatchSize()
     {
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
-        {
-            ValueTaskSourcePool.CalculatePoolSize(1073741824UL, 0);
-            return Task.CompletedTask;
-        });
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(
+            () => ValueTaskSourcePool.CalculatePoolSize(1073741824UL, 0));
+
+        await Assert.That(exception).IsNotNull();
     }
 
     [Test]
     public async Task CalculatePoolSize_ThrowsForNegativeBatchSize()
     {
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
-        {
-            ValueTaskSourcePool.CalculatePoolSize(1073741824UL, -1);
-            return Task.CompletedTask;
-        });
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(
+            () => ValueTaskSourcePool.CalculatePoolSize(1073741824UL, -1));
+
+        await Assert.That(exception).IsNotNull();
     }
 
     [Test]
@@ -271,11 +269,9 @@ public class ValueTaskSourcePoolTests
         var pool = new ValueTaskSourcePool<int>();
         await pool.DisposeAsync().ConfigureAwait(false);
 
-        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
-        {
-            pool.Rent();
-            return Task.CompletedTask;
-        });
+        var exception = Assert.Throws<ObjectDisposedException>(() => pool.Rent());
+
+        await Assert.That(exception).IsNotNull();
     }
 
     [Test]
@@ -299,17 +295,15 @@ public class ValueTaskSourcePoolTests
     [Test]
     public async Task Constructor_ThrowsForInvalidMaxSize()
     {
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
-        {
-            _ = new ValueTaskSourcePool<int>(maxPoolSize: 0);
-            return Task.CompletedTask;
-        });
+        var exception1 = Assert.Throws<ArgumentOutOfRangeException>(
+            () => _ = new ValueTaskSourcePool<int>(maxPoolSize: 0));
 
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
-        {
-            _ = new ValueTaskSourcePool<int>(maxPoolSize: -1);
-            return Task.CompletedTask;
-        });
+        await Assert.That(exception1).IsNotNull();
+
+        var exception2 = Assert.Throws<ArgumentOutOfRangeException>(
+            () => _ = new ValueTaskSourcePool<int>(maxPoolSize: -1));
+
+        await Assert.That(exception2).IsNotNull();
     }
 
     [Test]

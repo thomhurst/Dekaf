@@ -21,7 +21,7 @@ public static class ValueTaskSourcePool
     /// <summary>
     /// Fallback maximum pool size used when no producer options are available (e.g. parameterless constructor).
     /// </summary>
-    public const int FallbackMaxPoolSize = 4096;
+    internal const int FallbackMaxPoolSize = 4096;
 
     /// <summary>
     /// Conservative estimate of the number of messages per batch, used as a multiplier
@@ -49,10 +49,12 @@ public static class ValueTaskSourcePool
         if (batchSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(batchSize), "Batch size must be positive.");
 
-        var maxBatches = bufferMemory / (ulong)batchSize;
-        var estimatedSources = maxBatches * EstimatedMessagesPerBatch;
+        // Clamp maxBatches before multiplying to prevent overflow for large bufferMemory values.
+        const ulong maxUsefulBatches = MaxAutoPoolSize / EstimatedMessagesPerBatch; // 64
+        var maxBatches = Math.Min(bufferMemory / (ulong)batchSize, maxUsefulBatches);
+        var estimatedSources = (int)(maxBatches * EstimatedMessagesPerBatch);
 
-        return (int)Math.Clamp(estimatedSources, MinAutoPoolSize, MaxAutoPoolSize);
+        return Math.Clamp(estimatedSources, MinAutoPoolSize, MaxAutoPoolSize);
     }
 }
 
