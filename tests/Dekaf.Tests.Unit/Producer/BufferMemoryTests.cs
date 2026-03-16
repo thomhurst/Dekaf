@@ -42,13 +42,13 @@ public class BufferMemoryTests
 
             var result1 = accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null, null, null);
+                pooledKey, pooledValue, null, 0, null, null);
 
             await Assert.That(result1).IsTrue();
 
             var result2 = accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null, null, null);
+                pooledKey, pooledValue, null, 0, null, null);
 
             await Assert.That(result2).IsTrue();
 
@@ -80,11 +80,11 @@ public class BufferMemoryTests
 
             accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null, null, null);
+                pooledKey, pooledValue, null, 0, null, null);
 
             accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null, null, null);
+                pooledKey, pooledValue, null, 0, null, null);
 
             // Verify memory is reserved
             var bufferedBytesBeforeRelease = accumulator.BufferedBytes;
@@ -139,15 +139,15 @@ public class BufferMemoryTests
 
             accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null, null, null);
+                pooledKey, pooledValue, null, 0, null, null);
 
             accumulator.Append(
                 "test-topic", 1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null, null, null);
+                pooledKey, pooledValue, null, 0, null, null);
 
             accumulator.Append(
                 "test-topic", 2, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null, null, null);
+                pooledKey, pooledValue, null, 0, null, null);
 
             // Assert: Verify memory was reserved for all partitions
             var bufferedBytes = accumulator.BufferedBytes;
@@ -182,7 +182,7 @@ public class BufferMemoryTests
             {
                 var result = accumulator.Append(
                     "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, null, null, null);
+                    pooledKey, pooledValue, null, 0, null, null);
 
                 await Assert.That(result).IsTrue();
             }
@@ -224,7 +224,7 @@ public class BufferMemoryTests
             // First batch
             accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null, null, null);
+                pooledKey, pooledValue, null, 0, null, null);
 
             var bufferedAfterFirst = accumulator.BufferedBytes;
             await Assert.That(bufferedAfterFirst).IsGreaterThan(0);
@@ -232,7 +232,7 @@ public class BufferMemoryTests
             // Second batch to different partition
             accumulator.Append(
                 "test-topic", 1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null, null, null);
+                pooledKey, pooledValue, null, 0, null, null);
 
             var bufferedAfterSecond = accumulator.BufferedBytes;
             await Assert.That(bufferedAfterSecond).IsGreaterThan(bufferedAfterFirst);
@@ -309,7 +309,7 @@ public class BufferMemoryTests
                         pooledKey,
                         pooledValue,
                         null,
-                        null, null, null);
+                        0, null, null);
                     messageCount++;
                 }
             }
@@ -373,7 +373,7 @@ public class BufferMemoryTests
                 {
                     accumulator.Append(
                         "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                        pooledKey, pooledValue, null, null, null, null);
+                        pooledKey, pooledValue, null, 0, null, null);
                     await Task.CompletedTask.ConfigureAwait(false);
                 });
 
@@ -413,7 +413,7 @@ public class BufferMemoryTests
             {
                 accumulator.Append(
                     "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, null, null, null);
+                    pooledKey, pooledValue, null, 0, null, null);
                 await Task.CompletedTask.ConfigureAwait(false);
             });
 
@@ -449,7 +449,7 @@ public class BufferMemoryTests
                 {
                     accumulator.Append(
                         "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                        pooledKey, pooledValue, null, null, null, null);
+                        pooledKey, pooledValue, null, 0, null, null);
                     successCount++;
                 }
             }
@@ -490,7 +490,7 @@ public class BufferMemoryTests
             var pooledValue = new PooledMemory(null, 0, isNull: true);
             var resultAfterDisposal = accumulator.Append(
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                pooledKey, pooledValue, null, null, null, null);
+                pooledKey, pooledValue, null, 0, null, null);
 
             await Assert.That(resultAfterDisposal).IsFalse();
         }
@@ -524,7 +524,7 @@ public class BufferMemoryTests
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 new PooledMemory(null, 0, isNull: true),
                 new PooledMemory(null, 0, isNull: true),
-                null, null, null, null);
+                null, 0, null, null);
         }
 
         // Dispose should complete quickly (completion loop processes batches)
@@ -556,7 +556,7 @@ public class BufferMemoryTests
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 new PooledMemory(null, 0, isNull: true),
                 new PooledMemory(null, 0, isNull: true),
-                null, null, null, null);
+                null, 0, null, null);
 
             // Start background task to drain batches (simulates sender loop)
             using var cts = new CancellationTokenSource(15000);
@@ -625,7 +625,7 @@ public class BufferMemoryTests
                     "test-topic", i, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     new PooledMemory(null, 0, isNull: true),
                     new PooledMemory(null, 0, isNull: true),
-                    null, null, null, null);
+                    null, 0, null, null);
             }
 
             // Start background task to drain batches (simulates sender loop)
@@ -696,7 +696,7 @@ public class BufferMemoryTests
                     "test-topic", i % 5, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     new PooledMemory(null, 0, isNull: true),
                     new PooledMemory(null, 0, isNull: true),
-                    null, null, null, null);
+                    null, 0, null, null);
             }
 
             // Start background task to drain batches (simulates sender loop)
@@ -775,7 +775,7 @@ public class BufferMemoryTests
                     "test-topic", i, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     new PooledMemory(null, 0, isNull: true),
                     new PooledMemory(null, 0, isNull: true),
-                    null, null, null, null);
+                    null, 0, null, null);
             }
 
             // Start background task to drain batches (simulates sender loop)
@@ -829,7 +829,7 @@ public class BufferMemoryTests
                 "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 new PooledMemory(null, 0, isNull: true),
                 new PooledMemory(null, 0, isNull: true),
-                null, null, null, null);
+                null, 0, null, null);
         }
 
         // Disposal should complete quickly (completion loop stops)

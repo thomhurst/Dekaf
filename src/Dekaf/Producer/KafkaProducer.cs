@@ -816,15 +816,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var timestampMs = timestampOverride?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
 
         // Step 4: Convert headers
-        IReadOnlyList<Header>? recordHeaders = null;
         Header[]? pooledHeaderArray = null;
+        var headerCount = 0;
         if (headers is not null && headers.Count > 0)
         {
-            recordHeaders = ConvertHeaders(headers, out pooledHeaderArray);
+            RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
         }
 
         // Step 5: Append to accumulator (under deque lock for ordering safety)
-        AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, pooledHeaderArray);
+        AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, pooledHeaderArray, headerCount);
     }
 
     /// <summary>
@@ -840,8 +840,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         int keyLength,
         bool valueIsNull,
         int valueLength,
-        IReadOnlyList<Header>? recordHeaders,
         Header[]? pooledHeaderArray,
+        int headerCount,
         Action<RecordMetadata, Exception?>? callback = null)
     {
         // Pass raw spans from thread-local buffers directly to the accumulator.
@@ -863,8 +863,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             keyIsNull,
             valueSpan,
             valueIsNull,
-            recordHeaders,
             pooledHeaderArray,
+            headerCount,
             callback))
         {
             if (pooledHeaderArray is not null)
@@ -966,10 +966,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             var timestampMs = message.Timestamp?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
 
             // Convert headers
-            IReadOnlyList<Header>? recordHeaders = null;
+            var headerCount = 0;
             if (message.Headers is not null && message.Headers.Count > 0)
             {
-                recordHeaders = ConvertHeaders(message.Headers, out pooledHeaderArray);
+                RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
             }
 
             // Append to accumulator synchronously (non-blocking memory reservation).
@@ -980,8 +980,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 timestampMs,
                 key,
                 value,
-                recordHeaders,
                 pooledHeaderArray,
+                headerCount,
                 completion))
             {
                 // Clean up serialized data — the async slow path will re-serialize
@@ -1238,15 +1238,15 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var timestampMs = timestampOverride?.ToUnixTimeMilliseconds() ?? GetFastTimestampMs();
 
         // Step 4: Convert headers
-        IReadOnlyList<Header>? recordHeaders = null;
         Header[]? pooledHeaderArray = null;
+        var headerCount = 0;
         if (headers is not null && headers.Count > 0)
         {
-            recordHeaders = ConvertHeaders(headers, out pooledHeaderArray);
+            RentAndFillHeaders(headers, out pooledHeaderArray, out headerCount);
         }
 
         // Step 5: Append to accumulator with callback (under deque lock for ordering safety)
-        AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, recordHeaders, pooledHeaderArray, callback);
+        AppendWithSlowPath(topic, partition, timestampMs, keyIsNull, keyLength, valueIsNull, valueLength, pooledHeaderArray, headerCount, callback);
     }
 
     private async ValueTask ProduceInternalAsync(
@@ -1301,11 +1301,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         var timestampMs = timestamp.ToUnixTimeMilliseconds();
 
         // Convert headers with minimal allocations
-        IReadOnlyList<Header>? recordHeaders = null;
         Header[]? pooledHeaderArray = null;
+        var headerCount = 0;
         if (message.Headers is not null && message.Headers.Count > 0)
         {
-            recordHeaders = ConvertHeaders(message.Headers, out pooledHeaderArray);
+            RentAndFillHeaders(message.Headers, out pooledHeaderArray, out headerCount);
         }
 
         // Enqueue to per-partition-affine worker instead of calling AppendAsync inline.
@@ -1316,8 +1316,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
             timestampMs,
             key,
             value,
-            recordHeaders,
             pooledHeaderArray,
+            headerCount,
             completion,
             cancellationToken);
     }
@@ -2755,13 +2755,18 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <summary>
-    /// Converts Headers collection to a pooled Header array with minimal allocations.
+    /// Rents a Header array from the pool and fills it from the Headers collection.
     /// Always uses ArrayPool to avoid per-message heap allocations.
+    /// Returns the raw array and count to avoid boxing a wrapper struct to IReadOnlyList.
     /// </summary>
+    /// <remarks>
+    /// Assumes headers is non-null and non-empty; callers must guard before invoking.
+    /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static IReadOnlyList<Header> ConvertHeaders(Headers headers, out Header[]? pooledArray)
+    private static void RentAndFillHeaders(Headers headers, out Header[] pooledArray, out int headerCount)
     {
         var count = headers.Count;
+        headerCount = count;
 
         // Always pool to eliminate per-message allocations
         var result = ArrayPool<Header>.Shared.Rent(count);
@@ -2778,9 +2783,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 IsValueNull = h.IsValueNull
             };
         }
-
-        // Always wrap in HeaderListWrapper to expose only the valid portion
-        return new HeaderListWrapper(result, count);
     }
 
     public async ValueTask DisposeAsync()
@@ -3532,61 +3534,3 @@ internal ref struct PooledBufferWriter : IBufferWriter<byte>
     }
 }
 
-/// <summary>
-/// Zero-allocation wrapper around a pooled array that implements IReadOnlyList.
-/// The array is returned to the pool when the wrapper is no longer needed.
-/// This struct is used to avoid List allocations in the producer hot path.
-/// </summary>
-internal readonly struct HeaderListWrapper : IReadOnlyList<Header>
-{
-    private readonly Header[] _array;
-    private readonly int _count;
-
-    public HeaderListWrapper(Header[] array, int count)
-    {
-        _array = array;
-        _count = count;
-    }
-
-    public Header this[int index]
-    {
-        get
-        {
-            if (index < 0 || index >= _count)
-                throw new ArgumentOutOfRangeException(nameof(index));
-            return _array[index];
-        }
-    }
-
-    public int Count => _count;
-
-    public Enumerator GetEnumerator() => new(_array, _count);
-
-    IEnumerator<Header> IEnumerable<Header>.GetEnumerator() => GetEnumerator();
-
-    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
-
-    public struct Enumerator : IEnumerator<Header>
-    {
-        private readonly Header[] _array;
-        private readonly int _count;
-        private int _index;
-
-        public Enumerator(Header[] array, int count)
-        {
-            _array = array;
-            _count = count;
-            _index = -1;
-        }
-
-        public Header Current => _array[_index];
-
-        object System.Collections.IEnumerator.Current => Current;
-
-        public bool MoveNext() => ++_index < _count;
-
-        public void Reset() => _index = -1;
-
-        public void Dispose() { }
-    }
-}

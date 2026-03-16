@@ -2251,13 +2251,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     /// Returns headers directly without conversion. Returns null if empty.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static IReadOnlyList<Header>? GetHeaders(IReadOnlyList<Header>? recordHeaders)
+    private static IReadOnlyList<Header>? GetHeaders(Header[]? recordHeaders)
     {
         // Return null for empty to avoid exposing empty lists
-        if (recordHeaders is null || recordHeaders.Count == 0)
+        if (recordHeaders is null || recordHeaders.Length == 0)
             return null;
 
-        // Return directly - no conversion needed, zero allocation
+        // Return directly - Header[] implements IReadOnlyList<Header>, no boxing
         return recordHeaders;
     }
 

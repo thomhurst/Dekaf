@@ -256,7 +256,7 @@ public readonly struct PooledMemory
 /// <remarks>
 /// <para>
 /// <b>Ownership Semantics:</b> When passed to batch append methods,
-/// ownership of pooled resources (Key.Array, Value.Array, PooledHeaderArray) transfers to the accumulator
+/// ownership of pooled resources (Key.Array, Value.Array, Headers) transfers to the accumulator
 /// for successfully appended records. The accumulator will return these arrays to their pools when the
 /// batch completes or fails.
 /// </para>
@@ -266,8 +266,8 @@ public readonly struct ProducerRecordData
     public long Timestamp { get; init; }
     public PooledMemory Key { get; init; }
     public PooledMemory Value { get; init; }
-    public IReadOnlyList<Header>? Headers { get; init; }
-    public Header[]? PooledHeaderArray { get; init; }
+    public Header[]? Headers { get; init; }
+    public int HeaderCount { get; init; }
 }
 
 /// <summary>
@@ -281,8 +281,8 @@ internal readonly struct AppendWorkItem
     public readonly long Timestamp;
     public readonly PooledMemory Key;
     public readonly PooledMemory Value;
-    public readonly IReadOnlyList<Header>? Headers;
-    public readonly Header[]? PooledHeaderArray;
+    public readonly Header[]? Headers;
+    public readonly int HeaderCount;
     public readonly PooledValueTaskSource<RecordMetadata> Completion;
     public readonly CancellationToken CancellationToken;
 
@@ -292,8 +292,8 @@ internal readonly struct AppendWorkItem
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
+        Header[]? headers,
+        int headerCount,
         PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken)
     {
@@ -303,7 +303,7 @@ internal readonly struct AppendWorkItem
         Key = key;
         Value = value;
         Headers = headers;
-        PooledHeaderArray = pooledHeaderArray;
+        HeaderCount = headerCount;
         Completion = completion;
         CancellationToken = cancellationToken;
     }
@@ -1246,7 +1246,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     workItem.Key,
                     workItem.Value,
                     workItem.Headers,
-                    workItem.PooledHeaderArray,
+                    workItem.HeaderCount,
                     workItem.Completion,
                     null))
                 {
@@ -1276,9 +1276,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         workItem.Key.Return();
         workItem.Value.Return();
-        if (workItem.PooledHeaderArray is not null)
+        if (workItem.Headers is not null)
         {
-            ArrayPool<Header>.Shared.Return(workItem.PooledHeaderArray);
+            ArrayPool<Header>.Shared.Return(workItem.Headers);
         }
     }
 
@@ -1293,15 +1293,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
+        Header[]? headers,
+        int headerCount,
         PooledValueTaskSource<RecordMetadata> completion,
         CancellationToken cancellationToken)
     {
         EnsureAppendWorkersStarted();
         var workerIndex = (int)((uint)partition % (uint)_appendWorkerCount);
         var workItem = new AppendWorkItem(topic, partition, timestamp, key, value,
-            headers, pooledHeaderArray, completion, cancellationToken);
+            headers, headerCount, completion, cancellationToken);
 
         if (!_appendWorkerChannels[workerIndex].Writer.TryWrite(workItem))
         {
@@ -1387,15 +1387,15 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
+        Header[]? headers,
+        int headerCount,
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback)
     {
         if (_disposed)
             return false;
 
-        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
+        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
         ReserveMemorySync(recordSize);
 
         // Track pending awaited produce BEFORE append to prevent race condition:
@@ -1422,7 +1422,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Try append to current batch
             if (pd.CurrentBatch is { } currentBatch)
             {
-                if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, pooledHeaderArray,
+                if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, headerCount,
                     completionSource, callback, recordSize))
                     return true;
 
@@ -1436,7 +1436,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             Interlocked.Increment(ref _unsealedBatchCount);
 
             // Append to new batch — must succeed since batch is empty
-            if (!TryAppendToBatch(newBatch, timestamp, key, value, headers, pooledHeaderArray,
+            if (!TryAppendToBatch(newBatch, timestamp, key, value, headers, headerCount,
                 completionSource, callback, recordSize))
             {
                 // Record too large for a single batch
@@ -1470,14 +1470,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
+        Header[]? headers,
+        int headerCount,
         PooledValueTaskSource<RecordMetadata> completionSource)
     {
         if (_disposed)
             return false;
 
-        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers);
+        var recordSize = PartitionBatch.EstimateRecordSize(key.Length, value.Length, headers, headerCount);
 
         // Try non-blocking memory reservation. If buffer is full, return false so the
         // caller (ProduceAsync fast path) falls back to the async path.
@@ -1503,7 +1503,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Try append to current batch
             if (pd.CurrentBatch is { } currentBatch)
             {
-                if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, pooledHeaderArray,
+                if (TryAppendToBatch(currentBatch, timestamp, key, value, headers, headerCount,
                     completionSource, null, recordSize))
                     return true;
 
@@ -1517,7 +1517,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             Interlocked.Increment(ref _unsealedBatchCount);
 
             // Append to new batch — must succeed since batch is empty
-            if (!TryAppendToBatch(newBatch, timestamp, key, value, headers, pooledHeaderArray,
+            if (!TryAppendToBatch(newBatch, timestamp, key, value, headers, headerCount,
                 completionSource, null, recordSize))
             {
                 pd.CurrentBatch = null;
@@ -1547,13 +1547,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
+        Header[]? headers,
+        int headerCount,
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int estimatedSize)
     {
-        var result = batch.TryAppend(timestamp, key, value, headers, pooledHeaderArray, completionSource, callback, estimatedSize);
+        var result = batch.TryAppend(timestamp, key, value, headers, headerCount, completionSource, callback, estimatedSize);
 
         if (result.Success)
         {
@@ -1580,8 +1580,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         bool keyIsNull,
         ReadOnlySpan<byte> valueData,
         bool valueIsNull,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
+        Header[]? headers,
+        int headerCount,
         Action<RecordMetadata, Exception?>? callback)
     {
         if (_disposed)
@@ -1589,7 +1589,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         var keyLength = keyIsNull ? 0 : keyData.Length;
         var valueLength = valueIsNull ? 0 : valueData.Length;
-        var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, headers);
+        var recordSize = PartitionBatch.EstimateRecordSize(keyLength, valueLength, headers, headerCount);
         ReserveMemorySync(recordSize);
 
         var pd = GetOrCreateDeque(topic, partition);
@@ -1609,7 +1609,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (pd.CurrentBatch is { } currentBatch)
             {
                 if (TryAppendFromSpansToBatch(currentBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                    headers, pooledHeaderArray, callback, recordSize))
+                    headers, headerCount, callback, recordSize))
                     return true;
 
                 // Current batch is full — seal it (compress + enqueue after lock release)
@@ -1623,7 +1623,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             // Append to new batch — must succeed since batch is empty
             if (!TryAppendFromSpansToBatch(newBatch, timestamp, keyData, keyIsNull, valueData, valueIsNull,
-                headers, pooledHeaderArray, callback, recordSize))
+                headers, headerCount, callback, recordSize))
             {
                 // Record too large for a single batch
                 pd.CurrentBatch = null;
@@ -1654,13 +1654,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         bool keyIsNull,
         ReadOnlySpan<byte> valueData,
         bool valueIsNull,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
+        Header[]? headers,
+        int headerCount,
         Action<RecordMetadata, Exception?>? callback,
         int estimatedSize)
     {
         var result = batch.TryAppendFromSpans(timestamp, keyData, keyIsNull, valueData, valueIsNull,
-            headers, pooledHeaderArray, callback, estimatedSize);
+            headers, headerCount, callback, estimatedSize);
 
         if (result.Success)
         {
@@ -3069,8 +3069,8 @@ internal sealed class PartitionBatch
         long timestamp,
         PooledMemory key,
         PooledMemory value,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
+        Header[]? headers,
+        int headerCount,
         PooledValueTaskSource<RecordMetadata>? completionSource,
         Action<RecordMetadata, Exception?>? callback,
         int estimatedRecordSize)
@@ -3111,7 +3111,7 @@ internal sealed class PartitionBatch
         {
             GrowArray(ref _pooledArrays, ref _pooledArrayCount, ArrayPool<byte[]>.Shared);
         }
-        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
+        if (headers is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
         {
             GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
         }
@@ -3133,9 +3133,9 @@ internal sealed class PartitionBatch
         {
             _pooledArrays[_pooledArrayCount++] = value.Array;
         }
-        if (pooledHeaderArray is not null)
+        if (headers is not null)
         {
-            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
+            _pooledHeaderArrays[_pooledHeaderArrayCount++] = headers;
         }
 
         var timestampDelta = timestamp - _baseTimestamp;
@@ -3148,7 +3148,8 @@ internal sealed class PartitionBatch
             Value = value.Memory,
             IsValueNull = value.IsNull,
             Headers = headers,
-            CachedBodySize = Record.ComputeBodySize(timestampDelta, _recordCount, key.IsNull, key.Length, value.IsNull, value.Length, headers)
+            HeaderCount = headerCount,
+            CachedBodySize = Record.ComputeBodySize(timestampDelta, _recordCount, key.IsNull, key.Length, value.IsNull, value.Length, headers, headerCount)
         };
 
         if (completionSource is not null)
@@ -3179,8 +3180,8 @@ internal sealed class PartitionBatch
         bool keyIsNull,
         ReadOnlySpan<byte> valueData,
         bool valueIsNull,
-        IReadOnlyList<Header>? headers,
-        Header[]? pooledHeaderArray,
+        Header[]? headers,
+        int headerCount,
         Action<RecordMetadata, Exception?>? callback,
         int estimatedRecordSize)
     {
@@ -3215,7 +3216,7 @@ internal sealed class PartitionBatch
         {
             GrowArray(ref _records, ref _recordCount, ArrayPool<Record>.Shared);
         }
-        if (pooledHeaderArray is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
+        if (headers is not null && _pooledHeaderArrayCount >= _pooledHeaderArrays.Length)
         {
             GrowArray(ref _pooledHeaderArrays, ref _pooledHeaderArrayCount, ArrayPool<Header[]>.Shared);
         }
@@ -3277,9 +3278,9 @@ internal sealed class PartitionBatch
             _pooledArrays[_pooledArrayCount++] = valueArray;
         }
 
-        if (pooledHeaderArray is not null)
+        if (headers is not null)
         {
-            _pooledHeaderArrays[_pooledHeaderArrayCount++] = pooledHeaderArray;
+            _pooledHeaderArrays[_pooledHeaderArrayCount++] = headers;
         }
 
         var timestampDelta = timestamp - _baseTimestamp;
@@ -3292,7 +3293,8 @@ internal sealed class PartitionBatch
             Value = valueMemory,
             IsValueNull = valueIsNull,
             Headers = headers,
-            CachedBodySize = Record.ComputeBodySize(timestampDelta, _recordCount, keyIsNull, keyLength, valueIsNull, valueLength, headers)
+            HeaderCount = headerCount,
+            CachedBodySize = Record.ComputeBodySize(timestampDelta, _recordCount, keyIsNull, keyLength, valueIsNull, valueLength, headers, headerCount)
         };
 
         if (callback is not null)
@@ -3474,7 +3476,7 @@ internal sealed class PartitionBatch
     /// The actual size may be smaller due to varint compression, but this conservative estimate
     /// ensures we never under-allocate BufferMemory.
     /// </remarks>
-    internal static int EstimateRecordSize(int keyLength, int valueLength, IReadOnlyList<Header>? headers)
+    internal static int EstimateRecordSize(int keyLength, int valueLength, Header[]? headers, int headerCount)
     {
         var size = 20; // Base overhead for varint lengths, timestamp delta, offset delta, etc.
         size += keyLength;
@@ -3482,8 +3484,7 @@ internal sealed class PartitionBatch
 
         if (headers is not null)
         {
-            // Use index-based iteration to guarantee zero-allocation (avoids enumerator)
-            for (var i = 0; i < headers.Count; i++)
+            for (var i = 0; i < headerCount; i++)
             {
                 var header = headers[i];
                 // OPTIMIZATION: For ASCII-only keys (99%+ of cases), string.Length == byte count.

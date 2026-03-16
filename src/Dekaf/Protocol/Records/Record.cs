@@ -16,7 +16,14 @@ public readonly record struct Record
     public int OffsetDelta { get; init; }
     public ReadOnlyMemory<byte> Key { get; init; }
     public ReadOnlyMemory<byte> Value { get; init; }
-    public IReadOnlyList<Header>? Headers { get; init; }
+    public Header[]? Headers { get; init; }
+
+    /// <summary>
+    /// The number of valid headers in the Headers array.
+    /// Required because the array may be rented from ArrayPool and oversized.
+    /// When 0 and Headers is not null, defaults to Headers.Length.
+    /// </summary>
+    public int HeaderCount { get; init; }
 
     /// <summary>
     /// Returns true if the key is null (empty memory with special flag).
@@ -35,6 +42,11 @@ public readonly record struct Record
     internal int CachedBodySize { get; init; }
 
     /// <summary>
+    /// Gets the effective header count, handling both exact-sized and pooled arrays.
+    /// </summary>
+    private int EffectiveHeaderCount => Headers is null ? 0 : (HeaderCount > 0 ? HeaderCount : Headers.Length);
+
+    /// <summary>
     /// Writes the record to the protocol writer.
     /// </summary>
     public void Write(ref KafkaProtocolWriter writer)
@@ -42,7 +54,7 @@ public readonly record struct Record
         // First calculate the record body size
         var bodySize = CachedBodySize > 0
             ? CachedBodySize
-            : ComputeBodySize(TimestampDelta, OffsetDelta, IsKeyNull, Key.Length, IsValueNull, Value.Length, Headers);
+            : ComputeBodySize(TimestampDelta, OffsetDelta, IsKeyNull, Key.Length, IsValueNull, Value.Length, Headers, EffectiveHeaderCount);
 
         // Write length as varint
         writer.WriteVarInt(bodySize);
@@ -79,14 +91,14 @@ public readonly record struct Record
         }
 
         // Write headers
-        var headerCount = Headers?.Count ?? 0;
-        writer.WriteVarInt(headerCount);
+        var effectiveHeaderCount = EffectiveHeaderCount;
+        writer.WriteVarInt(effectiveHeaderCount);
 
         if (Headers is not null)
         {
-            foreach (var header in Headers)
+            for (var i = 0; i < effectiveHeaderCount; i++)
             {
-                header.Write(ref writer);
+                Headers[i].Write(ref writer);
             }
         }
     }
@@ -133,11 +145,12 @@ public readonly record struct Record
             IsKeyNull = isKeyNull,
             Value = value,
             IsValueNull = isValueNull,
-            Headers = headers
+            Headers = headers,
+            HeaderCount = headers?.Length ?? 0
         };
     }
 
-    internal static int ComputeBodySize(long timestampDelta, int offsetDelta, bool isKeyNull, int keyLength, bool isValueNull, int valueLength, IReadOnlyList<Header>? headers)
+    internal static int ComputeBodySize(long timestampDelta, int offsetDelta, bool isKeyNull, int keyLength, bool isValueNull, int valueLength, Header[]? headers, int headerCount)
     {
         var size = 1; // attributes
 
@@ -164,14 +177,13 @@ public readonly record struct Record
             size += valueLength;
         }
 
-        var headerCount = headers?.Count ?? 0;
         size += VarIntSize(headerCount);
 
         if (headers is not null)
         {
-            foreach (var header in headers)
+            for (var i = 0; i < headerCount; i++)
             {
-                size += header.CalculateSize();
+                size += headers[i].CalculateSize();
             }
         }
 

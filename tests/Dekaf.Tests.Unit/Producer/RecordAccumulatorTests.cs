@@ -47,7 +47,7 @@ public class RecordAccumulatorTests
                 pooledKey,
                 pooledValue,
                 null,
-                null,
+                0,
                 completion,
                 null);
 
@@ -115,7 +115,7 @@ public class RecordAccumulatorTests
                 pooledKey,
                 pooledValue,
                 null,
-                null,
+                0,
                 completion,
                 null);
 
@@ -189,7 +189,7 @@ public class RecordAccumulatorTests
                 pooledKey,
                 pooledValue,
                 null,
-                null,
+                0,
                 completion,
                 null);
 
@@ -268,7 +268,7 @@ public class RecordAccumulatorTests
                             pooledKey,
                             pooledValue,
                             null,
-                            null,
+                            0,
                             completion,
                             null);
 
@@ -352,7 +352,7 @@ public class RecordAccumulatorTests
                             pooledKey,
                             pooledValue,
                             null,
-                            null,
+                            0,
                             completion,
                             null);
 
@@ -425,7 +425,7 @@ public class RecordAccumulatorTests
                             pooledKey,
                             pooledValue,
                             null,
-                            null,
+                            0,
                             completion,
                             null);
 
@@ -482,7 +482,7 @@ public class RecordAccumulatorTests
                 pooledKey,
                 pooledValue,
                 null,
-                null, null, null);
+                0, null, null);
 
             await Assert.That(result).IsTrue();
 
@@ -548,7 +548,7 @@ public class RecordAccumulatorTests
                     pooledKey,
                     pooledValue,
                     null,
-                    null, null, null);
+                    0, null, null);
 
                 if (result) successCount++;
             }
@@ -607,7 +607,7 @@ public class RecordAccumulatorTests
                 pooledKey,
                 pooledValue,
                 null,
-                null, null, null);
+                0, null, null);
 
             await Assert.That(result).IsTrue();
 
@@ -658,7 +658,7 @@ public class RecordAccumulatorTests
             pooledKey,
             pooledValue,
             null,
-            null, null, null);
+            0, null, null);
 
         await Assert.That(result).IsFalse();
     }
@@ -694,7 +694,7 @@ public class RecordAccumulatorTests
                             pooledKey,
                             pooledValue,
                             null,
-                            null, null, null))
+                            0, null, null))
                         {
                             successCount++;
                         }
@@ -763,7 +763,7 @@ public class RecordAccumulatorTests
                     pooledKey,
                     pooledValue,
                     null,
-                    null, null, null))
+                    0, null, null))
                 {
                     successCount++;
                 }
@@ -860,7 +860,7 @@ public class RecordAccumulatorTests
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 new PooledMemory(null, 0, isNull: true),
                 new PooledMemory(null, 0, isNull: true),
-                null, null, null, null);
+                null, 0, null, null);
 
             await Assert.That(result).IsTrue();
 
@@ -901,7 +901,7 @@ public class RecordAccumulatorTests
                     "test-topic", 0, timestamp,
                     new PooledMemory(null, 0, isNull: true),
                     new PooledMemory(null, 0, isNull: true),
-                    null, null, null, null);
+                    null, 0, null, null);
                 await Assert.That(result).IsTrue();
             }
 
@@ -940,7 +940,7 @@ public class RecordAccumulatorTests
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             new PooledMemory(null, 0, isNull: true),
             new PooledMemory(null, 0, isNull: true),
-            null, null, null, null);
+            null, 0, null, null);
 
         await Assert.That(result).IsFalse();
     }
@@ -968,7 +968,7 @@ public class RecordAccumulatorTests
                 DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 new PooledMemory(keyArray, 10),
                 new PooledMemory(valueArray, 20),
-                null, null, null, null);
+                null, 0, null, null);
 
             await Assert.That(result).IsTrue();
 
@@ -1121,7 +1121,7 @@ public class RecordAccumulatorTests
                 pooledKey,
                 pooledValue,
                 null,
-                null,
+                0,
                 completion,
                 null);
 
@@ -1181,7 +1181,7 @@ public class RecordAccumulatorTests
                 pooledKey,
                 pooledValue,
                 null,
-                null,
+                0,
                 completion,
                 null);
 

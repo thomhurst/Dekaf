@@ -74,7 +74,7 @@ public class AppendWorkerAffinityTests
                 key: PooledMemory.Null,
                 value: PooledMemory.Null,
                 headers: null,
-                pooledHeaderArray: null,
+                headerCount: 0,
                 completion: completions[i],
                 cancellationToken: CancellationToken.None);
         }
@@ -121,7 +121,7 @@ public class AppendWorkerAffinityTests
                     key: PooledMemory.Null,
                     value: PooledMemory.Null,
                     headers: null,
-                    pooledHeaderArray: null,
+                    headerCount: 0,
                     completion: completion,
                     cancellationToken: CancellationToken.None);
             }
@@ -181,7 +181,7 @@ public class AppendWorkerAffinityTests
             key: PooledMemory.Null,
             value: PooledMemory.Null,
             headers: null,
-            pooledHeaderArray: null,
+            headerCount: 0,
             completion: completion,
             cancellationToken: CancellationToken.None);
 
@@ -212,7 +212,7 @@ public class AppendWorkerAffinityTests
             key: PooledMemory.Null,
             value: PooledMemory.Null,
             headers: null,
-            pooledHeaderArray: null,
+            headerCount: 0,
             completion: completion,
             cancellationToken: messageCts.Token);
 
