@@ -379,6 +379,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         _valueDeserializer = valueDeserializer;
         _logger = loggerFactory?.CreateLogger<KafkaConsumer<TKey, TValue>>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConsumer<TKey, TValue>>.Instance;
 
+        GcConfigurationCheck.WarnIfWorkstationGc(_logger);
+
         // Initialize interceptors from options
         if (options.Interceptors is { Count: > 0 })
         {

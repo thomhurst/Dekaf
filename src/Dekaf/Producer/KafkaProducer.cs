@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Dekaf.Compression;
 using Dekaf.Errors;
+using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Networking;
 using Dekaf.Protocol;
@@ -207,6 +208,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         // batches can be in-flight simultaneously. The tracker enables coordinated retry on
         // OutOfOrderSequenceNumber instead of blind backoff.
         _inflightTracker = new PartitionInflightTracker();
+
+        GcConfigurationCheck.WarnIfWorkstationGc(_logger);
 
         _senderCts = new CancellationTokenSource();
         // Use 1ms check interval for low-latency awaited produces.

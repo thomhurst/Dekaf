@@ -3,6 +3,12 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
+    <!-- Server GC is critical for high-throughput workloads on multi-core machines.
+         Workstation GC has a tiny Gen0 budget (~2-4MB) causing frequent collections
+         that pause all threads, leading to throughput degradation under sustained load.
+         Server GC allocates a Gen0 per logical core with much larger budgets (~50MB+),
+         reducing collection frequency by 10-50x and enabling parallel collection. -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>
