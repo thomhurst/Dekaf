@@ -711,6 +711,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // converting O(n_partitions) to O(n_ready_partitions) per sender cycle.
     // ConcurrentQueue is lock-free and safe for multi-producer (append workers, linger timer)
     // single-consumer (sender thread) usage.
+    //
+    // Duplicate entries for the same partition are harmless: Ready() dequeues and checks the
+    // partition deque, so extra notifications for an already-drained partition are no-ops.
+    // The total duplicate count is bounded by the number of sealed batches, which is itself
+    // bounded by buffer memory (BufferMemory / BatchSize).
     private readonly ConcurrentQueue<TopicPartition> _readyPartitions = new();
 
     // Coordination lock between FlushAsyncCore and ExpireLingerAsyncCore.
@@ -899,8 +904,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         for (var i = 0; i < count; i++)
         {
-            if (!_readyPartitions.TryDequeue(out var tp))
-                break;
+            var dequeued = _readyPartitions.TryDequeue(out var tp);
+            Debug.Assert(dequeued, "TryDequeue failed despite being the sole consumer of _readyPartitions");
 
             if (_mutedPartitions.ContainsKey(tp))
             {
@@ -934,6 +939,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
                     // Re-enqueue so the sender loop picks this partition up on the next cycle
                     // after the backoff expires.
+                    // TODO: defer re-enqueue until backoff expires to avoid per-cycle churn
                     _readyPartitions.Enqueue(tp);
                     continue;
                 }
@@ -1087,6 +1093,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     internal void UnmutePartition(TopicPartition tp)
     {
+        // TryRemove must precede Enqueue to ensure Ready() does not observe the notification
+        // but then find the partition still muted (which would cause a wasted re-enqueue cycle).
+        // This ordering is safe because Ready() is single-consumer (sender thread) and
+        // UnmutePartition is also called from the sender thread, so there is no concurrent
+        // race between the remove and the enqueue.
         _mutedPartitions.TryRemove(tp, out _);
 
         // Re-notify so Ready() picks up any sealed batches that were skipped while muted.
@@ -2171,6 +2182,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return true;
 
         if (Volatile.Read(ref _unsealedBatchCount) > 0)
+            return true;
+
+        // Fast path: if the ready notification queue is non-empty, there are sealed batches
+        // waiting to be drained — skip the O(n) partition scan below.
+        if (!_readyPartitions.IsEmpty)
             return true;
 
         // Still need O(n) scan for sealed-but-not-yet-sent batches (pd.Count > 0)

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dekaf.Metadata;
 using Dekaf.Producer;
 using Dekaf.Protocol;
@@ -340,6 +341,68 @@ public class RecordAccumulatorReadyTests
 
             // Assert: Node 1 should be ready (partition 3 has sealed batch)
             await Assert.That(readyNodes).Contains(1);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+            await pool.DisposeAsync();
+            await metadataManager.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Ready_BackoffBatch_ReenqueuedThenBecomesReadyAfterExpiry()
+    {
+        // Arrange: Create, seal, drain a batch, then reenqueue it with a short backoff.
+        // Verify that Ready() re-enqueues it during backoff, then reports it ready after expiry.
+        var options = CreateTestOptions(batchSize: 50);
+        var accumulator = new RecordAccumulator(options);
+        var pool = new ValueTaskSourcePool<RecordMetadata>();
+        var metadataManager = CreateMetadataManager("test-topic", 1, nodeId: 1);
+
+        try
+        {
+            var pooledKey = new PooledMemory(null, 0, isNull: true);
+            var pooledValue = new PooledMemory(null, 0, isNull: true);
+
+            // Fill to seal
+            for (var i = 0; i < 10; i++)
+            {
+                var completion = pool.Rent();
+                accumulator.Append("test-topic", 0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    pooledKey, pooledValue, null, null, completion, null);
+            }
+
+            // Drain the sealed batch via Ready() + Drain()
+            var readyNodes = new HashSet<int>();
+            accumulator.Ready(metadataManager, 0, readyNodes);
+            await Assert.That(readyNodes).Contains(1);
+
+            var drainResult = new Dictionary<int, List<ReadyBatch>>();
+            var batchListPool = new Stack<List<ReadyBatch>>();
+            accumulator.Drain(metadataManager, readyNodes, int.MaxValue, drainResult, batchListPool);
+            await Assert.That(drainResult).ContainsKey(1);
+
+            var batch = drainResult[1][0];
+
+            // Set a short backoff (100ms in the future) and reenqueue
+            batch.RetryNotBefore = Stopwatch.GetTimestamp() + (Stopwatch.Frequency / 10); // 100ms
+            accumulator.Reenqueue(batch, 0);
+
+            // Act 1: Ready() during backoff - should NOT report the node as ready,
+            // but should re-enqueue the notification for the next cycle.
+            var readyNodesDuringBackoff = new HashSet<int>();
+            var (nextCheckDelayMs, _) = accumulator.Ready(metadataManager, 0, readyNodesDuringBackoff);
+            await Assert.That(readyNodesDuringBackoff).IsEmpty();
+            await Assert.That(nextCheckDelayMs).IsLessThanOrEqualTo(100);
+
+            // Act 2: Wait for backoff to expire, then Ready() should report the node.
+            await Task.Delay(150);
+
+            var readyNodesAfterBackoff = new HashSet<int>();
+            accumulator.Ready(metadataManager, 0, readyNodesAfterBackoff);
+            await Assert.That(readyNodesAfterBackoff).Contains(1);
         }
         finally
         {
