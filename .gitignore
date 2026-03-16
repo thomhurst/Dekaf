@@ -64,3 +64,4 @@ nunit-*.xml
 docs/plans/
 
 .fake
+nul
