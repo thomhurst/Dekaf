@@ -68,9 +68,12 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
 
         await WarmUpAllPartitions(producer, topic, 5);
 
-        // Act - produce messages with different keys
+        // Act - produce messages with different keys.
+        // 10 keys across 5 partitions is statistically sufficient to hit ≥2 partitions
+        // (probability of all 10 landing on the same partition: (1/5)^9 ≈ 0.00005%).
+        // Keeping the count low avoids timeouts on slow CI runners with thread pool starvation.
         var results = new List<RecordMetadata>();
-        for (var i = 0; i < 50; i++)
+        for (var i = 0; i < 10; i++)
         {
             var metadata = await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
             {
