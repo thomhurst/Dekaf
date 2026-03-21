@@ -862,6 +862,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         /// <summary>Number of batches in the deque.</summary>
         public int Count => _count;
 
+        private const int MinCapacity = 4;
+
         /// <summary>Remove and return the first batch (oldest). Returns null if empty.</summary>
         public ReadyBatch? PollFirst()
         {
@@ -870,6 +872,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             _items[_head] = null;
             _head = (_head + 1) % _items.Length;
             _count--;
+
+            // Shrink if utilization drops below 25% and array is above minimum capacity.
+            // Prevents sticky peak allocation from temporary bursts (e.g., network partition).
+            if (_items.Length > MinCapacity && _count <= _items.Length / 4)
+                Shrink();
+
             return item;
         }
 
@@ -940,7 +948,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 return;
             }
 
-            // Shift elements right to make room at insertAt
+            // Shift elements right to make room at insertAt.
+            // O(n) shift is acceptable — this path is only taken on idempotent retry reenqueue,
+            // and typical deque depth is 1-3 batches.
             EnsureCapacity();
             for (var i = _count; i > insertAt; i--)
             {
@@ -954,6 +964,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             if (_count < _items.Length) return;
             var newItems = new ReadyBatch?[_items.Length * 2];
+            for (var i = 0; i < _count; i++)
+            {
+                newItems[i] = _items[(_head + i) % _items.Length];
+            }
+            _items = newItems;
+            _head = 0;
+        }
+
+        private void Shrink()
+        {
+            var newCapacity = Math.Max(MinCapacity, _items.Length / 2);
+            if (newCapacity >= _items.Length) return;
+            var newItems = new ReadyBatch?[newCapacity];
             for (var i = 0; i < _count; i++)
             {
                 newItems[i] = _items[(_head + i) % _items.Length];

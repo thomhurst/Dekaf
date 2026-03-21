@@ -953,7 +953,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     }
 
     /// <summary>
-    /// Core synchronous produce logic shared between TryProduceSyncForAsync and TryProduceSyncWithHandler.
+    /// Core synchronous produce logic for the ProduceAsync fast path (called from TryProduceSyncForAsync).
     /// Handles serialization, partitioning, and accumulator append with proper resource cleanup.
     /// Returns <see cref="SyncProduceResult.BufferFull"/> when the buffer is full instead of
     /// throwing an exception, avoiding ~5-10μs throw/catch overhead per message under backpressure.
