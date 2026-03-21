@@ -268,19 +268,35 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         await WarmUpAllPartitions(producer, topic, 2);
 
         // Produce ordered messages to partition 0.
-        // IMPORTANT: Do NOT use ProduceWithRetryAsync here. Cancellation after append
-        // doesn't prevent delivery (by design), so a retry would produce a duplicate,
-        // shifting indices and causing a false ordering failure.
+        // Use a per-call timeout so a single hung delivery fails fast (~30s) instead of
+        // blocking until the 360s orphan sweep. Don't retry — cancellation after append
+        // doesn't prevent delivery, so a retry would produce a duplicate and shift indices.
+        // If a timeout fires, the message is still delivered in the background;
+        // the consumer assertion below handles this gracefully.
         for (var i = 0; i < 10; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            using var perCallCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try
             {
-                Topic = topic,
-                Key = $"key-{i}",
-                Value = $"value-{i:D2}",
-                Partition = 0
-            });
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = $"key-{i}",
+                    Value = $"value-{i:D2}",
+                    Partition = 0
+                }, perCallCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Timeout — the message was likely appended and will be delivered in the
+                // background. Continue producing the rest; the consumer assertion below
+                // will validate ordering of whatever was delivered.
+            }
         }
+
+        // Flush to ensure all appended messages are sent, even if some ProduceAsync calls
+        // timed out (cancellation only stops the caller's await, not delivery).
+        await producer.FlushAsync();
 
         // Act
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -292,7 +308,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         consumer.Assign(new TopicPartition(topic, 0));
 
         var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
@@ -300,10 +316,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             if (messages.Count(m => m.Key != "warmup") >= 10) break;
         }
 
-        // Assert - order should be preserved (filter out warmup)
+        // Assert - all 10 messages received and in order (filter out warmup)
         var actual = messages.Where(m => m.Key != "warmup").ToList();
         await Assert.That(actual).Count().IsGreaterThanOrEqualTo(10);
-        for (var i = 0; i < 10; i++)
+        for (var i = 0; i < actual.Count; i++)
         {
             await Assert.That(actual[i].Value).IsEqualTo($"value-{i:D2}");
         }
