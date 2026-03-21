@@ -1472,9 +1472,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private async ValueTask WaitForAnyResponseAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         // WaitAsync returns true if signaled, false on timeout.
         // Throws OperationCanceledException only on shutdown (via RegisterShutdownToken).
-        await _anyResponseCompleted.WaitAsync(100, cancellationToken).ConfigureAwait(false);
+        await _anyResponseCompleted.WaitAsync(100).ConfigureAwait(false);
     }
 
     /// <summary>

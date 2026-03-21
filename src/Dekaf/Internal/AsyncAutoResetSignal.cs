@@ -7,17 +7,13 @@ namespace Dekaf.Internal;
 /// Wraps <see cref="ManualResetValueTaskSourceCore{TResult}"/> to provide an awaitable
 /// signal that resets automatically after each wait completes.
 ///
-/// After warmup, <see cref="WaitAsync(int, CancellationToken)"/> allocates nothing:
+/// After warmup, <see cref="WaitAsync"/> allocates nothing:
 /// the timer is reused via <see cref="Timer.Change(int, int)"/>, and the cancellation
-/// registration is only set up when the token is actually cancellable (rare in steady-state).
+/// registration is set up once via <see cref="RegisterShutdownToken"/>.
 ///
 /// Thread safety: <see cref="Signal"/> may be called from any thread concurrently.
-/// <see cref="WaitAsync(int, CancellationToken)"/> must only be called by a single consumer
+/// <see cref="WaitAsync"/> must only be called by a single consumer
 /// (not thread-safe for multiple concurrent waiters).
-///
-/// Used by <c>BrokerSender</c> to replace <see cref="SemaphoreSlim"/> for response
-/// completion notification — eliminates per-wait TaskNode allocations that
-/// SemaphoreSlim.WaitAsync(CancellationToken) creates internally.
 /// </summary>
 internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
 {
@@ -50,13 +46,12 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
     private readonly TimerCallback _timeoutCallback;
 
     /// <summary>
-    /// Cancellation registration for shutdown signaling. Only set when the caller's
-    /// cancellation token is actually cancellable (non-default). In the common
-    /// producer hot path this is the outer shutdown token which rarely fires,
-    /// and the registration is set up once per send loop start, not per wait.
+    /// Cancellation registration for shutdown signaling. Set once via
+    /// <see cref="RegisterShutdownToken"/> and disposed with the signal.
     /// </summary>
     private CancellationTokenRegistration _shutdownRegistration;
-    private volatile bool _shutdownRegistered;
+    private int _shutdownRegistered; // 0 = not registered, 1 = registered — guarded by Interlocked
+    private CancellationToken _shutdownToken;
 
     public AsyncAutoResetSignal()
     {
@@ -74,19 +69,24 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
 
     /// <summary>
     /// Registers a cancellation token for shutdown signaling. The registration persists
-    /// across multiple <see cref="WaitAsync(int, CancellationToken)"/> calls — it is set up
-    /// once and disposed with the signal. This avoids per-wait registration allocations.
+    /// across multiple <see cref="WaitAsync"/> calls — it is set up once and disposed
+    /// with the signal. This avoids per-wait registration allocations.
     /// </summary>
     /// <remarks>
-    /// Must be called before the first <see cref="WaitAsync(int, CancellationToken)"/> call
-    /// if cancellation support is needed. The token should be the long-lived shutdown token,
-    /// not a per-operation timeout token.
+    /// Must be called before the first <see cref="WaitAsync"/> call if cancellation
+    /// support is needed. The token should be the long-lived shutdown token, not a
+    /// per-operation timeout token. Thread-safe: multiple calls are idempotent.
     /// </remarks>
     public void RegisterShutdownToken(CancellationToken cancellationToken)
     {
-        if (!cancellationToken.CanBeCanceled || _shutdownRegistered)
+        if (!cancellationToken.CanBeCanceled)
             return;
 
+        // Atomic guard: only the first caller registers.
+        if (Interlocked.CompareExchange(ref _shutdownRegistered, 1, 0) != 0)
+            return;
+
+        _shutdownToken = cancellationToken;
         _shutdownRegistration = cancellationToken.UnsafeRegister(
             static state =>
             {
@@ -94,16 +94,15 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
                 // Shutdown requested — complete the waiter if one is pending.
                 if (Interlocked.CompareExchange(ref self._state, Idle, Waiting) == Waiting)
                 {
-                    self._core.SetException(new OperationCanceledException());
+                    self._core.SetException(new OperationCanceledException(self._shutdownToken));
                 }
             },
             this);
-        _shutdownRegistered = true;
     }
 
     /// <summary>
     /// Signals the waiter. If a waiter is pending, completes it. If no waiter,
-    /// stores the signal so the next <see cref="WaitAsync(int, CancellationToken)"/> returns immediately.
+    /// stores the signal so the next <see cref="WaitAsync"/> returns immediately.
     /// Multiple signals without a wait coalesce into one (auto-reset semantics).
     /// </summary>
     public void Signal()
@@ -131,26 +130,17 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
     /// <param name="timeoutMs">
     /// Timeout in milliseconds. Use <see cref="Timeout.Infinite"/> for no timeout.
     /// </param>
-    /// <param name="cancellationToken">
-    /// Not used for per-call registration — shutdown cancellation is handled via
-    /// <see cref="RegisterShutdownToken"/>. This parameter exists for API consistency
-    /// and is checked synchronously for already-cancelled tokens only.
-    /// </param>
     /// <remarks>
     /// Zero-allocation in steady state: the timer is reused via <see cref="Timer.Change(int, int)"/>,
     /// and no cancellation registration is created per call.
     /// Single-waiter only — must not be called concurrently from multiple threads.
     /// </remarks>
-    public ValueTask<bool> WaitAsync(int timeoutMs, CancellationToken cancellationToken = default)
+    public ValueTask<bool> WaitAsync(int timeoutMs)
     {
         // Fast path: if already signaled, consume it immediately (no allocation).
         var previous = Interlocked.CompareExchange(ref _state, Idle, Signaled);
         if (previous == Signaled)
             return new ValueTask<bool>(true);
-
-        // Check cancellation before setting up the wait
-        if (cancellationToken.IsCancellationRequested)
-            return ValueTask.FromCanceled<bool>(cancellationToken);
 
         // Zero-timeout = immediate check only (already handled above)
         if (timeoutMs == 0)
@@ -159,7 +149,22 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
         // Reset the core for a new wait cycle.
         _core.Reset();
 
-        // Arm the timeout timer (reused — no allocation after first call).
+        // Transition: idle -> waiting. Must happen BEFORE arming the timer.
+        // If the timer were armed first, it could fire before the CAS, see state=Idle,
+        // fail its CAS(Waiting→Idle), and _core would never be completed (hang).
+        previous = Interlocked.CompareExchange(ref _state, Waiting, Idle);
+        if (previous == Signaled)
+        {
+            // Signal arrived between our first check and setting Waiting.
+            // Consume it — transition back to idle.
+            Interlocked.Exchange(ref _state, Idle);
+            return new ValueTask<bool>(true);
+        }
+
+        // Now in Waiting state — safe to arm timer. If timer fires immediately,
+        // it will see Waiting, CAS succeeds, and SetResult(false) is called correctly.
+        // If Signal() already completed _core (Waiting→Idle + SetResult), the timer's
+        // CAS will fail (Idle != Waiting) and harmlessly no-op.
         if (timeoutMs != Timeout.Infinite)
         {
             if (_timeoutTimer is null)
@@ -168,19 +173,7 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
                 _timeoutTimer.Change(timeoutMs, Timeout.Infinite);
         }
 
-        // Transition: idle -> waiting. Must happen AFTER Reset() + timer arm
-        // to avoid Signal()/timeout completing _core before Reset().
-        previous = Interlocked.CompareExchange(ref _state, Waiting, Idle);
-        if (previous == Signaled)
-        {
-            // Signal arrived between our first check and setting Waiting.
-            // Consume it — transition back to idle.
-            Interlocked.Exchange(ref _state, Idle);
-            DisarmTimer();
-            return new ValueTask<bool>(true);
-        }
-
-        // Now waiting — Signal(), timeout, or shutdown will complete _core.
+        // Return the awaitable — Signal(), timeout, or shutdown will complete _core.
         return new ValueTask<bool>(this, _core.Version);
     }
 
