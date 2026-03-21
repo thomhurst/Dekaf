@@ -24,10 +24,16 @@ namespace Dekaf.Producer;
 public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, TValue>
 {
     /// <summary>
-    /// Sentinel exception used to signal that the buffer is full and the caller should
-    /// fall back to the async path (ReserveMemoryAsync). Never escapes ProduceSyncCore.
+    /// Sentinel return value from <see cref="TryProduceSyncCore"/> indicating that the
+    /// buffer is full and the caller should fall back to the async path (ReserveMemoryAsync).
+    /// Replaces the previous exception-based control flow to avoid ~5-10μs throw/catch
+    /// overhead per message under sustained backpressure.
     /// </summary>
-    private sealed class BufferFullException : Exception;
+    private enum SyncProduceResult : byte
+    {
+        Success,
+        BufferFull,
+    }
 
     private readonly ProducerOptions _options;
     private readonly ISerializer<TKey> _keySerializer;
@@ -486,28 +492,31 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         // All checks passed - we can proceed synchronously
         completion = _valueTaskSourcePool.Rent();
+        var result = SyncProduceResult.Success;
         try
         {
-            ProduceSyncCore(message, topicInfo, completion);
-        }
-        catch (BufferFullException)
-        {
-            // Buffer is full — fall back to async path which uses ReserveMemoryAsync
-            // (yields instead of blocking a thread, preventing thread pool starvation).
-            // ProduceSyncCore already cleaned up and returned the completion source.
-            completion = null;
-            return false;
+            result = TryProduceSyncCore(message, topicInfo, completion);
         }
         catch (Exception ex)
         {
-            // If ProduceSyncCore throws before setting result/exception on completion,
+            // If TryProduceSyncCore throws before setting result/exception on completion,
             // the rented completion would be leaked (never awaited = never returned to pool).
             // Set the exception on the completion so the caller can await it and it gets
             // properly returned to the pool.
-            // Note: ProduceSyncCore may have already called TrySetException, so use Try variant.
+            // Note: TryProduceSyncCore may have already called TrySetException, so use Try variant.
             // Don't re-throw here - let the caller await the ValueTask and get the exception.
             completion.TrySetException(ex);
         }
+
+        if (result == SyncProduceResult.BufferFull)
+        {
+            // Buffer is full — fall back to async path which uses ReserveMemoryAsync
+            // (yields instead of blocking a thread, preventing thread pool starvation).
+            // TryProduceSyncCore already cleaned up and returned the completion source.
+            completion = null;
+            return false;
+        }
+
         return true;
     }
 
@@ -946,8 +955,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     /// <summary>
     /// Core synchronous produce logic shared between TryProduceSyncForAsync and TryProduceSyncWithHandler.
     /// Handles serialization, partitioning, and accumulator append with proper resource cleanup.
+    /// Returns <see cref="SyncProduceResult.BufferFull"/> when the buffer is full instead of
+    /// throwing an exception, avoiding ~5-10μs throw/catch overhead per message under backpressure.
     /// </summary>
-    private void ProduceSyncCore(
+    private SyncProduceResult TryProduceSyncCore(
         ProducerMessage<TKey, TValue> message,
         TopicInfo topicInfo,
         PooledValueTaskSource<RecordMetadata> completion)
@@ -993,11 +1004,12 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 // Clean up serialized data — the async slow path will re-serialize
                 CleanupPooledResources(key, value, pooledHeaderArray);
                 _valueTaskSourcePool.Return(completion);
-                throw new BufferFullException();
+                return SyncProduceResult.BufferFull;
             }
 
+            return SyncProduceResult.Success;
         }
-        catch (Exception ex) when (ex is not ObjectDisposedException and not BufferFullException)
+        catch (Exception ex) when (ex is not ObjectDisposedException)
         {
             // Cleanup resources on any exception (except ObjectDisposedException which already cleaned up)
             CleanupPooledResources(key, value, pooledHeaderArray);
