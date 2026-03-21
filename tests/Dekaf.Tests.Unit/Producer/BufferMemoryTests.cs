@@ -580,7 +580,7 @@ public class BufferMemoryTests
                     }
                     else
                     {
-                        await accumulator.WaitForWakeupAsync(100, cts.Token);
+                        await accumulator.WaitForWakeupAsync(100);
                     }
                 }
             }, cts.Token);
@@ -651,7 +651,7 @@ public class BufferMemoryTests
                     }
                     else
                     {
-                        await accumulator.WaitForWakeupAsync(100, cts.Token);
+                        await accumulator.WaitForWakeupAsync(100);
                     }
                 }
             }, cts.Token);
@@ -724,7 +724,7 @@ public class BufferMemoryTests
                     }
                     else
                     {
-                        await accumulator.WaitForWakeupAsync(100, cts.Token);
+                        await accumulator.WaitForWakeupAsync(100);
                     }
                 }
             }, cts.Token);
@@ -797,7 +797,7 @@ public class BufferMemoryTests
                     }
                     else
                     {
-                        await accumulator.WaitForWakeupAsync(100, cts.Token);
+                        await accumulator.WaitForWakeupAsync(100);
                     }
                 }
             }, cts.Token);

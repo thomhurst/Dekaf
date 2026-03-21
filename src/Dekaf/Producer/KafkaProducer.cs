@@ -2011,6 +2011,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         try
         {
+            // Register shutdown token once — persists for the lifetime of the sender loop.
+            // The wakeup signal uses this for zero-allocation cancellation detection.
+            _accumulator.RegisterWakeupShutdownToken(cancellationToken);
+
             // Allocate collections once and reuse across iterations to avoid per-iteration allocations
             var readyNodes = new HashSet<int>();
             var drainResult = new Dictionary<int, List<ReadyBatch>>();
@@ -2116,8 +2120,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
                 try
                 {
                     await _accumulator.WaitForWakeupAsync(
-                        readyNodes.Count > 0 ? 0 : nextCheckDelayMs,
-                        cancellationToken).ConfigureAwait(false);
+                        readyNodes.Count > 0 ? 0 : nextCheckDelayMs).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
