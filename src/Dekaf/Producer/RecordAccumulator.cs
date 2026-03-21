@@ -2072,7 +2072,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Note: this gate shares <c>_syncBufferSpaceSignal</c> with <see cref="ReserveMemorySync"/>.
     /// Both are woken by <see cref="ReleaseMemory"/> when batches complete. A gate waiter may
     /// consume a signal intended for a reserve waiter (and vice versa), but both retry in a loop
-    /// with a 100ms timeout cap, so no waiter is permanently starved.
+    /// so no waiter is permanently starved.
     /// </remarks>
     internal void WaitForBufferSpace()
     {
