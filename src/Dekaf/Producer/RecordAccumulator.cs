@@ -1249,10 +1249,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _maxBufferMemory = options.BufferMemory;
 
         // Pre-warm pools to eliminate ramp-up allocation bursts.
-        // Lightweight pools (ReadyBatch, PartitionBatch) are fully warmed since they're cheap.
-        // BatchArena pre-warms a fraction (1/4) since each arena holds a ~BatchSize POH buffer.
+        // ReadyBatch is lightweight (no arena), so fully warm it.
+        // PartitionBatch and BatchArena each allocate a ~BatchSize POH buffer,
+        // so pre-warm only a fraction (1/4) to avoid excessive upfront memory usage
+        // (e.g., poolSize=512 × 1MB = 512MB if fully warmed).
         _readyBatchPool.PreWarm(poolSize * ReadyBatchPoolSizeRatio);
-        _batchPool.PreWarm(poolSize);
+        _batchPool.PreWarm(poolSize / 4);
         BatchArena.PreWarm(poolSize / 4, options.BatchSize);
 
         // Create per-partition-affine append worker channels.
