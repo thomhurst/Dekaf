@@ -31,7 +31,7 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
     ///   waiting -> idle     (Signal completes the waiter)
     ///   signaled -> idle    (WaitAsync consumes the pending signal)
     /// </summary>
-    private volatile int _state; // 0=idle, 1=waiting, 2=signaled
+    private int _state; // 0=idle, 1=waiting, 2=signaled — all accesses via Interlocked
 
     private const int Idle = 0;
     private const int Waiting = 1;
@@ -115,9 +115,11 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
             return;
 
         // previous == Waiting: a waiter is registered. Complete it.
-        // Transition: waiting -> idle (the waiter will consume the result).
-        Interlocked.Exchange(ref _state, Idle);
-        _core.SetResult(true);
+        // Must use CAS (not Exchange) to guard against the timer or shutdown callback
+        // having already transitioned Waiting → Idle and called SetResult/SetException.
+        // Double-completion of ManualResetValueTaskSourceCore is undefined behavior.
+        if (Interlocked.CompareExchange(ref _state, Idle, Waiting) == Waiting)
+            _core.SetResult(true);
     }
 
     /// <summary>
