@@ -343,20 +343,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly bool _useRoundRobinConnections;
 
     /// <summary>
-    /// Signal-based completion notification: SemaphoreSlim that gets released when any
-    /// response task completes. Replaces the previous rotated TCS pattern that allocated
-    /// a new TaskCompletionSource on every response (~64 bytes per batch), contributing
-    /// to Gen1 promotion at high throughput.
+    /// Zero-allocation async auto-reset signal for response completion notification.
+    /// Uses <see cref="ManualResetValueTaskSourceCore{TResult}"/> internally — no per-wait
+    /// TaskNode allocations unlike <c>SemaphoreSlim.WaitAsync(CancellationToken)</c>.
+    /// Timeout is handled by an internal reusable <see cref="Timer"/> (no per-call allocation).
+    /// Single waiter (send loop), multiple signalers (response callbacks on thread pool).
     /// </summary>
-    private readonly SemaphoreSlim _anyResponseCompleted = new(0, 1);
-
-    /// <summary>
-    /// Reusable CancellationTokenSource for the 100ms poll timeout on
-    /// <see cref="_anyResponseCompleted"/>. Using <c>CancelAfter(100)</c> +
-    /// <c>TryReset()</c> avoids the per-call Timer allocation that
-    /// <c>SemaphoreSlim.WaitAsync(TimeSpan, CancellationToken)</c> creates internally.
-    /// </summary>
-    private readonly CancellationTokenSource _pollTimeoutCts = new();
+    private readonly AsyncAutoResetSignal _anyResponseCompleted = new();
 
     /// <summary>
     /// Pre-allocated callback for response completion signaling.
@@ -368,7 +361,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// <remarks>
     /// <c>UnsafeOnCompleted</c> is used instead of <c>OnCompleted</c> because it skips
     /// <see cref="System.Threading.ExecutionContext"/> capture/restore. This is safe because the
-    /// callback only writes to a channel and releases a <see cref="SemaphoreSlim"/> —
+    /// callback only writes to a channel and signals an <see cref="AsyncAutoResetSignal"/> —
     /// no ambient context (e.g. <c>AsyncLocal</c>, <c>SecurityContext</c>) needs to flow.
     /// </remarks>
     private readonly Action _responseCompletionCallback;
@@ -429,8 +422,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _responseCompletionCallback = () =>
         {
             _eventChannel.Writer.TryWrite(SendLoopEvent.ResponseReady());
-            try { _anyResponseCompleted.Release(); }
-            catch (SemaphoreFullException) { /* Already signaled — benign race */ }
+            _anyResponseCompleted.Signal();
         };
         _cts = new CancellationTokenSource();
         _sendLoopTask = Task.Factory.StartNew(
@@ -532,10 +524,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        // Forward outer cancellation to the reusable poll-timeout CTS so that
-        // WaitAsync(_pollTimeoutCts.Token) responds immediately to shutdown.
-        var pollCtsRegistration = cancellationToken.Register(
-            static state => ((CancellationTokenSource)state!).Cancel(), _pollTimeoutCts);
+        // Register shutdown token once — persists for the lifetime of the send loop.
+        // Zero per-wait allocation: the signal uses an internal reusable timer for the
+        // 100ms poll timeout, and this one-time registration handles shutdown cancellation.
+        _anyResponseCompleted.RegisterShutdownToken(cancellationToken);
 
         try
         {
@@ -852,7 +844,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         catch (Exception ex) { LogSendLoopFailed(ex, _brokerId); }
         finally
         {
-            pollCtsRegistration.Dispose();
             sendTimeoutCts.Dispose();
             _eventChannel.Writer.TryComplete();
 
@@ -1471,26 +1462,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Waits for any pending response to complete using a SemaphoreSlim signal,
+    /// Waits for any pending response to complete using an <see cref="AsyncAutoResetSignal"/>,
     /// with a 100ms periodic wake-up to re-sweep delivery timeouts for zombie entries.
     /// Signal may be missed if multiple responses complete between iterations;
     /// the 100ms fallback ensures we don't wait indefinitely.
+    ///
+    /// Zero-allocation in steady state: the signal uses a reusable internal timer for
+    /// the 100ms timeout and a one-time shutdown token registration for cancellation.
     /// </summary>
     private async ValueTask WaitForAnyResponseAsync(CancellationToken cancellationToken)
     {
-        _pollTimeoutCts.CancelAfter(100);
-        try
-        {
-            await _anyResponseCompleted.WaitAsync(_pollTimeoutCts.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            // Poll timeout fired — not an error, just re-check loop conditions.
-        }
-        finally
-        {
-            _pollTimeoutCts.TryReset();
-        }
+        // WaitAsync returns true if signaled, false on timeout.
+        // Throws OperationCanceledException only on shutdown (via RegisterShutdownToken).
+        await _anyResponseCompleted.WaitAsync(100, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1667,7 +1651,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Signal the send loop to wake up and poll when the response arrives.
             // Only a lightweight signal — actual processing happens in ProcessCompletedResponses.
             // Two signal paths: (1) channel write for the main WaitToReadAsync path,
-            // (2) SemaphoreSlim release for the direct response-wait paths (replaces Task.WhenAny).
+            // (2) AsyncAutoResetSignal for the direct response-wait paths (replaces Task.WhenAny).
             //
             // Uses UnsafeOnCompleted with a cached Action delegate instead of ContinueWith
             // to avoid allocating a continuation Task on every pipelined send. The callback
@@ -2143,7 +2127,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         _cts.Dispose();
         _anyResponseCompleted.Dispose();
-        _pollTimeoutCts.Dispose();
     }
 
     private async Task ObserveMetadataRefreshAsync(string topic, CancellationToken cancellationToken)
