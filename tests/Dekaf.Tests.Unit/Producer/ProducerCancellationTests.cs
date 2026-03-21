@@ -81,7 +81,7 @@ public class ProducerCancellationTests
                     }
                     else
                     {
-                        await accumulator.WaitForWakeupAsync(100, cts.Token);
+                        await accumulator.WaitForWakeupAsync(100);
                     }
                 }
             }, cts.Token);

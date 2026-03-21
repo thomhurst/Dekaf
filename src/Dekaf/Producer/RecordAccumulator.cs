@@ -7,6 +7,7 @@ using System.Threading.Channels;
 using System.Threading.Tasks.Sources;
 using Dekaf.Compression;
 using Dekaf.Errors;
+using Dekaf.Internal;
 using Dekaf.Metadata;
 using Dekaf.Protocol;
 using Dekaf.Protocol.Records;
@@ -693,8 +694,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Signaled when new data is available for the sender loop to drain.
     /// Set by seal paths and reenqueue. Sender loop resets after wake.
+    /// Zero-allocation after warmup (reuses timer, one-time shutdown registration).
     /// </summary>
-    private readonly SemaphoreSlim _wakeupSignal = new(0, 1);
+    private readonly AsyncAutoResetSignal _wakeupSignal = new();
 
     // Per-partition-affine append workers: each worker owns a channel and processes
     // appends for a subset of partitions (partition % workerCount). This reduces
@@ -822,12 +824,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Buffer memory tracking for backpressure
     private readonly ulong _maxBufferMemory;
     private long _bufferedBytes;
-    // Sync signal for ReserveMemorySync — SemaphoreSlim(0,1) used as wake-one event.
-    // ReleaseMemory signals this so sync waiters wake one-at-a-time instead of thundering herd.
-    private readonly SemaphoreSlim _syncBufferSpaceSignal = new(0, 1);
+    // Sync signal for ReserveMemorySync — ManualResetEventSlim wakes all blocked sync
+    // waiters instantly when buffer space is freed, eliminating the 100ms polling cap
+    // that SemaphoreSlim(0,1) required (which caused 2x throughput variance in profiling).
+    private readonly ManualResetEventSlim _syncBufferSpaceSignal = new(false);
     private readonly CancellationTokenSource _disposalCts = new();
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
+    // Note: SemaphoreSlim is retained here (not AsyncAutoResetSignal) because ReserveMemoryAsync
+    // can have multiple concurrent async waiters from parallel ProduceAsync calls.
+    // AsyncAutoResetSignal is single-waiter only. The per-call allocation from WaitAsync is
+    // acceptable: it only occurs on the backpressure slow path (buffer full), not per-message.
     private readonly SemaphoreSlim _asyncBufferSpaceSignal = new(0, 1);
 
     /// <summary>
@@ -1186,7 +1193,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
     internal void SignalWakeup()
     {
-        TryReleaseSemaphore(_wakeupSignal);
+        _wakeupSignal.Signal();
     }
 
     /// <summary>
@@ -1225,9 +1232,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         catch (SemaphoreFullException) { }
     }
 
-    internal async ValueTask<bool> WaitForWakeupAsync(int timeoutMs, CancellationToken cancellationToken)
+    internal ValueTask<bool> WaitForWakeupAsync(int timeoutMs)
     {
-        return await _wakeupSignal.WaitAsync(timeoutMs, cancellationToken).ConfigureAwait(false);
+        return _wakeupSignal.WaitAsync(timeoutMs);
+    }
+
+    /// <summary>
+    /// Registers a shutdown token with the wakeup signal so cancellation wakes the sender loop
+    /// without per-wait allocation. Must be called once before the sender loop starts waiting.
+    /// </summary>
+    internal void RegisterWakeupShutdownToken(CancellationToken cancellationToken)
+    {
+        _wakeupSignal.RegisterShutdownToken(cancellationToken);
     }
 
     public RecordAccumulator(ProducerOptions options, CompressionCodecRegistry? compressionCodecs = null, ILogger? logger = null)
@@ -1994,64 +2010,35 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ? currentTicks + _options.MaxBlockMs
             : long.MaxValue;
 
-        var spinWait = new SpinWait();
-
-        while (!TryReserveMemory(recordSize))
+        while (true)
         {
-            // Adaptive spin: spin briefly before blocking. SpinWait adapts to
-            // hardware — more spins on multi-core, fewer on single-core.
-            // After each semaphore wake-up, we reset the spin budget because
-            // the wake-up signal means space was just freed — a few more spins
-            // often capture the newly-available memory without re-entering the
-            // kernel wait, reducing p99 latency and smoothing throughput variance.
-            if (!spinWait.NextSpinWillYield)
-            {
-                spinWait.SpinOnce();
-                continue;
-            }
-
             // Check for disposal before blocking
             if (_disposed)
-            {
                 throw new ObjectDisposedException(nameof(RecordAccumulator));
-            }
 
             // Check timeout
             var remainingMs = deadline - Environment.TickCount64;
             if (remainingMs <= 0)
                 ThrowBufferMemoryTimeout(recordSize, currentTicks);
 
-            // No CancellationToken intentionally: the timeout-only overload avoids the
-            // internal timer/callback allocation that SemaphoreSlim creates for cancellation
-            // registration. Disposal is detected via the _disposed check at loop top.
-            // (Contrast with ReserveMemoryAsync, which retains the caller's CancellationToken
-            // because async callers have user-supplied tokens and the allocation is amortised
-            // differently across awaits.)
-            //
-            // Cap at 100ms so that all blocked threads detect disposal promptly —
-            // TryReleaseSemaphore in DisposeAsync wakes only one waiter, so the remaining
-            // N-1 threads poll out within 100ms each.
-            var signaled = _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100));
+            // Reset-before-Wait: clear the event, then double-check the condition.
+            // Eliminates the 100ms polling cap that SemaphoreSlim(0,1) required.
+            if (_syncBufferSpaceSignal.IsSet)
+                _syncBufferSpaceSignal.Reset();
 
-            // Only reset spin budget when the semaphore was actually signaled (true),
-            // not on timeout (false). On timeout no space was freed, so spinning again
-            // would just waste CPU before re-entering the kernel wait.
-            // When signaled, ReleaseMemory just freed space — spinning is worthwhile because:
-            // 1. Batch completions often free space in bursts (multiple batches land
-            //    within microseconds), so a fresh spin round catches the next burst.
-            // 2. Without reset, we immediately re-enter the kernel wait even when
-            //    space is available, adding ~100ms stalls that cause the 2x throughput
-            //    variance seen in profiling (40K-85K msg/sec).
-            // 3. The spin cost is bounded: SpinWait yields after ~10 iterations on
-            //    multi-core, so worst case is ~1us of CPU before re-blocking.
-            if (signaled)
-                spinWait.Reset();
+            if (TryReserveMemory(recordSize))
+                break;
+
+            _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, int.MaxValue));
+
+            if (TryReserveMemory(recordSize))
+                break;
         }
 
-        // Chain-wake: if space still remains after this reservation, signal the next sync waiter.
-        // Safe with SemaphoreSlim(0,1) — max count prevents thundering herd.
+        // Chain-wake: if space still remains, wake other waiters so they don't
+        // wait until the next ReleaseMemory signal.
         if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
-            TryReleaseSemaphore(_syncBufferSpaceSignal);
+            _syncBufferSpaceSignal.Set();
     }
 
     private void ThrowBufferMemoryTimeout(int recordSize, long startTicks)
@@ -2085,7 +2072,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// Note: this gate shares <c>_syncBufferSpaceSignal</c> with <see cref="ReserveMemorySync"/>.
     /// Both are woken by <see cref="ReleaseMemory"/> when batches complete. A gate waiter may
     /// consume a signal intended for a reserve waiter (and vice versa), but both retry in a loop
-    /// with a 100ms timeout cap, so no waiter is permanently starved.
+    /// so no waiter is permanently starved.
     /// </remarks>
     internal void WaitForBufferSpace()
     {
@@ -2098,7 +2085,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Slow path: buffer is full, wait until the sender loop drains some batches.
         var startTicks = Environment.TickCount64;
-        var spinWait = new SpinWait();
 
         while ((ulong)Volatile.Read(ref _bufferedBytes) >= _maxBufferMemory)
         {
@@ -2109,28 +2095,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (elapsed >= _options.MaxBlockMs)
                 ThrowBufferFullTimeout(startTicks);
 
-            if (!spinWait.NextSpinWillYield)
-            {
-                spinWait.SpinOnce();
-                continue;
-            }
-
-            // No CancellationToken intentionally: avoids internal timer/callback allocation.
-            // This method is non-cancellable from the caller by design — it is a pure gate,
-            // not a user-facing wait. Disposal wakes this semaphore via TryReleaseSemaphore
-            // in DisposeAsync; waiters detect it at the _disposed check at loop top.
+            // Reset-before-Wait: clear the event, double-check condition, then wait.
+            // Eliminates the 100ms polling cap that SemaphoreSlim(0,1) required.
             var remainingMs = _options.MaxBlockMs - elapsed;
-            var signaled = _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, 100));
+            if (_syncBufferSpaceSignal.IsSet)
+                _syncBufferSpaceSignal.Reset();
 
-            // Only reset spin budget on real signal, not timeout — same rationale as ReserveMemorySync.
-            if (signaled)
-                spinWait.Reset();
+            if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+                break;
+
+            _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, int.MaxValue));
         }
 
-        // Chain-wake: if space still remains, signal the next sync waiter so concurrent
-        // ReserveMemorySync callers aren't delayed up to 100ms waiting for their own signal.
+        // Chain-wake: if space still remains, wake other waiters.
         if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
-            TryReleaseSemaphore(_syncBufferSpaceSignal);
+            _syncBufferSpaceSignal.Set();
     }
 
     private void ThrowBufferFullTimeout(long startTicks)
@@ -2172,8 +2151,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 #endif
         }
 
-        // Signal that space is available — wake one sync and one async waiter.
-        TryReleaseSemaphore(_syncBufferSpaceSignal);
+        // Signal that space is available — wake sync and async waiters.
+        _syncBufferSpaceSignal.Set();
         TryReleaseSemaphore(_asyncBufferSpaceSignal);
     }
 
@@ -2729,7 +2708,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Wake any threads blocked in ReserveMemorySync/Async so they recheck
         // _disposed promptly instead of waiting for the timeout.
-        TryReleaseSemaphore(_syncBufferSpaceSignal);
+        _syncBufferSpaceSignal.Set();
         TryReleaseSemaphore(_asyncBufferSpaceSignal);
 
         // Cancel the disposal token to interrupt any remaining blocked operations
@@ -2865,6 +2844,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Dispose resources to prevent leaks
         _syncBufferSpaceSignal?.Dispose();
+        _wakeupSignal?.Dispose();
         _disposalCts?.Dispose();
         _asyncBufferSpaceSignal?.Dispose();
         _flushLingerLock.Dispose();
