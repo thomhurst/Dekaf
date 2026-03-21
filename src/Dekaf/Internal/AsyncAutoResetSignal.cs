@@ -82,6 +82,13 @@ internal sealed class AsyncAutoResetSignal : IValueTaskSource<bool>, IDisposable
         if (!cancellationToken.CanBeCanceled)
             return;
 
+        // If already cancelled, skip registration. UnsafeRegister would fire the
+        // callback synchronously (state=Idle, CAS fails, no-op), but set
+        // _shutdownRegistered=1 — preventing future registration and silently
+        // disabling shutdown cancellation for all subsequent WaitAsync calls.
+        if (cancellationToken.IsCancellationRequested)
+            return;
+
         // Atomic guard: only the first caller registers.
         if (Interlocked.CompareExchange(ref _shutdownRegistered, 1, 0) != 0)
             return;
