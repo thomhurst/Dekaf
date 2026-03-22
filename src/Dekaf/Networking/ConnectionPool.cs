@@ -264,11 +264,16 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
             }
             catch
             {
-                // Close any successfully created connections to avoid leaking TCP handles
+                // Close any successfully created connections to avoid leaking TCP handles.
+                // Each DisposeAsync is wrapped individually so one failure doesn't prevent
+                // cleanup of remaining connections.
                 foreach (var task in tasks)
                 {
                     if (task.IsCompletedSuccessfully)
-                        await task.Result.DisposeAsync().ConfigureAwait(false);
+                    {
+                        try { await task.Result.DisposeAsync().ConfigureAwait(false); }
+                        catch { /* best-effort cleanup */ }
+                    }
                 }
                 throw;
             }

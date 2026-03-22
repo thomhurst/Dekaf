@@ -2445,7 +2445,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Launch connection creation in the background — send loop continues immediately
         _lastScaleTimeTicks = now;
         _pendingScaleTask = _connectionPool.ScaleConnectionGroupAsync(
-            _brokerId, _connectionCount + 1, CancellationToken.None).AsTask();
+            _brokerId, _connectionCount + 1, _cts.Token).AsTask();
 
         return 0;
     }
