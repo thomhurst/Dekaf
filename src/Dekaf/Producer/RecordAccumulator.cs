@@ -55,8 +55,9 @@ internal sealed class SyncWaiterNode
     public readonly ManualResetEventSlim Event = new(false);
 
     /// <summary>
-    /// Set to true when the owning thread succeeds without waiting (early CAS success).
-    /// WakeNextSyncWaiter skips cancelled nodes to avoid wasting signals on stale entries.
+    /// Set to true when the owning thread is done with this node.
+    /// WakeNextSyncWaiter skips cancelled nodes to avoid consuming a signal
+    /// that no thread is waiting on.
     /// </summary>
     public volatile bool Cancelled;
 }
@@ -2132,7 +2133,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var waiter = new SyncWaiterNode();
             _syncWaiterQueue.Enqueue(waiter);
             waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
-            CancelWaiterNode(waiter);
+            waiter.Cancelled = true;
 
             if (TryReserveMemory(recordSize))
                 break;
@@ -2207,7 +2208,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var waiter = new SyncWaiterNode();
             _syncWaiterQueue.Enqueue(waiter);
             waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
-            CancelWaiterNode(waiter);
+            waiter.Cancelled = true;
         }
 
         // Chain-wake: if space still remains, wake the next waiter.
@@ -2229,13 +2230,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
     }
 
-    /// <summary>
-    /// Marks a waiter node as cancelled so stale queue entries are skipped by
-    /// <see cref="WakeNextSyncWaiter"/>. Nodes are not pooled to avoid a race where
-    /// a recycled node is signaled for the wrong thread while still in the waiter queue.
-    /// The allocation cost (~1 per backpressure event) is negligible on this slow path.
-    /// </summary>
-    private static void CancelWaiterNode(SyncWaiterNode node) => node.Cancelled = true;
 
     /// <summary>
     /// Dequeues and signals the next non-cancelled waiter in FIFO order (if any).
