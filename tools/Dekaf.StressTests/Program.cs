@@ -114,7 +114,8 @@ public static class Program
                 LingerMs = options.LingerMs,
                 BatchSize = options.BatchSize,
                 Compression = options.Compression,
-                BrokerCount = options.Brokers
+                BrokerCount = options.Brokers,
+                ConnectionsPerBroker = options.ConnectionsPerBroker
             };
 
             var result = await scenario.RunAsync(testOptions, CancellationToken.None).ConfigureAwait(false);
@@ -304,6 +305,13 @@ public static class Program
                         throw new ArgumentException("--brokers must be at least 1");
                     }
                     break;
+                case "--connections-per-broker":
+                    options.ConnectionsPerBroker = int.Parse(args[++i]);
+                    if (options.ConnectionsPerBroker < 1)
+                    {
+                        throw new ArgumentException("--connections-per-broker must be at least 1");
+                    }
+                    break;
                 case "--help":
                 case "-h":
                     PrintHelp();
@@ -334,6 +342,7 @@ public static class Program
               --batch-size <bytes>    Producer batch size (default: 1048576)
               --compression <type>   Compression type: none, lz4, snappy, zstd (default: none)
               --brokers <count>      Number of Kafka brokers (default: 1, use 3 for multi-broker)
+              --connections-per-broker <n>  TCP connections per broker (default: 1)
               report --input <path>   Generate report from existing results
 
             Environment Variables:
@@ -373,5 +382,6 @@ public static class Program
         public int BatchSize { get; set; } = 1048576;
         public string Compression { get; set; } = "none";
         public int Brokers { get; set; } = 1;
+        public int ConnectionsPerBroker { get; set; } = 1;
     }
 }
