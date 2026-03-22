@@ -2536,6 +2536,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     internal static int ComputeScaleTarget(long pressureDelta, int currentConnections, int maxConnections)
     {
+        // Caller guarantees pressureDelta >= ScalePressureDeltaThreshold, so step >= 1.
+        Debug.Assert(pressureDelta >= ScalePressureDeltaThreshold,
+            $"ComputeScaleTarget called with pressureDelta {pressureDelta} < threshold {ScalePressureDeltaThreshold}");
         var step = (int)Math.Min(pressureDelta / ScalePressureDeltaThreshold, MaxScaleStep);
         return Math.Min(currentConnections + step, maxConnections);
     }
