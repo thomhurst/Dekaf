@@ -665,14 +665,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
-                // ── 4b. Adaptive connection scaling ──
-                // Lightweight check: reads two atomics from accumulator, skips if no pressure.
-                // Only runs for non-idempotent producers with adaptive scaling enabled.
+                // ── 4b. Adaptive connection scaling (non-idempotent only) ──
                 if (_adaptiveScalingEnabled)
                 {
                     var scaledToCount = await MaybeScaleConnectionsAsync(cancellationToken).ConfigureAwait(false);
 
-                    // If a scale-up occurred, resize send-loop-local arrays
                     if (scaledToCount > 0)
                     {
                         var newScratches = new ProduceRequestScratch[scaledToCount];

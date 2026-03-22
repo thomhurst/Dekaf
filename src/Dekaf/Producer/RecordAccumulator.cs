@@ -58,15 +58,6 @@ internal sealed class SyncWaiterNode
     /// WakeNextSyncWaiter skips cancelled nodes to avoid wasting signals on stale entries.
     /// </summary>
     public volatile bool Cancelled;
-
-    /// <summary>
-    /// Resets the node for reuse from the pool.
-    /// </summary>
-    public void Reset()
-    {
-        Cancelled = false;
-        Event.Reset();
-    }
 }
 
 /// <summary>
@@ -856,11 +847,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private long _bufferedBytes;
     // Adaptive connection scaling: counts slow-path entries in ReserveMemorySync/Async
     private long _bufferPressureEvents;
-    // FIFO waiter queue for sync buffer space waiters. Each blocked thread gets its own
-    // ManualResetEventSlim via a pooled SyncWaiterNode, eliminating thundering herd:
-    // ReleaseMemory wakes waiters one-at-a-time in FIFO order instead of broadcasting.
+    // FIFO waiter queue: each blocked thread gets its own SyncWaiterNode so
+    // ReleaseMemory wakes waiters one-at-a-time instead of broadcasting (thundering herd).
     private readonly ConcurrentQueue<SyncWaiterNode> _syncWaiterQueue = new();
-    private readonly ConcurrentQueue<SyncWaiterNode> _syncWaiterPool = new();
     private readonly CancellationTokenSource _disposalCts = new();
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
@@ -2052,7 +2041,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return;
         }
 
-        // Slow path: buffer is full — increment pressure counter for adaptive connection scaling
+        // Track for adaptive connection scaling
         Interlocked.Increment(ref _bufferPressureEvents);
 
         // Slow path: wait for space to become available with timeout protection
@@ -2114,7 +2103,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return;
         }
 
-        // Slow path: buffer is full — increment pressure counter for adaptive connection scaling
+        // Track for adaptive connection scaling
         Interlocked.Increment(ref _bufferPressureEvents);
 
         // Enqueue a FIFO waiter node and block on its individual event.
@@ -2124,7 +2113,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ? currentTicks + _options.MaxBlockMs
             : long.MaxValue;
 
-        var waiter = RentWaiterNode();
+        var waiter = new SyncWaiterNode();
         _syncWaiterQueue.Enqueue(waiter);
 
         try
@@ -2157,7 +2146,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
-            ReturnWaiterNode(waiter);
+            CancelWaiterNode(waiter);
         }
 
         // Chain-wake: if space still remains after our reservation, wake the next
@@ -2209,7 +2198,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         // Slow path: enqueue a FIFO waiter node (requestedBytes=0 for gate-only waiters).
         var startTicks = Environment.TickCount64;
-        var waiter = RentWaiterNode();
+        var waiter = new SyncWaiterNode();
         _syncWaiterQueue.Enqueue(waiter);
 
         try
@@ -2234,7 +2223,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         }
         finally
         {
-            ReturnWaiterNode(waiter);
+            CancelWaiterNode(waiter);
         }
 
         // Chain-wake: if space still remains, wake the next waiter.
@@ -2257,32 +2246,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     }
 
     /// <summary>
-    /// Rents a <see cref="SyncWaiterNode"/> from the pool, or creates a new one if the pool is empty.
+    /// Marks a waiter node as cancelled so stale queue entries are skipped by
+    /// <see cref="WakeNextSyncWaiter"/>. Nodes are not pooled to avoid a race where
+    /// a recycled node is signaled for the wrong thread while still in the waiter queue.
+    /// The allocation cost (~1 per backpressure event) is negligible on this slow path.
     /// </summary>
-    private SyncWaiterNode RentWaiterNode()
-    {
-        if (_syncWaiterPool.TryDequeue(out var node))
-        {
-            node.Reset();
-            return node;
-        }
-
-        return new SyncWaiterNode();
-    }
-
-    /// <summary>
-    /// Returns a <see cref="SyncWaiterNode"/> to the pool for reuse.
-    /// Marks the node as cancelled first so stale queue entries are skipped.
-    /// </summary>
-    private void ReturnWaiterNode(SyncWaiterNode node)
-    {
-        node.Cancelled = true;
-
-        // Cap pool size to avoid unbounded growth (soft cap — racy but harmless).
-        // 64 is more than enough for typical producer thread counts.
-        if (_syncWaiterPool.Count < 64)
-            _syncWaiterPool.Enqueue(node);
-    }
+    private static void CancelWaiterNode(SyncWaiterNode node) => node.Cancelled = true;
 
     /// <summary>
     /// Dequeues and signals the next non-cancelled waiter in FIFO order (if any).
@@ -3006,9 +2975,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _batchPool.Clear();
 
         // Dispose resources to prevent leaks
-        // Dispose all pooled waiter node events
-        while (_syncWaiterPool.TryDequeue(out var pooledNode))
-            pooledNode.Event.Dispose();
         while (_syncWaiterQueue.TryDequeue(out var queuedNode))
             queuedNode.Event.Dispose();
         _wakeupSignal?.Dispose();
