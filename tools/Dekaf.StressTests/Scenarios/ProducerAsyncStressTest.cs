@@ -31,7 +31,7 @@ internal sealed class ProducerAsyncStressTest : IStressTestScenario
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
             .WithBatchSize(options.BatchSize)
             .WithConnectionsPerBroker(options.ConnectionsPerBroker)
-            .WithSocketSendBufferBytes(1048576);
+            .WithSocketSendBufferBytes(options.BatchSize);
 
         _ = options.Compression switch
         {
