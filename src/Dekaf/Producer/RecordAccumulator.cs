@@ -2114,36 +2114,28 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             ? currentTicks + _options.MaxBlockMs
             : long.MaxValue;
 
-        var waiter = new SyncWaiterNode();
-
-        try
+        while (true)
         {
-            while (true)
-            {
-                if (_disposed)
-                    throw new ObjectDisposedException(nameof(RecordAccumulator));
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(RecordAccumulator));
 
-                var remainingMs = deadline - Environment.TickCount64;
-                if (remainingMs <= 0)
-                    ThrowBufferMemoryTimeout(recordSize, currentTicks);
+            var remainingMs = deadline - Environment.TickCount64;
+            if (remainingMs <= 0)
+                ThrowBufferMemoryTimeout(recordSize, currentTicks);
 
-                if (TryReserveMemory(recordSize))
-                    break;
+            if (TryReserveMemory(recordSize))
+                break;
 
-                // Enqueue right before blocking so the node is only in the queue
-                // when we're genuinely about to wait. Avoids wasting signals on
-                // stale entries from threads that succeed at CAS before Wait().
-                _syncWaiterQueue.Enqueue(waiter);
-                waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
-                waiter.Event.Reset();
-
-                if (TryReserveMemory(recordSize))
-                    break;
-            }
-        }
-        finally
-        {
+            // Fresh node per wait attempt. On timeout, the old node stays in the
+            // queue but is cancelled, so WakeNextSyncWaiter skips it. Re-using the
+            // same node across iterations would cause a double-enqueue race on timeout.
+            var waiter = new SyncWaiterNode();
+            _syncWaiterQueue.Enqueue(waiter);
+            waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
             CancelWaiterNode(waiter);
+
+            if (TryReserveMemory(recordSize))
+                break;
         }
 
         // Chain-wake: if space still remains after our reservation, wake the next
@@ -2193,32 +2185,28 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
             return;
 
+        // Track for adaptive connection scaling
+        Interlocked.Increment(ref _bufferPressureEvents);
+
         var startTicks = Environment.TickCount64;
-        var waiter = new SyncWaiterNode();
 
-        try
+        while ((ulong)Volatile.Read(ref _bufferedBytes) >= _maxBufferMemory)
         {
-            while ((ulong)Volatile.Read(ref _bufferedBytes) >= _maxBufferMemory)
-            {
-                if (_disposed)
-                    throw new ObjectDisposedException(nameof(RecordAccumulator));
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(RecordAccumulator));
 
-                var elapsed = Environment.TickCount64 - startTicks;
-                if (elapsed >= _options.MaxBlockMs)
-                    ThrowBufferFullTimeout(startTicks);
+            var elapsed = Environment.TickCount64 - startTicks;
+            if (elapsed >= _options.MaxBlockMs)
+                ThrowBufferFullTimeout(startTicks);
 
-                var remainingMs = _options.MaxBlockMs - elapsed;
+            var remainingMs = _options.MaxBlockMs - elapsed;
 
-                if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
-                    break;
+            if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+                break;
 
-                _syncWaiterQueue.Enqueue(waiter);
-                waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
-                waiter.Event.Reset();
-            }
-        }
-        finally
-        {
+            var waiter = new SyncWaiterNode();
+            _syncWaiterQueue.Enqueue(waiter);
+            waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
             CancelWaiterNode(waiter);
         }
 
