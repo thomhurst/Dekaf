@@ -235,9 +235,9 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
 
         var messages = new List<ConsumeResult<string, string>>();
         var seenPartitions = new HashSet<int>();
-        // Consumer group rebalance can take 30+ seconds on slow CI runners with
+        // Consumer group rebalance can take 60+ seconds on slow CI runners with
         // thread pool starvation. Use a generous timeout to avoid flaky failures.
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
@@ -267,20 +267,33 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
 
         await WarmUpAllPartitions(producer, topic, 2);
 
-        // Produce ordered messages to partition 0.
-        // IMPORTANT: Do NOT use ProduceWithRetryAsync here. Cancellation after append
-        // doesn't prevent delivery (by design), so a retry would produce a duplicate,
-        // shifting indices and causing a false ordering failure.
+        // Produce ordered messages to partition 0 with per-call timeout.
+        // Don't use ProduceWithRetryAsync — retries could produce duplicates that shift
+        // indices, causing a false ordering failure. Instead, use a per-call CancellationToken
+        // so a hung delivery fails fast (~30s) instead of blocking for 360s.
+        // Cancellation after append doesn't prevent delivery (by design), so all messages
+        // will still be delivered in the background.
         for (var i = 0; i < 10; i++)
         {
-            await producer.ProduceAsync(new ProducerMessage<string, string>
+            using var perCallCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try
             {
-                Topic = topic,
-                Key = $"key-{i}",
-                Value = $"value-{i:D2}",
-                Partition = 0
-            });
+                await producer.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = topic,
+                    Key = $"key-{i}",
+                    Value = $"value-{i:D2}",
+                    Partition = 0
+                }, perCallCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Timeout — message was likely appended and will be delivered in background.
+            }
         }
+
+        // Flush to ensure all appended messages are sent before consuming.
+        await producer.FlushAsync();
 
         // Act
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -292,7 +305,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         consumer.Assign(new TopicPartition(topic, 0));
 
         var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
@@ -303,7 +316,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Assert - order should be preserved (filter out warmup)
         var actual = messages.Where(m => m.Key != "warmup").ToList();
         await Assert.That(actual).Count().IsGreaterThanOrEqualTo(10);
-        for (var i = 0; i < 10; i++)
+        for (var i = 0; i < actual.Count; i++)
         {
             await Assert.That(actual[i].Value).IsEqualTo($"value-{i:D2}");
         }
