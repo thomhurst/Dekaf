@@ -296,7 +296,8 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
 
         // Flush to ensure all appended messages are sent, even if some ProduceAsync calls
         // timed out (cancellation only stops the caller's await, not delivery).
-        await producer.FlushAsync();
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await producer.FlushAsync(flushCts.Token);
 
         // Act
         await using var consumer = await Kafka.CreateConsumer<string, string>()
