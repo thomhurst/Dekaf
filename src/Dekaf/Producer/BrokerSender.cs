@@ -700,6 +700,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             newBucketCts[i] = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                         bucketTimeoutCts = newBucketCts;
 
+                        // No Array.Copy needed: ValueTask is a struct and entries are overwritten
+                        // before each use. pendingSendCount bounds iteration so stale entries
+                        // beyond the new connection count are never accessed.
                         parallelSends = new ValueTask[scaledToCount];
                     }
                 }
@@ -2213,14 +2216,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private static async ValueTask<int> AwaitParallelSendsAsync(ValueTask[] sends, int count)
     {
         Exception? firstException = null;
-        var completed = 0;
 
         for (var i = 0; i < count; i++)
         {
             try
             {
                 await sends[i].ConfigureAwait(false);
-                completed++;
             }
             catch (Exception ex) when (firstException is null)
             {
@@ -2237,7 +2238,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             ExceptionDispatchInfo.Capture(firstException).Throw();
         }
 
-        return completed;
+        // All sends succeeded — partial completion is not possible on the success path
+        // because any failure throws above.
+        return count;
     }
 
     /// <summary>
