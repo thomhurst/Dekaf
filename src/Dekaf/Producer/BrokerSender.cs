@@ -576,9 +576,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         // Per-connection timeout CTS for multi-connection mode, reused with TryReset()
         // to avoid per-send CTS allocation (same pattern as sendTimeoutCts for single-connection).
-        var bucketTimeoutCts = new CancellationTokenSource[_connectionCount];
-        for (var c = 0; c < _connectionCount; c++)
-            bucketTimeoutCts[c] = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var bucketTimeoutCts = _connectionCount > 1
+            ? new CancellationTokenSource[_connectionCount]
+            : Array.Empty<CancellationTokenSource>();
+        if (_connectionCount > 1)
+        {
+            for (var c = 0; c < _connectionCount; c++)
+                bucketTimeoutCts[c] = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        }
 
         // Register shutdown token once — persists for the lifetime of the send loop.
         // Zero per-wait allocation: the signal uses an internal reusable timer for the
@@ -905,7 +910,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 7. Compute timeout and wait ──
-                if (carryOver.Count == 0 && TotalPendingResponseCount == 0)
+                var waitPendingCount = TotalPendingResponseCount;
+                if (carryOver.Count == 0 && waitPendingCount == 0)
                 {
                     // Fully idle — wait for any event (new batch, response, unmute).
                     if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
@@ -917,7 +923,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // responses and re-coalesce. Carry-over batches that were blocked by
                     // duplicate-partition will coalesce next time (coalescedPartitions is cleared).
                 }
-                else if (TotalPendingResponseCount > 0)
+                else if (waitPendingCount > 0)
                 {
                     // Carry-over (possibly all muted) and/or pending responses — wait for
                     // any response to complete. Cannot use eventReader.WaitToReadAsync here
@@ -2110,7 +2116,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private async ValueTask<IKafkaConnection> GetConnectionForPartitionAsync(int partitionId, CancellationToken cancellationToken)
     {
         if (_useRoundRobinConnections)
-            return await GetRoundRobinConnectionAsync(cancellationToken).ConfigureAwait(false);
+            return await _connectionPool.GetConnectionAsync(_brokerId, cancellationToken).ConfigureAwait(false);
 
         var connIdx = _connectionCount > 1 ? partitionId % _connectionCount : 0;
 
@@ -2126,15 +2132,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         _pinnedConnections[connIdx] = connection;
         return connection;
-    }
-
-    /// <summary>
-    /// Round-robin connection selection for non-idempotent multi-connection mode (existing behavior).
-    /// </summary>
-    private async ValueTask<IKafkaConnection> GetRoundRobinConnectionAsync(CancellationToken cancellationToken)
-    {
-        return await _connectionPool.GetConnectionAsync(_brokerId, cancellationToken)
-            .ConfigureAwait(false);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -2287,7 +2284,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     for (var j = 0; j < pr.Count; j++)
                     {
                         if (pr.Batches[j] is not null)
-                            FailAndCleanupBatch(pr.Batches[j], new ObjectDisposedException(nameof(BrokerSender)));
+                        {
+                            try { FailAndCleanupBatch(pr.Batches[j], new ObjectDisposedException(nameof(BrokerSender))); }
+                            catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                        }
                     }
 
                     pr.ReturnBatchesArray();

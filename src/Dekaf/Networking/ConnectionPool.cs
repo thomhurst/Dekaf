@@ -118,19 +118,16 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
         if (Volatile.Read(ref _disposed) != 0)
             throw new ObjectDisposedException(nameof(ConnectionPool));
 
-        // Get broker info
         if (!_brokers.TryGetValue(brokerId, out var brokerInfo))
         {
             throw new InvalidOperationException($"Unknown broker ID: {brokerId}");
         }
 
-        // If single-connection mode, ignore index and delegate
         if (_connectionsPerBroker <= 1)
         {
             return await GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
         }
 
-        // Ensure connection group exists
         if (!_connectionGroupsById.TryGetValue(brokerId, out var connections))
         {
             // CreateConnectionGroupAsync populates _connectionGroupsById and returns
@@ -150,7 +147,6 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
             return connection;
         }
 
-        // Connection at this index is unhealthy, replace it
         return await ReplaceConnectionInGroupAsync(brokerId, brokerInfo, effectiveIndex, cancellationToken).ConfigureAwait(false);
     }
 
