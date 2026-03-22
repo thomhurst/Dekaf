@@ -2122,6 +2122,33 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return;
         }
 
+        // Spin-wait phase: when the buffer is nearly full and draining rapidly, memory
+        // often frees up within microseconds. A short spin avoids the expensive kernel
+        // context switch that ManualResetEventSlim.Wait would incur.
+        // Gate on waiter queue emptiness: if other threads are already waiting in the
+        // kernel queue, spinning just burns CPU competing with the drain-side threads
+        // that need to free memory. Skip straight to the kernel wait in that case.
+        if (_syncWaiterQueue.IsEmpty)
+        {
+            var spinner = new SpinWait();
+            while (!spinner.NextSpinWillYield)
+            {
+                if (_disposed)
+                    throw new ObjectDisposedException(nameof(RecordAccumulator));
+
+                spinner.SpinOnce();
+
+                if (TryReserveMemory(recordSize))
+                {
+                    // Intentionally not incrementing _bufferPressureEvents here:
+                    // transient pressure that resolves within a sub-microsecond spin
+                    // should not trigger adaptive connection scaling, which targets
+                    // sustained backpressure requiring kernel waits.
+                    return;
+                }
+            }
+        }
+
         // Track for adaptive connection scaling
         Interlocked.Increment(ref _bufferPressureEvents);
 
@@ -2214,6 +2241,29 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Fast path: buffer has space — the common case.
         if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
             return;
+
+        // Spin-wait phase: same rationale as ReserveMemorySync — avoid kernel transition
+        // when buffer space frees up within microseconds. Only spin if no other threads
+        // are already waiting; otherwise go straight to the kernel wait.
+        if (_syncWaiterQueue.IsEmpty)
+        {
+            var spinner = new SpinWait();
+            while (!spinner.NextSpinWillYield)
+            {
+                if (_disposed)
+                    throw new ObjectDisposedException(nameof(RecordAccumulator));
+
+                spinner.SpinOnce();
+
+                if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+                {
+                    // Intentionally not incrementing _bufferPressureEvents:
+                    // transient pressure that resolves within a sub-microsecond spin
+                    // should not trigger adaptive connection scaling.
+                    return;
+                }
+            }
+        }
 
         // Track for adaptive connection scaling
         Interlocked.Increment(ref _bufferPressureEvents);
