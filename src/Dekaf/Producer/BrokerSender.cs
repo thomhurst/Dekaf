@@ -863,8 +863,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 if (!connectionBuckets[c].HasBatches) continue;
                                 if (_pendingResponsesByConnection[c].Count >= _maxInFlight) continue;
 
+                                ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
                                 await SendConnectionBucketAsync(c, connectionBuckets,
-                                    scratches[c], bucketTimeoutCts[c], cancellationToken).ConfigureAwait(false);
+                                    scratches[c], bucketTimeoutCts[c].Token).ConfigureAwait(false);
                                 sentThisIteration = true;
                             }
 
@@ -881,8 +882,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                     if (!connectionBuckets[c].HasBatches) continue;
                                     if (_pendingResponsesByConnection[c].Count >= _maxInFlight) continue;
 
+                                    ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
                                     await SendConnectionBucketAsync(c, connectionBuckets,
-                                        scratches[c], bucketTimeoutCts[c], cancellationToken).ConfigureAwait(false);
+                                        scratches[c], bucketTimeoutCts[c].Token).ConfigureAwait(false);
                                     sentThisIteration = true;
                                 }
                             }
@@ -2058,10 +2060,23 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Takes <paramref name="connectionBuckets"/> array + index instead of ref struct
     /// because async methods cannot have ref parameters.
     /// </summary>
+    /// <summary>
+    /// Resets a per-connection timeout CTS for reuse, or recreates it if TryReset fails.
+    /// Mirrors the single-connection path's sendTimeoutCts reuse pattern.
+    /// </summary>
+    private static void ResetBucketTimeout(ref CancellationTokenSource cts, CancellationToken shutdownToken)
+    {
+        if (!cts.TryReset())
+        {
+            cts.Dispose();
+            cts = CancellationTokenSource.CreateLinkedTokenSource(shutdownToken);
+        }
+        cts.CancelAfter(SendCoalescedTimeoutMs);
+    }
+
     private async ValueTask SendConnectionBucketAsync(
         int connIdx, ConnectionBucket[] connectionBuckets,
-        ProduceRequestScratch scratch, CancellationTokenSource timeoutCts,
-        CancellationToken shutdownToken)
+        ProduceRequestScratch scratch, CancellationToken cancellationToken)
     {
         ref var bucket = ref connectionBuckets[connIdx];
         var batchesToSend = ArrayPool<ReadyBatch>.Shared.Rent(bucket.Count);
@@ -2069,18 +2084,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var countToSend = bucket.Count;
         bucket.Clear();
 
-        // Reuse per-connection CTS with TryReset to avoid per-send allocation.
-        if (!timeoutCts.TryReset())
-        {
-            timeoutCts.Dispose();
-            timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(shutdownToken);
-        }
-        timeoutCts.CancelAfter(SendCoalescedTimeoutMs);
-
         var conn = await GetConnectionForPartitionAsync(
-            batchesToSend[0].TopicPartition.Partition, timeoutCts.Token).ConfigureAwait(false);
+            batchesToSend[0].TopicPartition.Partition, cancellationToken).ConfigureAwait(false);
 
-        await SendCoalescedAsync(batchesToSend, countToSend, scratch, conn, connIdx, timeoutCts.Token)
+        await SendCoalescedAsync(batchesToSend, countToSend, scratch, conn, connIdx, cancellationToken)
             .ConfigureAwait(false);
     }
 
