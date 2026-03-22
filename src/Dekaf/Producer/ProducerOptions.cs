@@ -49,10 +49,21 @@ public sealed class ProducerOptions
 
     /// <summary>
     /// Total memory buffer size in bytes for pending messages.
-    /// When the buffer is full, Send() and ProduceAsync() will block until space is available.
-    /// Default is 1GB, matching librdkafka's default (queue.buffering.max.kbytes).
+    /// When the buffer is full, <see cref="KafkaProducer{TKey,TValue}.Send"/> and
+    /// <see cref="KafkaProducer{TKey,TValue}.ProduceAsync"/> block until space is available
+    /// (controlled by <see cref="MaxBlockMs"/>).
+    /// <para>
+    /// Default is 2GB. Profiling at 268K msg/sec with 1KB messages showed that a 1GB buffer fills
+    /// in ~4 seconds, after which every append blocks in backpressure (5.77% CPU). Doubling the
+    /// buffer delays backpressure onset and reduces blocking frequency under sustained load.
+    /// </para>
+    /// <para>
+    /// <b>Tuning guidance:</b> Increase this value if profiling shows significant time in
+    /// <c>ReserveMemorySync</c> / <c>ManualResetEventSlim.Wait</c>. Decrease it to limit
+    /// memory usage in low-throughput or memory-constrained environments.
+    /// </para>
     /// </summary>
-    public ulong BufferMemory { get; init; } = 1073741824;
+    public ulong BufferMemory { get; init; } = 2L * 1024 * 1024 * 1024;
 
     /// <summary>
     /// Compression type.

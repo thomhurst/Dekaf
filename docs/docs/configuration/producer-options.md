@@ -194,7 +194,7 @@ Maximum memory the producer uses for buffering unsent messages:
 .WithBufferMemory(256 * 1024 * 1024)  // 256MB
 ```
 
-Default: 1GB. When the buffer is full, `ProduceAsync` and `Send` block until space is freed (controlled by `WithMaxBlockMs`).
+Default: 2GB. When the buffer is full, `ProduceAsync` and `Send` block until space is freed (controlled by `WithMaxBlockMs`). Increase if profiling shows significant time in backpressure waits; decrease in memory-constrained environments.
 
 ### WithSocketSendBufferBytes / WithSocketReceiveBufferBytes
 
@@ -243,7 +243,7 @@ Enable periodic statistics:
 | `WithConnectionsPerBroker` | 1 | TCP connections per broker |
 | `WithAdaptiveConnections` | enabled (max 10) | Auto-scale connections under load |
 | `WithoutAdaptiveConnections` | — | Disable adaptive scaling |
-| `WithBufferMemory` | 1GB | Max buffer for unsent messages |
+| `WithBufferMemory` | 2GB | Max buffer for unsent messages |
 | `WithSocketSendBufferBytes` | (OS default) | TCP send buffer size |
 | `WithSocketReceiveBufferBytes` | (OS default) | TCP receive buffer size |
 | `UseTls` | false | Enable TLS |
