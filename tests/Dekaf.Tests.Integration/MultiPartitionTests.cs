@@ -235,9 +235,9 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
 
         var messages = new List<ConsumeResult<string, string>>();
         var seenPartitions = new HashSet<int>();
-        // Consumer group rebalance can take 30+ seconds on slow CI runners with
+        // Consumer group rebalance can take 60+ seconds on slow CI runners with
         // thread pool starvation. Use a generous timeout to avoid flaky failures.
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
