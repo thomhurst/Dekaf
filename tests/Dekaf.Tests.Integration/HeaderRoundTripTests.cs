@@ -132,7 +132,7 @@ public class HeaderRoundTripTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         var nullHeader = result!.Value.Headers!.First(h => h.Key == "null-header");
         await Assert.That(nullHeader.IsValueNull).IsTrue();
 
-        var normalHeader = result.Value.Headers.First(h => h.Key == "normal-header");
+        var normalHeader = result.Value.Headers!.First(h => h.Key == "normal-header");
         await Assert.That(Encoding.UTF8.GetString(normalHeader.Value.Span)).IsEqualTo("has-value");
     }
 
