@@ -6,7 +6,7 @@ namespace Dekaf.StressTests.Reporting;
 
 internal sealed class StressTestResult
 {
-    public required string Scenario { get; init; }
+    public required string Scenario { get; set; }
     public required string Client { get; init; }
     public required int DurationMinutes { get; init; }
     public required int MessageSizeBytes { get; init; }

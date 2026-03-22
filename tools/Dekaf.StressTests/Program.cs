@@ -115,7 +115,8 @@ public static class Program
                 BatchSize = options.BatchSize,
                 Compression = options.Compression,
                 BrokerCount = options.Brokers,
-                ConnectionsPerBroker = options.ConnectionsPerBroker
+                // Baseline: single connection for fair comparison with Confluent
+                ConnectionsPerBroker = 1
             };
 
             var result = await scenario.RunAsync(testOptions, CancellationToken.None).ConfigureAwait(false);
@@ -124,6 +125,41 @@ public static class Program
             GC.Collect();
             GC.WaitForPendingFinalizers();
             GC.Collect();
+        }
+
+        // Multi-connection pass: run Dekaf-only scenarios with ConnectionsPerBroker > 1
+        // to show the throughput advantage of parallel TCP connections.
+        if (options.ConnectionsPerBroker > 1)
+        {
+            var multiConnScenarios = scenarios.Where(s => s.Client == "Dekaf").ToList();
+            foreach (var scenario in multiConnScenarios)
+            {
+                Console.WriteLine();
+                Console.WriteLine($"=== Running: {scenario.Client} {scenario.Name} (×{options.ConnectionsPerBroker} connections) ===");
+
+                var testOptions = new StressTestOptions
+                {
+                    BootstrapServers = kafka.BootstrapServers,
+                    Topic = scenario.Name.StartsWith("producer", StringComparison.OrdinalIgnoreCase) ? producerTopic : consumerTopic,
+                    DurationMinutes = options.DurationMinutes,
+                    MessageSizeBytes = options.MessageSizeBytes,
+                    Partitions = options.Partitions,
+                    LingerMs = options.LingerMs,
+                    BatchSize = options.BatchSize,
+                    Compression = options.Compression,
+                    BrokerCount = options.Brokers,
+                    ConnectionsPerBroker = options.ConnectionsPerBroker
+                };
+
+                var result = await scenario.RunAsync(testOptions, CancellationToken.None).ConfigureAwait(false);
+                // Tag the result so the report shows it's multi-connection
+                result.Scenario = $"{result.Scenario} (×{options.ConnectionsPerBroker}conn)";
+                results.Add(result);
+
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+            }
         }
 
         var runCompletedAt = DateTime.UtcNow;
