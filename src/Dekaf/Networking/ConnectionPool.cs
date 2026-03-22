@@ -113,6 +113,42 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
         return await CreateConnectionGroupAsync(brokerId, brokerInfo, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(ConnectionPool));
+
+        // Get broker info
+        if (!_brokers.TryGetValue(brokerId, out var brokerInfo))
+        {
+            throw new InvalidOperationException($"Unknown broker ID: {brokerId}");
+        }
+
+        // If single-connection mode, ignore index and delegate
+        if (_connectionsPerBroker <= 1)
+        {
+            return await GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Ensure connection group exists
+        if (!_connectionGroupsById.TryGetValue(brokerId, out var connections))
+        {
+            await CreateConnectionGroupAsync(brokerId, brokerInfo, cancellationToken).ConfigureAwait(false);
+            _connectionGroupsById.TryGetValue(brokerId, out connections);
+        }
+
+        var effectiveIndex = index % connections!.Length;
+        var connection = connections[effectiveIndex];
+
+        if (connection is not null && connection.IsConnected)
+        {
+            return connection;
+        }
+
+        // Connection at this index is unhealthy, replace it
+        return await ReplaceConnectionInGroupAsync(brokerId, brokerInfo, effectiveIndex, cancellationToken).ConfigureAwait(false);
+    }
+
     private async ValueTask<IKafkaConnection> CreateConnectionGroupAsync(int brokerId, BrokerInfo brokerInfo, CancellationToken cancellationToken)
     {
         // Create all connections for this broker in parallel

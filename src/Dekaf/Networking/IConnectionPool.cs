@@ -11,6 +11,12 @@ public interface IConnectionPool : IAsyncDisposable
     ValueTask<IKafkaConnection> GetConnectionAsync(int brokerId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Gets a connection to a broker by ID and specific index within the connection group.
+    /// Used by partition-affined multi-connection mode to pin partitions to specific connections.
+    /// </summary>
+    ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gets a connection to a broker by host and port.
     /// </summary>
     ValueTask<IKafkaConnection> GetConnectionAsync(string host, int port, CancellationToken cancellationToken = default);
