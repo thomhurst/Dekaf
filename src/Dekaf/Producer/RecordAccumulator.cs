@@ -471,7 +471,8 @@ internal sealed class BatchArena
     {
         if (_buffer is not null && _buffer.Length >= capacity)
         {
-            _buffer.AsSpan(0, _position).Clear();
+            // Skip clearing — _position reset to 0 means stale bytes are never read,
+            // and the next batch overwrites from position 0.
             _position = 0;
             return;
         }
@@ -842,16 +843,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// The deque holds sealed ReadyBatches waiting to be drained by the sender loop.
     /// CurrentBatch is the unsealed batch accepting new records.
     /// Thread-safety: all access to Deque and CurrentBatch must be under Lock.
+    /// Uses a ring-buffer backing array instead of LinkedList to eliminate per-batch
+    /// LinkedListNode and HashSet allocations. Typical deques hold 1-3 batches.
     /// </summary>
     private sealed class PartitionDeque
     {
-        /// <summary>Sealed batches waiting to drain. Front = oldest (drain target).</summary>
-        private readonly LinkedList<ReadyBatch> _deque = new();
-
-        /// <summary>O(1) containment check for the orphan sweep diagnostic path.
-        /// Without this, Contains() performs an O(n) LinkedList scan under SpinLock,
-        /// blocking the hot append/seal path as deque size grows.</summary>
-        private readonly HashSet<ReadyBatch> _dequeSet = new(ReferenceEqualityComparer.Instance);
+        private ReadyBatch?[] _items = new ReadyBatch?[4];
+        private int _head;
+        private int _count;
 
         /// <summary>Per-partition lock for deque access (matches Java's synchronized(deque)).
         /// SpinLock avoids kernel transitions for the brief critical sections in append/drain paths.</summary>
@@ -861,65 +860,129 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         public PartitionBatch? CurrentBatch;
 
         /// <summary>Number of batches in the deque.</summary>
-        public int Count => _deque.Count;
+        public int Count => _count;
+
+        private const int MinCapacity = 4;
 
         /// <summary>Remove and return the first batch (oldest). Returns null if empty.</summary>
         public ReadyBatch? PollFirst()
         {
-            if (_deque.First is not { } first) return null;
-            _deque.RemoveFirst();
-            _dequeSet.Remove(first.Value);
-            return first.Value;
+            if (_count == 0) return null;
+            var item = _items[_head]!;
+            _items[_head] = null;
+            _head = (_head + 1) % _items.Length;
+            _count--;
+
+            // Shrink if utilization drops below 25% and array is above minimum capacity.
+            // Prevents sticky peak allocation from temporary bursts (e.g., network partition).
+            if (_items.Length > MinCapacity && _count <= _items.Length / 4)
+                Shrink();
+
+            return item;
         }
 
         /// <summary>Return the first batch without removing. Returns null if empty.</summary>
         public ReadyBatch? PeekFirst()
         {
-            return _deque.First?.Value;
+            return _count == 0 ? null : _items[_head];
         }
 
         /// <summary>Add to back of deque (normal seal path).</summary>
         public void AddLast(ReadyBatch batch)
         {
-            _deque.AddLast(batch);
-            _dequeSet.Add(batch);
+            EnsureCapacity();
+            _items[(_head + _count) % _items.Length] = batch;
+            _count++;
         }
 
         /// <summary>Add to front of deque (retry/reenqueue — Java's addFirst).</summary>
         public void AddFirst(ReadyBatch batch)
         {
-            _deque.AddFirst(batch);
-            _dequeSet.Add(batch);
+            EnsureCapacity();
+            _head = (_head - 1 + _items.Length) % _items.Length;
+            _items[_head] = batch;
+            _count++;
         }
 
-        /// <summary>Whether the deque contains the specified batch. O(1) via HashSet.</summary>
-        public bool Contains(ReadyBatch batch) => _dequeSet.Contains(batch);
+        /// <summary>Whether the deque contains the specified batch. O(n) linear scan.
+        /// Only used in diagnostic/orphan-sweep paths, not hot append/drain.</summary>
+        public bool Contains(ReadyBatch batch)
+        {
+            for (var i = 0; i < _count; i++)
+            {
+                if (ReferenceEquals(_items[(_head + i) % _items.Length], batch))
+                    return true;
+            }
+            return false;
+        }
 
         /// <summary>
         /// Insert a batch in ascending sequence order for idempotent reenqueue.
-        /// Walks to the first node that is unsequenced (&lt; 0) or &gt;= batch's sequence,
+        /// Walks to the first position that is unsequenced (&lt; 0) or &gt;= batch's sequence,
         /// then inserts before it to maintain ascending sequence order.
         /// </summary>
         public void InsertInSequenceOrder(ReadyBatch batch)
         {
             if (batch.RecordBatch.BaseSequence < 0)
             {
-                _deque.AddFirst(batch);
-                _dequeSet.Add(batch);
+                AddFirst(batch);
                 return;
             }
 
-            var node = _deque.First;
-            while (node is not null
-                && node.Value.RecordBatch.BaseSequence >= 0
-                && node.Value.RecordBatch.BaseSequence < batch.RecordBatch.BaseSequence)
+            // Find insertion position
+            var insertAt = _count;
+            for (var i = 0; i < _count; i++)
             {
-                node = node.Next;
+                var existing = _items[(_head + i) % _items.Length]!;
+                if (existing.RecordBatch.BaseSequence < 0 ||
+                    existing.RecordBatch.BaseSequence >= batch.RecordBatch.BaseSequence)
+                {
+                    insertAt = i;
+                    break;
+                }
             }
 
-            if (node is null) _deque.AddLast(batch);
-            else _deque.AddBefore(node, batch);
-            _dequeSet.Add(batch);
+            if (insertAt == _count)
+            {
+                AddLast(batch);
+                return;
+            }
+
+            // Shift elements right to make room at insertAt.
+            // O(n) shift is acceptable — this path is only taken on idempotent retry reenqueue,
+            // and typical deque depth is 1-3 batches.
+            EnsureCapacity();
+            for (var i = _count; i > insertAt; i--)
+            {
+                _items[(_head + i) % _items.Length] = _items[(_head + i - 1) % _items.Length];
+            }
+            _items[(_head + insertAt) % _items.Length] = batch;
+            _count++;
+        }
+
+        private void EnsureCapacity()
+        {
+            if (_count < _items.Length) return;
+            var newItems = new ReadyBatch?[_items.Length * 2];
+            for (var i = 0; i < _count; i++)
+            {
+                newItems[i] = _items[(_head + i) % _items.Length];
+            }
+            _items = newItems;
+            _head = 0;
+        }
+
+        private void Shrink()
+        {
+            var newCapacity = Math.Max(MinCapacity, _items.Length / 2);
+            if (newCapacity >= _items.Length) return;
+            var newItems = new ReadyBatch?[newCapacity];
+            for (var i = 0; i < _count; i++)
+            {
+                newItems[i] = _items[(_head + i) % _items.Length];
+            }
+            _items = newItems;
+            _head = 0;
         }
     }
 
@@ -1597,7 +1660,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     completionSource, callback, recordSize))
                     return true;
 
-                // Current batch is full — seal it (compress + enqueue after lock release)
+                // Current batch is full — seal it (compress + enqueue under lock)
                 sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
             }
 
@@ -1678,7 +1741,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     completionSource, null, recordSize))
                     return true;
 
-                // Current batch is full — seal it (compress + enqueue after lock release)
+                // Current batch is full — seal it (compress + enqueue under lock)
                 sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
             }
 
@@ -1783,7 +1846,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     headers, headerCount, callback, recordSize))
                     return true;
 
-                // Current batch is full — seal it (compress + enqueue after lock release)
+                // Current batch is full — seal it (compress + enqueue under lock)
                 sealedBatch = SealCurrentBatchUnderLock(pd, currentBatch);
             }
 
@@ -2324,30 +2387,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     if (sealAll || pd.CurrentBatch.ShouldFlush(now, _options.LingerMs))
                     {
                         ProducerDebugCounters.RecordBatchFlushedFromDictionary();
-                        var readyBatch = pd.CurrentBatch.Complete();
-                        if (readyBatch is not null)
-                        {
-                            if (readyBatch.CompletionSourcesCount > 0)
-                                Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
-                            ProducerDebugCounters.RecordBatchCompleted(readyBatch.CompletionSourcesCount);
-
-                            // Pre-compress under the lock to preserve per-partition ordering.
-                            if (_options.CompressionType != CompressionType.None)
-                            {
-                                readyBatch.RecordBatch.PreCompress(_options.CompressionType, _compressionCodecs);
-                            }
-
-                            OnBatchEntersPipeline(readyBatch);
-                            pd.AddLast(readyBatch);
-                            ProducerDebugCounters.RecordBatchQueuedToReady();
-
-                            // Notify Ready() that this partition has a sendable batch.
-                            _readyPartitions.Enqueue(readyBatch.TopicPartition);
-                            sealedBatch = readyBatch;
-                        }
-                        _batchPool.Return(pd.CurrentBatch);
-                        pd.CurrentBatch = null;
-                        Interlocked.Decrement(ref _unsealedBatchCount);
+                        // Seal under lock (includes compression + enqueue)
+                        sealedBatch = SealCurrentBatchUnderLock(pd, pd.CurrentBatch);
                     }
                     else
                     {
