@@ -53,7 +53,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int? _deliveryTimeoutMs;
     private int? _requestTimeoutMs;
     private IRetryPolicy? _retryPolicy;
-    private bool _enableAdaptiveConnections;
+    private bool _enableAdaptiveConnections = true;
     private int _maxConnectionsPerBroker = 10;
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
@@ -182,17 +182,17 @@ public sealed class ProducerBuilder<TKey, TValue>
     }
 
     /// <summary>
-    /// Enables adaptive connection scaling based on buffer pressure.
+    /// Configures the maximum connections for adaptive connection scaling.
+    /// Adaptive scaling is enabled by default for non-idempotent producers — this method
+    /// only needs to be called to change the maximum from the default of 10.
+    /// <para>
     /// When sustained backpressure is detected, the producer will automatically add connections
     /// per broker (up to <paramref name="maxConnections"/>) to increase drain throughput.
-    /// <para>
-    /// Only effective for non-idempotent producers. Idempotent producers require fixed connection
-    /// counts for sequence number ordering and will ignore this setting.
+    /// Idempotent producers ignore this setting (partition affinity requires fixed connection count).
     /// </para>
     /// <para>
-    /// Note: connections are only scaled up, never down. Connections added during a traffic spike
-    /// persist for the lifetime of the producer. This avoids the complexity of draining in-flight
-    /// requests on connections being removed.
+    /// Connections are only scaled up, never down. Connections added during a traffic spike
+    /// persist for the lifetime of the producer.
     /// </para>
     /// </summary>
     /// <param name="maxConnections">Maximum connections per broker. Default: 10.</param>
@@ -201,6 +201,16 @@ public sealed class ProducerBuilder<TKey, TValue>
         ArgumentOutOfRangeException.ThrowIfLessThan(maxConnections, 1);
         _enableAdaptiveConnections = true;
         _maxConnectionsPerBroker = maxConnections;
+        return this;
+    }
+
+    /// <summary>
+    /// Disables adaptive connection scaling. The producer will use a fixed number of connections
+    /// per broker as configured by <see cref="WithConnectionsPerBroker"/>.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithoutAdaptiveConnections()
+    {
+        _enableAdaptiveConnections = false;
         return this;
     }
 

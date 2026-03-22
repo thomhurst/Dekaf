@@ -332,9 +332,9 @@ public sealed class ProducerOptions
     /// Idempotent producers require partition affinity on a fixed connection count for
     /// sequence number ordering, so adaptive scaling is automatically disabled.
     /// </para>
-    /// Default: false.
+    /// Default: true.
     /// </summary>
-    public bool EnableAdaptiveConnections { get; init; }
+    public bool EnableAdaptiveConnections { get; init; } = true;
 
     /// <summary>
     /// Maximum connections per broker when adaptive scaling is enabled.
