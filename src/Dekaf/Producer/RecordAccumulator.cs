@@ -388,7 +388,7 @@ internal sealed class BatchArena
     /// than retaining the pool headroom, and most applications use a single producer config.
     /// Worst-case amplification: if a transient small-batch producer (e.g., 256KB batches)
     /// ratchets the cap to 2048, then a 1MB-batch producer can retain up to
-    /// 2048 × ~1.1MB ≈ 2.2GB of POH memory instead of the normal 512 × ~1.1MB ≈ 560MB.
+    /// 2048 × ~1.1MB ≈ 2.2GB of POH memory instead of the normal 1024 × ~1.1MB ≈ ~1.1GB.
     /// </summary>
     internal static void RatchetPoolSize(int newSize)
     {
