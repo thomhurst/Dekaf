@@ -64,14 +64,13 @@ public class ShouldFlushTests
         CompletionSourceCountField.SetValue(batch, count);
     }
 
-    private static void SetCreatedAtMillisecondsAgo(object batch, double millisecondsAgo)
+    private static long SetCreatedAtMillisecondsAgo(object batch, double millisecondsAgo)
     {
         var now = Stopwatch.GetTimestamp();
         var ticksAgo = (long)(millisecondsAgo * Stopwatch.Frequency / 1000.0);
         CreatedStopwatchTimestampField.SetValue(batch, now - ticksAgo);
+        return now;
     }
-
-    private static long GetNowTimestamp() => Stopwatch.GetTimestamp();
 
     // --- LingerMs == 0: backwards compatibility (immediate flush) ---
 
@@ -82,9 +81,9 @@ public class ShouldFlushTests
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 1);
-        SetCreatedAtMillisecondsAgo(batch, 0); // Age = 0ms
+        var now = SetCreatedAtMillisecondsAgo(batch, 0); // Age = 0ms
 
-        var result = InvokeShouldFlush(batch, GetNowTimestamp(), lingerMs: 0);
+        var result = InvokeShouldFlush(batch, now, lingerMs: 0);
         await Assert.That(result).IsTrue();
     }
 
@@ -95,9 +94,9 @@ public class ShouldFlushTests
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 0);
-        SetCreatedAtMillisecondsAgo(batch, 0); // Age = 0ms
+        var now = SetCreatedAtMillisecondsAgo(batch, 0); // Age = 0ms
 
-        var result = InvokeShouldFlush(batch, GetNowTimestamp(), lingerMs: 0);
+        var result = InvokeShouldFlush(batch, now, lingerMs: 0);
         await Assert.That(result).IsTrue();
     }
 
@@ -110,9 +109,9 @@ public class ShouldFlushTests
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 1);
-        SetCreatedAtMillisecondsAgo(batch, 0); // Age = 0ms, micro-linger = 0.5ms
+        var now = SetCreatedAtMillisecondsAgo(batch, 0); // Age = 0ms, micro-linger = 0.5ms
 
-        var result = InvokeShouldFlush(batch, GetNowTimestamp(), lingerMs: 5);
+        var result = InvokeShouldFlush(batch, now, lingerMs: 5);
         await Assert.That(result).IsFalse();
     }
 
@@ -123,9 +122,9 @@ public class ShouldFlushTests
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 1);
-        SetCreatedAtMillisecondsAgo(batch, 0.5); // Age = 0.5ms = micro-linger threshold
+        var now = SetCreatedAtMillisecondsAgo(batch, 0.5); // Age = 0.5ms = micro-linger threshold
 
-        var result = InvokeShouldFlush(batch, GetNowTimestamp(), lingerMs: 5);
+        var result = InvokeShouldFlush(batch, now, lingerMs: 5);
         await Assert.That(result).IsTrue();
     }
 
@@ -136,9 +135,9 @@ public class ShouldFlushTests
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 1);
-        SetCreatedAtMillisecondsAgo(batch, 1.0); // Age = 1ms, well past 0.5ms micro-linger
+        var now = SetCreatedAtMillisecondsAgo(batch, 1.0); // Age = 1ms, well past 0.5ms micro-linger
 
-        var result = InvokeShouldFlush(batch, GetNowTimestamp(), lingerMs: 5);
+        var result = InvokeShouldFlush(batch, now, lingerMs: 5);
         await Assert.That(result).IsTrue();
     }
 
@@ -151,9 +150,9 @@ public class ShouldFlushTests
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 1);
-        SetCreatedAtMillisecondsAgo(batch, 0.9); // Age = 0.9ms, micro-linger = 1ms
+        var now = SetCreatedAtMillisecondsAgo(batch, 0.9); // Age = 0.9ms, micro-linger = 1ms
 
-        var result = InvokeShouldFlush(batch, GetNowTimestamp(), lingerMs: 20);
+        var result = InvokeShouldFlush(batch, now, lingerMs: 20);
         await Assert.That(result).IsFalse();
     }
 
@@ -164,9 +163,9 @@ public class ShouldFlushTests
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 1);
-        SetCreatedAtMillisecondsAgo(batch, 1.0); // Age = 1ms = capped micro-linger
+        var now = SetCreatedAtMillisecondsAgo(batch, 1.0); // Age = 1ms = capped micro-linger
 
-        var result = InvokeShouldFlush(batch, GetNowTimestamp(), lingerMs: 20);
+        var result = InvokeShouldFlush(batch, now, lingerMs: 20);
         await Assert.That(result).IsTrue();
     }
 
@@ -179,9 +178,9 @@ public class ShouldFlushTests
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 0);
-        SetCreatedAtMillisecondsAgo(batch, 4.0); // Age = 4ms < 5ms linger
+        var now = SetCreatedAtMillisecondsAgo(batch, 4.0); // Age = 4ms < 5ms linger
 
-        var result = InvokeShouldFlush(batch, GetNowTimestamp(), lingerMs: 5);
+        var result = InvokeShouldFlush(batch, now, lingerMs: 5);
         await Assert.That(result).IsFalse();
     }
 
@@ -192,9 +191,9 @@ public class ShouldFlushTests
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 0);
-        SetCreatedAtMillisecondsAgo(batch, 5.0); // Age = 5ms = full linger
+        var now = SetCreatedAtMillisecondsAgo(batch, 5.0); // Age = 5ms = full linger
 
-        var result = InvokeShouldFlush(batch, GetNowTimestamp(), lingerMs: 5);
+        var result = InvokeShouldFlush(batch, now, lingerMs: 5);
         await Assert.That(result).IsTrue();
     }
 
@@ -207,9 +206,9 @@ public class ShouldFlushTests
 
         SetRecordCount(batch, 0);
         SetCompletionSourceCount(batch, 1);
-        SetCreatedAtMillisecondsAgo(batch, 100.0); // Very old, but empty
+        var now = SetCreatedAtMillisecondsAgo(batch, 100.0); // Very old, but empty
 
-        var result = InvokeShouldFlush(batch, GetNowTimestamp(), lingerMs: 5);
+        var result = InvokeShouldFlush(batch, now, lingerMs: 5);
         await Assert.That(result).IsFalse();
     }
 
@@ -222,9 +221,9 @@ public class ShouldFlushTests
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 1);
-        SetCreatedAtMillisecondsAgo(batch, 0.9); // micro-linger = min(1ms, 100/10) = 1ms
+        var now = SetCreatedAtMillisecondsAgo(batch, 0.9); // micro-linger = min(1ms, 100/10) = 1ms
 
-        var result = InvokeShouldFlush(batch, GetNowTimestamp(), lingerMs: 100);
+        var result = InvokeShouldFlush(batch, now, lingerMs: 100);
         await Assert.That(result).IsFalse();
     }
 
@@ -235,9 +234,9 @@ public class ShouldFlushTests
 
         SetRecordCount(batch, 1);
         SetCompletionSourceCount(batch, 1);
-        SetCreatedAtMillisecondsAgo(batch, 1.0); // Age = 1ms = capped micro-linger
+        var now = SetCreatedAtMillisecondsAgo(batch, 1.0); // Age = 1ms = capped micro-linger
 
-        var result = InvokeShouldFlush(batch, GetNowTimestamp(), lingerMs: 100);
+        var result = InvokeShouldFlush(batch, now, lingerMs: 100);
         await Assert.That(result).IsTrue();
     }
 }
