@@ -1,0 +1,362 @@
+using System.Buffers;
+using Dekaf.Producer;
+
+namespace Dekaf.Tests.Unit.Producer;
+
+/// <summary>
+/// Tests for adaptive connection scaling features:
+/// FIFO waiter queue behavior, buffer pressure tracking, and builder validation.
+/// </summary>
+public class AdaptiveScalingTests
+{
+    #region Helpers
+
+    private static RecordAccumulator CreateAccumulator(ulong bufferMemory, int maxBlockMs = 10_000)
+    {
+        return new RecordAccumulator(new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            ClientId = "test-producer",
+            BufferMemory = bufferMemory,
+            BatchSize = 16384,
+            LingerMs = 100,
+            MaxBlockMs = maxBlockMs
+        });
+    }
+
+    private static void AppendOneRecord(RecordAccumulator accumulator)
+    {
+        var pooledKey = new PooledMemory(null, 0, isNull: true);
+        var valueBytes = ArrayPool<byte>.Shared.Rent(200);
+        var pooledValue = new PooledMemory(valueBytes, 200);
+
+        accumulator.Append(
+            "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            pooledKey, pooledValue, null, 0, null, null);
+    }
+
+    /// <summary>
+    /// Measures the actual BufferedBytes consumed by a single record append.
+    /// Avoids hardcoding record overhead assumptions.
+    /// </summary>
+    private static async Task<int> MeasureRecordSizeAsync()
+    {
+        var accumulator = CreateAccumulator(bufferMemory: 10_000_000);
+        AppendOneRecord(accumulator);
+        var size = (int)accumulator.BufferedBytes;
+
+        accumulator.ClearCurrentBatch("test-topic", 0);
+        accumulator.ReleaseMemory(size);
+
+        await accumulator.DisposeAsync();
+        return size;
+    }
+
+    private static int CountWoken(int[] wokeUp)
+    {
+        var count = 0;
+        for (var i = 0; i < wokeUp.Length; i++)
+            if (Volatile.Read(ref wokeUp[i]) == 1) count++;
+        return count;
+    }
+
+    /// <summary>
+    /// Waits until BufferPressureEvents reaches the expected count, indicating all
+    /// threads have entered the slow path. Deterministic alternative to Task.Delay.
+    /// </summary>
+    private static async Task WaitForPressureAsync(RecordAccumulator accumulator, long expectedPressure, CancellationToken ct)
+    {
+        var deadline = Environment.TickCount64 + 10_000;
+        while (accumulator.BufferPressureEvents < expectedPressure && Environment.TickCount64 < deadline)
+            await Task.Delay(10, ct);
+    }
+
+    #endregion
+
+    #region FIFO Waiter Queue Tests
+
+    [Test]
+    [Timeout(90_000)]
+    public async Task ReserveMemorySync_WakesExactlyOneWaiterPerRelease(CancellationToken cancellationToken)
+    {
+        var recordSize = await MeasureRecordSizeAsync();
+        var accumulator = CreateAccumulator(bufferMemory: (ulong)recordSize, maxBlockMs: 15_000);
+
+        try
+        {
+            AppendOneRecord(accumulator);
+
+            const int waiterCount = 3;
+            var wokeUp = new int[waiterCount];
+            var pressureBefore = accumulator.BufferPressureEvents;
+            var tasks = new Task[waiterCount];
+
+            for (int i = 0; i < waiterCount; i++)
+            {
+                var index = i;
+                tasks[i] = Task.Run(() =>
+                {
+                    accumulator.ReserveMemorySync(recordSize);
+                    Interlocked.Exchange(ref wokeUp[index], 1);
+                }, cancellationToken);
+            }
+
+            // Wait until all threads have entered the slow path (incremented pressure)
+            await WaitForPressureAsync(accumulator, pressureBefore + waiterCount, cancellationToken);
+
+            // Release memory for one record — should wake exactly one waiter
+            accumulator.ClearCurrentBatch("test-topic", 0);
+            accumulator.ReleaseMemory(recordSize);
+
+            // Wait for exactly one task to complete
+            var deadline = Environment.TickCount64 + 5_000;
+            while (CountWoken(wokeUp) < 1 && Environment.TickCount64 < deadline)
+                await Task.Delay(10, cancellationToken);
+
+            await Assert.That(CountWoken(wokeUp)).IsEqualTo(1);
+
+            // Release again — wake the next waiter
+            accumulator.ClearCurrentBatch("test-topic", 0);
+            accumulator.ReleaseMemory(recordSize);
+
+            deadline = Environment.TickCount64 + 5_000;
+            while (CountWoken(wokeUp) < 2 && Environment.TickCount64 < deadline)
+                await Task.Delay(10, cancellationToken);
+
+            await Assert.That(CountWoken(wokeUp)).IsEqualTo(2);
+
+            // Release once more for the last waiter
+            accumulator.ClearCurrentBatch("test-topic", 0);
+            accumulator.ReleaseMemory(recordSize);
+
+            await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            await Assert.That(CountWoken(wokeUp)).IsEqualTo(3);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(90_000)]
+    public async Task WakeAllSyncWaiters_ViaDispose_UnblocksAllThreads(CancellationToken cancellationToken)
+    {
+        var recordSize = await MeasureRecordSizeAsync();
+        var accumulator = CreateAccumulator(bufferMemory: (ulong)recordSize, maxBlockMs: 30_000);
+
+        AppendOneRecord(accumulator);
+
+        const int waiterCount = 3;
+        var pressureBefore = accumulator.BufferPressureEvents;
+        var exceptions = new Exception?[waiterCount];
+        var tasks = new Task[waiterCount];
+
+        for (int i = 0; i < waiterCount; i++)
+        {
+            var index = i;
+            tasks[i] = Task.Run(() =>
+            {
+                try
+                {
+                    accumulator.ReserveMemorySync(recordSize);
+                }
+                catch (Exception ex)
+                {
+                    exceptions[index] = ex;
+                }
+            }, cancellationToken);
+        }
+
+        // Wait until all threads have entered the slow path (incremented pressure counter).
+        // BufferPressureEvents is incremented before Enqueue+Wait, so there is a small window
+        // between "entered slow path" and "blocking in Event.Wait()". Thread.Sleep bridges this
+        // gap — an internal seam (e.g., callback after Enqueue) would eliminate it but would
+        // modify library code solely for test observability.
+        await WaitForPressureAsync(accumulator, pressureBefore + waiterCount, cancellationToken);
+        Thread.Sleep(50);
+
+        // Dispose triggers WakeAllSyncWaiters
+        await accumulator.DisposeAsync();
+
+        await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+
+        // All threads should have been unblocked — each gets an exception (ObjectDisposedException
+        // or similar) because ReserveMemorySync cannot succeed on a disposed accumulator.
+        // All threads should have been unblocked with some exception
+        for (var i = 0; i < waiterCount; i++)
+            await Assert.That(exceptions[i]).IsNotNull();
+    }
+
+    [Test]
+    [Timeout(90_000)]
+    public async Task CancelledWaiterNode_IsSkippedByWakeNextSyncWaiter(CancellationToken cancellationToken)
+    {
+        var recordSize = await MeasureRecordSizeAsync();
+        // Use 5s maxBlockMs so even slow CI runners complete the timeout
+        var accumulator = CreateAccumulator(bufferMemory: (ulong)recordSize, maxBlockMs: 5_000);
+
+        try
+        {
+            AppendOneRecord(accumulator);
+
+            // Waiter 1: will time out (maxBlockMs), leaving a cancelled node in the queue
+            var timedOutTask = Task.Run(() =>
+            {
+                try { accumulator.ReserveMemorySync(recordSize); }
+                catch { /* Expected: KafkaTimeoutException */ }
+            }, cancellationToken);
+
+            await timedOutTask.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+
+            // Start waiter 2 — uses same FIFO queue
+            var pressureBefore = accumulator.BufferPressureEvents;
+            var waiter2Completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var waiter2Task = Task.Run(() =>
+            {
+                accumulator.WaitForBufferSpace();
+                waiter2Completed.SetResult();
+            }, cancellationToken);
+
+            // Wait until waiter 2 has entered slow path
+            await WaitForPressureAsync(accumulator, pressureBefore + 1, cancellationToken);
+
+            // Release — WakeNextSyncWaiter should skip cancelled node, wake waiter 2
+            accumulator.ClearCurrentBatch("test-topic", 0);
+            accumulator.ReleaseMemory(recordSize);
+
+            await waiter2Completed.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            await waiter2Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    #endregion
+
+    #region Pressure Tracking Tests
+
+    [Test]
+    [Timeout(90_000)]
+    public async Task BufferPressureEvents_Increments_WhenReserveMemorySyncEntersSlowPath(CancellationToken cancellationToken)
+    {
+        var recordSize = await MeasureRecordSizeAsync();
+        var accumulator = CreateAccumulator(bufferMemory: (ulong)recordSize, maxBlockMs: 10_000);
+
+        try
+        {
+            // Fill the buffer
+            AppendOneRecord(accumulator);
+            await Assert.That((ulong)accumulator.BufferedBytes).IsGreaterThanOrEqualTo(accumulator.MaxBufferMemory);
+
+            var pressureBefore = accumulator.BufferPressureEvents;
+
+            // Start a thread that will block in ReserveMemorySync (slow path)
+            var reserveTask = Task.Run(() =>
+            {
+                accumulator.ReserveMemorySync(recordSize);
+            }, cancellationToken);
+
+            // Wait until the thread has entered the slow path (incremented pressure)
+            await WaitForPressureAsync(accumulator, pressureBefore + 1, cancellationToken);
+
+            await Assert.That(accumulator.BufferPressureEvents).IsGreaterThan(pressureBefore);
+
+            // Release to unblock the thread
+            accumulator.ClearCurrentBatch("test-topic", 0);
+            accumulator.ReleaseMemory(recordSize);
+            await reserveTask.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    [Timeout(90_000)]
+    public async Task BufferPressureEvents_Increments_WhenWaitForBufferSpaceEntersSlowPath(CancellationToken cancellationToken)
+    {
+        var recordSize = await MeasureRecordSizeAsync();
+        var accumulator = CreateAccumulator(bufferMemory: (ulong)recordSize, maxBlockMs: 10_000);
+
+        try
+        {
+            // Fill the buffer
+            AppendOneRecord(accumulator);
+            await Assert.That((ulong)accumulator.BufferedBytes).IsGreaterThanOrEqualTo(accumulator.MaxBufferMemory);
+
+            var pressureBefore = accumulator.BufferPressureEvents;
+
+            // Start a thread that will block in WaitForBufferSpace (slow path)
+            var waitTask = Task.Run(() =>
+            {
+                accumulator.WaitForBufferSpace();
+            }, cancellationToken);
+
+            // Wait until the thread has entered the slow path (incremented pressure)
+            await WaitForPressureAsync(accumulator, pressureBefore + 1, cancellationToken);
+
+            await Assert.That(accumulator.BufferPressureEvents).IsGreaterThan(pressureBefore);
+
+            // Release to unblock the thread
+            accumulator.ClearCurrentBatch("test-topic", 0);
+            accumulator.ReleaseMemory(recordSize);
+            await waitTask.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task BufferUtilization_ReturnsCorrectRatio()
+    {
+        var recordSize = await MeasureRecordSizeAsync();
+        // Buffer that can hold exactly 2 records
+        var accumulator = CreateAccumulator(bufferMemory: (ulong)(recordSize * 2));
+
+        try
+        {
+            // Empty buffer: utilization should be 0
+            await Assert.That(accumulator.BufferUtilization).IsEqualTo(0.0);
+
+            // Append one record: utilization should be ~0.5
+            AppendOneRecord(accumulator);
+            var utilization = accumulator.BufferUtilization;
+            await Assert.That(utilization).IsGreaterThan(0.0);
+            await Assert.That(utilization).IsLessThanOrEqualTo(1.0);
+
+            // The utilization should be approximately 0.5 (one record in a 2-record buffer)
+            await Assert.That(utilization).IsGreaterThanOrEqualTo(0.4);
+            await Assert.That(utilization).IsLessThanOrEqualTo(0.6);
+        }
+        finally
+        {
+            await accumulator.DisposeAsync();
+        }
+    }
+
+    #endregion
+
+    #region Builder Validation Tests
+
+    [Test]
+    public async Task WithAdaptiveConnections_MaxLessThanConnectionsPerBroker_ThrowsOnBuild()
+    {
+        await Assert.That(() =>
+        {
+            Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers("localhost:9092")
+                .WithConnectionsPerBroker(5)
+                .WithAdaptiveConnections(maxConnections: 3)
+                .Build();
+        }).Throws<InvalidOperationException>();
+    }
+
+    #endregion
+}

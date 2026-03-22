@@ -53,6 +53,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int? _deliveryTimeoutMs;
     private int? _requestTimeoutMs;
     private IRetryPolicy? _retryPolicy;
+    private bool _enableAdaptiveConnections = true;
+    private int _maxConnectionsPerBroker = 10;
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -176,6 +178,39 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
         _connectionsPerBroker = connectionsPerBroker;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures the maximum connections for adaptive connection scaling.
+    /// Adaptive scaling is enabled by default for non-idempotent producers — this method
+    /// only needs to be called to change the maximum from the default of 10.
+    /// <para>
+    /// When sustained backpressure is detected, the producer will automatically add connections
+    /// per broker (up to <paramref name="maxConnections"/>) to increase drain throughput.
+    /// Idempotent producers ignore this setting (partition affinity requires fixed connection count).
+    /// </para>
+    /// <para>
+    /// Connections are only scaled up, never down. Connections added during a traffic spike
+    /// persist for the lifetime of the producer.
+    /// </para>
+    /// </summary>
+    /// <param name="maxConnections">Maximum connections per broker. Default: 10.</param>
+    public ProducerBuilder<TKey, TValue> WithAdaptiveConnections(int maxConnections = 10)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConnections, 1);
+        _enableAdaptiveConnections = true;
+        _maxConnectionsPerBroker = maxConnections;
+        return this;
+    }
+
+    /// <summary>
+    /// Disables adaptive connection scaling. The producer will use a fixed number of connections
+    /// per broker as configured by <see cref="WithConnectionsPerBroker"/>.
+    /// </summary>
+    public ProducerBuilder<TKey, TValue> WithoutAdaptiveConnections()
+    {
+        _enableAdaptiveConnections = false;
         return this;
     }
 
@@ -615,6 +650,11 @@ public sealed class ProducerBuilder<TKey, TValue>
         if (_enableIdempotence && _acks == Acks.None)
             throw new InvalidOperationException("Acks.None is incompatible with idempotence because the broker cannot acknowledge sequence numbers without sending a response.");
 
+        if (_enableAdaptiveConnections && _maxConnectionsPerBroker < _connectionsPerBroker)
+            throw new InvalidOperationException(
+                $"MaxConnectionsPerBroker ({_maxConnectionsPerBroker}) must be >= ConnectionsPerBroker ({_connectionsPerBroker}). " +
+                $"Adaptive scaling would be permanently disabled since the initial connection count already exceeds the maximum.");
+
         // Java Kafka client enforces acks=all when enable.idempotence=true.
         // With acks=leader, the leader acknowledges before ISR replication completes,
         // which can cause OutOfOrderSequenceNumber on leader failover and makes the
@@ -663,7 +703,9 @@ public sealed class ProducerBuilder<TKey, TValue>
             SocketSendBufferBytes = _socketSendBufferBytes,
             SocketReceiveBufferBytes = _socketReceiveBufferBytes,
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
-            RetryPolicy = _retryPolicy
+            RetryPolicy = _retryPolicy,
+            EnableAdaptiveConnections = _enableAdaptiveConnections,
+            MaxConnectionsPerBroker = _maxConnectionsPerBroker
         };
 
         var metadataOptions = _metadataMaxAge.HasValue

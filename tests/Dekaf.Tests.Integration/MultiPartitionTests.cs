@@ -397,6 +397,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 10);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
+        // Let broker stabilize partition leaders before producing.
+        // On slow CI runners, leader election for 10 partitions can take several seconds.
+        await Task.Delay(3000);
+
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
@@ -416,6 +420,8 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             });
         }
 
+        await producer.FlushAsync();
+
         // Act
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -432,13 +438,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            // Wait for at least 10 non-warmup messages. ProduceWithRetryAsync may
-            // produce duplicate warmup messages on retry, so we can't use a fixed count.
+            // Break once we have enough non-warmup messages. Don't wait for full
+            // partition coverage — if a partition is missing, the assertion below
+            // will catch it with a clear error instead of hanging for 60s.
             var dataCount = messages.Count(m => m.Key != "warmup");
             if (dataCount >= 10) break;
         }
 
-        // Assert - should get all 10 messages from all partitions (filter out warmup)
+        // Assert - should get messages from all 10 partitions (filter out warmup)
         var actual = messages.Where(m => m.Key != "warmup").ToList();
         await Assert.That(actual).Count().IsGreaterThanOrEqualTo(10);
         var partitions = actual.Select(m => m.Partition).Distinct().OrderBy(p => p).ToList();

@@ -34,6 +34,7 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
     private static int t_nextConnectionIndex;
 
     private readonly SemaphoreSlim _disposeLock = new(1, 1);
+    private readonly SemaphoreSlim _scaleLock = new(1, 1);
     private int _disposed;
 
     public ConnectionPool(
@@ -219,6 +220,80 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
         {
             linkedCts.Dispose();
             timeoutCts.Dispose();
+        }
+    }
+
+    public async ValueTask<int> ScaleConnectionGroupAsync(int brokerId, int newCount, CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(ConnectionPool));
+
+        if (!_brokers.TryGetValue(brokerId, out var brokerInfo))
+            throw new InvalidOperationException($"Unknown broker ID: {brokerId}");
+
+        // Check current group size without locking
+        if (_connectionGroupsById.TryGetValue(brokerId, out var currentGroup) && currentGroup.Length >= newCount)
+            return currentGroup.Length;
+
+        // Serialize scaling operations per pool (not per broker, to keep implementation simple)
+        await _scaleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Re-check after acquiring lock
+            if (_connectionGroupsById.TryGetValue(brokerId, out currentGroup) && currentGroup.Length >= newCount)
+                return currentGroup.Length;
+
+            var existingCount = currentGroup?.Length ?? 0;
+            var additionalCount = newCount - existingCount;
+
+            // Create additional connections in parallel with a single timeout mechanism
+            using var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+
+            var tasks = new Task<IKafkaConnection>[additionalCount];
+
+            for (var i = 0; i < additionalCount; i++)
+            {
+                var index = existingCount + i;
+                tasks[i] = CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, linkedCts.Token).AsTask();
+            }
+
+            try
+            {
+                await Task.WhenAll(tasks).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Close any successfully created connections to avoid leaking TCP handles.
+                // Each DisposeAsync is wrapped individually so one failure doesn't prevent
+                // cleanup of remaining connections.
+                foreach (var task in tasks)
+                {
+                    if (task.IsCompletedSuccessfully)
+                    {
+                        try { await task.Result.DisposeAsync().ConfigureAwait(false); }
+                        catch { /* best-effort cleanup */ }
+                    }
+                }
+                throw;
+            }
+
+            // Build new array: copy existing + write completed tasks directly
+            var newGroup = new IKafkaConnection[newCount];
+            if (currentGroup is not null)
+                Array.Copy(currentGroup, newGroup, existingCount);
+            for (var i = 0; i < additionalCount; i++)
+                newGroup[existingCount + i] = tasks[i].Result;
+
+            // Atomically swap the connection group
+            _connectionGroupsById[brokerId] = newGroup;
+
+            LogScaledConnectionGroup(existingCount, newCount, brokerId);
+            return newCount;
+        }
+        finally
+        {
+            _scaleLock.Release();
         }
     }
 
@@ -521,6 +596,7 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
 
         await CloseAllAsync().ConfigureAwait(false);
         _disposeLock.Dispose();
+        _scaleLock.Dispose();
     }
 
     #region Logging
@@ -563,6 +639,9 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Replacing connection {Index} for broker {BrokerId}")]
     private partial void LogConnectionReplacement(int brokerId, int index);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Scaled connection group from {OldCount} to {NewCount} connections for broker {BrokerId}")]
+    private partial void LogScaledConnectionGroup(int oldCount, int newCount, int brokerId);
 
     #endregion
 

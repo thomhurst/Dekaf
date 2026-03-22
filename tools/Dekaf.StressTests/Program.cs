@@ -79,8 +79,7 @@ public static class Program
         Console.WriteLine($"Client: {options.Client}");
         Console.WriteLine($"Compression: {options.Compression}");
         Console.WriteLine($"Brokers: {options.Brokers}");
-        if (options.ConnectionsPerBroker > 1)
-            Console.WriteLine($"Multi-connection: {options.ConnectionsPerBroker} connections per broker (Dekaf only)");
+        Console.WriteLine("Adaptive connections: enabled (scales up automatically)");
         Console.WriteLine(new string('-', 50));
 
         await using var kafka = await KafkaEnvironment.CreateAsync(options.Brokers).ConfigureAwait(false);
@@ -116,9 +115,7 @@ public static class Program
                 LingerMs = options.LingerMs,
                 BatchSize = options.BatchSize,
                 Compression = options.Compression,
-                BrokerCount = options.Brokers,
-                // Baseline: single connection for fair comparison with Confluent
-                ConnectionsPerBroker = 1
+                BrokerCount = options.Brokers
             };
 
             var result = await scenario.RunAsync(testOptions, CancellationToken.None).ConfigureAwait(false);
@@ -129,43 +126,8 @@ public static class Program
             GC.Collect();
         }
 
-        // Multi-connection pass: run Dekaf-only scenarios with ConnectionsPerBroker > 1
-        // to show the throughput advantage of parallel TCP connections.
-        if (options.ConnectionsPerBroker > 1)
-        {
-            var multiConnScenarios = scenarios
-                .Where(s => s.Client == "Dekaf" && s.Name.StartsWith("producer", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            foreach (var scenario in multiConnScenarios)
-            {
-                Console.WriteLine();
-                Console.WriteLine($"=== Running: {scenario.Client} {scenario.Name} (×{options.ConnectionsPerBroker} connections) ===");
-
-                var testOptions = new StressTestOptions
-                {
-                    BootstrapServers = kafka.BootstrapServers,
-                    Topic = scenario.Name.StartsWith("producer", StringComparison.OrdinalIgnoreCase) ? producerTopic : consumerTopic,
-                    DurationMinutes = options.DurationMinutes,
-                    MessageSizeBytes = options.MessageSizeBytes,
-                    Partitions = options.Partitions,
-                    LingerMs = options.LingerMs,
-                    BatchSize = options.BatchSize,
-                    Compression = options.Compression,
-                    BrokerCount = options.Brokers,
-                    ConnectionsPerBroker = options.ConnectionsPerBroker
-                };
-
-                var result = await scenario.RunAsync(testOptions, CancellationToken.None).ConfigureAwait(false);
-                // Tag the client name so multi-connection results appear in the same
-                // scenario table alongside single-connection baseline and Confluent.
-                result.Client = $"Dekaf ({options.ConnectionsPerBroker}conn)";
-                results.Add(result);
-
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                GC.Collect();
-            }
-        }
+        // Multi-connection pass removed: adaptive connection scaling now handles
+        // scaling up connections automatically based on buffer pressure.
 
         var runCompletedAt = DateTime.UtcNow;
 
@@ -347,11 +309,8 @@ public static class Program
                     }
                     break;
                 case "--connections-per-broker":
-                    options.ConnectionsPerBroker = int.Parse(args[++i]);
-                    if (options.ConnectionsPerBroker < 1)
-                    {
-                        throw new ArgumentException("--connections-per-broker must be at least 1");
-                    }
+                    _ = int.Parse(args[++i]);
+                    Console.Error.WriteLine("WARNING: --connections-per-broker is deprecated. Adaptive connection scaling now handles this automatically.");
                     break;
                 case "--help":
                 case "-h":
@@ -383,7 +342,6 @@ public static class Program
               --batch-size <bytes>    Producer batch size (default: 1048576)
               --compression <type>   Compression type: none, lz4, snappy, zstd (default: none)
               --brokers <count>      Number of Kafka brokers (default: 1, use 3 for multi-broker)
-              --connections-per-broker <n>  TCP connections per broker for multi-conn pass (default: 3, use 1 to skip)
               report --input <path>   Generate report from existing results
 
             Environment Variables:
@@ -423,6 +381,5 @@ public static class Program
         public int BatchSize { get; set; } = 1048576;
         public string Compression { get; set; } = "none";
         public int Brokers { get; set; } = 1;
-        public int ConnectionsPerBroker { get; set; } = 3;
     }
 }
