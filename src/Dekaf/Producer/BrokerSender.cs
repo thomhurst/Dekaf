@@ -593,6 +593,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
+        // Pre-allocated array for parallel multi-connection sends. Each entry holds
+        // a pending SendConnectionBucketAsync ValueTask so connections can flush concurrently
+        // instead of sequentially (overlaps TCP FlushAsync waits across connections).
+        var parallelSends = _connectionCount > 1
+            ? new ValueTask[_connectionCount]
+            : Array.Empty<ValueTask>();
+
         // Per-connection timeout CTS for multi-connection mode, reused with TryReset()
         // to avoid per-send CTS allocation (same pattern as sendTimeoutCts for single-connection).
         var bucketTimeoutCts = _connectionCount > 1
@@ -691,6 +698,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         for (var i = bucketTimeoutCts.Length; i < scaledToCount; i++)
                             newBucketCts[i] = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                         bucketTimeoutCts = newBucketCts;
+
+                        parallelSends = new ValueTask[scaledToCount];
                     }
                 }
 
@@ -922,18 +931,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 if (connectionBuckets[c].HasBatches) remainingBuckets++;
                             }
 
-                            // Send on connections with in-flight capacity first
+                            // Send on connections with in-flight capacity first.
+                            // Fire all eligible connection sends concurrently so TCP
+                            // FlushAsync waits overlap instead of serializing.
+                            var pendingSendCount = 0;
                             for (var c = 0; c < _connectionCount; c++)
                             {
                                 if (!connectionBuckets[c].HasBatches) continue;
                                 if (_pendingResponsesByConnection[c].Count >= _maxInFlight) continue;
 
                                 ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
-                                await SendConnectionBucketAsync(c, connectionBuckets,
-                                    scratches[c], bucketTimeoutCts[c].Token).ConfigureAwait(false);
-                                sentThisIteration = true;
-                                remainingBuckets--;
+                                parallelSends[pendingSendCount++] = SendConnectionBucketAsync(c, connectionBuckets,
+                                    scratches[c], bucketTimeoutCts[c].Token);
                             }
+
+                            var completedSends = await AwaitParallelSendsAsync(parallelSends, pendingSendCount)
+                                .ConfigureAwait(false);
+                            if (completedSends > 0) sentThisIteration = true;
+                            remainingBuckets -= completedSends;
 
                             // Wait for capacity on blocked connections
                             while (remainingBuckets > 0)
@@ -943,19 +958,26 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 // Handle timed-out requests to free zombie entries from stale connections.
                                 HandleTimedOutRequests(carryOver, cancellationToken);
 
-                                // Try sending on connections that now have capacity
+                                // Try sending on connections that now have capacity (parallel)
                                 var sent = false;
+                                pendingSendCount = 0;
                                 for (var c = 0; c < _connectionCount; c++)
                                 {
                                     if (!connectionBuckets[c].HasBatches) continue;
                                     if (_pendingResponsesByConnection[c].Count >= _maxInFlight) continue;
 
                                     ResetBucketTimeout(ref bucketTimeoutCts[c], cancellationToken);
-                                    await SendConnectionBucketAsync(c, connectionBuckets,
-                                        scratches[c], bucketTimeoutCts[c].Token).ConfigureAwait(false);
+                                    parallelSends[pendingSendCount++] = SendConnectionBucketAsync(c, connectionBuckets,
+                                        scratches[c], bucketTimeoutCts[c].Token);
+                                }
+
+                                var waitCompletedSends = await AwaitParallelSendsAsync(parallelSends, pendingSendCount)
+                                    .ConfigureAwait(false);
+                                if (waitCompletedSends > 0)
+                                {
                                     sentThisIteration = true;
-                                    remainingBuckets--;
                                     sent = true;
+                                    remainingBuckets -= waitCompletedSends;
                                 }
 
                                 if (remainingBuckets > 0 && !sent)
@@ -2171,6 +2193,40 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         await SendCoalescedAsync(batchesToSend, countToSend, scratch, connIdx, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Awaits all pending parallel sends, observing every ValueTask even if one faults.
+    /// Returns the number of successfully completed sends.
+    /// </summary>
+    private static async ValueTask<int> AwaitParallelSendsAsync(ValueTask[] sends, int count)
+    {
+        Exception? firstException = null;
+        var completed = 0;
+
+        for (var i = 0; i < count; i++)
+        {
+            try
+            {
+                await sends[i].ConfigureAwait(false);
+                completed++;
+            }
+            catch (Exception ex) when (firstException is null)
+            {
+                firstException = ex;
+            }
+            catch
+            {
+                // Observe but discard subsequent exceptions — first one wins.
+            }
+        }
+
+        if (firstException is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(firstException).Throw();
+        }
+
+        return completed;
     }
 
     /// <summary>
