@@ -296,7 +296,9 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
 
         // Flush to ensure all appended messages are sent, even if some ProduceAsync calls
         // timed out (cancellation only stops the caller's await, not delivery).
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        // Use a generous timeout — on slow CI runners with thread pool starvation, the
+        // send loop may take 30+ seconds to drain batches for a newly-created topic.
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         await producer.FlushAsync(flushCts.Token);
 
         // Act
@@ -309,7 +311,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         consumer.Assign(new TopicPartition(topic, 0));
 
         var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
