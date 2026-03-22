@@ -365,6 +365,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // HandleTimedOutRequests when entries are removed. Single-threaded send loop only.
     private int _totalPendingResponseCount;
 
+    // Tracks distinct partitions this broker has seen, used to skip MicroLinger when all
+    // known partitions are already coalesced (e.g., single-partition topics).
+    // Conservative: a brand-new partition not yet in _knownPartitions may miss one
+    // coalescing opportunity on its first appearance — benign, picked up next iteration.
+    // Single-threaded: only accessed by the send loop.
+    private readonly HashSet<TopicPartition> _knownPartitions = [];
+
     /// <summary>
     /// Zero-allocation async auto-reset signal for response completion notification.
     /// Uses <see cref="ManualResetValueTaskSourceCore{TResult}"/> internally — no per-wait
@@ -698,7 +705,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // reducing per-request overhead. SpinWait adapts across core counts (spins on
                 // multi-core, yields on single-core) and avoids kernel transitions when possible.
                 // The iteration count caps total work (both spins and channel reads).
+                //
+                // Skip when all known partitions are already coalesced — any new batch from the
+                // channel would be for an already-coalesced partition and get carried over, making
+                // the spin pure waste. This is especially important for single-partition topics
+                // where coalescedCount is always 1 and every MicroLinger iteration is wasted.
                 if (coalescedCount > 0 && coalescedCount <= MicroLingerBatchThreshold
+                    && coalescedPartitions.Count < _knownPartitions.Count
                     && carryOver.Count == 0
                     && _totalPendingResponseCount < _totalMaxInFlight)
                 {
@@ -1043,6 +1056,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         HashSet<TopicPartition> coalescedPartitions,
         PartitionCarryOver carryOver)
     {
+        // Track distinct partitions this broker serves for MicroLinger skip optimization.
+        _knownPartitions.Add(batch.TopicPartition);
+
         if (batch.IsRetry)
         {
             // Check delivery deadline before re-sending. Without this, a retrying batch
