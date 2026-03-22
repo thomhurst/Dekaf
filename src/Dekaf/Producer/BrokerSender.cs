@@ -175,7 +175,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         public void Clear()
         {
-            Array.Clear(Batches, 0, Count);
             Count = 0;
         }
 
@@ -318,6 +317,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Non-blocking in-flight request limiter. The send loop uses TotalPendingResponseCount
     // (which it exclusively owns) as the in-flight measure. No cross-thread signaling needed.
     private readonly int _maxInFlight;
+    private readonly int _totalMaxInFlight;
 
     // Per-producer shared API version (read via volatile, written via Interlocked)
     private readonly Func<int> _getProduceApiVersion;
@@ -357,7 +357,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // are fetched from the pool each time (existing behavior, unchanged).
     private readonly IKafkaConnection?[] _pinnedConnections;
     private readonly int _connectionCount;
-    private readonly bool _usePartitionAffinity;
     private readonly bool _useRoundRobinConnections;
 
     private int TotalPendingResponseCount
@@ -370,7 +369,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return total;
         }
     }
-
 
     /// <summary>
     /// Zero-allocation async auto-reset signal for response completion notification.
@@ -447,9 +445,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         // Idempotent producers with multiple connections per broker use partition affinity:
         // each partition is pinned to a specific connection (partition % connectionCount).
-        _usePartitionAffinity = options.EnableIdempotence && options.ConnectionsPerBroker > 1;
-        _connectionCount = _usePartitionAffinity ? options.ConnectionsPerBroker : 1;
+        _connectionCount = options.EnableIdempotence && options.ConnectionsPerBroker > 1
+            ? options.ConnectionsPerBroker : 1;
         _pinnedConnections = new IKafkaConnection?[_connectionCount];
+        _totalMaxInFlight = _connectionCount * _maxInFlight;
 
         _pendingResponsesByConnection = new List<PendingResponse>[_connectionCount];
         for (var i = 0; i < _connectionCount; i++)
@@ -694,7 +693,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // The iteration count caps total work (both spins and channel reads).
                 if (coalescedCount > 0 && coalescedCount <= MicroLingerBatchThreshold
                     && carryOver.Count == 0
-                    && TotalPendingResponseCount < _connectionCount * _maxInFlight)
+                    && TotalPendingResponseCount < _totalMaxInFlight)
                 {
                     var spinWait = new SpinWait();
                     for (var spin = 0; spin < MicroLingerMaxSpins; spin++)
@@ -719,21 +718,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var sentThisIteration = false;
                 if (coalescedCount > 0)
                 {
-                    if (TotalPendingResponseCount >= _connectionCount * _maxInFlight)
-                        LogWaitingForInFlightCapacity(_brokerId, TotalPendingResponseCount, _connectionCount * _maxInFlight);
+                    var pendingCount = TotalPendingResponseCount;
+                    if (pendingCount >= _totalMaxInFlight)
+                        LogWaitingForInFlightCapacity(_brokerId, pendingCount, _totalMaxInFlight);
 
-                    while (TotalPendingResponseCount >= _connectionCount * _maxInFlight)
+                    while (pendingCount >= _totalMaxInFlight)
                     {
                         // Poll for completed responses to free in-flight slots.
                         ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
+                        pendingCount = TotalPendingResponseCount;
 
-                        if (TotalPendingResponseCount >= _connectionCount * _maxInFlight)
+                        if (pendingCount >= _totalMaxInFlight)
                         {
                             // Handle timed-out requests (Java pattern) to free zombie entries.
                             // Without this, the send loop blocks forever when a response task
                             // never completes.
                             HandleTimedOutRequests(carryOver, cancellationToken);
-                            if (TotalPendingResponseCount < _connectionCount * _maxInFlight)
+                            pendingCount = TotalPendingResponseCount;
+                            if (pendingCount < _totalMaxInFlight)
                                 break;
 
                             // Wait for any pending response to complete.
@@ -742,6 +744,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // return, creating a spin loop that starves the thread pool and
                             // prevents I/O completion callbacks from running.
                             await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
+                            pendingCount = TotalPendingResponseCount;
                         }
                     }
 
@@ -2089,19 +2092,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (_useRoundRobinConnections)
             return await GetRoundRobinConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-        var connIdx = _usePartitionAffinity ? partitionId % _connectionCount : 0;
+        var connIdx = _connectionCount > 1 ? partitionId % _connectionCount : 0;
 
         var conn = _pinnedConnections[connIdx];
         if (conn is not null && conn.IsConnected)
             return conn;
 
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(_options.RequestTimeoutMs));
-
-        var connection = _usePartitionAffinity
-            ? await _connectionPool.GetConnectionByIndexAsync(_brokerId, connIdx, timeoutCts.Token)
+        var connection = _connectionCount > 1
+            ? await _connectionPool.GetConnectionByIndexAsync(_brokerId, connIdx, cancellationToken)
                 .ConfigureAwait(false)
-            : await _connectionPool.GetConnectionAsync(_brokerId, timeoutCts.Token)
+            : await _connectionPool.GetConnectionAsync(_brokerId, cancellationToken)
                 .ConfigureAwait(false);
 
         _pinnedConnections[connIdx] = connection;
@@ -2113,10 +2113,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private async ValueTask<IKafkaConnection> GetRoundRobinConnectionAsync(CancellationToken cancellationToken)
     {
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(_options.RequestTimeoutMs));
-
-        return await _connectionPool.GetConnectionAsync(_brokerId, timeoutCts.Token)
+        return await _connectionPool.GetConnectionAsync(_brokerId, cancellationToken)
             .ConfigureAwait(false);
     }
 
