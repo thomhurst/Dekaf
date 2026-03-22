@@ -736,7 +736,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Optimization: Track the oldest batch creation time to skip unnecessary enumeration.
     // With LingerMs=5ms and 1ms timer, we'd enumerate 5x per batch without this optimization.
     // By tracking the oldest batch, we can skip enumeration when no batch is old enough to flush.
-    // Uses ticks (100ns units) for precision. long.MaxValue means no batches exist.
+    // Uses Stopwatch ticks for high-resolution timing. long.MaxValue means no batches exist.
     private long _oldestBatchCreatedTicks = long.MaxValue;
 
     // Track whether there are pending awaited produces (ProduceAsync with completion sources).
@@ -2296,8 +2296,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var oldestTicks = Volatile.Read(ref _oldestBatchCreatedTicks);
             if (oldestTicks != long.MaxValue)
             {
-                var nowTicks = DateTimeOffset.UtcNow.Ticks;
-                var millisSinceOldest = (nowTicks - oldestTicks) / TimeSpan.TicksPerMillisecond;
+                var millisSinceOldest = (long)Stopwatch.GetElapsedTime(oldestTicks).TotalMilliseconds;
                 if (millisSinceOldest < _options.LingerMs)
                 {
                     // No batch is old enough to flush yet - skip the O(n) enumeration
@@ -2369,7 +2368,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
         try
         {
-            var now = DateTimeOffset.UtcNow;
+            var now = Stopwatch.GetTimestamp();
             var newOldestTicks = long.MaxValue;
             bool anySealed = false;
 
@@ -2393,7 +2392,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                     else
                     {
                         // Batch not ready for flush - track its creation time for oldest batch calculation
-                        var batchCreatedTicks = pd.CurrentBatch.CreatedAtTicks;
+                        var batchCreatedTicks = pd.CurrentBatch.CreatedAtStopwatchTimestamp;
                         if (batchCreatedTicks < newOldestTicks)
                             newOldestTicks = batchCreatedTicks;
                     }
@@ -3032,7 +3031,7 @@ internal sealed class PartitionBatch
     private long _baseTimestamp;
     private int _estimatedSize;
     // Note: _offsetDelta removed - it always equals _recordCount at assignment time
-    private DateTimeOffset _createdAt;
+    private long _createdStopwatchTimestamp;
     private int _isCompleted; // 0 = not completed, 1 = completed (Interlocked guard for idempotent Complete)
     private ReadyBatch? _completedBatch; // Cached result to ensure Complete() is idempotent
 
@@ -3063,7 +3062,7 @@ internal sealed class PartitionBatch
     {
         _topicPartition = topicPartition;
         _options = options;
-        _createdAt = DateTimeOffset.UtcNow;
+        _createdStopwatchTimestamp = Stopwatch.GetTimestamp();
 
         _initialRecordCapacity = options.InitialBatchRecordCapacity > 0
             ? Math.Clamp(options.InitialBatchRecordCapacity, 16, 16384)
@@ -3137,7 +3136,7 @@ internal sealed class PartitionBatch
     internal void Reset(TopicPartition topicPartition)
     {
         _topicPartition = topicPartition;
-        _createdAt = DateTimeOffset.UtcNow;
+        _createdStopwatchTimestamp = Stopwatch.GetTimestamp();
         _recordCount = 0;
         _completionSourceCount = 0;
         _callbackCount = 0;
@@ -3212,10 +3211,10 @@ internal sealed class PartitionBatch
     public int EstimatedSize => _estimatedSize;
 
     /// <summary>
-    /// Returns the batch creation time in ticks for efficient age comparisons.
+    /// Returns the batch creation timestamp from Stopwatch for efficient age comparisons.
     /// Used by ExpireLingerAsync to track the oldest batch without enumeration.
     /// </summary>
-    public long CreatedAtTicks => _createdAt.Ticks;
+    public long CreatedAtStopwatchTimestamp => _createdStopwatchTimestamp;
 
     /// <summary>
     /// Appends a record to the batch. Handles all three record types:
@@ -3488,7 +3487,7 @@ internal sealed class PartitionBatch
     /// This balances low latency for awaited produces with efficient batching.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool ShouldFlush(DateTimeOffset now, int lingerMs)
+    public bool ShouldFlush(long nowStopwatchTimestamp, int lingerMs)
     {
         // Volatile read for thread-safe access without locking.
         // A stale read that returns 0 when there are records just delays flush to next cycle.
@@ -3496,7 +3495,7 @@ internal sealed class PartitionBatch
         if (Volatile.Read(ref _recordCount) == 0)
             return false;
 
-        var elapsedMs = (now - _createdAt).TotalMilliseconds;
+        var elapsedMs = Stopwatch.GetElapsedTime(_createdStopwatchTimestamp, nowStopwatchTimestamp).TotalMilliseconds;
 
         // Awaited produces: use micro-linger instead of immediate flush.
         // When LingerMs > 0 (default is 5), wait min(1ms, LingerMs/10) to let co-temporal messages batch.
