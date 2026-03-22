@@ -841,11 +841,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             }
                             sendTimeoutCts.CancelAfter(SendCoalescedTimeoutMs);
 
-                            var conn = await GetConnectionAtIndexAsync(0, sendTimeoutCts.Token)
-                                .ConfigureAwait(false);
-
                             await SendCoalescedAsync(batchesToSend, countToSend,
-                                    scratches[0], conn, 0, sendTimeoutCts.Token)
+                                    scratches[0], 0, sendTimeoutCts.Token)
                                 .ConfigureAwait(false);
                             sentThisIteration = true;
                         }
@@ -1629,7 +1626,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         ReadyBatch[] batches,
         int count,
         ProduceRequestScratch scratch,
-        IKafkaConnection connection,
         int connectionIndex,
         CancellationToken cancellationToken)
     {
@@ -1697,6 +1693,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         batch.CompletionSourcesCount);
                 }
             }
+
+            var connection = await GetConnectionAtIndexAsync(connectionIndex, cancellationToken)
+                .ConfigureAwait(false);
 
             // Diagnostic: mark batches as having acquired a connection.
             // If orphan trace shows 'S' but no 'G' (Got connection), the hang is at
@@ -2101,9 +2100,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var countToSend = bucket.Count;
         bucket.Clear();
 
-        var conn = await GetConnectionAtIndexAsync(connIdx, cancellationToken).ConfigureAwait(false);
-
-        await SendCoalescedAsync(batchesToSend, countToSend, scratch, conn, connIdx, cancellationToken)
+        await SendCoalescedAsync(batchesToSend, countToSend, scratch, connIdx, cancellationToken)
             .ConfigureAwait(false);
     }
 
