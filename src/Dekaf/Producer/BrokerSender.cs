@@ -860,7 +860,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             {
                                 var connIdx = _requirePartitionAffinity
                                     ? coalescedBatches[i].TopicPartition.Partition % _connectionCount
-                                    : roundRobinCounter++ % _connectionCount;
+                                    : (roundRobinCounter++ & int.MaxValue) % _connectionCount;
                                 ref var bucket = ref connectionBuckets[connIdx];
                                 bucket.Batches[bucket.Count++] = coalescedBatches[i];
                             }
