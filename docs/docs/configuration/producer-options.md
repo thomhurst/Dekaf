@@ -147,6 +147,64 @@ Custom serializers:
 .WithValueSerializer(new JsonSerializer<Order>())
 ```
 
+## Networking
+
+### WithConnectionsPerBroker
+
+Number of TCP connections to each broker:
+
+```csharp
+.WithConnectionsPerBroker(3)  // 3 parallel connections per broker
+```
+
+Default: 1. Must be 1 for idempotent producers (partition affinity requires a fixed connection).
+
+### WithAdaptiveConnections
+
+Configure adaptive connection scaling. When sustained buffer backpressure is detected, the producer automatically adds connections per broker to increase drain throughput:
+
+```csharp
+// Use defaults (max 10 connections per broker)
+.WithAdaptiveConnections()
+
+// Custom maximum
+.WithAdaptiveConnections(maxConnections: 5)
+```
+
+Adaptive scaling is **enabled by default** for non-idempotent producers. It monitors three signals before scaling up:
+- **Pressure delta**: at least 100 buffer-full events since the last check
+- **Utilization**: buffer is over 80% full
+- **Cooldown**: at least 30 seconds since the last scale-up
+
+Connections are only scaled up, never down. Connections added during a traffic spike persist for the lifetime of the producer. Idempotent producers ignore this setting.
+
+### WithoutAdaptiveConnections
+
+Disable adaptive scaling and use a fixed connection count:
+
+```csharp
+.WithoutAdaptiveConnections()
+```
+
+### WithBufferMemory
+
+Maximum memory the producer uses for buffering unsent messages:
+
+```csharp
+.WithBufferMemory(256 * 1024 * 1024)  // 256MB
+```
+
+Default: 1GB. When the buffer is full, `ProduceAsync` and `Send` block until space is freed (controlled by `WithMaxBlockMs`).
+
+### WithSocketSendBufferBytes / WithSocketReceiveBufferBytes
+
+TCP socket buffer sizes:
+
+```csharp
+.WithSocketSendBufferBytes(1_048_576)    // 1MB send buffer
+.WithSocketReceiveBufferBytes(1_048_576) // 1MB receive buffer
+```
+
 ## Observability
 
 ### WithLoggerFactory
@@ -182,6 +240,12 @@ Enable periodic statistics:
 | `WithTransactionalId` | null | Transaction ID |
 | `UseCompression` | None | Compression codec |
 | `WithPartitioner` | Default | Partition strategy |
+| `WithConnectionsPerBroker` | 1 | TCP connections per broker |
+| `WithAdaptiveConnections` | enabled (max 10) | Auto-scale connections under load |
+| `WithoutAdaptiveConnections` | — | Disable adaptive scaling |
+| `WithBufferMemory` | 1GB | Max buffer for unsent messages |
+| `WithSocketSendBufferBytes` | (OS default) | TCP send buffer size |
+| `WithSocketReceiveBufferBytes` | (OS default) | TCP receive buffer size |
 | `UseTls` | false | Enable TLS |
 | `WithKeySerializer` | (auto) | Key serializer |
 | `WithValueSerializer` | (auto) | Value serializer |

@@ -49,6 +49,44 @@ finally
 
 All network I/O goes through `System.IO.Pipelines`, which gives us back-pressure (so we don't blow up memory under load), zero-copy reading where possible, and efficient buffer management without manual bookkeeping.
 
+### Adaptive Connection Scaling
+
+Dekaf automatically scales up TCP connections per broker when the producer detects sustained buffer backpressure. This means the producer starts with a single connection and adds more only when needed—no manual tuning required.
+
+**How it works:**
+1. When the producer's buffer fills up (messages are being produced faster than the network can send them), `ReserveMemorySync` blocks the producer thread
+2. The send loop monitors buffer pressure events and utilization
+3. When pressure is sustained (100+ events, >80% buffer utilization, 30-second cooldown), a new connection is added to the broker
+4. More connections = more parallel TCP sends = faster buffer drainage = less backpressure
+
+**What you see in practice:** A producer under load might start at 300K msg/sec on one connection and automatically scale to 400K+ msg/sec as connections are added, without any configuration changes.
+
+```csharp
+// Adaptive scaling is enabled by default — just build the producer
+var producer = Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .Build();
+
+// Customize the maximum connections
+var producer = Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithAdaptiveConnections(maxConnections: 5)
+    .Build();
+
+// Disable if you need fixed connection topology
+var producer = Kafka.CreateProducer<string, string>()
+    .WithBootstrapServers("localhost:9092")
+    .WithoutAdaptiveConnections()
+    .WithConnectionsPerBroker(3)
+    .Build();
+```
+
+**Note:** Adaptive scaling only applies to non-idempotent producers. Idempotent producers require partition affinity on a fixed connection count for sequence number ordering. Connections are only scaled up, never down—connections added during a traffic spike persist for the lifetime of the producer.
+
+### FIFO Buffer Backpressure
+
+When the producer's buffer is full, blocked threads are managed with a FIFO waiter queue. Each thread gets its own wait handle, and `ReleaseMemory` wakes exactly one thread at a time in FIFO order. This eliminates the "thundering herd" problem where all blocked threads wake up simultaneously and race for buffer space.
+
 ## Tuning for Your Use Case
 
 Different workloads need different settings. Here's how to configure Dekaf for common scenarios.
