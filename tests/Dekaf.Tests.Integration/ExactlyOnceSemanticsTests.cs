@@ -28,7 +28,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
 
         for (var i = 0; i < messageCount; i++)
         {
-            await seedProducer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(seedProducer, new ProducerMessage<string, string>
             {
                 Topic = inputTopic,
                 Key = $"atomic-key-{i}",
@@ -55,7 +55,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
         consumer.Subscribe(inputTopic);
 
         var processedCount = 0;
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
@@ -89,7 +89,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
         outputConsumer.Subscribe(outputTopic);
 
         var outputMessages = new List<ConsumeResult<string, string>>();
-        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
         await foreach (var msg in outputConsumer.ConsumeAsync(cts2.Token))
         {
@@ -106,7 +106,8 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
         }
 
         // Assert: Verify consumer offsets were committed atomically --
-        // a new consumer with the same group should have no messages left to consume
+        // a new consumer with the same group should have no messages left to consume.
+        // Use generous timeouts — consumer group rebalance can take 30+ seconds on slow CI.
         await using var resumeConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(consumerGroupId)
@@ -116,8 +117,8 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
 
         resumeConsumer.Subscribe(inputTopic);
 
-        using var resumeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var resumeResult = await resumeConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), resumeCts.Token);
+        using var resumeCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var resumeResult = await resumeConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), resumeCts.Token);
 
         // Should be null because all offsets were atomically committed with the transaction
         await Assert.That(resumeResult).IsNull();
@@ -463,7 +464,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
 
         for (var i = 0; i < messageCount; i++)
         {
-            await seedProducer.ProduceAsync(new ProducerMessage<string, string>
+            await ProduceWithRetryAsync(seedProducer, new ProducerMessage<string, string>
             {
                 Topic = inputTopic,
                 Key = $"input-{i}",
@@ -561,8 +562,8 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
 
         rereadConsumer.Subscribe(inputTopic);
 
-        using var rereadCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var rereadResult = await rereadConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), rereadCts.Token);
+        using var rereadCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var rereadResult = await rereadConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), rereadCts.Token);
 
         await Assert.That(rereadResult).IsNull();
     }
