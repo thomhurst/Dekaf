@@ -2137,11 +2137,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (TryReserveMemory(recordSize))
             {
                 waiter.Cancelled = true;
+                waiter.Event.Dispose();
                 break;
             }
 
             waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
             waiter.Cancelled = true;
+            waiter.Event.Dispose();
         }
 
         // Chain-wake: if space still remains after our reservation, wake the next
@@ -2214,11 +2216,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
             {
                 waiter.Cancelled = true;
+                waiter.Event.Dispose();
                 break;
             }
 
             waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
             waiter.Cancelled = true;
+            waiter.Event.Dispose();
         }
 
         // Chain-wake: if space still remains, wake the next waiter.
@@ -2264,16 +2268,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private void WakeAllSyncWaiters()
     {
-        // Two passes: signal all waiters first so threads can observe _disposed,
-        // then dispose events. Disposing before the thread exits Wait() is unsafe.
-        var nodes = new List<SyncWaiterNode>();
+        // Signal only — disposal is handled by each owning thread after Wait() returns.
         while (_syncWaiterQueue.TryDequeue(out var waiter))
-        {
             waiter.Event.Set();
-            nodes.Add(waiter);
-        }
-        foreach (var node in nodes)
-            node.Event.Dispose();
     }
 
     /// <summary>
