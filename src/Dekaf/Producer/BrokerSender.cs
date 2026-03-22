@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using Dekaf.Compression;
@@ -2197,8 +2198,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     /// <summary>
     /// Awaits all pending parallel sends, observing every ValueTask even if one faults.
-    /// Returns the number of successfully completed sends.
+    /// Returns the number of successfully completed sends. When an exception is thrown,
+    /// the return value is not used — the exception unwinds the send loop entirely.
     /// </summary>
+    /// <remarks>
+    /// All ValueTasks were started before this method is called, so the underlying TCP
+    /// FlushAsync operations run concurrently. The sequential await loop simply collects
+    /// results in index order — total wall-clock time is max(latencies), identical to
+    /// Task.WhenAll. We avoid Task.WhenAll because ValueTask.AsTask() allocates a Task
+    /// object per send, violating the zero-allocation hot-path principle.
+    /// Stale ValueTask entries from previous iterations are harmlessly overwritten by
+    /// the caller before each call (ValueTask is a struct).
+    /// </remarks>
     private static async ValueTask<int> AwaitParallelSendsAsync(ValueTask[] sends, int count)
     {
         Exception? firstException = null;
@@ -2223,7 +2234,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         if (firstException is not null)
         {
-            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(firstException).Throw();
+            ExceptionDispatchInfo.Capture(firstException).Throw();
         }
 
         return completed;
