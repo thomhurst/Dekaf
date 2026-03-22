@@ -133,7 +133,9 @@ public static class Program
         // to show the throughput advantage of parallel TCP connections.
         if (options.ConnectionsPerBroker > 1)
         {
-            var multiConnScenarios = scenarios.Where(s => s.Client == "Dekaf").ToList();
+            var multiConnScenarios = scenarios
+                .Where(s => s.Client == "Dekaf" && s.Name.StartsWith("producer", StringComparison.OrdinalIgnoreCase))
+                .ToList();
             foreach (var scenario in multiConnScenarios)
             {
                 Console.WriteLine();
