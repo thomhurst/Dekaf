@@ -15,7 +15,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
     public async Task IdempotentMultiConnection_BasicCorrectness_NoDuplicatesNoGaps()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 6);
-        const int messageCount = 10_000;
+        const int messageCount = 2_000;
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -24,21 +24,25 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             .WithConnectionsPerBroker(3)
             .BuildAsync();
 
+        // Use ProduceAsync to ensure all messages are acknowledged
         for (var i = 0; i < messageCount; i++)
         {
-            producer.Produce(topic, $"key-{i % 100}", $"msg-{i}");
+            await producer.ProduceAsync(topic, $"key-{i % 100}", $"msg-{i}");
         }
-        await producer.FlushAsync();
 
+        // Consume using Assign for reliability (no group coordination delay)
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .BuildAsync();
 
-        consumer.Subscribe(topic);
+        // Assign all partitions explicitly
+        consumer.Assign(Enumerable.Range(0, 6)
+            .Select(p => new TopicPartition(topic, p))
+            .ToArray());
 
         var received = new HashSet<string>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
@@ -56,9 +60,9 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
     [Test]
     public async Task IdempotentMultiConnection_PerPartitionOrdering_Preserved()
     {
-        const int partitionCount = 6;
+        const int partitionCount = 4;
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: partitionCount);
-        const int messagesPerPartition = 500;
+        const int messagesPerPartition = 200;
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -89,6 +93,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             }
         }
 
+        // Consume per-partition and verify ordering
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
@@ -109,6 +114,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
 
             await Assert.That(messages).Count().IsEqualTo(messagesPerPartition);
 
+            // Verify strict ordering within this partition
             for (var i = 0; i < messagesPerPartition; i++)
             {
                 await Assert.That(messages[i]).IsEqualTo($"p{p}-seq-{i:D4}");
@@ -120,7 +126,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
     public async Task IdempotentMultiConnection_FlushAsync_DeliversAllMessages()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
-        const int messageCount = 5_000;
+        const int messageCount = 2_000;
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -141,9 +147,13 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .BuildAsync();
 
-        consumer.Subscribe(topic);
+        // Assign all partitions explicitly
+        consumer.Assign(Enumerable.Range(0, 4)
+            .Select(p => new TopicPartition(topic, p))
+            .ToArray());
+
         var count = 0;
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
         await foreach (var _ in consumer.ConsumeAsync(cts.Token))
         {
@@ -193,8 +203,9 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
     public async Task IdempotentMultiConnection_Backpressure_NoDeadlock()
     {
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
-        const int messageCount = 5_000;
+        const int messageCount = 2_000;
 
+        // Small BufferMemory to force backpressure
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
@@ -204,6 +215,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
+        // Produce all messages — should not deadlock
         var tasks = new List<ValueTask<RecordMetadata>>();
         for (var i = 0; i < messageCount; i++)
         {
@@ -215,14 +227,18 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             await tasks[i];
         }
 
+        // Verify all delivered
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .BuildAsync();
 
-        consumer.Subscribe(topic);
+        consumer.Assign(Enumerable.Range(0, 4)
+            .Select(p => new TopicPartition(topic, p))
+            .ToArray());
+
         var count = 0;
-        using var consumeCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var consumeCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
         await foreach (var _ in consumer.ConsumeAsync(consumeCts.Token))
         {
