@@ -126,8 +126,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Task<ProduceResponse> ResponseTask,
         ReadyBatch[] Batches,
         int Count,
-        long RequestStartTime,
-        int ConnectionIndex)
+        long RequestStartTime)
     {
         /// <summary>
         /// Clears batch references and returns the pooled array to <see cref="ArrayPool{T}.Shared"/>.
@@ -372,16 +371,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private int GetConnectionIndex(IKafkaConnection connection)
-    {
-        for (var i = 0; i < _pinnedConnections.Length; i++)
-        {
-            if (ReferenceEquals(_pinnedConnections[i], connection))
-                return i;
-        }
-        return 0; // Fallback for round-robin mode or single-connection
-    }
 
     /// <summary>
     /// Zero-allocation async auto-reset signal for response completion notification.
@@ -841,7 +830,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 .ConfigureAwait(false);
 
                             await SendCoalescedAsync(batchesToSend, countToSend,
-                                    scratches[0], conn, sendTimeoutCts.Token)
+                                    scratches[0], conn, 0, sendTimeoutCts.Token)
                                 .ConfigureAwait(false);
                             sentThisIteration = true;
                         }
@@ -1173,7 +1162,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 {
                     var ex = task.Exception?.InnerException ?? new OperationCanceledException();
                     LogResponseFailed(ex, _brokerId);
-                    Array.Clear(_pinnedConnections); // No-op in round-robin mode — connection is fetched from pool each time
+                    _pinnedConnections[connIdx] = null; // Invalidate only the affected connection
 
                     for (var j = 0; j < count; j++)
                     {
@@ -1353,7 +1342,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// removed from the connection's pending list BEFORE processing, so ProcessCompletedResponses
     /// cannot also process the same batches (eliminating the race condition).
     /// <para/>
-    /// The connections are also invalidated (Array.Clear(_pinnedConnections)) so the next send
+    /// The affected connection is also invalidated so the next send
     /// establishes a fresh connection. Response tasks from the old connection are orphaned —
     /// they may eventually complete, but nobody polls them since the entries were removed.
     /// </summary>
@@ -1388,7 +1377,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // for this connection. Must process ALL entries (not just the timed-out one) because
             // they share the same connection, which is now unreliable. This matches Java's behavior:
             // when any request times out, ALL in-flight requests for that node are failed.
-            Array.Clear(_pinnedConnections); // No-op in round-robin mode — connection is fetched from pool each time
+            _pinnedConnections[connIdx] = null; // Invalidate only the affected connection
             LogRequestTimeoutDisconnection(_brokerId, pendingList.Count);
 
             var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
@@ -1611,6 +1600,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         int count,
         ProduceRequestScratch scratch,
         IKafkaConnection connection,
+        int connectionIndex,
         CancellationToken cancellationToken)
     {
         try
@@ -1763,9 +1753,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            var connIdx = GetConnectionIndex(connection);
-            var pendingResponse = new PendingResponse(responseTask, batches, count, requestStartTime, connIdx);
-            _pendingResponsesByConnection[connIdx].Add(pendingResponse);
+            var pendingResponse = new PendingResponse(responseTask, batches, count, requestStartTime);
+            _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
 
             // Diagnostic: mark batches as successfully pipelined to _pendingResponsesByConnection.
             // If an orphan trace shows 'S' but no 'W' (Wire), the batch never reached here.
@@ -1825,7 +1814,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             // Send failed (connection error, timeout, etc.) — retry batches instead of permanently failing.
             // Aligned with Java Kafka's Sender: transient failures cause reenqueue for retry.
-            Array.Clear(_pinnedConnections); // Invalidate broken connections; no-op in round-robin mode — connection is fetched from pool each time
+            _pinnedConnections[connectionIndex] = null; // Invalidate only the broken connection
             LogResponseFailed(ex, _brokerId);
 
             for (var i = 0; i < count; i++)
@@ -2053,7 +2042,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// <summary>
     /// Sends a bucket of batches on the specified connection. Rents a pooled array,
     /// acquires the connection, and calls SendCoalescedAsync.
     /// Takes <paramref name="connectionBuckets"/> array + index instead of ref struct
@@ -2076,7 +2064,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var conn = await GetConnectionForPartitionAsync(
             batchesToSend[0].TopicPartition.Partition, timeoutCts.Token).ConfigureAwait(false);
 
-        await SendCoalescedAsync(batchesToSend, countToSend, scratch, conn, timeoutCts.Token)
+        await SendCoalescedAsync(batchesToSend, countToSend, scratch, conn, connIdx, timeoutCts.Token)
             .ConfigureAwait(false);
     }
 
@@ -2090,6 +2078,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         return false;
     }
 
+    /// <summary>
     /// Returns a connection for the given partition using partition affinity.
     /// Each partition is pinned to a specific connection: partition % _connectionCount.
     /// For single-connection mode, all partitions use index 0.
