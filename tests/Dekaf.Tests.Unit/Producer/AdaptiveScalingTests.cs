@@ -343,6 +343,49 @@ public class AdaptiveScalingTests
 
     #endregion
 
+    #region Scale Step Calculation Tests
+
+    [Test]
+    public async Task ComputeScaleTarget_MinimumPressure_AddsOneConnection()
+    {
+        // pressureDelta = 100 (exactly threshold) → step = 1
+        var target = BrokerSender.ComputeScaleTarget(pressureDelta: 100, currentConnections: 1, maxConnections: 10);
+        await Assert.That(target).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ComputeScaleTarget_ModeratePressure_AddsTwoConnections()
+    {
+        // pressureDelta = 250 → step = 2
+        var target = BrokerSender.ComputeScaleTarget(pressureDelta: 250, currentConnections: 1, maxConnections: 10);
+        await Assert.That(target).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task ComputeScaleTarget_HighPressure_CapsAtMaxStep()
+    {
+        // pressureDelta = 10_000 → step capped at 3 (MaxScaleStep)
+        var target = BrokerSender.ComputeScaleTarget(pressureDelta: 10_000, currentConnections: 1, maxConnections: 10);
+        await Assert.That(target).IsEqualTo(4);
+    }
+
+    [Test]
+    public async Task ComputeScaleTarget_NearMaxConnections_ClampsToMax()
+    {
+        // step would be 3, but maxConnections caps at 10
+        var target = BrokerSender.ComputeScaleTarget(pressureDelta: 500, currentConnections: 9, maxConnections: 10);
+        await Assert.That(target).IsEqualTo(10);
+    }
+
+    [Test]
+    public async Task ComputeScaleTarget_AtMaxConnections_ReturnsMax()
+    {
+        var target = BrokerSender.ComputeScaleTarget(pressureDelta: 500, currentConnections: 10, maxConnections: 10);
+        await Assert.That(target).IsEqualTo(10);
+    }
+
+    #endregion
+
     #region Builder Validation Tests
 
     [Test]

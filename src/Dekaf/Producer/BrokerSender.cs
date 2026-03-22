@@ -369,6 +369,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private Task<int>? _pendingScaleTask; // Background connection creation, polled by send loop
 
     // Scaling thresholds
+    // Also the per-connection unit of pressure for step estimation (step = delta / threshold),
+    // so changing this value affects both trigger sensitivity and per-step magnitude.
     private const long ScalePressureDeltaThreshold = 100;
     private const long ScaleCooldownMs = 5_000;
     private const double ScaleUtilizationThreshold = 0.7;
@@ -2470,6 +2472,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var oldCount = _connectionCount;
                     _connectionCount = actualCount;
                     _totalMaxInFlight = _connectionCount * _maxInFlight;
+                    // Only reset on successful growth — intentional. If the pool returned fewer
+                    // connections than requested, stale pressure keeps accumulating so the next
+                    // cooldown window retries with the full delta rather than starting from zero.
                     _lastPressureSnapshot = _accumulator.BufferPressureEvents;
 
                     var newPinned = new IKafkaConnection?[actualCount];
@@ -2514,10 +2519,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (_accumulator.BufferUtilization < ScaleUtilizationThreshold)
             return 0;
 
-        // Each pressure-threshold multiple suggests one extra connection;
-        // cap at MaxScaleStep to avoid over-provisioning from a brief spike.
-        var step = (int)Math.Min(pressureDelta / ScalePressureDeltaThreshold, MaxScaleStep);
-        var targetCount = Math.Min(_connectionCount + step, _maxConnectionsPerBroker);
+        var targetCount = ComputeScaleTarget(pressureDelta, _connectionCount, _maxConnectionsPerBroker);
 
         // Launch connection creation in the background — send loop continues immediately
         _lastScaleTimeTicks = now;
@@ -2525,6 +2527,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _brokerId, targetCount, _cts.Token).AsTask();
 
         return 0;
+    }
+
+    /// <summary>
+    /// Computes the target connection count for a scale-up based on pressure severity.
+    /// Each pressure-threshold multiple suggests one extra connection, capped at
+    /// <see cref="MaxScaleStep"/> to avoid over-provisioning from a brief spike.
+    /// </summary>
+    internal static int ComputeScaleTarget(long pressureDelta, int currentConnections, int maxConnections)
+    {
+        var step = (int)Math.Min(pressureDelta / ScalePressureDeltaThreshold, MaxScaleStep);
+        return Math.Min(currentConnections + step, maxConnections);
     }
 
     #region Logging
