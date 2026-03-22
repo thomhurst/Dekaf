@@ -1,3 +1,4 @@
+using Dekaf.Admin;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
@@ -215,7 +216,34 @@ internal sealed class KafkaEnvironment : IAsyncDisposable
             return;
         }
 
-        Console.WriteLine($"Using external Kafka - assuming topic {topic} exists or will be auto-created");
+        await AdminCreateTopicAsync(BootstrapServers, topic, partitions, replicationFactor).ConfigureAwait(false);
+    }
+
+    private static async Task AdminCreateTopicAsync(
+        string bootstrapServers, string topic, int partitions, int replicationFactor)
+    {
+        await using var adminClient = Kafka.CreateAdminClient()
+            .WithBootstrapServers(bootstrapServers)
+            .WithClientId("stress-test-admin")
+            .Build();
+
+        try
+        {
+            await adminClient.CreateTopicsAsync([
+                new NewTopic
+                {
+                    Name = topic,
+                    NumPartitions = partitions,
+                    ReplicationFactor = (short)replicationFactor
+                }
+            ]).ConfigureAwait(false);
+
+            Console.WriteLine($"Created topic via Dekaf admin API: {topic} (partitions={partitions}, replication={replicationFactor})");
+        }
+        catch (Dekaf.Errors.KafkaException ex) when (ex.ErrorCode == Dekaf.Protocol.ErrorCode.TopicAlreadyExists)
+        {
+            Console.WriteLine($"Topic {topic} already exists");
+        }
     }
 
     private static async Task ExecCreateTopicAsync(
