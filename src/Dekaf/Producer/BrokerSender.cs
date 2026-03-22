@@ -373,11 +373,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private const long ScaleCooldownMs = 5_000;
     private const double ScaleUtilizationThreshold = 0.7;
 
-    /// <summary>
-    /// Maximum connections to add per scale-up step.
-    /// Bounds the jump so a brief pressure spike doesn't over-provision.
-    /// </summary>
-    private const int MaxScaleStep = 3;
+    private const int MaxScaleStep = 3; // Cap per scale-up to avoid over-provisioning from a brief spike
 
     // Maintained counter for O(1) hot-path access. Incremented in SendCoalescedAsync
     // when a PendingResponse is added, decremented in ProcessCompletedResponses and
@@ -2518,10 +2514,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (_accumulator.BufferUtilization < ScaleUtilizationThreshold)
             return 0;
 
-        // Estimate how many connections to add based on pressure severity.
-        // Higher pressure delta → more connections needed. Each multiple of the
-        // threshold suggests one additional connection, capped at MaxScaleStep
-        // to avoid over-provisioning from a brief spike.
+        // Each pressure-threshold multiple suggests one extra connection;
+        // cap at MaxScaleStep to avoid over-provisioning from a brief spike.
         var step = (int)Math.Min(pressureDelta / ScalePressureDeltaThreshold, MaxScaleStep);
         var targetCount = Math.Min(_connectionCount + step, _maxConnectionsPerBroker);
 
