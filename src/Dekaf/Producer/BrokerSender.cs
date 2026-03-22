@@ -166,6 +166,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
+    /// Pre-allocated bucket for grouping coalesced batches by connection affinity.
+    /// Single-threaded: only accessed by the send loop.
+    /// </summary>
+    private struct ConnectionBucket
+    {
+        public ReadyBatch[] Batches;
+        public int Count;
+
+        public void Clear()
+        {
+            Array.Clear(Batches, 0, Count);
+            Count = 0;
+        }
+
+        public readonly bool HasBatches => Count > 0;
+    }
+
+    /// <summary>
     /// Per-partition carry-over queues matching Java Kafka's per-partition Deque design.
     /// Retries go to the FRONT (AddFirst), new batches to the BACK (Add).
     /// Guarantees per-partition FIFO ordering during coalescing.
@@ -555,6 +573,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // so these can be safely reused without synchronization.
         var requestScratch = new ProduceRequestScratch(_options, _compressionCodecs, maxCoalesce);
 
+        // Per-connection scratch and buckets for partition-affined multi-send.
+        // When _connectionCount == 1, single scratch and bucket — no grouping overhead.
+        var scratches = new ProduceRequestScratch[_connectionCount];
+        scratches[0] = requestScratch; // Reuse the existing one for index 0
+        for (var c = 1; c < _connectionCount; c++)
+            scratches[c] = new ProduceRequestScratch(_options, _compressionCodecs, maxCoalesce);
+
+        var connectionBuckets = new ConnectionBucket[_connectionCount];
+        for (var c = 0; c < _connectionCount; c++)
+            connectionBuckets[c].Batches = new ReadyBatch[maxCoalesce];
+
         var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         // Register shutdown token once — persists for the lifetime of the send loop.
@@ -791,38 +820,75 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         LogSendingCoalesced(_brokerId, coalescedCount);
                         for (var si = 0; si < coalescedCount; si++)
                             coalescedBatches[si].AppendDiag('S');
-                        // Rent a pooled array for SendCoalescedAsync, which stores it in
-                        // PendingResponse beyond this iteration. Returned to the pool when
-                        // the response is processed (ProcessCompletedResponses, HandleTimedOutRequests,
-                        // or disposal). The pre-allocated scratch array stays with the loop for reuse.
-                        var batchesToSend = ArrayPool<ReadyBatch>.Shared.Rent(coalescedCount);
-                        coalescedBatches.AsSpan(0, coalescedCount).CopyTo(batchesToSend);
-                        var countToSend = coalescedCount;
-                        Array.Clear(coalescedBatches, 0, coalescedCount);
-                        coalescedCount = 0;
-                        // Send timeout: if SendCoalescedAsync hangs (connection issues,
-                        // stale sockets), the CTS cancellation triggers the Z path (retry/fail)
-                        // so the send loop stays responsive for HandleTimedOutRequests.
-                        // IMPORTANT: must await (not fire-and-forget) to preserve thread safety —
-                        // SendCoalescedAsync accesses _pendingResponsesByConnection and _sendFailedRetries
-                        // which are not thread-safe.
+                        if (_connectionCount == 1)
                         {
+                            // === Single-connection fast path (no grouping overhead) ===
+                            var batchesToSend = ArrayPool<ReadyBatch>.Shared.Rent(coalescedCount);
+                            coalescedBatches.AsSpan(0, coalescedCount).CopyTo(batchesToSend);
+                            var countToSend = coalescedCount;
+                            Array.Clear(coalescedBatches, 0, coalescedCount);
+                            coalescedCount = 0;
+
                             if (!sendTimeoutCts.TryReset())
                             {
                                 sendTimeoutCts.Dispose();
                                 sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                             }
                             sendTimeoutCts.CancelAfter(SendCoalescedTimeoutMs);
-                            // Use first batch's partition to determine connection.
-                            // Task 5 will add proper per-connection grouping.
-                            var sendConnection = await GetConnectionForPartitionAsync(
+
+                            var conn = await GetConnectionForPartitionAsync(
                                 batchesToSend[0].TopicPartition.Partition, sendTimeoutCts.Token)
                                 .ConfigureAwait(false);
+
                             await SendCoalescedAsync(batchesToSend, countToSend,
-                                    requestScratch, sendConnection, sendTimeoutCts.Token)
+                                    scratches[0], conn, sendTimeoutCts.Token)
                                 .ConfigureAwait(false);
+                            sentThisIteration = true;
                         }
-                        sentThisIteration = true;
+                        else
+                        {
+                            // === Multi-connection path: group by partition affinity ===
+
+                            // Distribute coalesced batches into per-connection buckets
+                            for (var i = 0; i < coalescedCount; i++)
+                            {
+                                var connIdx = coalescedBatches[i].TopicPartition.Partition % _connectionCount;
+                                ref var bucket = ref connectionBuckets[connIdx];
+                                bucket.Batches[bucket.Count++] = coalescedBatches[i];
+                            }
+                            Array.Clear(coalescedBatches, 0, coalescedCount);
+                            coalescedCount = 0;
+
+                            // Send on connections with in-flight capacity first
+                            for (var c = 0; c < _connectionCount; c++)
+                            {
+                                if (!connectionBuckets[c].HasBatches) continue;
+                                if (_pendingResponsesByConnection[c].Count >= _maxInFlight) continue;
+
+                                await SendConnectionBucketAsync(c, connectionBuckets,
+                                    scratches[c], cancellationToken).ConfigureAwait(false);
+                                sentThisIteration = true;
+                            }
+
+                            // Wait for capacity on blocked connections
+                            while (HasRemainingBuckets(connectionBuckets))
+                            {
+                                ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
+                                if (!HasRemainingBuckets(connectionBuckets)) break;
+
+                                await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
+
+                                for (var c = 0; c < _connectionCount; c++)
+                                {
+                                    if (!connectionBuckets[c].HasBatches) continue;
+                                    if (_pendingResponsesByConnection[c].Count >= _maxInFlight) continue;
+
+                                    await SendConnectionBucketAsync(c, connectionBuckets,
+                                        scratches[c], cancellationToken).ConfigureAwait(false);
+                                    sentThisIteration = true;
+                                }
+                            }
+                        }
                     }
                     else
                     {
@@ -1987,6 +2053,43 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
+    /// <summary>
+    /// Sends a bucket of batches on the specified connection. Rents a pooled array,
+    /// acquires the connection, and calls SendCoalescedAsync.
+    /// Takes <paramref name="connectionBuckets"/> array + index instead of ref struct
+    /// because async methods cannot have ref parameters.
+    /// </summary>
+    private async ValueTask SendConnectionBucketAsync(
+        int connIdx, ConnectionBucket[] connectionBuckets,
+        ProduceRequestScratch scratch, CancellationToken cancellationToken)
+    {
+        ref var bucket = ref connectionBuckets[connIdx];
+        var batchesToSend = ArrayPool<ReadyBatch>.Shared.Rent(bucket.Count);
+        bucket.Batches.AsSpan(0, bucket.Count).CopyTo(batchesToSend);
+        var countToSend = bucket.Count;
+        bucket.Clear();
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(SendCoalescedTimeoutMs);
+
+        // All batches in this bucket target the same connection affinity slot.
+        var conn = await GetConnectionForPartitionAsync(
+            batchesToSend[0].TopicPartition.Partition, timeoutCts.Token).ConfigureAwait(false);
+
+        await SendCoalescedAsync(batchesToSend, countToSend, scratch, conn, timeoutCts.Token)
+            .ConfigureAwait(false);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool HasRemainingBuckets(ConnectionBucket[] buckets)
+    {
+        for (var i = 0; i < buckets.Length; i++)
+        {
+            if (buckets[i].HasBatches) return true;
+        }
+        return false;
+    }
+
     /// Returns a connection for the given partition using partition affinity.
     /// Each partition is pinned to a specific connection: partition % _connectionCount.
     /// For single-connection mode, all partitions use index 0.
