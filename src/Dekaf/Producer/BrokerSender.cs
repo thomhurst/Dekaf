@@ -574,6 +574,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
+        // Per-connection timeout CTS for multi-connection mode, reused with TryReset()
+        // to avoid per-send CTS allocation (same pattern as sendTimeoutCts for single-connection).
+        var bucketTimeoutCts = new CancellationTokenSource[_connectionCount];
+        for (var c = 0; c < _connectionCount; c++)
+            bucketTimeoutCts[c] = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
         // Register shutdown token once — persists for the lifetime of the send loop.
         // Zero per-wait allocation: the signal uses an internal reusable timer for the
         // 100ms poll timeout, and this one-time registration handles shutdown cancellation.
@@ -858,7 +864,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 if (_pendingResponsesByConnection[c].Count >= _maxInFlight) continue;
 
                                 await SendConnectionBucketAsync(c, connectionBuckets,
-                                    scratches[c], cancellationToken).ConfigureAwait(false);
+                                    scratches[c], bucketTimeoutCts[c], cancellationToken).ConfigureAwait(false);
                                 sentThisIteration = true;
                             }
 
@@ -876,7 +882,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                     if (_pendingResponsesByConnection[c].Count >= _maxInFlight) continue;
 
                                     await SendConnectionBucketAsync(c, connectionBuckets,
-                                        scratches[c], cancellationToken).ConfigureAwait(false);
+                                        scratches[c], bucketTimeoutCts[c], cancellationToken).ConfigureAwait(false);
                                     sentThisIteration = true;
                                 }
                             }
@@ -941,6 +947,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         finally
         {
             sendTimeoutCts.Dispose();
+            for (var c = 0; c < bucketTimeoutCts.Length; c++)
+                bucketTimeoutCts[c].Dispose();
             _eventChannel.Writer.TryComplete();
 
             var disposedException = new ObjectDisposedException(nameof(BrokerSender));
@@ -2052,7 +2060,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// </summary>
     private async ValueTask SendConnectionBucketAsync(
         int connIdx, ConnectionBucket[] connectionBuckets,
-        ProduceRequestScratch scratch, CancellationToken cancellationToken)
+        ProduceRequestScratch scratch, CancellationTokenSource timeoutCts,
+        CancellationToken shutdownToken)
     {
         ref var bucket = ref connectionBuckets[connIdx];
         var batchesToSend = ArrayPool<ReadyBatch>.Shared.Rent(bucket.Count);
@@ -2060,10 +2069,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var countToSend = bucket.Count;
         bucket.Clear();
 
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        // Reuse per-connection CTS with TryReset to avoid per-send allocation.
+        if (!timeoutCts.TryReset())
+        {
+            timeoutCts.Dispose();
+            timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(shutdownToken);
+        }
         timeoutCts.CancelAfter(SendCoalescedTimeoutMs);
 
-        // All batches in this bucket target the same connection affinity slot.
         var conn = await GetConnectionForPartitionAsync(
             batchesToSend[0].TopicPartition.Partition, timeoutCts.Token).ConfigureAwait(false);
 

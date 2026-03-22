@@ -133,11 +133,16 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
         // Ensure connection group exists
         if (!_connectionGroupsById.TryGetValue(brokerId, out var connections))
         {
+            // CreateConnectionGroupAsync populates _connectionGroupsById and returns
+            // the first connection. If it throws (timeout, broker unreachable), the
+            // exception propagates — no null-dereference risk below.
             await CreateConnectionGroupAsync(brokerId, brokerInfo, cancellationToken).ConfigureAwait(false);
-            _connectionGroupsById.TryGetValue(brokerId, out connections);
+
+            if (!_connectionGroupsById.TryGetValue(brokerId, out connections))
+                throw new InvalidOperationException($"Connection group for broker {brokerId} was not created");
         }
 
-        var effectiveIndex = index % connections!.Length;
+        var effectiveIndex = index % connections.Length;
         var connection = connections[effectiveIndex];
 
         if (connection is not null && connection.IsConnected)
