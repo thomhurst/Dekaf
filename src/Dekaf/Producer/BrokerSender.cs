@@ -2383,14 +2383,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return 0;
 
         // Check pressure: has there been sustained pressure since last check?
+        // Only update snapshot when scaling succeeds, so pressure accumulates
+        // until all conditions (delta + cooldown + utilization) are simultaneously met.
         var currentPressure = _accumulator.BufferPressureEvents;
         var pressureDelta = currentPressure - _lastPressureSnapshot;
-        _lastPressureSnapshot = currentPressure;
 
         if (pressureDelta < ScalePressureDeltaThreshold)
             return 0;
 
-        // Enforce cooldown between scale-up events
         var now = Environment.TickCount64;
         if (now - _lastScaleTimeTicks < ScaleCooldownMs)
             return 0;
@@ -2424,6 +2424,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _connectionCount = actualCount;
         _totalMaxInFlight = _connectionCount * _maxInFlight;
         _lastScaleTimeTicks = now;
+        _lastPressureSnapshot = currentPressure;
 
         // Resize pinned connections array
         var newPinned = new IKafkaConnection?[actualCount];

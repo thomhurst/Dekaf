@@ -262,7 +262,7 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
             await Task.WhenAll(tasks).ConfigureAwait(false);
 
             for (var i = 0; i < additionalCount; i++)
-                newConnections[i] = await tasks[i].ConfigureAwait(false);
+                newConnections[i] = tasks[i].Result;
 
             // Build new array: copy existing + append new connections
             var newGroup = new IKafkaConnection[newCount];
@@ -625,7 +625,7 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
     [LoggerMessage(Level = LogLevel.Debug, Message = "Replacing connection {Index} for broker {BrokerId}")]
     private partial void LogConnectionReplacement(int brokerId, int index);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Scaled connection group from {OldCount} to {NewCount} connections for broker {BrokerId}")]
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Scaled connection group from {OldCount} to {NewCount} connections for broker {BrokerId}")]
     private partial void LogScaledConnectionGroup(int oldCount, int newCount, int brokerId);
 
     #endregion

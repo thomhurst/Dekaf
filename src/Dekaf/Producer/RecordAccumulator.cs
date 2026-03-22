@@ -2114,30 +2114,26 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             : long.MaxValue;
 
         var waiter = new SyncWaiterNode();
-        _syncWaiterQueue.Enqueue(waiter);
 
         try
         {
             while (true)
             {
-                // Check for disposal before blocking
                 if (_disposed)
                     throw new ObjectDisposedException(nameof(RecordAccumulator));
 
-                // Check timeout
                 var remainingMs = deadline - Environment.TickCount64;
                 if (remainingMs <= 0)
                     ThrowBufferMemoryTimeout(recordSize, currentTicks);
 
-                // Try to reserve before waiting — space may have become available
-                // between enqueue and here, or after a signal that we consumed.
                 if (TryReserveMemory(recordSize))
                     break;
 
-                // Block on this waiter's individual event (not a shared broadcast signal).
+                // Enqueue right before blocking so the node is only in the queue
+                // when we're genuinely about to wait. Avoids wasting signals on
+                // stale entries from threads that succeed at CAS before Wait().
+                _syncWaiterQueue.Enqueue(waiter);
                 waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
-
-                // Reset the event for potential re-wait if CAS fails.
                 waiter.Event.Reset();
 
                 if (TryReserveMemory(recordSize))
@@ -2196,10 +2192,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
             return;
 
-        // Slow path: enqueue a FIFO waiter node (requestedBytes=0 for gate-only waiters).
         var startTicks = Environment.TickCount64;
         var waiter = new SyncWaiterNode();
-        _syncWaiterQueue.Enqueue(waiter);
 
         try
         {
@@ -2217,6 +2211,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
                     break;
 
+                _syncWaiterQueue.Enqueue(waiter);
                 waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
                 waiter.Event.Reset();
             }
