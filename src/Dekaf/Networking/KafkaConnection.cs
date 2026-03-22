@@ -321,7 +321,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
-                    await WritePreSerializedAsync(serializedArray, serializedLength, cancellationToken)
+                    await WritePreSerializedAsync(serializedArray, serializedLength, correlationId, cancellationToken)
                         .ConfigureAwait(false);
                 }
                 finally
@@ -408,7 +408,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await WritePreSerializedAsync(serializedArray, serializedLength, cancellationToken, callerOwnsTimeout)
+                await WritePreSerializedAsync(serializedArray, serializedLength, correlationId, cancellationToken, callerOwnsTimeout)
                     .ConfigureAwait(false);
             }
             finally
@@ -484,7 +484,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
-                    await WritePreSerializedAsync(serializedArray, serializedLength, cancellationToken, callerOwnsTimeout)
+                    await WritePreSerializedAsync(serializedArray, serializedLength, correlationId, cancellationToken, callerOwnsTimeout)
                         .ConfigureAwait(false);
                 }
                 finally
@@ -668,8 +668,11 @@ public sealed partial class KafkaConnection : IKafkaConnection
         var rentedArray = ArrayPool<byte>.Shared.Rent(totalLength);
         buffer.WrittenSpan.CopyTo(rentedArray);
 
-        // Backpatch the 4-byte size prefix in the rented array (writable, and safe from
-        // ArrayBufferWriter internal resizes that could invalidate a captured Span)
+        // Backpatch the 4-byte size prefix in the rented array. The Kafka wire protocol size
+        // prefix is the byte count of everything AFTER the prefix (header + request body).
+        // bodyWriter.BytesWritten counts only bytes written through KafkaProtocolWriter,
+        // not the initial Advance(4) for the size prefix itself, so this is correct.
+        Debug.Assert(bodyWriter.BytesWritten == totalLength - 4, "Size prefix calculation invariant violated");
         BinaryPrimitives.WriteInt32BigEndian(rentedArray.AsSpan(), bodyWriter.BytesWritten);
 
         return (rentedArray, totalLength);
@@ -683,6 +686,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private async ValueTask WritePreSerializedAsync(
         byte[] serializedData,
         int length,
+        int correlationId,
         CancellationToken cancellationToken,
         bool callerOwnsTimeout = false)
     {
@@ -712,7 +716,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             // Any OperationCanceledException here means the caller's timeout elapsed.
             catch (OperationCanceledException)
             {
-                LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
+                LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
                 throw new KafkaException(
                     $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
@@ -732,7 +736,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
-                LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
+                LogFlushTimeout(_options.RequestTimeout.TotalMilliseconds, correlationId, BrokerId);
 
                 throw new KafkaException(
                     $"Flush timeout after {(int)_options.RequestTimeout.TotalMilliseconds}ms on connection to broker {BrokerId}");
@@ -744,6 +748,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
             throw new IOException("Connection closed while writing");
         }
 
+        // IsCanceled is set when PipeWriter.CancelPendingFlush() is called — distinct from
+        // the CancellationToken-based cancellation above which throws OperationCanceledException.
         if (result.IsCanceled)
         {
             throw new IOException("Flush operation was canceled");
@@ -1751,8 +1757,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
     [LoggerMessage(Level = LogLevel.Debug, Message = "Response received for correlation {CorrelationId}")]
     private partial void LogResponseReceived(int correlationId);
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Flush timeout after {Timeout}ms on broker {BrokerId}")]
-    private partial void LogFlushTimeout(double timeout, int brokerId);
+    [LoggerMessage(Level = LogLevel.Error, Message = "Flush timeout after {Timeout}ms for request {CorrelationId} to broker {BrokerId}")]
+    private partial void LogFlushTimeout(double timeout, int correlationId, int brokerId);
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Receive loop started for {Host}:{Port}")]
     private partial void LogReceiveLoopStarted(string host, int port);
