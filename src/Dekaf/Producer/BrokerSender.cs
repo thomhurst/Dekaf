@@ -354,11 +354,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Partition-affined connections: each partition pins to _pinnedConnections[partition % _connectionCount].
     // For single-connection mode (_connectionCount == 1), degenerates to the original pinned behavior.
-    // For non-idempotent round-robin mode, _useRoundRobinConnections is true and connections
-    // are fetched from the pool each time (existing behavior, unchanged).
     private readonly IKafkaConnection?[] _pinnedConnections;
     private readonly int _connectionCount;
-    private readonly bool _useRoundRobinConnections;
 
     private int TotalPendingResponseCount
     {
@@ -444,20 +441,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Idempotent producers with maxInFlight > 1 rely on sequence numbers for ordering.
         _muteOnSend = _maxInFlight <= 1;
 
-        // Idempotent producers with multiple connections per broker use partition affinity:
-        // each partition is pinned to a specific connection (partition % connectionCount).
-        _connectionCount = options.EnableIdempotence && options.ConnectionsPerBroker > 1
-            ? options.ConnectionsPerBroker : 1;
+        // Multiple connections per broker use partition affinity: each partition is pinned
+        // to a specific connection (partition % connectionCount). For idempotent producers,
+        // this preserves per-partition sequence ordering. For non-idempotent producers,
+        // it provides a stable distribution for per-connection in-flight tracking.
+        _connectionCount = options.ConnectionsPerBroker;
         _pinnedConnections = new IKafkaConnection?[_connectionCount];
         _totalMaxInFlight = _connectionCount * _maxInFlight;
 
         _pendingResponsesByConnection = new List<PendingResponse>[_connectionCount];
         for (var i = 0; i < _connectionCount; i++)
             _pendingResponsesByConnection[i] = new List<PendingResponse>();
-
-        // Non-idempotent producers with multiple connections per broker use round-robin
-        // connection selection to distribute load across TCP streams.
-        _useRoundRobinConnections = !options.EnableIdempotence && options.ConnectionsPerBroker > 1;
 
         _responseCompletionCallback = () =>
         {
@@ -2118,13 +2112,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// Returns a connection for the given partition using partition affinity.
     /// Each partition is pinned to a specific connection: partition % _connectionCount.
     /// For single-connection mode, all partitions use index 0.
-    /// For round-robin mode (non-idempotent), delegates to pool's round-robin selection.
     /// </summary>
     private async ValueTask<IKafkaConnection> GetConnectionForPartitionAsync(int partitionId, CancellationToken cancellationToken)
     {
-        if (_useRoundRobinConnections)
-            return await _connectionPool.GetConnectionAsync(_brokerId, cancellationToken).ConfigureAwait(false);
-
         var connIdx = _connectionCount > 1 ? partitionId % _connectionCount : 0;
 
         var conn = _pinnedConnections[connIdx];
