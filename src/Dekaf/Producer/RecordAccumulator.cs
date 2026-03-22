@@ -2105,6 +2105,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return;
         }
 
+        // Spin-wait phase: when the buffer is nearly full and draining rapidly, memory
+        // often frees up within microseconds. A short spin avoids the expensive kernel
+        // context switch that ManualResetEventSlim.Wait would incur.
+        var spinner = new SpinWait();
+        while (!spinner.NextSpinWillYield)
+        {
+            spinner.SpinOnce();
+
+            if (TryReserveMemory(recordSize))
+                return;
+        }
+
         // Track for adaptive connection scaling
         Interlocked.Increment(ref _bufferPressureEvents);
 
