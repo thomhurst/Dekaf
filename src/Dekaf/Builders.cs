@@ -46,6 +46,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int _metadataRecoveryRebootstrapTriggerMs = 300000;
     private bool _enableIdempotence = true;
     private int _connectionsPerBroker = 1;
+    private int _socketSendBufferBytes;
+    private int _socketReceiveBufferBytes;
     private List<IProducerInterceptor<TKey, TValue>>? _interceptors;
     private TimeSpan? _metadataMaxAge;
     private int? _deliveryTimeoutMs;
@@ -174,6 +176,30 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
         _connectionsPerBroker = connectionsPerBroker;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the socket send buffer size in bytes.
+    /// Larger buffers can reduce the number of syscalls for high-throughput producers.
+    /// </summary>
+    /// <param name="bytes">The send buffer size in bytes. Set to 0 to use system default.</param>
+    public ProducerBuilder<TKey, TValue> WithSocketSendBufferBytes(int bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(bytes);
+        _socketSendBufferBytes = bytes;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets the socket receive buffer size in bytes.
+    /// Larger buffers can improve throughput for high-volume producers receiving acknowledgements.
+    /// </summary>
+    /// <param name="bytes">The receive buffer size in bytes. Set to 0 to use system default.</param>
+    public ProducerBuilder<TKey, TValue> WithSocketReceiveBufferBytes(int bytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(bytes);
+        _socketReceiveBufferBytes = bytes;
         return this;
     }
 
@@ -634,6 +660,8 @@ public sealed class ProducerBuilder<TKey, TValue>
             OAuthBearerTokenProvider = _oauthTokenProvider,
             MetadataRecoveryStrategy = _metadataRecoveryStrategy,
             MetadataRecoveryRebootstrapTriggerMs = _metadataRecoveryRebootstrapTriggerMs,
+            SocketSendBufferBytes = _socketSendBufferBytes,
+            SocketReceiveBufferBytes = _socketReceiveBufferBytes,
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
             RetryPolicy = _retryPolicy
         };
