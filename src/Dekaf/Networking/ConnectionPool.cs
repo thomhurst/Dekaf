@@ -258,7 +258,20 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
                 tasks[i] = CreateConnectionForGroupAsync(brokerId, brokerInfo.Host, brokerInfo.Port, index, linkedCts.Token).AsTask();
             }
 
-            await Task.WhenAll(tasks).ConfigureAwait(false);
+            try
+            {
+                await Task.WhenAll(tasks).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Close any successfully created connections to avoid leaking TCP handles
+                foreach (var task in tasks)
+                {
+                    if (task.IsCompletedSuccessfully)
+                        await task.Result.DisposeAsync().ConfigureAwait(false);
+                }
+                throw;
+            }
 
             // Build new array: copy existing + write completed tasks directly
             var newGroup = new IKafkaConnection[newCount];

@@ -2380,7 +2380,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private async ValueTask<int> MaybeScaleConnectionsAsync(CancellationToken cancellationToken)
     {
         if (_connectionCount >= _maxConnectionsPerBroker)
+        {
+            // Max reached permanently — disable further checks to avoid per-iteration overhead
+            _adaptiveScalingEnabled = false;
             return 0;
+        }
 
         // Check pressure: has there been sustained pressure since last check?
         // Only update snapshot when scaling succeeds, so pressure accumulates

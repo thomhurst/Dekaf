@@ -2127,16 +2127,21 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (TryReserveMemory(recordSize))
                 break;
 
-            // Fresh node per wait attempt. On timeout, the old node stays in the
-            // queue but is cancelled, so WakeNextSyncWaiter skips it. Re-using the
-            // same node across iterations would cause a double-enqueue race on timeout.
+            // Fresh node per wait. Re-using across iterations causes double-enqueue on timeout.
             var waiter = new SyncWaiterNode();
             _syncWaiterQueue.Enqueue(waiter);
+
+            // Re-check after enqueue: ReleaseMemory may have fired between the check
+            // above and the enqueue, finding an empty queue. Without this, the thread
+            // sleeps through available space until the next ReleaseMemory or timeout.
+            if (TryReserveMemory(recordSize))
+            {
+                waiter.Cancelled = true;
+                break;
+            }
+
             waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
             waiter.Cancelled = true;
-
-            if (TryReserveMemory(recordSize))
-                break;
         }
 
         // Chain-wake: if space still remains after our reservation, wake the next
@@ -2207,6 +2212,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             var waiter = new SyncWaiterNode();
             _syncWaiterQueue.Enqueue(waiter);
+
+            // Re-check after enqueue to avoid sleeping through freed space
+            if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+            {
+                waiter.Cancelled = true;
+                break;
+            }
+
             waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
             waiter.Cancelled = true;
         }
@@ -2255,7 +2268,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void WakeAllSyncWaiters()
     {
         while (_syncWaiterQueue.TryDequeue(out var waiter))
+        {
             waiter.Event.Set();
+            // Dispose here since the cleanup loop in DisposeAsync runs after this
+            // drains the queue, making the cleanup loop a no-op otherwise.
+            waiter.Event.Dispose();
+        }
     }
 
     /// <summary>
