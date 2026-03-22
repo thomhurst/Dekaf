@@ -38,6 +38,11 @@ internal sealed class PendingFetchData : IDisposable
     public int PartitionIndex { get; }
 
     /// <summary>
+    /// Cached activity name to avoid per-record string interpolation in consume loop.
+    /// </summary>
+    public string ActivityName { get; }
+
+    /// <summary>
     /// Cached TopicPartition to avoid per-message allocation in consume loop.
     /// </summary>
     public TopicPartition TopicPartition { get; }
@@ -70,6 +75,7 @@ internal sealed class PendingFetchData : IDisposable
     {
         Topic = topic;
         PartitionIndex = partitionIndex;
+        ActivityName = $"{topic} receive";
         TopicPartition = new TopicPartition(topic, partitionIndex);
         _batches = batches;
         _memoryOwner = memoryOwner;
@@ -693,7 +699,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         if (producerContext.HasValue && Diagnostics.DekafDiagnostics.Source.HasListeners())
                         {
                             activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
-                                $"{pending.Topic} receive",
+                                pending.ActivityName,
                                 System.Diagnostics.ActivityKind.Consumer,
                                 parentContext: default(System.Diagnostics.ActivityContext),
                                 tags: null,
@@ -702,7 +708,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         else
                         {
                             activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
-                                $"{pending.Topic} receive",
+                                pending.ActivityName,
                                 System.Diagnostics.ActivityKind.Consumer);
                         }
                     }

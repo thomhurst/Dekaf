@@ -915,11 +915,11 @@ public sealed partial class KafkaConnection : IKafkaConnection
         responseBuffer.Slice(0, 4).CopyTo(correlationBuffer);
         correlationId = BinaryPrimitives.ReadInt32BigEndian(correlationBuffer);
 
-        // Use dedicated response pool for responses <= 4MB.
-        // Kafka fetch responses are typically slightly over 1MB (due to protocol overhead
-        // on top of max.partition.fetch.bytes default of 1,048,576), so ArrayPool<byte>.Shared
-        // (which only pools up to 2^20 bytes) can't pool them, causing LOH allocations on every fetch.
-        const int maxPooledSize = 4 * 1024 * 1024;
+        // Use dedicated response pool for responses <= 16MB.
+        // Multi-partition fetch responses (e.g., 6 partitions × 1MB) easily exceed 4MB.
+        // Unpooled responses go to LOH and require Gen2 GC to reclaim, which on
+        // CPU-constrained machines causes cascading GC pressure.
+        const int maxPooledSize = 16 * 1024 * 1024;
         byte[] responseArray;
         bool isPooled;
 
@@ -1917,15 +1917,15 @@ public sealed class ConnectionOptions
 internal readonly struct PooledResponseBuffer : IDisposable
 {
     /// <summary>
-    /// Dedicated pool for Kafka response buffers. Sized to accommodate fetch responses
-    /// which are typically slightly over 1MB due to protocol overhead on top of
-    /// max.partition.fetch.bytes (default 1,048,576). ArrayPool&lt;byte&gt;.Shared only pools
-    /// arrays up to 2^20 (1,048,576) bytes, so responses of ~1,048,712 bytes would bypass
-    /// pooling entirely, causing ~693 LOH allocations/sec under load.
+    /// Dedicated pool for Kafka response buffers. Sized to accommodate multi-partition
+    /// fetch responses (e.g., 6 partitions × 1 MB = ~6 MB) without falling back to
+    /// unpooled LOH allocations that trigger Gen2 GC. ArrayPool&lt;byte&gt;.Shared only pools
+    /// arrays up to 2^20 (1 MB), so even single-partition fetch responses (~1,048,712 bytes)
+    /// would bypass pooling without this dedicated pool.
     /// </summary>
     internal static readonly ArrayPool<byte> Pool = ArrayPool<byte>.Create(
-        maxArrayLength: 4 * 1024 * 1024,
-        maxArraysPerBucket: 256);
+        maxArrayLength: 16 * 1024 * 1024,
+        maxArraysPerBucket: 32);
 
     private readonly byte[] _buffer;
     private readonly int _offset;
