@@ -324,6 +324,36 @@ public sealed class ProducerOptions
     public IRetryPolicy? RetryPolicy { get; init; }
 
     /// <summary>
+    /// Enable adaptive connection scaling based on buffer pressure.
+    /// When enabled, the producer will automatically increase connections per broker
+    /// when sustained buffer backpressure is detected, improving drain throughput.
+    /// <para>
+    /// Only applies to non-idempotent producers (<see cref="EnableIdempotence"/> = false).
+    /// Idempotent producers require partition affinity on a fixed connection count for
+    /// sequence number ordering, so adaptive scaling is automatically disabled.
+    /// </para>
+    /// Default: false.
+    /// </summary>
+    public bool EnableAdaptiveConnections { get; init; }
+
+    /// <summary>
+    /// Maximum connections per broker when adaptive scaling is enabled.
+    /// The producer will not scale beyond this limit regardless of buffer pressure.
+    /// Must be at least 1. Default: 10.
+    /// </summary>
+    public int MaxConnectionsPerBroker
+    {
+        get => _maxConnectionsPerBroker;
+        init
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(value, 1);
+            _maxConnectionsPerBroker = value;
+        }
+    }
+
+    private readonly int _maxConnectionsPerBroker = 10;
+
+    /// <summary>
     /// Producer interceptors, called in order during the produce pipeline.
     /// Interceptors are called on the hot path (OnSend) and on acknowledgement (OnAcknowledgement).
     /// Interceptor exceptions are caught and logged, not propagated.

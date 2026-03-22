@@ -307,8 +307,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     // Per-connection pending responses. Each list tracks in-flight requests for one connection.
-    // Single-threaded: only accessed by the send loop.
-    private readonly List<PendingResponse>[] _pendingResponsesByConnection;
+    // Single-threaded: only accessed by the send loop. Resized by adaptive connection scaling.
+    private List<PendingResponse>[] _pendingResponsesByConnection;
 
     // Batches that failed during SendCoalescedAsync (connection error, etc.) and need retry.
     // Set by the catch block, consumed by the send loop at the top of each iteration.
@@ -318,7 +318,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Non-blocking in-flight request limiter. The send loop uses _totalPendingResponseCount
     // (which it exclusively owns) as the in-flight measure. No cross-thread signaling needed.
     private readonly int _maxInFlight;
-    private readonly int _totalMaxInFlight;
+    private int _totalMaxInFlight;
 
     // Per-producer shared API version (read via volatile, written via Interlocked)
     private readonly Func<int> _getProduceApiVersion;
@@ -356,9 +356,20 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // For single-connection mode (_connectionCount == 1), degenerates to the original pinned behavior.
     // Idempotent producers require partition affinity for sequence ordering; non-idempotent
     // producers use round-robin for better distribution with skewed partition traffic.
-    private readonly IKafkaConnection?[] _pinnedConnections;
-    private readonly int _connectionCount;
+    private IKafkaConnection?[] _pinnedConnections;
+    private int _connectionCount;
     private readonly bool _requirePartitionAffinity;
+
+    // Adaptive connection scaling state (send-loop owned, single-threaded)
+    private readonly bool _adaptiveScalingEnabled;
+    private readonly int _maxConnectionsPerBroker;
+    private long _lastPressureSnapshot;
+    private long _lastScaleTimeTicks;
+
+    // Scaling thresholds
+    private const long ScalePressureDeltaThreshold = 100;
+    private const long ScaleCooldownMs = 30_000;
+    private const double ScaleUtilizationThreshold = 0.8;
 
     // Maintained counter for O(1) hot-path access. Incremented in SendCoalescedAsync
     // when a PendingResponse is added, decremented in ProcessCompletedResponses and
@@ -452,6 +463,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _requirePartitionAffinity = options.EnableIdempotence;
         _pinnedConnections = new IKafkaConnection?[_connectionCount];
         _totalMaxInFlight = _connectionCount * _maxInFlight;
+
+        // Adaptive scaling: only for non-idempotent producers (idempotent requires fixed partition affinity)
+        _adaptiveScalingEnabled = options.EnableAdaptiveConnections && !options.EnableIdempotence;
+        _maxConnectionsPerBroker = options.MaxConnectionsPerBroker;
 
         _pendingResponsesByConnection = new List<PendingResponse>[_connectionCount];
         for (var i = 0; i < _connectionCount; i++)
@@ -647,6 +662,37 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     finally
                     {
                         _partitionsNeedingSequenceReset.Clear();
+                    }
+                }
+
+                // ── 4b. Adaptive connection scaling ──
+                // Lightweight check: reads two atomics from accumulator, skips if no pressure.
+                // Only runs for non-idempotent producers with adaptive scaling enabled.
+                if (_adaptiveScalingEnabled)
+                {
+                    var scaledToCount = await MaybeScaleConnectionsAsync(cancellationToken).ConfigureAwait(false);
+
+                    // If a scale-up occurred, resize send-loop-local arrays
+                    if (scaledToCount > 0)
+                    {
+                        var newScratches = new ProduceRequestScratch[scaledToCount];
+                        Array.Copy(scratches, newScratches, Math.Min(scratches.Length, scaledToCount));
+                        for (var i = scratches.Length; i < scaledToCount; i++)
+                            newScratches[i] = new ProduceRequestScratch(_options, _compressionCodecs, maxCoalesce);
+                        scratches = newScratches;
+
+                        var newBuckets = new ConnectionBucket[scaledToCount];
+                        Array.Copy(connectionBuckets, newBuckets, Math.Min(connectionBuckets.Length, scaledToCount));
+                        for (var i = connectionBuckets.Length; i < scaledToCount; i++)
+                            newBuckets[i].Batches = new ReadyBatch[maxCoalesce];
+                        connectionBuckets = newBuckets;
+
+                        var newBucketCts = new CancellationTokenSource[scaledToCount];
+                        if (bucketTimeoutCts.Length > 0)
+                            Array.Copy(bucketTimeoutCts, newBucketCts, Math.Min(bucketTimeoutCts.Length, scaledToCount));
+                        for (var i = bucketTimeoutCts.Length; i < scaledToCount; i++)
+                            newBucketCts[i] = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                        bucketTimeoutCts = newBucketCts;
                     }
                 }
 
@@ -2329,6 +2375,75 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Checks buffer pressure metrics and scales up connections if sustained backpressure is detected.
+    /// Called from the send loop (single-threaded) so field mutations are safe without synchronization.
+    /// Returns the new connection count if scaling occurred, or 0 if no scaling happened.
+    /// </summary>
+    private async ValueTask<int> MaybeScaleConnectionsAsync(CancellationToken cancellationToken)
+    {
+        if (_connectionCount >= _maxConnectionsPerBroker)
+            return 0;
+
+        // Check pressure: has there been sustained pressure since last check?
+        var currentPressure = _accumulator.BufferPressureEvents;
+        var pressureDelta = currentPressure - _lastPressureSnapshot;
+        _lastPressureSnapshot = currentPressure;
+
+        if (pressureDelta < ScalePressureDeltaThreshold)
+            return 0;
+
+        // Enforce cooldown between scale-up events
+        var now = Environment.TickCount64;
+        if (now - _lastScaleTimeTicks < ScaleCooldownMs)
+            return 0;
+
+        if (_accumulator.BufferUtilization < ScaleUtilizationThreshold)
+            return 0;
+
+        // Scale up by 1 connection — wrapped in try-catch to avoid killing the send loop
+        // on transient connection failures (TCP timeout, auth failure, etc.)
+        int actualCount;
+        try
+        {
+            actualCount = await _connectionPool.ScaleConnectionGroupAsync(
+                _brokerId, _connectionCount + 1, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw; // Propagate cancellation
+        }
+        catch (Exception ex)
+        {
+            LogAdaptiveScaleFailed(ex, _brokerId, _connectionCount);
+            _lastScaleTimeTicks = now; // Apply cooldown even on failure
+            return 0;
+        }
+
+        if (actualCount <= _connectionCount)
+            return 0;
+
+        var oldCount = _connectionCount;
+        _connectionCount = actualCount;
+        _totalMaxInFlight = _connectionCount * _maxInFlight;
+        _lastScaleTimeTicks = now;
+
+        // Resize pinned connections array
+        var newPinned = new IKafkaConnection?[actualCount];
+        Array.Copy(_pinnedConnections, newPinned, oldCount);
+        _pinnedConnections = newPinned;
+
+        // Resize pending responses array
+        var newPending = new List<PendingResponse>[actualCount];
+        Array.Copy(_pendingResponsesByConnection, newPending, oldCount);
+        for (var i = oldCount; i < actualCount; i++)
+            newPending[i] = new List<PendingResponse>();
+        _pendingResponsesByConnection = newPending;
+
+        LogAdaptiveScaleUp(_brokerId, oldCount, actualCount);
+        return actualCount;
+    }
+
     #region Logging
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "[BrokerSender] Epoch bump failed for stale epoch {Epoch}, will retry next iteration")]
@@ -2399,6 +2514,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] non-fatal exception during batch cleanup step (suppressed)")]
     private partial void LogBatchCleanupStepFailed(Exception exception, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "BrokerSender[{BrokerId}] adaptive scale-up: {OldCount} -> {NewCount} connections")]
+    private partial void LogAdaptiveScaleUp(int brokerId, int oldCount, int newCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] adaptive scale-up failed (current: {CurrentCount} connections)")]
+    private partial void LogAdaptiveScaleFailed(Exception exception, int brokerId, int currentCount);
 
     #endregion
 }

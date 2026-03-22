@@ -53,6 +53,8 @@ public sealed class ProducerBuilder<TKey, TValue>
     private int? _deliveryTimeoutMs;
     private int? _requestTimeoutMs;
     private IRetryPolicy? _retryPolicy;
+    private bool _enableAdaptiveConnections;
+    private int _maxConnectionsPerBroker = 10;
 
     public ProducerBuilder<TKey, TValue> WithBootstrapServers(string servers)
     {
@@ -176,6 +178,25 @@ public sealed class ProducerBuilder<TKey, TValue>
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(connectionsPerBroker, 1);
         _connectionsPerBroker = connectionsPerBroker;
+        return this;
+    }
+
+    /// <summary>
+    /// Enables adaptive connection scaling based on buffer pressure.
+    /// When sustained backpressure is detected, the producer will automatically add connections
+    /// per broker (up to <paramref name="maxConnections"/>) to increase drain throughput.
+    /// <para>
+    /// Only effective for non-idempotent producers. Idempotent producers require fixed connection
+    /// counts for sequence number ordering and will ignore this setting.
+    /// </para>
+    /// </summary>
+    /// <param name="enabled">Whether to enable adaptive scaling. Default: true.</param>
+    /// <param name="maxConnections">Maximum connections per broker. Default: 10.</param>
+    public ProducerBuilder<TKey, TValue> WithAdaptiveConnections(bool enabled = true, int maxConnections = 10)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxConnections, 1);
+        _enableAdaptiveConnections = enabled;
+        _maxConnectionsPerBroker = maxConnections;
         return this;
     }
 
@@ -663,7 +684,9 @@ public sealed class ProducerBuilder<TKey, TValue>
             SocketSendBufferBytes = _socketSendBufferBytes,
             SocketReceiveBufferBytes = _socketReceiveBufferBytes,
             Interceptors = _interceptors?.Count > 0 ? _interceptors.ToArray() : null,
-            RetryPolicy = _retryPolicy
+            RetryPolicy = _retryPolicy,
+            EnableAdaptiveConnections = _enableAdaptiveConnections,
+            MaxConnectionsPerBroker = _maxConnectionsPerBroker
         };
 
         var metadataOptions = _metadataMaxAge.HasValue

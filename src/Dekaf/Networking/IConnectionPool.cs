@@ -27,6 +27,17 @@ public interface IConnectionPool : IAsyncDisposable
     void RegisterBroker(int brokerId, string host, int port);
 
     /// <summary>
+    /// Scales the connection group for a broker to the specified count.
+    /// If the broker already has at least <paramref name="newCount"/> connections, this is a no-op.
+    /// New connections are created in parallel and appended to the existing group.
+    /// </summary>
+    /// <param name="brokerId">The broker to scale connections for.</param>
+    /// <param name="newCount">The desired number of connections.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The actual connection count after scaling.</returns>
+    ValueTask<int> ScaleConnectionGroupAsync(int brokerId, int newCount, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Removes a connection from the pool.
     /// </summary>
     ValueTask RemoveConnectionAsync(int brokerId);

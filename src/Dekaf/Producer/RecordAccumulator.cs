@@ -41,6 +41,35 @@ internal ref struct SpinLockGuard
 }
 
 /// <summary>
+/// Pooled node for FIFO sync waiter queue. Each blocked thread in ReserveMemorySync or
+/// WaitForBufferSpace gets its own node so ReleaseMemory can wake waiters one-at-a-time
+/// instead of broadcasting (thundering herd). Nodes are pooled to avoid per-wait allocations.
+/// </summary>
+internal sealed class SyncWaiterNode
+{
+    /// <summary>
+    /// The event this waiter blocks on. Starts unsignaled; signaled by ReleaseMemory
+    /// when this node reaches the front of the queue.
+    /// </summary>
+    public readonly ManualResetEventSlim Event = new(false);
+
+    /// <summary>
+    /// Set to true when the owning thread succeeds without waiting (early CAS success).
+    /// WakeNextSyncWaiter skips cancelled nodes to avoid wasting signals on stale entries.
+    /// </summary>
+    public volatile bool Cancelled;
+
+    /// <summary>
+    /// Resets the node for reuse from the pool.
+    /// </summary>
+    public void Reset()
+    {
+        Cancelled = false;
+        Event.Reset();
+    }
+}
+
+/// <summary>
 /// Debug-only tracking for message flow through the producer pipeline.
 /// Tracks messages at each stage to identify where messages are lost.
 /// All recording methods use [Conditional("DEBUG")] so calls are stripped in Release builds.
@@ -825,10 +854,13 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Buffer memory tracking for backpressure
     private readonly ulong _maxBufferMemory;
     private long _bufferedBytes;
-    // Sync signal for ReserveMemorySync — ManualResetEventSlim wakes all blocked sync
-    // waiters instantly when buffer space is freed, eliminating the 100ms polling cap
-    // that SemaphoreSlim(0,1) required (which caused 2x throughput variance in profiling).
-    private readonly ManualResetEventSlim _syncBufferSpaceSignal = new(false);
+    // Adaptive connection scaling: counts slow-path entries in ReserveMemorySync/Async
+    private long _bufferPressureEvents;
+    // FIFO waiter queue for sync buffer space waiters. Each blocked thread gets its own
+    // ManualResetEventSlim via a pooled SyncWaiterNode, eliminating thundering herd:
+    // ReleaseMemory wakes waiters one-at-a-time in FIFO order instead of broadcasting.
+    private readonly ConcurrentQueue<SyncWaiterNode> _syncWaiterQueue = new();
+    private readonly ConcurrentQueue<SyncWaiterNode> _syncWaiterPool = new();
     private readonly CancellationTokenSource _disposalCts = new();
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
@@ -1965,6 +1997,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     public ulong MaxBufferMemory => _maxBufferMemory;
 
     /// <summary>
+    /// Gets the cumulative count of buffer pressure events (slow-path entries in memory reservation).
+    /// Used by adaptive connection scaling to detect sustained backpressure.
+    /// </summary>
+    internal long BufferPressureEvents => Volatile.Read(ref _bufferPressureEvents);
+
+    /// <summary>
+    /// Gets the current buffer utilization as a ratio (0.0 to 1.0+).
+    /// Used by adaptive connection scaling to confirm buffer is actually full.
+    /// </summary>
+    internal double BufferUtilization => (double)Volatile.Read(ref _bufferedBytes) / (double)_maxBufferMemory;
+
+    /// <summary>
     /// Attempts to reserve buffer memory for a record without blocking.
     /// Uses lock-free CAS loop for thread-safe reservation.
     /// </summary>
@@ -2007,6 +2051,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         {
             return;
         }
+
+        // Slow path: buffer is full — increment pressure counter for adaptive connection scaling
+        Interlocked.Increment(ref _bufferPressureEvents);
 
         // Slow path: wait for space to become available with timeout protection
         // Use MaxBlockMs to limit how long we block waiting for buffer space (equivalent to Kafka's max.block.ms)
@@ -2067,41 +2114,56 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return;
         }
 
-        // Slow path: wait for space with timeout and cancellation support
+        // Slow path: buffer is full — increment pressure counter for adaptive connection scaling
+        Interlocked.Increment(ref _bufferPressureEvents);
+
+        // Enqueue a FIFO waiter node and block on its individual event.
+        // Only one waiter is woken per ReleaseMemory call, eliminating thundering herd.
         var currentTicks = Environment.TickCount64;
         var deadline = (long.MaxValue - currentTicks > _options.MaxBlockMs)
             ? currentTicks + _options.MaxBlockMs
             : long.MaxValue;
 
-        while (true)
+        var waiter = RentWaiterNode();
+        _syncWaiterQueue.Enqueue(waiter);
+
+        try
         {
-            // Check for disposal before blocking
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(RecordAccumulator));
+            while (true)
+            {
+                // Check for disposal before blocking
+                if (_disposed)
+                    throw new ObjectDisposedException(nameof(RecordAccumulator));
 
-            // Check timeout
-            var remainingMs = deadline - Environment.TickCount64;
-            if (remainingMs <= 0)
-                ThrowBufferMemoryTimeout(recordSize, currentTicks);
+                // Check timeout
+                var remainingMs = deadline - Environment.TickCount64;
+                if (remainingMs <= 0)
+                    ThrowBufferMemoryTimeout(recordSize, currentTicks);
 
-            // Reset-before-Wait: clear the event, then double-check the condition.
-            // Eliminates the 100ms polling cap that SemaphoreSlim(0,1) required.
-            if (_syncBufferSpaceSignal.IsSet)
-                _syncBufferSpaceSignal.Reset();
+                // Try to reserve before waiting — space may have become available
+                // between enqueue and here, or after a signal that we consumed.
+                if (TryReserveMemory(recordSize))
+                    break;
 
-            if (TryReserveMemory(recordSize))
-                break;
+                // Block on this waiter's individual event (not a shared broadcast signal).
+                waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
 
-            _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, int.MaxValue));
+                // Reset the event for potential re-wait if CAS fails.
+                waiter.Event.Reset();
 
-            if (TryReserveMemory(recordSize))
-                break;
+                if (TryReserveMemory(recordSize))
+                    break;
+            }
+        }
+        finally
+        {
+            ReturnWaiterNode(waiter);
         }
 
-        // Chain-wake: if space still remains, wake other waiters so they don't
-        // wait until the next ReleaseMemory signal.
+        // Chain-wake: if space still remains after our reservation, wake the next
+        // waiter in FIFO order so it can attempt its CAS without waiting for ReleaseMemory.
         if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
-            _syncBufferSpaceSignal.Set();
+            WakeNextSyncWaiter();
     }
 
     private void ThrowBufferMemoryTimeout(int recordSize, long startTicks)
@@ -2129,13 +2191,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// of Tasks, saturating the thread pool and preventing the sender loop from draining batches.
     /// </summary>
     /// <remarks>
-    /// <see cref="DisposeAsync"/> promptly unblocks any thread waiting here by releasing
-    /// <c>_syncBufferSpaceSignal</c>; the waiter then hits the <c>_disposed</c> check.
+    /// <see cref="DisposeAsync"/> promptly unblocks all waiting threads via
+    /// <see cref="WakeAllSyncWaiters"/>; each waiter then hits the <c>_disposed</c> check.
     /// <para/>
-    /// Note: this gate shares <c>_syncBufferSpaceSignal</c> with <see cref="ReserveMemorySync"/>.
-    /// Both are woken by <see cref="ReleaseMemory"/> when batches complete. A gate waiter may
-    /// consume a signal intended for a reserve waiter (and vice versa), but both retry in a loop
-    /// so no waiter is permanently starved.
+    /// Both this method and <see cref="ReserveMemorySync"/> use the shared FIFO waiter queue.
+    /// <see cref="ReleaseMemory"/> wakes waiters one-at-a-time in FIFO order via
+    /// <see cref="WakeNextSyncWaiter"/>, with chain-wake propagation when space remains.
     /// </remarks>
     internal void WaitForBufferSpace()
     {
@@ -2146,33 +2207,39 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
             return;
 
-        // Slow path: buffer is full, wait until the sender loop drains some batches.
+        // Slow path: enqueue a FIFO waiter node (requestedBytes=0 for gate-only waiters).
         var startTicks = Environment.TickCount64;
+        var waiter = RentWaiterNode();
+        _syncWaiterQueue.Enqueue(waiter);
 
-        while ((ulong)Volatile.Read(ref _bufferedBytes) >= _maxBufferMemory)
+        try
         {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(RecordAccumulator));
+            while ((ulong)Volatile.Read(ref _bufferedBytes) >= _maxBufferMemory)
+            {
+                if (_disposed)
+                    throw new ObjectDisposedException(nameof(RecordAccumulator));
 
-            var elapsed = Environment.TickCount64 - startTicks;
-            if (elapsed >= _options.MaxBlockMs)
-                ThrowBufferFullTimeout(startTicks);
+                var elapsed = Environment.TickCount64 - startTicks;
+                if (elapsed >= _options.MaxBlockMs)
+                    ThrowBufferFullTimeout(startTicks);
 
-            // Reset-before-Wait: clear the event, double-check condition, then wait.
-            // Eliminates the 100ms polling cap that SemaphoreSlim(0,1) required.
-            var remainingMs = _options.MaxBlockMs - elapsed;
-            if (_syncBufferSpaceSignal.IsSet)
-                _syncBufferSpaceSignal.Reset();
+                var remainingMs = _options.MaxBlockMs - elapsed;
 
-            if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
-                break;
+                if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
+                    break;
 
-            _syncBufferSpaceSignal.Wait((int)Math.Min(remainingMs, int.MaxValue));
+                waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
+                waiter.Event.Reset();
+            }
+        }
+        finally
+        {
+            ReturnWaiterNode(waiter);
         }
 
-        // Chain-wake: if space still remains, wake other waiters.
+        // Chain-wake: if space still remains, wake the next waiter.
         if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
-            _syncBufferSpaceSignal.Set();
+            WakeNextSyncWaiter();
     }
 
     private void ThrowBufferFullTimeout(long startTicks)
@@ -2187,6 +2254,61 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             $"drain within max.block.ms ({_options.MaxBlockMs}ms). " +
             $"Producer is generating messages faster than the network can send them. " +
             $"Consider: increasing BufferMemory, increasing MaxBlockMs, reducing production rate, or checking network connectivity.");
+    }
+
+    /// <summary>
+    /// Rents a <see cref="SyncWaiterNode"/> from the pool, or creates a new one if the pool is empty.
+    /// </summary>
+    private SyncWaiterNode RentWaiterNode()
+    {
+        if (_syncWaiterPool.TryDequeue(out var node))
+        {
+            node.Reset();
+            return node;
+        }
+
+        return new SyncWaiterNode();
+    }
+
+    /// <summary>
+    /// Returns a <see cref="SyncWaiterNode"/> to the pool for reuse.
+    /// Marks the node as cancelled first so stale queue entries are skipped.
+    /// </summary>
+    private void ReturnWaiterNode(SyncWaiterNode node)
+    {
+        node.Cancelled = true;
+
+        // Cap pool size to avoid unbounded growth (soft cap — racy but harmless).
+        // 64 is more than enough for typical producer thread counts.
+        if (_syncWaiterPool.Count < 64)
+            _syncWaiterPool.Enqueue(node);
+    }
+
+    /// <summary>
+    /// Dequeues and signals the next non-cancelled waiter in FIFO order (if any).
+    /// Skips stale entries from threads that succeeded before waiting.
+    /// Called from ReleaseMemory and chain-wake paths.
+    /// </summary>
+    private void WakeNextSyncWaiter()
+    {
+        while (_syncWaiterQueue.TryDequeue(out var waiter))
+        {
+            if (!waiter.Cancelled)
+            {
+                waiter.Event.Set();
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Wakes ALL queued sync waiters. Used during disposal to unblock all waiting threads
+    /// so they can observe <c>_disposed</c> and throw <see cref="ObjectDisposedException"/>.
+    /// </summary>
+    private void WakeAllSyncWaiters()
+    {
+        while (_syncWaiterQueue.TryDequeue(out var waiter))
+            waiter.Event.Set();
     }
 
     /// <summary>
@@ -2214,8 +2336,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 #endif
         }
 
-        // Signal that space is available — wake sync and async waiters.
-        _syncBufferSpaceSignal.Set();
+        // Signal that space is available — wake sync waiters one-at-a-time (FIFO)
+        // and async waiters via semaphore.
+        WakeNextSyncWaiter();
         TryReleaseSemaphore(_asyncBufferSpaceSignal);
     }
 
@@ -2746,9 +2869,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // (CloseAsync checks _disposed and returns immediately, so channels may not be completed)
         CompleteAppendWorkerChannels();
 
-        // Wake any threads blocked in ReserveMemorySync/Async so they recheck
-        // _disposed promptly instead of waiting for the timeout.
-        _syncBufferSpaceSignal.Set();
+        // Wake ALL threads blocked in ReserveMemorySync/WaitForBufferSpace so they
+        // recheck _disposed promptly instead of waiting for the timeout.
+        WakeAllSyncWaiters();
         TryReleaseSemaphore(_asyncBufferSpaceSignal);
 
         // Cancel the disposal token to interrupt any remaining blocked operations
@@ -2883,7 +3006,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         _batchPool.Clear();
 
         // Dispose resources to prevent leaks
-        _syncBufferSpaceSignal?.Dispose();
+        // Dispose all pooled waiter node events
+        while (_syncWaiterPool.TryDequeue(out var pooledNode))
+            pooledNode.Event.Dispose();
+        while (_syncWaiterQueue.TryDequeue(out var queuedNode))
+            queuedNode.Event.Dispose();
         _wakeupSignal?.Dispose();
         _disposalCts?.Dispose();
         _asyncBufferSpaceSignal?.Dispose();
