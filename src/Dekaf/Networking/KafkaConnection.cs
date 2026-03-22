@@ -1920,9 +1920,6 @@ internal readonly struct PooledResponseBuffer : IDisposable
     /// guard in TryReadResponse — single source of truth to prevent silent divergence.
     /// Sized to accommodate multi-partition fetch responses (e.g., 6 partitions × 1 MB = ~6 MB)
     /// without falling back to unpooled LOH allocations that trigger Gen2 GC.
-    /// Note: this is a static pool, so it cannot adapt to per-consumer
-    /// FetchMaxBytes/MaxPartitionFetchBytes. Users with very large partition fetch sizes
-    /// (e.g., 4 MB × 6 partitions = 24 MB) will still bypass pooling for those responses.
     /// </summary>
     internal const int MaxArrayLength = 16 * 1024 * 1024;
 

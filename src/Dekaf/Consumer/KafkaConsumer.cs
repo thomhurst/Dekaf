@@ -40,7 +40,7 @@ internal sealed class PendingFetchData : IDisposable
     /// <summary>
     /// Cached activity name to avoid per-record string interpolation in consume loop.
     /// </summary>
-    public string ActivityName { get; }
+    internal string ActivityName { get; }
 
     /// <summary>
     /// Cached TopicPartition to avoid per-message allocation in consume loop.
