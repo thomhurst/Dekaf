@@ -915,15 +915,14 @@ public sealed partial class KafkaConnection : IKafkaConnection
         responseBuffer.Slice(0, 4).CopyTo(correlationBuffer);
         correlationId = BinaryPrimitives.ReadInt32BigEndian(correlationBuffer);
 
-        // Use dedicated response pool for responses <= 16MB.
+        // Use dedicated response pool for responses within the pool's max array size.
         // Multi-partition fetch responses (e.g., 6 partitions × 1MB) easily exceed 4MB.
         // Unpooled responses go to LOH and require Gen2 GC to reclaim, which on
         // CPU-constrained machines causes cascading GC pressure.
-        const int maxPooledSize = 16 * 1024 * 1024;
         byte[] responseArray;
         bool isPooled;
 
-        if (size <= maxPooledSize)
+        if (size <= PooledResponseBuffer.MaxArrayLength)
         {
             responseArray = PooledResponseBuffer.Pool.Rent(size);
             isPooled = true;
@@ -1917,17 +1916,18 @@ public sealed class ConnectionOptions
 internal readonly struct PooledResponseBuffer : IDisposable
 {
     /// <summary>
-    /// Dedicated pool for Kafka response buffers. Sized to accommodate multi-partition
-    /// fetch responses (e.g., 6 partitions × 1 MB = ~6 MB) without falling back to
-    /// unpooled LOH allocations that trigger Gen2 GC. ArrayPool&lt;byte&gt;.Shared only pools
-    /// arrays up to 2^20 (1 MB), so even single-partition fetch responses (~1,048,712 bytes)
-    /// would bypass pooling without this dedicated pool.
-    /// Note: this is a static pool, so maxArrayLength cannot adapt to per-consumer
+    /// Maximum array size the pool can handle. Used both to configure the pool and as the
+    /// guard in TryReadResponse — single source of truth to prevent silent divergence.
+    /// Sized to accommodate multi-partition fetch responses (e.g., 6 partitions × 1 MB = ~6 MB)
+    /// without falling back to unpooled LOH allocations that trigger Gen2 GC.
+    /// Note: this is a static pool, so it cannot adapt to per-consumer
     /// FetchMaxBytes/MaxPartitionFetchBytes. Users with very large partition fetch sizes
     /// (e.g., 4 MB × 6 partitions = 24 MB) will still bypass pooling for those responses.
     /// </summary>
+    internal const int MaxArrayLength = 16 * 1024 * 1024;
+
     internal static readonly ArrayPool<byte> Pool = ArrayPool<byte>.Create(
-        maxArrayLength: 16 * 1024 * 1024,
+        maxArrayLength: MaxArrayLength,
         maxArraysPerBucket: 32); // 32 × 16 MB = ~512 MB worst-case pool retention
 
     private readonly byte[] _buffer;
