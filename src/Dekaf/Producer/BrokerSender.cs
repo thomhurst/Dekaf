@@ -2068,12 +2068,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Sends a bucket of batches on the specified connection. Rents a pooled array,
-    /// acquires the connection, and calls SendCoalescedAsync.
-    /// Takes <paramref name="connectionBuckets"/> array + index instead of ref struct
-    /// because async methods cannot have ref parameters.
-    /// </summary>
-    /// <summary>
     /// Resets a per-connection timeout CTS for reuse, or recreates it if TryReset fails.
     /// Mirrors the single-connection path's sendTimeoutCts reuse pattern.
     /// </summary>
@@ -2087,6 +2081,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         cts.CancelAfter(SendCoalescedTimeoutMs);
     }
 
+    /// <summary>
+    /// Sends a bucket of batches on the specified connection. Rents a pooled array,
+    /// acquires the connection, and calls SendCoalescedAsync.
+    /// Takes <paramref name="connectionBuckets"/> array + index instead of ref struct
+    /// because async methods cannot have ref parameters.
+    /// </summary>
     private async ValueTask SendConnectionBucketAsync(
         int connIdx, ConnectionBucket[] connectionBuckets,
         ProduceRequestScratch scratch, CancellationToken cancellationToken)
