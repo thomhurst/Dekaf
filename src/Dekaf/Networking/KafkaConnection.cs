@@ -637,21 +637,25 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         Debug.Assert(bodyWriter.BytesWritten == buffer.WrittenCount, "BytesWritten must equal buffer.WrittenCount");
 
-        // Write the 4-byte size prefix (byte count of header + body) into the PipeWriter,
-        // followed by the serialized payload. Two writes into the same pipe segment are
-        // cheaper than backpatching through a ReadOnlySpan.
-        var sizeSpan = writer.GetSpan(4);
-        BinaryPrimitives.WriteInt32BigEndian(sizeSpan, bodyWriter.BytesWritten);
-        writer.Advance(4);
-
-        // Write the serialized header + body from the thread-local buffer (single copy).
-        writer.Write(buffer.WrittenSpan);
+        // Write the 4-byte size prefix and the serialized payload as a single atomic
+        // operation via GetMemory/Advance. This ensures that a partial frame (size prefix
+        // without body) can never be committed to the PipeWriter if the body copy throws.
+        var totalLength = 4 + bodyWriter.BytesWritten;
+        var memory = writer.GetMemory(totalLength);
+        BinaryPrimitives.WriteInt32BigEndian(memory.Span, bodyWriter.BytesWritten);
+        buffer.WrittenSpan.CopyTo(memory.Span.Slice(4));
+        writer.Advance(totalLength);
     }
 
     /// <summary>
     /// Serializes a request into the PipeWriter and flushes.
     /// Must be called under the write lock.
     /// </summary>
+    /// <remarks>
+    /// Serialization intentionally runs under the write lock. This increases lock hold time
+    /// slightly, but eliminates a buffer copy and the ArrayPool rent/return overhead that
+    /// would be needed to serialize outside the lock and then copy into the PipeWriter.
+    /// </remarks>
     private async ValueTask SerializeAndFlushAsync<TRequest, TResponse>(
         TRequest request,
         int correlationId,
