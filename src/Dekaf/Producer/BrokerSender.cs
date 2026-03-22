@@ -55,7 +55,7 @@ namespace Dekaf.Producer;
 /// Response completion is detected by polling <c>_pendingResponsesByConnection</c> for completed tasks
 /// (checking <c>ResponseTask.IsCompleted</c>). <c>UnsafeOnCompleted</c> callbacks write lightweight
 /// <see cref="SendLoopEvent.ResponseReady"/> signals to wake up the send loop when responses
-/// arrive. In-flight capacity is measured by <c>TotalPendingResponseCount</c>.
+/// arrive. In-flight capacity is measured by <c>_totalPendingResponseCount</c>.
 /// </para>
 /// <para>
 /// External threads (producer callers) interact with BrokerSender only through the unbounded
@@ -315,7 +315,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Single-threaded: only accessed by the send loop.
     private readonly List<ReadyBatch> _sendFailedRetries = new();
 
-    // Non-blocking in-flight request limiter. The send loop uses TotalPendingResponseCount
+    // Non-blocking in-flight request limiter. The send loop uses _totalPendingResponseCount
     // (which it exclusively owns) as the in-flight measure. No cross-thread signaling needed.
     private readonly int _maxInFlight;
     private readonly int _totalMaxInFlight;
@@ -360,16 +360,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly int _connectionCount;
     private readonly bool _requirePartitionAffinity;
 
-    private int TotalPendingResponseCount
-    {
-        get
-        {
-            var total = 0;
-            for (var i = 0; i < _pendingResponsesByConnection.Length; i++)
-                total += _pendingResponsesByConnection[i].Count;
-            return total;
-        }
-    }
+    // Maintained counter for O(1) hot-path access. Incremented in SendCoalescedAsync
+    // when a PendingResponse is added, decremented in ProcessCompletedResponses and
+    // HandleTimedOutRequests when entries are removed. Single-threaded send loop only.
+    private int _totalPendingResponseCount;
 
     /// <summary>
     /// Zero-allocation async auto-reset signal for response completion notification.
@@ -572,7 +566,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         // Round-robin counter for non-idempotent multi-connection bucket assignment.
         // Distributes batches evenly across connections regardless of partition skew.
-        var roundRobinCounter = 0;
+        var roundRobinCounter = 0u;
 
         var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
@@ -598,7 +592,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                LogSendLoopIteration(_brokerId, carryOver.Count, TotalPendingResponseCount);
+                LogSendLoopIteration(_brokerId, carryOver.Count, _totalPendingResponseCount);
 
                 // ── 1. Poll pending responses (like Java's client.poll()) ──
                 // Signal events (ResponseReady, Unmute) may have woken us up — processing
@@ -706,7 +700,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // The iteration count caps total work (both spins and channel reads).
                 if (coalescedCount > 0 && coalescedCount <= MicroLingerBatchThreshold
                     && carryOver.Count == 0
-                    && TotalPendingResponseCount < _totalMaxInFlight)
+                    && _totalPendingResponseCount < _totalMaxInFlight)
                 {
                     var spinWait = new SpinWait();
                     for (var spin = 0; spin < MicroLingerMaxSpins; spin++)
@@ -731,7 +725,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var sentThisIteration = false;
                 if (coalescedCount > 0)
                 {
-                    var pendingCount = TotalPendingResponseCount;
+                    var pendingCount = _totalPendingResponseCount;
                     if (pendingCount >= _totalMaxInFlight)
                         LogWaitingForInFlightCapacity(_brokerId, pendingCount, _totalMaxInFlight);
 
@@ -739,7 +733,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     {
                         // Poll for completed responses to free in-flight slots.
                         ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
-                        pendingCount = TotalPendingResponseCount;
+                        pendingCount = _totalPendingResponseCount;
 
                         if (pendingCount >= _totalMaxInFlight)
                         {
@@ -747,7 +741,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // Without this, the send loop blocks forever when a response task
                             // never completes.
                             HandleTimedOutRequests(carryOver, cancellationToken);
-                            pendingCount = TotalPendingResponseCount;
+                            pendingCount = _totalPendingResponseCount;
                             if (pendingCount < _totalMaxInFlight)
                                 break;
 
@@ -757,7 +751,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // return, creating a spin loop that starves the thread pool and
                             // prevents I/O completion callbacks from running.
                             await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
-                            pendingCount = TotalPendingResponseCount;
+                            pendingCount = _totalPendingResponseCount;
                         }
                     }
 
@@ -857,7 +851,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             {
                                 var connIdx = _requirePartitionAffinity
                                     ? coalescedBatches[i].TopicPartition.Partition % _connectionCount
-                                    : (roundRobinCounter++ & int.MaxValue) % _connectionCount;
+                                    : (int)(roundRobinCounter++ % (uint)_connectionCount);
                                 ref var bucket = ref connectionBuckets[connIdx];
                                 bucket.Batches[bucket.Count++] = coalescedBatches[i];
                             }
@@ -927,7 +921,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 7. Compute timeout and wait ──
-                var waitPendingCount = TotalPendingResponseCount;
+                var waitPendingCount = _totalPendingResponseCount;
                 if (carryOver.Count == 0 && waitPendingCount == 0)
                 {
                     // Fully idle — wait for any event (new batch, response, unmute).
@@ -1001,6 +995,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                     pr.ReturnBatchesArray();
                 }
+                _totalPendingResponseCount -= pendingList.Count;
                 pendingList.Clear();
             }
 
@@ -1247,7 +1242,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Compact: remove processed entries from the end
             if (writeIdx < pendingList.Count)
+            {
+                _totalPendingResponseCount -= pendingList.Count - writeIdx;
                 pendingList.RemoveRange(writeIdx, pendingList.Count - writeIdx);
+            }
         }
     }
 
@@ -1463,6 +1461,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Remove all entries. Response tasks are orphaned — they'll eventually complete
             // (via CTS timeout or connection disposal) but nobody polls them.
+            _totalPendingResponseCount -= pendingList.Count;
             pendingList.Clear();
         }
     }
@@ -1793,6 +1792,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             var pendingResponse = new PendingResponse(responseTask, batches, count, requestStartTime);
             _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
+            _totalPendingResponseCount++;
 
             // Diagnostic: mark batches as successfully pipelined to _pendingResponsesByConnection.
             // If an orphan trace shows 'S' but no 'W' (Wire), the batch never reached here.
@@ -1834,7 +1834,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            LogPipelinedSend(_brokerId, count, TotalPendingResponseCount);
+            LogPipelinedSend(_brokerId, count, _totalPendingResponseCount);
         }
         catch (OperationCanceledException) when (_cts.IsCancellationRequested)
         {
@@ -2269,7 +2269,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             LogBatchCleanupStepFailed(ex, _brokerId);
         }
 
-        var totalPending = TotalPendingResponseCount;
+        var totalPending = _totalPendingResponseCount;
         if (totalPending > 0)
         {
             LogFailingPendingResponses(_brokerId, totalPending);
@@ -2292,6 +2292,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     pr.ReturnBatchesArray();
                 }
 
+                _totalPendingResponseCount -= pendingList.Count;
                 pendingList.Clear();
             }
         }
