@@ -1925,7 +1925,7 @@ internal readonly struct PooledResponseBuffer : IDisposable
 
     internal static readonly ArrayPool<byte> Pool = ArrayPool<byte>.Create(
         maxArrayLength: MaxArrayLength,
-        maxArraysPerBucket: 32); // 32 × 16 MB = ~512 MB worst-case pool retention
+        maxArraysPerBucket: 32); // 32 arrays per bucket; worst-case retention across all buckets is ~1 GB
 
     private readonly byte[] _buffer;
     private readonly int _offset;
