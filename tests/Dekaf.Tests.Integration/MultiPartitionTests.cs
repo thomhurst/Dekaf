@@ -397,6 +397,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 10);
         var groupId = $"test-group-{Guid.NewGuid():N}";
 
+        // Let broker stabilize partition leaders before producing.
+        // On slow CI runners, leader election for 10 partitions can take several seconds.
+        await Task.Delay(3000);
+
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
