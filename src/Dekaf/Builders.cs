@@ -165,7 +165,7 @@ public sealed class ProducerBuilder<TKey, TValue>
     /// </summary>
     /// <param name="connectionsPerBroker">
     /// Number of connections per broker. Must be at least 1.
-    /// Cannot be greater than 1 when idempotence is enabled.
+    /// Cannot be greater than 1 when TransactionalId is set.
     /// </param>
     /// <exception cref="ArgumentOutOfRangeException">
     /// Thrown when <paramref name="connectionsPerBroker"/> is less than 1.
@@ -580,11 +580,11 @@ public sealed class ProducerBuilder<TKey, TValue>
         if (_transactionalId is not null && !_enableIdempotence)
             throw new InvalidOperationException("Idempotence cannot be disabled when TransactionalId is set. Transactions require idempotence for correctness.");
 
-        if (_enableIdempotence && _connectionsPerBroker > 1)
+        if (_transactionalId is not null && _connectionsPerBroker > 1)
             throw new InvalidOperationException(
-                "ConnectionsPerBroker cannot be greater than 1 when idempotence is enabled. " +
-                "Idempotent producers require a single pinned connection per broker to maintain sequence number ordering. " +
-                "Either disable idempotence with WithIdempotence(false) or use ConnectionsPerBroker = 1.");
+                "ConnectionsPerBroker cannot be greater than 1 when TransactionalId is set. " +
+                "Transaction coordination requests require a single connection per broker. " +
+                "Either remove WithTransactionalId() or use ConnectionsPerBroker = 1.");
 
         if (_enableIdempotence && _acks == Acks.None)
             throw new InvalidOperationException("Acks.None is incompatible with idempotence because the broker cannot acknowledge sequence numbers without sending a response.");
