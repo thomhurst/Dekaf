@@ -82,10 +82,11 @@ public class AppendWorkerAffinityTests
         var deques = GetPartitionDeques(accumulator);
         var tp = new TopicPartition("test-topic", 0);
 
-        // Poll until workers have processed and created the batch
+        // Poll until workers have processed and created the batch.
+        // Use 30s timeout for slow CI runners (thread pool starvation on single-core).
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (!HasBatchForPartition(deques, tp) && sw.ElapsedMilliseconds < 5000)
-            await Task.Delay(10);
+        while (!HasBatchForPartition(deques, tp) && sw.ElapsedMilliseconds < 30_000)
+            await Task.Delay(50);
 
         await Assert.That(HasBatchForPartition(deques, tp)).IsTrue();
 
@@ -130,10 +131,9 @@ public class AppendWorkerAffinityTests
         var deques = GetPartitionDeques(accumulator);
 
         // Poll until workers have created batches for ALL partitions.
-        // Checking deque count alone is insufficient — a deque entry can exist
-        // before the worker has created the batch (CurrentBatch is still null).
+        // Use 30s timeout for slow CI runners (thread pool starvation on single-core).
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (sw.ElapsedMilliseconds < 5000)
+        while (sw.ElapsedMilliseconds < 30_000)
         {
             var allReady = true;
             for (var p = 0; p < partitionCount; p++)
@@ -148,7 +148,7 @@ public class AppendWorkerAffinityTests
             if (allReady)
                 break;
 
-            await Task.Delay(10);
+            await Task.Delay(50);
         }
 
         for (var p = 0; p < partitionCount; p++)
