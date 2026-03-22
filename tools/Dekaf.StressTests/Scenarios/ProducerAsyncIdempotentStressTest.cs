@@ -29,7 +29,8 @@ internal sealed class ProducerAsyncIdempotentStressTest : IStressTestScenario
             .WithIdempotence(true)
             .WithAcks(Acks.All)
             .WithLinger(TimeSpan.FromMilliseconds(options.LingerMs))
-            .WithBatchSize(options.BatchSize);
+            .WithBatchSize(options.BatchSize)
+            .WithConnectionsPerBroker(options.ConnectionsPerBroker);
 
         _ = options.Compression switch
         {

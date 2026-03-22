@@ -347,31 +347,27 @@ public class ProducerBuilderValidationTests
     #region ConnectionsPerBroker Validation
 
     [Test]
-    public async Task Build_WithIdempotenceAndConnectionsPerBrokerGreaterThan1_ThrowsInvalidOperationException()
+    public async Task Build_WithIdempotenceAndConnectionsPerBrokerGreaterThan1_Succeeds()
     {
-        var builder = Kafka.CreateProducer<string, string>()
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
             .WithIdempotence(true)
-            .WithConnectionsPerBroker(4);
+            .WithConnectionsPerBroker(4)
+            .Build();
 
-        var act = () => builder.Build();
-
-        await Assert.That(act).Throws<InvalidOperationException>()
-            .And.HasMessageContaining("ConnectionsPerBroker cannot be greater than 1");
+        await Assert.That(producer).IsNotNull();
     }
 
     [Test]
-    public async Task Build_WithDefaultIdempotenceAndConnectionsPerBrokerGreaterThan1_ThrowsInvalidOperationException()
+    public async Task Build_WithDefaultIdempotenceAndConnectionsPerBrokerGreaterThan1_Succeeds()
     {
-        // Default idempotence is true, so this should also throw
-        var builder = Kafka.CreateProducer<string, string>()
+        // Default idempotence is true — partition affinity makes multi-connection safe
+        await using var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("localhost:9092")
-            .WithConnectionsPerBroker(2);
+            .WithConnectionsPerBroker(2)
+            .Build();
 
-        var act = () => builder.Build();
-
-        await Assert.That(act).Throws<InvalidOperationException>()
-            .And.HasMessageContaining("ConnectionsPerBroker cannot be greater than 1");
+        await Assert.That(producer).IsNotNull();
     }
 
     [Test]
@@ -424,6 +420,48 @@ public class ProducerBuilderValidationTests
         var builder = Kafka.CreateProducer<string, string>();
         var result = builder.WithConnectionsPerBroker(3);
         await Assert.That(result).IsSameReferenceAs(builder);
+    }
+
+    #endregion
+
+    #region Multi-Connection Validation
+
+    [Test]
+    public async Task Build_IdempotentWithMultipleConnectionsPerBroker_Succeeds()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithIdempotence(true)
+            .WithConnectionsPerBroker(3)
+            .Build();
+
+        await Assert.That(producer).IsNotNull();
+    }
+
+    [Test]
+    public async Task Build_TransactionalWithMultipleConnectionsPerBroker_ThrowsInvalidOperationException()
+    {
+        var builder = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithTransactionalId("test-txn")
+            .WithConnectionsPerBroker(3);
+
+        var act = () => builder.Build();
+
+        await Assert.That(act).Throws<InvalidOperationException>()
+            .And.HasMessageContaining("ConnectionsPerBroker");
+    }
+
+    [Test]
+    public async Task Build_NonIdempotentWithMultipleConnectionsPerBroker_Succeeds()
+    {
+        await using var producer = Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers("localhost:9092")
+            .WithIdempotence(false)
+            .WithConnectionsPerBroker(3)
+            .Build();
+
+        await Assert.That(producer).IsNotNull();
     }
 
     #endregion

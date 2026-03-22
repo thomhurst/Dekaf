@@ -113,6 +113,43 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
         return await CreateConnectionGroupAsync(brokerId, brokerInfo, cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<IKafkaConnection> GetConnectionByIndexAsync(int brokerId, int index, CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(ConnectionPool));
+
+        if (!_brokers.TryGetValue(brokerId, out var brokerInfo))
+        {
+            throw new InvalidOperationException($"Unknown broker ID: {brokerId}");
+        }
+
+        if (_connectionsPerBroker <= 1)
+        {
+            return await GetConnectionAsync(brokerId, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!_connectionGroupsById.TryGetValue(brokerId, out var connections))
+        {
+            // CreateConnectionGroupAsync populates _connectionGroupsById and returns
+            // the first connection. If it throws (timeout, broker unreachable), the
+            // exception propagates — no null-dereference risk below.
+            await CreateConnectionGroupAsync(brokerId, brokerInfo, cancellationToken).ConfigureAwait(false);
+
+            if (!_connectionGroupsById.TryGetValue(brokerId, out connections))
+                throw new InvalidOperationException($"Connection group for broker {brokerId} was not created");
+        }
+
+        var effectiveIndex = index % connections.Length;
+        var connection = connections[effectiveIndex];
+
+        if (connection is not null && connection.IsConnected)
+        {
+            return connection;
+        }
+
+        return await ReplaceConnectionInGroupAsync(brokerId, brokerInfo, effectiveIndex, cancellationToken).ConfigureAwait(false);
+    }
+
     private async ValueTask<IKafkaConnection> CreateConnectionGroupAsync(int brokerId, BrokerInfo brokerInfo, CancellationToken cancellationToken)
     {
         // Create all connections for this broker in parallel

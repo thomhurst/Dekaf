@@ -15,28 +15,23 @@ internal static class MarkdownReporter
         sb.AppendLine($"**Total Duration:** {(results.RunCompletedAtUtc - results.RunStartedAtUtc).TotalMinutes:F1} minutes");
         sb.AppendLine();
 
+        // Group by scenario and broker count, then output throughput + latency + GC
+        // together per scenario so related data is easy to compare side-by-side.
         var scenarioGroups = GroupByScenarioAndBrokers(results.Results).ToList();
 
         foreach (var group in scenarioGroups)
         {
+            var groupResults = group.ToList();
             var title = FormatGroupTitle(FormatScenarioTitle(group.Key.Scenario), group.Key.BrokerCount);
-            GenerateThroughputTable(sb, title, group.ToList());
-        }
+            var label = FormatGroupTitle(FormatScenarioLabel(group.Key.Scenario), group.Key.BrokerCount);
 
-        foreach (var group in scenarioGroups)
-        {
-            var resultsWithLatency = group.Where(r => r.Latency is not null).ToList();
+            GenerateThroughputTable(sb, title, groupResults);
+
+            var resultsWithLatency = groupResults.Where(r => r.Latency is not null).ToList();
             if (resultsWithLatency.Count > 0)
-            {
-                var title = FormatGroupTitle("Latency - " + FormatScenarioLabel(group.Key.Scenario), group.Key.BrokerCount);
-                GenerateLatencyTable(sb, resultsWithLatency, title);
-            }
-        }
+                GenerateLatencyTable(sb, resultsWithLatency, $"Latency - {label}");
 
-        foreach (var group in scenarioGroups)
-        {
-            var title = FormatGroupTitle("GC Statistics - " + FormatScenarioLabel(group.Key.Scenario), group.Key.BrokerCount);
-            GenerateGcTable(sb, group.ToList(), title);
+            GenerateGcTable(sb, groupResults, $"GC Statistics - {label}");
         }
 
         return sb.ToString();
@@ -52,10 +47,14 @@ internal static class MarkdownReporter
     private static string FormatGroupTitle(string title, int brokerCount) =>
         brokerCount > 1 ? $"{title}, {brokerCount} Brokers" : title;
 
+    private static int GetClientColumnWidth(List<StressTestResult> results) =>
+        Math.Max(9, results.Max(r => r.Client.Length));
+
     private static void GenerateThroughputTable(StringBuilder sb, string title, List<StressTestResult> results)
     {
         var messageSizes = results.Select(r => r.MessageSizeBytes).Distinct().ToList();
         var durationMinutes = results.Select(r => r.DurationMinutes).Distinct().FirstOrDefault();
+        var clientWidth = GetClientColumnWidth(results);
 
         foreach (var messageSize in messageSizes)
         {
@@ -68,8 +67,8 @@ internal static class MarkdownReporter
             var messageSizeKb = messageSize >= 1024 ? $"{messageSize / 1024.0:F1}KB" : $"{messageSize}B";
             sb.AppendLine($"## {title} ({durationMinutes} minutes, {messageSizeKb} messages)");
             sb.AppendLine();
-            sb.AppendLine("| Client    | Messages/sec | MB/sec | Errors | Ratio |");
-            sb.AppendLine("|-----------|--------------|--------|--------|-------|");
+            sb.AppendLine($"| {"Client".PadRight(clientWidth)} | Messages/sec | MB/sec | Errors | Ratio |");
+            sb.AppendLine($"|{new string('-', clientWidth + 2)}|--------------|--------|--------|-------|");
 
             var baseline = sizeResults
                 .Where(r => r.Client.Equals("Confluent", StringComparison.OrdinalIgnoreCase))
@@ -84,7 +83,7 @@ internal static class MarkdownReporter
             foreach (var result in sizeResults.OrderByDescending(r => r.Throughput.AverageMessagesPerSecond))
             {
                 var ratio = baseline > 0 ? result.Throughput.AverageMessagesPerSecond / baseline : 1.0;
-                sb.AppendLine($"| {result.Client,-9} | {result.Throughput.AverageMessagesPerSecond,12:N0} | {result.Throughput.AverageMegabytesPerSecond,6:F2} | {result.Throughput.TotalErrors,6} | {ratio:F2}x |");
+                sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {result.Throughput.AverageMessagesPerSecond,12:N0} | {result.Throughput.AverageMegabytesPerSecond,6:F2} | {result.Throughput.TotalErrors,6} | {ratio:F2}x |");
             }
 
             sb.AppendLine();
@@ -93,16 +92,17 @@ internal static class MarkdownReporter
 
     private static void GenerateLatencyTable(StringBuilder sb, List<StressTestResult> results, string title = "Latency Percentiles")
     {
+        var clientWidth = GetClientColumnWidth(results);
+
         sb.AppendLine($"## {title}");
         sb.AppendLine();
-        sb.AppendLine("| Client    | Scenario         | p50    | p95    | p99    | Max    |");
-        sb.AppendLine("|-----------|------------------|--------|--------|--------|--------|");
+        sb.AppendLine($"| {"Client".PadRight(clientWidth)} | p50    | p95    | p99    | Max    |");
+        sb.AppendLine($"|{new string('-', clientWidth + 2)}|--------|--------|--------|--------|");
 
-        foreach (var result in results.OrderBy(r => r.Scenario).ThenBy(r => r.Latency!.P50Ms))
+        foreach (var result in results.OrderBy(r => r.Latency!.P50Ms))
         {
             var latency = result.Latency!;
-            var scenarioLabel = FormatScenarioLabel(result.Scenario);
-            sb.AppendLine($"| {result.Client,-9} | {scenarioLabel,-16} | {FormatLatency(latency.P50Ms)} | {FormatLatency(latency.P95Ms)} | {FormatLatency(latency.P99Ms)} | {FormatLatency(latency.MaxMs)} |");
+            sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {FormatLatency(latency.P50Ms)} | {FormatLatency(latency.P95Ms)} | {FormatLatency(latency.P99Ms)} | {FormatLatency(latency.MaxMs)} |");
         }
 
         sb.AppendLine();
@@ -110,14 +110,16 @@ internal static class MarkdownReporter
 
     private static void GenerateGcTable(StringBuilder sb, List<StressTestResult> results, string title = "GC Statistics")
     {
+        var clientWidth = GetClientColumnWidth(results);
+
         sb.AppendLine($"## {title}");
         sb.AppendLine();
-        sb.AppendLine("| Client    | Scenario | Gen0 | Gen1 | Gen2 | Total Allocated |");
-        sb.AppendLine("|-----------|----------|------|------|------|-----------------|");
+        sb.AppendLine($"| {"Client".PadRight(clientWidth)} | Gen0 | Gen1 | Gen2 | Total Allocated |");
+        sb.AppendLine($"|{new string('-', clientWidth + 2)}|------|------|------|-----------------|");
 
-        foreach (var result in results.OrderBy(r => r.Client).ThenBy(r => r.Scenario))
+        foreach (var result in results.OrderBy(r => r.Client))
         {
-            sb.AppendLine($"| {result.Client,-9} | {result.Scenario,-8} | {result.GcStats.Gen0Collections,4} | {result.GcStats.Gen1Collections,4} | {result.GcStats.Gen2Collections,4} | {result.GcStats.FormatAllocatedBytes(),9} |");
+            sb.AppendLine($"| {result.Client.PadRight(clientWidth)} | {result.GcStats.Gen0Collections,4} | {result.GcStats.Gen1Collections,4} | {result.GcStats.Gen2Collections,4} | {result.GcStats.FormatAllocatedBytes(),9} |");
         }
 
         sb.AppendLine();
