@@ -24,7 +24,7 @@ namespace Dekaf.Producer;
 /// All wake-up sources (new batches, response completions, partition unmutes) flow through
 /// a single <see cref="_eventChannel"/> — like Java Kafka's Sender.poll() model. Response
 /// tasks complete and signal the channel via lightweight <c>UnsafeOnCompleted</c> wake-ups;
-/// the send loop then polls <c>_pendingResponses</c> for completed tasks (like main's
+/// the send loop then polls <c>_pendingResponsesByConnection</c> for completed tasks (like main's
 /// ProcessCompletedResponses). This avoids cross-thread reference sharing of batches arrays.
 ///
 /// Per-partition ordering during retries uses a mute set (aligned with the Java Kafka
@@ -36,9 +36,9 @@ namespace Dekaf.Producer;
 /// response handlers signal a flag, and the single-threaded send loop bumps the epoch
 /// before the next send. This eliminates all races between concurrent handlers.
 ///
-/// In-flight request limiting uses <see cref="_pendingResponses"/> count (exclusively owned
+/// In-flight request limiting uses <see cref="_pendingResponsesByConnection"/> count (exclusively owned
 /// by the send loop) as the in-flight measure. Completed responses are processed by polling
-/// <c>_pendingResponses</c> for completed tasks on each iteration.
+/// <c>_pendingResponsesByConnection</c> for completed tasks on each iteration.
 ///
 /// All writes go through the send loop — there are no out-of-loop write paths.
 /// </summary>
@@ -47,15 +47,15 @@ namespace Dekaf.Producer;
 /// <para>
 /// The core of BrokerSender is the <see cref="SendLoopAsync"/> method, which runs on a single
 /// dedicated thread (Task). This send loop owns and exclusively accesses the following mutable state:
-/// <see cref="_pendingResponses"/>, <see cref="_sendFailedRetries"/>, carry-over batch lists,
+/// <see cref="_pendingResponsesByConnection"/>, <see cref="_sendFailedRetries"/>, carry-over batch lists,
 /// coalesced batch arrays, and <see cref="_pinnedConnections"/>. No locks are needed for these
 /// because they are only ever touched by the send loop thread.
 /// </para>
 /// <para>
-/// Response completion is detected by polling <c>_pendingResponses</c> for completed tasks
+/// Response completion is detected by polling <c>_pendingResponsesByConnection</c> for completed tasks
 /// (checking <c>ResponseTask.IsCompleted</c>). <c>UnsafeOnCompleted</c> callbacks write lightweight
 /// <see cref="SendLoopEvent.ResponseReady"/> signals to wake up the send loop when responses
-/// arrive. In-flight capacity is measured by <c>_pendingResponses.Count</c>.
+/// arrive. In-flight capacity is measured by <c>TotalPendingResponseCount</c>.
 /// </para>
 /// <para>
 /// External threads (producer callers) interact with BrokerSender only through the unbounded
@@ -126,7 +126,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Task<ProduceResponse> ResponseTask,
         ReadyBatch[] Batches,
         int Count,
-        long RequestStartTime)
+        long RequestStartTime,
+        int ConnectionIndex)
     {
         /// <summary>
         /// Clears batch references and returns the pooled array to <see cref="ArrayPool{T}.Shared"/>.
@@ -141,7 +142,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private enum SendLoopEventType : byte
     {
         NewBatch,
-        ResponseReady, // Lightweight signal: a response task completed, poll _pendingResponses
+        ResponseReady, // Lightweight signal: a response task completed, poll _pendingResponsesByConnection
         Unmute
     }
 
@@ -288,14 +289,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
     }
 
-    private readonly List<PendingResponse> _pendingResponses = new();
+    // Per-connection pending responses. Each list tracks in-flight requests for one connection.
+    // Single-threaded: only accessed by the send loop.
+    private readonly List<PendingResponse>[] _pendingResponsesByConnection;
 
     // Batches that failed during SendCoalescedAsync (connection error, etc.) and need retry.
     // Set by the catch block, consumed by the send loop at the top of each iteration.
     // Single-threaded: only accessed by the send loop.
     private readonly List<ReadyBatch> _sendFailedRetries = new();
 
-    // Non-blocking in-flight request limiter. The send loop uses _pendingResponses.Count
+    // Non-blocking in-flight request limiter. The send loop uses TotalPendingResponseCount
     // (which it exclusively owns) as the in-flight measure. No cross-thread signaling needed.
     private readonly int _maxInFlight;
 
@@ -339,6 +342,28 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly int _connectionCount;
     private readonly bool _usePartitionAffinity;
     private readonly bool _useRoundRobinConnections;
+
+    private int TotalPendingResponseCount
+    {
+        get
+        {
+            var total = 0;
+            for (var i = 0; i < _pendingResponsesByConnection.Length; i++)
+                total += _pendingResponsesByConnection[i].Count;
+            return total;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int GetConnectionIndex(IKafkaConnection connection)
+    {
+        for (var i = 0; i < _pinnedConnections.Length; i++)
+        {
+            if (ReferenceEquals(_pinnedConnections[i], connection))
+                return i;
+        }
+        return 0; // Fallback for round-robin mode or single-connection
+    }
 
     /// <summary>
     /// Zero-allocation async auto-reset signal for response completion notification.
@@ -418,6 +443,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         _usePartitionAffinity = options.EnableIdempotence && options.ConnectionsPerBroker > 1;
         _connectionCount = _usePartitionAffinity ? options.ConnectionsPerBroker : 1;
         _pinnedConnections = new IKafkaConnection?[_connectionCount];
+
+        _pendingResponsesByConnection = new List<PendingResponse>[_connectionCount];
+        for (var i = 0; i < _connectionCount; i++)
+            _pendingResponsesByConnection[i] = new List<PendingResponse>();
 
         // Non-idempotent producers with multiple connections per broker use round-robin
         // connection selection to distribute load across TCP streams.
@@ -539,7 +568,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                LogSendLoopIteration(_brokerId, carryOver.Count, _pendingResponses.Count);
+                LogSendLoopIteration(_brokerId, carryOver.Count, TotalPendingResponseCount);
 
                 // ── 1. Poll pending responses (like Java's client.poll()) ──
                 // Signal events (ResponseReady, Unmute) may have woken us up — processing
@@ -647,7 +676,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // The iteration count caps total work (both spins and channel reads).
                 if (coalescedCount > 0 && coalescedCount <= MicroLingerBatchThreshold
                     && carryOver.Count == 0
-                    && _pendingResponses.Count < _maxInFlight)
+                    && TotalPendingResponseCount < _connectionCount * _maxInFlight)
                 {
                     var spinWait = new SpinWait();
                     for (var spin = 0; spin < MicroLingerMaxSpins; spin++)
@@ -672,21 +701,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var sentThisIteration = false;
                 if (coalescedCount > 0)
                 {
-                    if (_pendingResponses.Count >= _maxInFlight)
-                        LogWaitingForInFlightCapacity(_brokerId, _pendingResponses.Count, _maxInFlight);
+                    if (TotalPendingResponseCount >= _connectionCount * _maxInFlight)
+                        LogWaitingForInFlightCapacity(_brokerId, TotalPendingResponseCount, _connectionCount * _maxInFlight);
 
-                    while (_pendingResponses.Count >= _maxInFlight)
+                    while (TotalPendingResponseCount >= _connectionCount * _maxInFlight)
                     {
                         // Poll for completed responses to free in-flight slots.
                         ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
 
-                        if (_pendingResponses.Count >= _maxInFlight)
+                        if (TotalPendingResponseCount >= _connectionCount * _maxInFlight)
                         {
                             // Handle timed-out requests (Java pattern) to free zombie entries.
                             // Without this, the send loop blocks forever when a response task
                             // never completes.
                             HandleTimedOutRequests(carryOver, cancellationToken);
-                            if (_pendingResponses.Count < _maxInFlight)
+                            if (TotalPendingResponseCount < _connectionCount * _maxInFlight)
                                 break;
 
                             // Wait for any pending response to complete.
@@ -775,7 +804,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         // stale sockets), the CTS cancellation triggers the Z path (retry/fail)
                         // so the send loop stays responsive for HandleTimedOutRequests.
                         // IMPORTANT: must await (not fire-and-forget) to preserve thread safety —
-                        // SendCoalescedAsync accesses _pendingResponses and _sendFailedRetries
+                        // SendCoalescedAsync accesses _pendingResponsesByConnection and _sendFailedRetries
                         // which are not thread-safe.
                         {
                             if (!sendTimeoutCts.TryReset())
@@ -810,7 +839,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 7. Compute timeout and wait ──
-                if (carryOver.Count == 0 && _pendingResponses.Count == 0)
+                if (carryOver.Count == 0 && TotalPendingResponseCount == 0)
                 {
                     // Fully idle — wait for any event (new batch, response, unmute).
                     if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
@@ -822,7 +851,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     // responses and re-coalesce. Carry-over batches that were blocked by
                     // duplicate-partition will coalesce next time (coalescedPartitions is cleared).
                 }
-                else if (_pendingResponses.Count > 0)
+                else if (TotalPendingResponseCount > 0)
                 {
                     // Carry-over (possibly all muted) and/or pending responses — wait for
                     // any response to complete. Cannot use eventReader.WaitToReadAsync here
@@ -865,20 +894,24 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
             _sendFailedRetries.Clear();
 
-            for (var i = 0; i < _pendingResponses.Count; i++)
+            for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
             {
-                var pr = _pendingResponses[i];
-                for (var j = 0; j < pr.Count; j++)
+                var pendingList = _pendingResponsesByConnection[connIdx];
+                for (var i = 0; i < pendingList.Count; i++)
                 {
-                    if (pr.Batches[j] is not null)
+                    var pr = pendingList[i];
+                    for (var j = 0; j < pr.Count; j++)
                     {
-                        try { FailAndCleanupBatch(pr.Batches[j], disposedException); }
-                        catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                        if (pr.Batches[j] is not null)
+                        {
+                            try { FailAndCleanupBatch(pr.Batches[j], disposedException); }
+                            catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                        }
                     }
+                    pr.ReturnBatchesArray();
                 }
-                pr.ReturnBatchesArray();
+                pendingList.Clear();
             }
-            _pendingResponses.Clear();
 
             FailCarryOverBatches(carryOver);
 
@@ -1035,7 +1068,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Polls _pendingResponses for completed response tasks and processes them inline.
+    /// Polls _pendingResponsesByConnection for completed response tasks and processes them inline.
     /// Equivalent to Java's Sender processing completed sends inside NetworkClient.poll().
     /// Uses compact-in-place pattern to avoid list allocation during removal.
     /// </summary>
@@ -1050,75 +1083,81 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // preserving per-partition FIFO ordering during the next coalescing pass.
         // Reverse iteration (swap-with-last O(1) removal) would process R2 before R1,
         // causing the newer batch to be coalesced first and violating ordering.
-        var writeIdx = 0;
-        for (var i = 0; i < _pendingResponses.Count; i++)
+        for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
         {
-            var pending = _pendingResponses[i];
-            if (!pending.ResponseTask.IsCompleted)
+            var pendingList = _pendingResponsesByConnection[connIdx];
+            if (pendingList.Count == 0) continue;
+
+            var writeIdx = 0;
+            for (var i = 0; i < pendingList.Count; i++)
             {
-                // Keep this entry — compact in-place
-                _pendingResponses[writeIdx++] = pending;
-                continue;
-            }
-
-            var task = pending.ResponseTask;
-            var batches = pending.Batches;
-            var count = pending.Count;
-
-            if (task.IsFaulted || task.IsCanceled)
-            {
-                var ex = task.Exception?.InnerException ?? new OperationCanceledException();
-                LogResponseFailed(ex, _brokerId);
-                Array.Clear(_pinnedConnections); // No-op in round-robin mode — connection is fetched from pool each time
-
-                for (var j = 0; j < count; j++)
+                var pending = pendingList[i];
+                if (!pending.ResponseTask.IsCompleted)
                 {
-                    if (batches[j] is not null)
+                    // Keep this entry — compact in-place
+                    pendingList[writeIdx++] = pending;
+                    continue;
+                }
+
+                var task = pending.ResponseTask;
+                var batches = pending.Batches;
+                var count = pending.Count;
+
+                if (task.IsFaulted || task.IsCanceled)
+                {
+                    var ex = task.Exception?.InnerException ?? new OperationCanceledException();
+                    LogResponseFailed(ex, _brokerId);
+                    Array.Clear(_pinnedConnections); // No-op in round-robin mode — connection is fetched from pool each time
+
+                    for (var j = 0; j < count; j++)
                     {
-                        batches[j].AppendDiag('P'); // Faulted/cancelled response processed
-                        try
+                        if (batches[j] is not null)
                         {
-                            HandleRetriableBatch(batches[j], ErrorCode.NetworkException,
-                                carryOver, cancellationToken);
+                            batches[j].AppendDiag('P'); // Faulted/cancelled response processed
+                            try
+                            {
+                                HandleRetriableBatch(batches[j], ErrorCode.NetworkException,
+                                    carryOver, cancellationToken);
+                            }
+                            catch (Exception batchEx)
+                            {
+                                try { FailAndCleanupBatch(batches[j], ex); }
+                                catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                                LogBatchCleanupStepFailed(batchEx, _brokerId);
+                            }
                         }
-                        catch (Exception batchEx)
-                        {
-                            try { FailAndCleanupBatch(batches[j], ex); }
-                            catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
-                            LogBatchCleanupStepFailed(batchEx, _brokerId);
-                        }
+                    }
+
+                    pending.ReturnBatchesArray();
+                    continue;
+                }
+
+                var response = task.Result;
+                // Reuse caller-provided dictionary to avoid per-response allocation.
+                // The dictionary is cleared after use in ProcessResponseBatches.
+                var responseLookup = reusableResponseLookup;
+                foreach (var topicResp in response.Responses)
+                {
+                    foreach (var partResp in topicResp.PartitionResponses)
+                    {
+                        responseLookup ??= new Dictionary<(string, int), ProduceResponsePartitionData>();
+                        responseLookup[(topicResp.Name, partResp.Index)] = partResp;
                     }
                 }
 
+                ProcessResponseBatches(batches, count, responseLookup,
+                    carryOver, cancellationToken);
+
+                // Clear for reuse on next response (avoids per-response dictionary allocation)
+                responseLookup?.Clear();
+
                 pending.ReturnBatchesArray();
-                continue;
             }
 
-            var response = task.Result;
-            // Reuse caller-provided dictionary to avoid per-response allocation.
-            // The dictionary is cleared after use in ProcessResponseBatches.
-            var responseLookup = reusableResponseLookup;
-            foreach (var topicResp in response.Responses)
-            {
-                foreach (var partResp in topicResp.PartitionResponses)
-                {
-                    responseLookup ??= new Dictionary<(string, int), ProduceResponsePartitionData>();
-                    responseLookup[(topicResp.Name, partResp.Index)] = partResp;
-                }
-            }
-
-            ProcessResponseBatches(batches, count, responseLookup,
-                carryOver, cancellationToken);
-
-            // Clear for reuse on next response (avoids per-response dictionary allocation)
-            responseLookup?.Clear();
-
-            pending.ReturnBatchesArray();
+            // Compact: remove processed entries from the end
+            if (writeIdx < pendingList.Count)
+                pendingList.RemoveRange(writeIdx, pendingList.Count - writeIdx);
         }
-
-        // Compact: remove processed entries from the end
-        if (writeIdx < _pendingResponses.Count)
-            _pendingResponses.RemoveRange(writeIdx, _pendingResponses.Count - writeIdx);
     }
 
     /// <summary>
@@ -1240,12 +1279,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// <summary>
     /// Java-style request timeout handling (handleTimedOutRequests pattern).
     /// On every send loop iteration, checks if ANY pending response has exceeded the
-    /// request timeout. If so, removes ALL entries from _pendingResponses and processes
+    /// request timeout. If so, removes ALL entries from the connection's pending list and processes
     /// each batch — exactly like Java's NetworkClient.handleTimedOutRequests() which closes
     /// the connection and calls cancelInFlightRequests() for the node.
     /// <para/>
     /// Processing happens synchronously in the single-threaded send loop. Entries are
-    /// removed from _pendingResponses BEFORE processing, so ProcessCompletedResponses
+    /// removed from the connection's pending list BEFORE processing, so ProcessCompletedResponses
     /// cannot also process the same batches (eliminating the race condition).
     /// <para/>
     /// The connections are also invalidated (Array.Clear(_pinnedConnections)) so the next send
@@ -1256,85 +1295,90 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         PartitionCarryOver carryOver,
         CancellationToken cancellationToken)
     {
-        if (_pendingResponses.Count == 0) return;
-
         var now = Stopwatch.GetTimestamp();
         var requestTimeoutTicks = _options.RequestTimeoutTicks;
 
-        // Check if ANY pending response has exceeded the request timeout.
-        var hasTimedOut = false;
-        for (var i = 0; i < _pendingResponses.Count; i++)
+        // Check each connection's pending responses for timeout.
+        for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
         {
-            if (now >= _pendingResponses[i].RequestStartTime + requestTimeoutTicks)
+            var pendingList = _pendingResponsesByConnection[connIdx];
+            if (pendingList.Count == 0) continue;
+
+            // Check if ANY pending response in this connection's list has exceeded the request timeout.
+            var hasTimedOut = false;
+            for (var i = 0; i < pendingList.Count; i++)
             {
-                hasTimedOut = true;
-                break;
-            }
-        }
-
-        if (!hasTimedOut)
-            return;
-
-        // Request timeout detected — invalidate connection and process ALL pending batches.
-        // Must process ALL entries (not just the timed-out one) because they share the same
-        // connection, which is now unreliable. This matches Java's behavior: when any request
-        // times out, ALL in-flight requests for that node are failed.
-        Array.Clear(_pinnedConnections); // No-op in round-robin mode — connection is fetched from pool each time
-        LogRequestTimeoutDisconnection(_brokerId, _pendingResponses.Count);
-
-        var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
-
-        for (var i = 0; i < _pendingResponses.Count; i++)
-        {
-            var pending = _pendingResponses[i];
-            for (var j = 0; j < pending.Count; j++)
-            {
-                var batch = pending.Batches[j];
-                if (batch is null) continue;
-
-                batch.AppendDiag('T'); // Timed-out request
-
-                // Check delivery deadline: if exceeded, permanently fail the batch.
-                // Otherwise, retry (like Java's handleProduceResponse for disconnected requests).
-                if (now >= batch.StopwatchCreatedTicks + deliveryTimeoutTicks)
+                if (now >= pendingList[i].RequestStartTime + requestTimeoutTicks)
                 {
-                    UnmutePartition(batch.TopicPartition);
-                    var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
-                    var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
-                    try
-                    {
-                        FailAndCleanupBatch(batch, new KafkaTimeoutException(
-                            TimeoutKind.Delivery, elapsed, configured,
-                            $"Delivery timeout exceeded while awaiting response for {batch.TopicPartition}"));
-                    }
-                    catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                    hasTimedOut = true;
+                    break;
                 }
-                else
+            }
+
+            if (!hasTimedOut)
+                continue;
+
+            // Request timeout detected — invalidate connection and process ALL pending batches
+            // for this connection. Must process ALL entries (not just the timed-out one) because
+            // they share the same connection, which is now unreliable. This matches Java's behavior:
+            // when any request times out, ALL in-flight requests for that node are failed.
+            Array.Clear(_pinnedConnections); // No-op in round-robin mode — connection is fetched from pool each time
+            LogRequestTimeoutDisconnection(_brokerId, pendingList.Count);
+
+            var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
+
+            for (var i = 0; i < pendingList.Count; i++)
+            {
+                var pending = pendingList[i];
+                for (var j = 0; j < pending.Count; j++)
                 {
-                    try
+                    var batch = pending.Batches[j];
+                    if (batch is null) continue;
+
+                    batch.AppendDiag('T'); // Timed-out request
+
+                    // Check delivery deadline: if exceeded, permanently fail the batch.
+                    // Otherwise, retry (like Java's handleProduceResponse for disconnected requests).
+                    if (now >= batch.StopwatchCreatedTicks + deliveryTimeoutTicks)
                     {
-                        HandleRetriableBatch(batch, ErrorCode.NetworkException,
-                            carryOver, cancellationToken);
-                    }
-                    catch (Exception batchEx)
-                    {
-                        try { FailAndCleanupBatch(batch, batchEx); }
+                        UnmutePartition(batch.TopicPartition);
+                        var elapsed = Stopwatch.GetElapsedTime(batch.StopwatchCreatedTicks);
+                        var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs);
+                        try
+                        {
+                            FailAndCleanupBatch(batch, new KafkaTimeoutException(
+                                TimeoutKind.Delivery, elapsed, configured,
+                                $"Delivery timeout exceeded while awaiting response for {batch.TopicPartition}"));
+                        }
                         catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                     }
+                    else
+                    {
+                        try
+                        {
+                            HandleRetriableBatch(batch, ErrorCode.NetworkException,
+                                carryOver, cancellationToken);
+                        }
+                        catch (Exception batchEx)
+                        {
+                            try { FailAndCleanupBatch(batch, batchEx); }
+                            catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
+                        }
+                    }
                 }
+
+                pending.ReturnBatchesArray();
             }
 
-            pending.ReturnBatchesArray();
+            // Remove all entries. Response tasks are orphaned — they'll eventually complete
+            // (via CTS timeout or connection disposal) but nobody polls them.
+            pendingList.Clear();
         }
-
-        // Remove all entries. Response tasks are orphaned — they'll eventually complete
-        // (via CTS timeout or connection disposal) but nobody polls them.
-        _pendingResponses.Clear();
     }
 
     /// <summary>
     /// Computes the next poll timeout in milliseconds. Returns the minimum of:
-    /// - Earliest request timeout deadline from _pendingResponses
+    /// - Earliest request timeout deadline from _pendingResponsesByConnection
     /// - Earliest retry backoff from carry-over batches
     /// - Earliest delivery deadline from carry-over batches
     /// Returns 0 if a deadline has already passed (immediate re-loop).
@@ -1346,11 +1390,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var earliestTicks = long.MaxValue;
 
         // Use request timeout for pending responses (Java handleTimedOutRequests pattern).
-        for (var i = 0; i < _pendingResponses.Count; i++)
+        for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
         {
-            var deadline = _pendingResponses[i].RequestStartTime + _options.RequestTimeoutTicks;
-            if (deadline < earliestTicks)
-                earliestTicks = deadline;
+            var pendingList = _pendingResponsesByConnection[connIdx];
+            for (var i = 0; i < pendingList.Count; i++)
+            {
+                var deadline = pendingList[i].RequestStartTime + _options.RequestTimeoutTicks;
+                if (deadline < earliestTicks)
+                    earliestTicks = deadline;
+            }
         }
 
         var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
@@ -1610,7 +1658,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // Release everything synchronously (no pipelined response — fire-and-forget
-                // doesn't add to _pendingResponses, so no in-flight slot to release)
+                // doesn't add to _pendingResponsesByConnection, so no in-flight slot to release)
                 for (var i = 0; i < count; i++)
                 {
                     CleanupBatch(batches[i]);
@@ -1621,7 +1669,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             }
 
             // Pipelined send: write request, get response task.
-            // Add to _pendingResponses for the send loop to process inline (like Java's client.poll()).
+            // Add to _pendingResponsesByConnection for the send loop to process inline (like Java's client.poll()).
             // No fire-and-forget — responses are processed in the single-threaded send loop,
             // making retry ordering deterministic by construction.
             // Use the caller-timeout overload to avoid per-write
@@ -1649,10 +1697,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            var pendingResponse = new PendingResponse(responseTask, batches, count, requestStartTime);
-            _pendingResponses.Add(pendingResponse);
+            var connIdx = GetConnectionIndex(connection);
+            var pendingResponse = new PendingResponse(responseTask, batches, count, requestStartTime, connIdx);
+            _pendingResponsesByConnection[connIdx].Add(pendingResponse);
 
-            // Diagnostic: mark batches as successfully pipelined to _pendingResponses.
+            // Diagnostic: mark batches as successfully pipelined to _pendingResponsesByConnection.
             // If an orphan trace shows 'S' but no 'W' (Wire), the batch never reached here.
             for (var i = 0; i < count; i++)
                 batches[i].AppendDiag('W');
@@ -1692,7 +1741,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            LogPipelinedSend(_brokerId, count, _pendingResponses.Count);
+            LogPipelinedSend(_brokerId, count, TotalPendingResponseCount);
         }
         catch (OperationCanceledException) when (_cts.IsCancellationRequested)
         {
@@ -2103,7 +2152,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         await _cts.CancelAsync().ConfigureAwait(false);
 
         // Wait for send loop to finish (should exit quickly now that CTS is cancelled).
-        // The send loop owns _pendingResponses — it will process remaining responses
+        // The send loop owns _pendingResponsesByConnection — it will process remaining responses
         // during its final iteration(s) before exiting.
         LogWaitingForSendLoop(_brokerId);
         try
@@ -2115,22 +2164,28 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             LogBatchCleanupStepFailed(ex, _brokerId);
         }
 
-        if (_pendingResponses.Count > 0)
+        var totalPending = TotalPendingResponseCount;
+        if (totalPending > 0)
         {
-            LogFailingPendingResponses(_brokerId, _pendingResponses.Count);
+            LogFailingPendingResponses(_brokerId, totalPending);
 
-            foreach (var pr in _pendingResponses)
+            for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
             {
-                for (var j = 0; j < pr.Count; j++)
+                var pendingList = _pendingResponsesByConnection[connIdx];
+                for (var i = 0; i < pendingList.Count; i++)
                 {
-                    if (pr.Batches[j] is not null)
-                        FailAndCleanupBatch(pr.Batches[j], new ObjectDisposedException(nameof(BrokerSender)));
+                    var pr = pendingList[i];
+                    for (var j = 0; j < pr.Count; j++)
+                    {
+                        if (pr.Batches[j] is not null)
+                            FailAndCleanupBatch(pr.Batches[j], new ObjectDisposedException(nameof(BrokerSender)));
+                    }
+
+                    pr.ReturnBatchesArray();
                 }
 
-                pr.ReturnBatchesArray();
+                pendingList.Clear();
             }
-
-            _pendingResponses.Clear();
         }
 
         _cts.Dispose();
