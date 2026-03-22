@@ -79,6 +79,8 @@ public static class Program
         Console.WriteLine($"Client: {options.Client}");
         Console.WriteLine($"Compression: {options.Compression}");
         Console.WriteLine($"Brokers: {options.Brokers}");
+        if (options.ConnectionsPerBroker > 1)
+            Console.WriteLine($"Multi-connection: {options.ConnectionsPerBroker} connections per broker (Dekaf only)");
         Console.WriteLine(new string('-', 50));
 
         await using var kafka = await KafkaEnvironment.CreateAsync(options.Brokers).ConfigureAwait(false);
@@ -152,8 +154,9 @@ public static class Program
                 };
 
                 var result = await scenario.RunAsync(testOptions, CancellationToken.None).ConfigureAwait(false);
-                // Tag the result so the report shows it's multi-connection
-                result.Scenario = $"{result.Scenario} (×{options.ConnectionsPerBroker}conn)";
+                // Tag the client name so multi-connection results appear in the same
+                // scenario table alongside single-connection baseline and Confluent.
+                result.Client = $"Dekaf ({options.ConnectionsPerBroker}conn)";
                 results.Add(result);
 
                 GC.Collect();
@@ -378,7 +381,7 @@ public static class Program
               --batch-size <bytes>    Producer batch size (default: 1048576)
               --compression <type>   Compression type: none, lz4, snappy, zstd (default: none)
               --brokers <count>      Number of Kafka brokers (default: 1, use 3 for multi-broker)
-              --connections-per-broker <n>  TCP connections per broker (default: 1)
+              --connections-per-broker <n>  TCP connections per broker for multi-conn pass (default: 3, use 1 to skip)
               report --input <path>   Generate report from existing results
 
             Environment Variables:
@@ -418,6 +421,6 @@ public static class Program
         public int BatchSize { get; set; } = 1048576;
         public string Compression { get; set; } = "none";
         public int Brokers { get; set; } = 1;
-        public int ConnectionsPerBroker { get; set; } = 1;
+        public int ConnectionsPerBroker { get; set; } = 3;
     }
 }
