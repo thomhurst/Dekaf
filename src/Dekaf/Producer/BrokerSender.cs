@@ -354,8 +354,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Partition-affined connections: each partition pins to _pinnedConnections[partition % _connectionCount].
     // For single-connection mode (_connectionCount == 1), degenerates to the original pinned behavior.
+    // Idempotent producers require partition affinity for sequence ordering; non-idempotent
+    // producers use round-robin for better distribution with skewed partition traffic.
     private readonly IKafkaConnection?[] _pinnedConnections;
     private readonly int _connectionCount;
+    private readonly bool _requirePartitionAffinity;
 
     private int TotalPendingResponseCount
     {
@@ -441,11 +444,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Idempotent producers with maxInFlight > 1 rely on sequence numbers for ordering.
         _muteOnSend = _maxInFlight <= 1;
 
-        // Multiple connections per broker use partition affinity: each partition is pinned
-        // to a specific connection (partition % connectionCount). For idempotent producers,
-        // this preserves per-partition sequence ordering. For non-idempotent producers,
-        // it provides a stable distribution for per-connection in-flight tracking.
+        // Idempotent producers require partition affinity (partition % connectionCount) to
+        // preserve per-partition sequence ordering. Non-idempotent producers use round-robin
+        // for better utilization when partition distribution is skewed.
         _connectionCount = options.ConnectionsPerBroker;
+        _requirePartitionAffinity = options.EnableIdempotence;
         _pinnedConnections = new IKafkaConnection?[_connectionCount];
         _totalMaxInFlight = _connectionCount * _maxInFlight;
 
@@ -566,6 +569,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var connectionBuckets = new ConnectionBucket[_connectionCount];
         for (var c = 0; c < _connectionCount; c++)
             connectionBuckets[c].Batches = new ReadyBatch[maxCoalesce];
+
+        // Round-robin counter for non-idempotent multi-connection bucket assignment.
+        // Distributes batches evenly across connections regardless of partition skew.
+        var roundRobinCounter = 0;
 
         var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
@@ -834,8 +841,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             }
                             sendTimeoutCts.CancelAfter(SendCoalescedTimeoutMs);
 
-                            var conn = await GetConnectionForPartitionAsync(
-                                batchesToSend[0].TopicPartition.Partition, sendTimeoutCts.Token)
+                            var conn = await GetConnectionAtIndexAsync(0, sendTimeoutCts.Token)
                                 .ConfigureAwait(false);
 
                             await SendCoalescedAsync(batchesToSend, countToSend,
@@ -845,12 +851,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         }
                         else
                         {
-                            // === Multi-connection path: group by partition affinity ===
+                            // === Multi-connection path ===
 
-                            // Distribute coalesced batches into per-connection buckets
+                            // Distribute coalesced batches into per-connection buckets.
+                            // Idempotent: partition affinity (partition % N) for sequence ordering.
+                            // Non-idempotent: round-robin for even distribution across connections.
                             for (var i = 0; i < coalescedCount; i++)
                             {
-                                var connIdx = coalescedBatches[i].TopicPartition.Partition % _connectionCount;
+                                var connIdx = _requirePartitionAffinity
+                                    ? coalescedBatches[i].TopicPartition.Partition % _connectionCount
+                                    : roundRobinCounter++ % _connectionCount;
                                 ref var bucket = ref connectionBuckets[connIdx];
                                 bucket.Batches[bucket.Count++] = coalescedBatches[i];
                             }
@@ -1690,7 +1700,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Diagnostic: mark batches as having acquired a connection.
             // If orphan trace shows 'S' but no 'G' (Got connection), the hang is at
-            // GetConnectionForPartitionAsync (connection creation or write lock contention).
+            // GetConnectionAtIndexAsync (connection creation or write lock contention).
             for (var i = 0; i < count; i++)
                 batches[i].AppendDiag('G');
 
@@ -2091,8 +2101,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         var countToSend = bucket.Count;
         bucket.Clear();
 
-        var conn = await GetConnectionForPartitionAsync(
-            batchesToSend[0].TopicPartition.Partition, cancellationToken).ConfigureAwait(false);
+        var conn = await GetConnectionAtIndexAsync(connIdx, cancellationToken).ConfigureAwait(false);
 
         await SendCoalescedAsync(batchesToSend, countToSend, scratch, conn, connIdx, cancellationToken)
             .ConfigureAwait(false);
@@ -2109,14 +2118,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns a connection for the given partition using partition affinity.
-    /// Each partition is pinned to a specific connection: partition % _connectionCount.
-    /// For single-connection mode, all partitions use index 0.
+    /// Returns the pinned connection for the given connection index.
+    /// Each connection slot caches a healthy connection for reuse.
     /// </summary>
-    private async ValueTask<IKafkaConnection> GetConnectionForPartitionAsync(int partitionId, CancellationToken cancellationToken)
+    private async ValueTask<IKafkaConnection> GetConnectionAtIndexAsync(int connIdx, CancellationToken cancellationToken)
     {
-        var connIdx = _connectionCount > 1 ? partitionId % _connectionCount : 0;
-
         var conn = _pinnedConnections[connIdx];
         if (conn is not null && conn.IsConnected)
             return conn;
