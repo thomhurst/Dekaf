@@ -67,7 +67,7 @@ internal sealed class SyncWaiterNode
     /// Resets this node for reuse. Must only be called after the node has been dequeued
     /// from the waiter queue and is no longer referenced by any other thread.
     /// </summary>
-    public void Reset()
+    internal void Reset()
     {
         Cancelled = false;
         Event.Reset();
@@ -868,7 +868,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Bounded to avoid holding excess memory when backpressure subsides.
     private const int MaxPooledWaiterNodes = 64;
     private readonly ConcurrentQueue<SyncWaiterNode> _syncWaiterNodePool = new();
-    private int _pooledWaiterNodeCount;
     private readonly CancellationTokenSource _disposalCts = new();
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
@@ -2305,7 +2304,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         if (_syncWaiterNodePool.TryDequeue(out var node))
         {
-            Interlocked.Decrement(ref _pooledWaiterNodeCount);
             return node;
         }
 
@@ -2322,11 +2320,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     private void ReturnWaiterNode(SyncWaiterNode node)
     {
         // Bound the pool to avoid holding excess memory after backpressure subsides.
-        if (Interlocked.Increment(ref _pooledWaiterNodeCount) > MaxPooledWaiterNodes)
-        {
-            Interlocked.Decrement(ref _pooledWaiterNodeCount);
+        // ConcurrentQueue<T>.Count is O(1) so this check is cheap.
+        if (_syncWaiterNodePool.Count >= MaxPooledWaiterNodes)
             return; // Let GC collect the excess node
-        }
 
         node.Reset();
         _syncWaiterNodePool.Enqueue(node);
@@ -3029,6 +3025,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Dispose resources to prevent leaks
         while (_syncWaiterQueue.TryDequeue(out var queuedNode))
             queuedNode.Event.Dispose();
+        while (_syncWaiterNodePool.TryDequeue(out var pooledNode))
+            pooledNode.Event.Dispose();
         _wakeupSignal?.Dispose();
         _disposalCts?.Dispose();
         _asyncBufferSpaceSignal?.Dispose();
