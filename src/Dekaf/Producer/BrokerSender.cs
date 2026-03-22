@@ -175,6 +175,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         public void Clear()
         {
+            Array.Clear(Batches, 0, Count);
             Count = 0;
         }
 
@@ -878,6 +879,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             while (HasRemainingBuckets(connectionBuckets))
                             {
                                 ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
+                                if (!HasRemainingBuckets(connectionBuckets)) break;
+
+                                // Handle timed-out requests to free zombie entries from stale connections.
+                                // Without this, a half-open TCP connection leaves response tasks that never
+                                // complete, causing this loop to hang indefinitely.
+                                HandleTimedOutRequests(carryOver, cancellationToken);
                                 if (!HasRemainingBuckets(connectionBuckets)) break;
 
                                 await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
