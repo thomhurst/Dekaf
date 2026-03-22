@@ -168,9 +168,12 @@ public class AdaptiveScalingTests
             }, cancellationToken);
         }
 
-        // Wait until all threads have entered the slow path
+        // Wait until all threads have entered the slow path (incremented pressure counter).
+        // BufferPressureEvents is incremented before Enqueue+Wait, so there is a small window
+        // between "entered slow path" and "blocking in Event.Wait()". Thread.Sleep bridges this
+        // gap — an internal seam (e.g., callback after Enqueue) would eliminate it but would
+        // modify library code solely for test observability.
         await WaitForPressureAsync(accumulator, pressureBefore + waiterCount, cancellationToken);
-        // Yield to let threads progress from pressure increment to Event.Wait()
         Thread.Sleep(50);
 
         // Dispose triggers WakeAllSyncWaiters
