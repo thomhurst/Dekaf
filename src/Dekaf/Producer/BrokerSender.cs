@@ -365,6 +365,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly int _maxConnectionsPerBroker;
     private long _lastPressureSnapshot;
     private long _lastScaleTimeTicks;
+    private Task<int>? _pendingScaleTask; // Background connection creation, polled by send loop
 
     // Scaling thresholds
     private const long ScalePressureDeltaThreshold = 100;
@@ -668,7 +669,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // ── 4b. Adaptive connection scaling (non-idempotent only) ──
                 if (_adaptiveScalingEnabled)
                 {
-                    var scaledToCount = await MaybeScaleConnectionsAsync(cancellationToken).ConfigureAwait(false);
+                    var scaledToCount = MaybeScaleConnections();
 
                     if (scaledToCount > 0)
                     {
@@ -2373,22 +2374,61 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Checks buffer pressure metrics and scales up connections if sustained backpressure is detected.
-    /// Called from the send loop (single-threaded) so field mutations are safe without synchronization.
-    /// Returns the new connection count if scaling occurred, or 0 if no scaling happened.
+    /// Non-blocking adaptive scaling check. Connection creation runs in the background
+    /// so the send loop is never blocked by TCP handshakes. Field mutations happen on the
+    /// send loop thread when the background task completes (polled each iteration).
+    /// Returns the new connection count if scaling completed this iteration, or 0 otherwise.
     /// </summary>
-    private async ValueTask<int> MaybeScaleConnectionsAsync(CancellationToken cancellationToken)
+    private int MaybeScaleConnections()
     {
+        // Phase 1: Check if a pending background scale-up completed
+        if (_pendingScaleTask is not null)
+        {
+            if (!_pendingScaleTask.IsCompleted)
+                return 0; // Still connecting — send loop continues unblocked
+
+            var task = _pendingScaleTask;
+            _pendingScaleTask = null;
+
+            if (task.IsCompletedSuccessfully)
+            {
+                var actualCount = task.Result;
+                if (actualCount > _connectionCount)
+                {
+                    var oldCount = _connectionCount;
+                    _connectionCount = actualCount;
+                    _totalMaxInFlight = _connectionCount * _maxInFlight;
+                    _lastPressureSnapshot = _accumulator.BufferPressureEvents;
+
+                    var newPinned = new IKafkaConnection?[actualCount];
+                    Array.Copy(_pinnedConnections, newPinned, oldCount);
+                    _pinnedConnections = newPinned;
+
+                    var newPending = new List<PendingResponse>[actualCount];
+                    Array.Copy(_pendingResponsesByConnection, newPending, oldCount);
+                    for (var i = oldCount; i < actualCount; i++)
+                        newPending[i] = new List<PendingResponse>();
+                    _pendingResponsesByConnection = newPending;
+
+                    LogAdaptiveScaleUp(_brokerId, oldCount, actualCount);
+                    return actualCount;
+                }
+            }
+            else if (task.Exception is not null)
+            {
+                LogAdaptiveScaleFailed(task.Exception.InnerException ?? task.Exception, _brokerId, _connectionCount);
+            }
+
+            return 0;
+        }
+
+        // Phase 2: Check if we should start a new scale-up
         if (_connectionCount >= _maxConnectionsPerBroker)
         {
-            // Max reached permanently — disable further checks to avoid per-iteration overhead
             _adaptiveScalingEnabled = false;
             return 0;
         }
 
-        // Check pressure: has there been sustained pressure since last check?
-        // Only update snapshot when scaling succeeds, so pressure accumulates
-        // until all conditions (delta + cooldown + utilization) are simultaneously met.
         var currentPressure = _accumulator.BufferPressureEvents;
         var pressureDelta = currentPressure - _lastPressureSnapshot;
 
@@ -2402,48 +2442,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (_accumulator.BufferUtilization < ScaleUtilizationThreshold)
             return 0;
 
-        // Scale up by 1 connection — wrapped in try-catch to avoid killing the send loop
-        // on transient connection failures (TCP timeout, auth failure, etc.)
-        int actualCount;
-        try
-        {
-            actualCount = await _connectionPool.ScaleConnectionGroupAsync(
-                _brokerId, _connectionCount + 1, cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw; // Propagate cancellation
-        }
-        catch (Exception ex)
-        {
-            LogAdaptiveScaleFailed(ex, _brokerId, _connectionCount);
-            _lastScaleTimeTicks = now; // Apply cooldown even on failure
-            return 0;
-        }
-
-        if (actualCount <= _connectionCount)
-            return 0;
-
-        var oldCount = _connectionCount;
-        _connectionCount = actualCount;
-        _totalMaxInFlight = _connectionCount * _maxInFlight;
+        // Launch connection creation in the background — send loop continues immediately
         _lastScaleTimeTicks = now;
-        _lastPressureSnapshot = currentPressure;
+        _pendingScaleTask = _connectionPool.ScaleConnectionGroupAsync(
+            _brokerId, _connectionCount + 1, CancellationToken.None).AsTask();
 
-        // Resize pinned connections array
-        var newPinned = new IKafkaConnection?[actualCount];
-        Array.Copy(_pinnedConnections, newPinned, oldCount);
-        _pinnedConnections = newPinned;
-
-        // Resize pending responses array
-        var newPending = new List<PendingResponse>[actualCount];
-        Array.Copy(_pendingResponsesByConnection, newPending, oldCount);
-        for (var i = oldCount; i < actualCount; i++)
-            newPending[i] = new List<PendingResponse>();
-        _pendingResponsesByConnection = newPending;
-
-        LogAdaptiveScaleUp(_brokerId, oldCount, actualCount);
-        return actualCount;
+        return 0;
     }
 
     #region Logging
