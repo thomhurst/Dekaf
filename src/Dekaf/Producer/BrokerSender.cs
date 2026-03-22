@@ -361,7 +361,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private readonly bool _requirePartitionAffinity;
 
     // Adaptive connection scaling state (send-loop owned, single-threaded)
-    private readonly bool _adaptiveScalingEnabled;
+    private bool _adaptiveScalingEnabled;
     private readonly int _maxConnectionsPerBroker;
     private long _lastPressureSnapshot;
     private long _lastScaleTimeTicks;

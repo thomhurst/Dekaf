@@ -2207,9 +2207,6 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             var remainingMs = _options.MaxBlockMs - elapsed;
 
-            if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
-                break;
-
             var waiter = new SyncWaiterNode();
             _syncWaiterQueue.Enqueue(waiter);
 
@@ -2267,13 +2264,16 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private void WakeAllSyncWaiters()
     {
+        // Two passes: signal all waiters first so threads can observe _disposed,
+        // then dispose events. Disposing before the thread exits Wait() is unsafe.
+        var nodes = new List<SyncWaiterNode>();
         while (_syncWaiterQueue.TryDequeue(out var waiter))
         {
             waiter.Event.Set();
-            // Dispose here since the cleanup loop in DisposeAsync runs after this
-            // drains the queue, making the cleanup loop a no-op otherwise.
-            waiter.Event.Dispose();
+            nodes.Add(waiter);
         }
+        foreach (var node in nodes)
+            node.Event.Dispose();
     }
 
     /// <summary>
