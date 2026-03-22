@@ -43,8 +43,10 @@ internal ref struct SpinLockGuard
 /// <summary>
 /// Per-waiter node for FIFO sync waiter queue. Each blocked thread in ReserveMemorySync or
 /// WaitForBufferSpace gets its own node so ReleaseMemory can wake waiters one-at-a-time
-/// instead of broadcasting (thundering herd). Nodes are NOT pooled — a fresh node is allocated
-/// per slow-path entry to avoid a race where a recycled node is signaled for the wrong thread.
+/// instead of broadcasting (thundering herd). Nodes are pooled to reduce GC pressure during
+/// sustained backpressure. Safety invariant: a node is only returned to the pool after it has
+/// been dequeued from <c>_syncWaiterQueue</c> by <see cref="RecordAccumulator.WakeNextSyncWaiter"/>
+/// (which sets the event), so no concurrent thread can signal a recycled node.
 /// </summary>
 internal sealed class SyncWaiterNode
 {
@@ -60,6 +62,16 @@ internal sealed class SyncWaiterNode
     /// that no thread is waiting on.
     /// </summary>
     public volatile bool Cancelled;
+
+    /// <summary>
+    /// Resets this node for reuse. Must only be called after the node has been dequeued
+    /// from the waiter queue and is no longer referenced by any other thread.
+    /// </summary>
+    public void Reset()
+    {
+        Cancelled = false;
+        Event.Reset();
+    }
 }
 
 /// <summary>
@@ -852,6 +864,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // FIFO waiter queue: each blocked thread gets its own SyncWaiterNode so
     // ReleaseMemory wakes waiters one-at-a-time instead of broadcasting (thundering herd).
     private readonly ConcurrentQueue<SyncWaiterNode> _syncWaiterQueue = new();
+    // Pool of reusable SyncWaiterNode instances to reduce GC pressure during backpressure.
+    // Bounded to avoid holding excess memory when backpressure subsides.
+    private const int MaxPooledWaiterNodes = 64;
+    private readonly ConcurrentQueue<SyncWaiterNode> _syncWaiterNodePool = new();
+    private int _pooledWaiterNodeCount;
     private readonly CancellationTokenSource _disposalCts = new();
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
@@ -2127,8 +2144,8 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (TryReserveMemory(recordSize))
                 break;
 
-            // Fresh node per wait. Re-using across iterations causes double-enqueue on timeout.
-            var waiter = new SyncWaiterNode();
+            // Rent from pool or allocate. One node per iteration avoids double-enqueue on timeout.
+            var waiter = RentWaiterNode();
             _syncWaiterQueue.Enqueue(waiter);
 
             // Re-check after enqueue: ReleaseMemory may have fired between the check
@@ -2136,12 +2153,19 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // sleeps through available space until the next ReleaseMemory or timeout.
             if (TryReserveMemory(recordSize))
             {
+                // Node is still in the queue — do NOT return to pool.
+                // WakeNextSyncWaiter will skip it (Cancelled = true) and discard it.
                 waiter.Cancelled = true;
                 break;
             }
 
-            waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
+            var signaled = waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
             waiter.Cancelled = true;
+
+            // Only return to pool when the node was signaled, meaning WakeNextSyncWaiter
+            // already dequeued it. Timed-out nodes may still be in the queue.
+            if (signaled)
+                ReturnWaiterNode(waiter);
         }
 
         // Chain-wake: if space still remains after our reservation, wake the next
@@ -2207,18 +2231,23 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
 
             var remainingMs = _options.MaxBlockMs - elapsed;
 
-            var waiter = new SyncWaiterNode();
+            var waiter = RentWaiterNode();
             _syncWaiterQueue.Enqueue(waiter);
 
             // Re-check after enqueue to avoid sleeping through freed space
             if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
             {
+                // Node is still in the queue — do NOT return to pool.
                 waiter.Cancelled = true;
                 break;
             }
 
-            waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
+            var signaled = waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
             waiter.Cancelled = true;
+
+            // Only return to pool when the node was signaled (already dequeued).
+            if (signaled)
+                ReturnWaiterNode(waiter);
         }
 
         // Chain-wake: if space still remains, wake the next waiter.
@@ -2267,6 +2296,40 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         // Signal only — disposal is handled by each owning thread after Wait() returns.
         while (_syncWaiterQueue.TryDequeue(out var waiter))
             waiter.Event.Set();
+    }
+
+    /// <summary>
+    /// Rents a <see cref="SyncWaiterNode"/> from the pool, or allocates a new one if the pool is empty.
+    /// </summary>
+    private SyncWaiterNode RentWaiterNode()
+    {
+        if (_syncWaiterNodePool.TryDequeue(out var node))
+        {
+            Interlocked.Decrement(ref _pooledWaiterNodeCount);
+            return node;
+        }
+
+        return new SyncWaiterNode();
+    }
+
+    /// <summary>
+    /// Returns a <see cref="SyncWaiterNode"/> to the pool after resetting it.
+    /// Only call this for nodes that have been dequeued from <c>_syncWaiterQueue</c>
+    /// (i.e., signaled by <see cref="WakeNextSyncWaiter"/>). Nodes that are still
+    /// in the queue (early-exit or timeout paths) must NOT be returned — they will
+    /// be skipped and discarded by a future <see cref="WakeNextSyncWaiter"/> call.
+    /// </summary>
+    private void ReturnWaiterNode(SyncWaiterNode node)
+    {
+        // Bound the pool to avoid holding excess memory after backpressure subsides.
+        if (Interlocked.Increment(ref _pooledWaiterNodeCount) > MaxPooledWaiterNodes)
+        {
+            Interlocked.Decrement(ref _pooledWaiterNodeCount);
+            return; // Let GC collect the excess node
+        }
+
+        node.Reset();
+        _syncWaiterNodePool.Enqueue(node);
     }
 
     /// <summary>
