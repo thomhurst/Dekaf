@@ -433,16 +433,16 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         consumer.Subscribe(topic);
 
         var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            // Wait until we have data messages from all 10 partitions.
-            // ProduceWithRetryAsync may produce duplicate warmup messages on retry.
-            var dataMessages = messages.Where(m => m.Key != "warmup").ToList();
-            var coveredPartitions = dataMessages.Select(m => m.Partition).Distinct().Count();
-            if (coveredPartitions >= 10) break;
+            // Break once we have enough non-warmup messages. Don't wait for full
+            // partition coverage — if a partition is missing, the assertion below
+            // will catch it with a clear error instead of hanging for 60s.
+            var dataCount = messages.Count(m => m.Key != "warmup");
+            if (dataCount >= 10) break;
         }
 
         // Assert - should get messages from all 10 partitions (filter out warmup)
