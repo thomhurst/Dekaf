@@ -2137,13 +2137,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if (TryReserveMemory(recordSize))
             {
                 waiter.Cancelled = true;
-                waiter.Event.Dispose();
                 break;
             }
 
             waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
             waiter.Cancelled = true;
-            waiter.Event.Dispose();
         }
 
         // Chain-wake: if space still remains after our reservation, wake the next
@@ -2216,13 +2214,11 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             if ((ulong)Volatile.Read(ref _bufferedBytes) < _maxBufferMemory)
             {
                 waiter.Cancelled = true;
-                waiter.Event.Dispose();
                 break;
             }
 
             waiter.Event.Wait((int)Math.Min(remainingMs, int.MaxValue));
             waiter.Cancelled = true;
-            waiter.Event.Dispose();
         }
 
         // Chain-wake: if space still remains, wake the next waiter.

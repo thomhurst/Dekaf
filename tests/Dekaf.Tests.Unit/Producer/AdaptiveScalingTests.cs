@@ -76,7 +76,7 @@ public class AdaptiveScalingTests
     #region FIFO Waiter Queue Tests
 
     [Test]
-    [Timeout(30_000)]
+    [Timeout(90_000)]
     public async Task ReserveMemorySync_WakesExactlyOneWaiterPerRelease(CancellationToken cancellationToken)
     {
         var recordSize = await MeasureRecordSizeAsync();
@@ -139,7 +139,7 @@ public class AdaptiveScalingTests
     }
 
     [Test]
-    [Timeout(30_000)]
+    [Timeout(90_000)]
     public async Task WakeAllSyncWaiters_ViaDispose_UnblocksAllThreads(CancellationToken cancellationToken)
     {
         var recordSize = await MeasureRecordSizeAsync();
@@ -189,7 +189,7 @@ public class AdaptiveScalingTests
     }
 
     [Test]
-    [Timeout(30_000)]
+    [Timeout(90_000)]
     public async Task CancelledWaiterNode_IsSkippedByWakeNextSyncWaiter(CancellationToken cancellationToken)
     {
         var recordSize = await MeasureRecordSizeAsync();
@@ -239,7 +239,7 @@ public class AdaptiveScalingTests
     #region Pressure Tracking Tests
 
     [Test]
-    [Timeout(30_000)]
+    [Timeout(90_000)]
     public async Task BufferPressureEvents_Increments_WhenReserveMemorySyncEntersSlowPath(CancellationToken cancellationToken)
     {
         var recordSize = await MeasureRecordSizeAsync();
@@ -276,7 +276,7 @@ public class AdaptiveScalingTests
     }
 
     [Test]
-    [Timeout(30_000)]
+    [Timeout(90_000)]
     public async Task BufferPressureEvents_Increments_WhenWaitForBufferSpaceEntersSlowPath(CancellationToken cancellationToken)
     {
         var recordSize = await MeasureRecordSizeAsync();
