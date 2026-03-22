@@ -309,9 +309,8 @@ public static class Program
                     }
                     break;
                 case "--connections-per-broker":
-                    // Deprecated: adaptive connection scaling handles this automatically.
-                    // Parse and ignore for backwards compatibility.
                     _ = int.Parse(args[++i]);
+                    Console.Error.WriteLine("WARNING: --connections-per-broker is deprecated. Adaptive connection scaling now handles this automatically.");
                     break;
                 case "--help":
                 case "-h":

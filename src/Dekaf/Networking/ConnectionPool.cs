@@ -250,7 +250,6 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
             using var timeoutCts = new CancellationTokenSource(_connectionOptions.ConnectionTimeout);
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
-            var newConnections = new IKafkaConnection[additionalCount];
             var tasks = new Task<IKafkaConnection>[additionalCount];
 
             for (var i = 0; i < additionalCount; i++)
@@ -261,14 +260,12 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
 
             await Task.WhenAll(tasks).ConfigureAwait(false);
 
-            for (var i = 0; i < additionalCount; i++)
-                newConnections[i] = tasks[i].Result;
-
-            // Build new array: copy existing + append new connections
+            // Build new array: copy existing + write completed tasks directly
             var newGroup = new IKafkaConnection[newCount];
             if (currentGroup is not null)
                 Array.Copy(currentGroup, newGroup, existingCount);
-            Array.Copy(newConnections, 0, newGroup, existingCount, additionalCount);
+            for (var i = 0; i < additionalCount; i++)
+                newGroup[existingCount + i] = tasks[i].Result;
 
             // Atomically swap the connection group
             _connectionGroupsById[brokerId] = newGroup;

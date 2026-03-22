@@ -41,9 +41,10 @@ internal ref struct SpinLockGuard
 }
 
 /// <summary>
-/// Pooled node for FIFO sync waiter queue. Each blocked thread in ReserveMemorySync or
+/// Per-waiter node for FIFO sync waiter queue. Each blocked thread in ReserveMemorySync or
 /// WaitForBufferSpace gets its own node so ReleaseMemory can wake waiters one-at-a-time
-/// instead of broadcasting (thundering herd). Nodes are pooled to avoid per-wait allocations.
+/// instead of broadcasting (thundering herd). Nodes are NOT pooled — a fresh node is allocated
+/// per slow-path entry to avoid a race where a recycled node is signaled for the wrong thread.
 /// </summary>
 internal sealed class SyncWaiterNode
 {
