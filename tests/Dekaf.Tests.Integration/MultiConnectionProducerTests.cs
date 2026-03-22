@@ -268,4 +268,44 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         await producer.DisposeAsync();
         // If we reach here without exception or hang, the test passes.
     }
+
+    [Test]
+    public async Task NonIdempotentMultiConnection_RoundRobin_DeliversAllMessages()
+    {
+        var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 4);
+        const int messageCount = 2_000;
+
+        await using var producer = await Kafka.CreateProducer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithClientId("test-multi-conn-roundrobin")
+            .WithIdempotence(false)
+            .WithAcks(Acks.Leader)
+            .WithConnectionsPerBroker(3)
+            .BuildAsync();
+
+        for (var i = 0; i < messageCount; i++)
+        {
+            await producer.ProduceAsync(topic, $"key-{i % 50}", $"rr-msg-{i}");
+        }
+
+        await using var consumer = await Kafka.CreateConsumer<string, string>()
+            .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .BuildAsync();
+
+        consumer.Assign(Enumerable.Range(0, 4)
+            .Select(p => new TopicPartition(topic, p))
+            .ToArray());
+
+        var received = new HashSet<string>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+
+        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        {
+            received.Add(msg.Value!);
+            if (received.Count >= messageCount) break;
+        }
+
+        await Assert.That(received).Count().IsEqualTo(messageCount);
+    }
 }

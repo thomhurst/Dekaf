@@ -864,6 +864,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             Array.Clear(coalescedBatches, 0, coalescedCount);
                             coalescedCount = 0;
 
+                            // Count buckets with batches to avoid O(N) scans in the wait loop.
+                            var remainingBuckets = 0;
+                            for (var c = 0; c < _connectionCount; c++)
+                            {
+                                if (connectionBuckets[c].HasBatches) remainingBuckets++;
+                            }
+
                             // Send on connections with in-flight capacity first
                             for (var c = 0; c < _connectionCount; c++)
                             {
@@ -874,22 +881,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 await SendConnectionBucketAsync(c, connectionBuckets,
                                     scratches[c], bucketTimeoutCts[c].Token).ConfigureAwait(false);
                                 sentThisIteration = true;
+                                remainingBuckets--;
                             }
 
                             // Wait for capacity on blocked connections
-                            while (HasRemainingBuckets(connectionBuckets))
+                            while (remainingBuckets > 0)
                             {
                                 ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
-                                if (!HasRemainingBuckets(connectionBuckets)) break;
 
                                 // Handle timed-out requests to free zombie entries from stale connections.
-                                // Without this, a half-open TCP connection leaves response tasks that never
-                                // complete, causing this loop to hang indefinitely.
                                 HandleTimedOutRequests(carryOver, cancellationToken);
-                                if (!HasRemainingBuckets(connectionBuckets)) break;
 
-                                await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
-
+                                // Try sending on connections that now have capacity
+                                var sent = false;
                                 for (var c = 0; c < _connectionCount; c++)
                                 {
                                     if (!connectionBuckets[c].HasBatches) continue;
@@ -899,7 +903,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                     await SendConnectionBucketAsync(c, connectionBuckets,
                                         scratches[c], bucketTimeoutCts[c].Token).ConfigureAwait(false);
                                     sentThisIteration = true;
+                                    remainingBuckets--;
+                                    sent = true;
                                 }
+
+                                if (remainingBuckets > 0 && !sent)
+                                    await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
                             }
                         }
                     }
@@ -2102,16 +2111,6 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         await SendCoalescedAsync(batchesToSend, countToSend, scratch, connIdx, cancellationToken)
             .ConfigureAwait(false);
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool HasRemainingBuckets(ConnectionBucket[] buckets)
-    {
-        for (var i = 0; i < buckets.Length; i++)
-        {
-            if (buckets[i].HasBatches) return true;
-        }
-        return false;
     }
 
     /// <summary>
