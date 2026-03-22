@@ -367,6 +367,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Tracks distinct partitions this broker has seen, used to skip MicroLinger when all
     // known partitions are already coalesced (e.g., single-partition topics).
+    // Conservative: a brand-new partition not yet in _knownPartitions may miss one
+    // coalescing opportunity on its first appearance — benign, picked up next iteration.
     // Single-threaded: only accessed by the send loop.
     private readonly HashSet<TopicPartition> _knownPartitions = [];
 
