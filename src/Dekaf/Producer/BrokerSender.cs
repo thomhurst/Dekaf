@@ -48,7 +48,7 @@ namespace Dekaf.Producer;
 /// The core of BrokerSender is the <see cref="SendLoopAsync"/> method, which runs on a single
 /// dedicated thread (Task). This send loop owns and exclusively accesses the following mutable state:
 /// <see cref="_pendingResponses"/>, <see cref="_sendFailedRetries"/>, carry-over batch lists,
-/// coalesced batch arrays, and <see cref="_pinnedConnection"/>. No locks are needed for these
+/// coalesced batch arrays, and <see cref="_pinnedConnections"/>. No locks are needed for these
 /// because they are only ever touched by the send loop thread.
 /// </para>
 /// <para>
@@ -331,15 +331,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Single-threaded send loop — no locks needed.
     private readonly HashSet<TopicPartition> _partitionsNeedingSequenceReset = new();
 
-    // Pinned connection: for idempotent producers, the send loop reuses a single connection
-    // to preserve wire order. With multiple connections per broker (round-robin pool), requests
-    // on different TCP connections can arrive at the broker out of order, causing OOSN.
-    // By pinning one connection, all produce requests are pipelined on the same TCP stream.
-    //
-    // For non-idempotent producers with ConnectionsPerBroker > 1, _useRoundRobinConnections
-    // is true and GetPinnedConnectionAsync fetches a new connection from the pool each time
-    // (round-robin), distributing load across TCP streams for higher throughput.
-    private IKafkaConnection? _pinnedConnection;
+    // Partition-affined connections: each partition pins to _pinnedConnections[partition % _connectionCount].
+    // For single-connection mode (_connectionCount == 1), degenerates to the original pinned behavior.
+    // For non-idempotent round-robin mode, _useRoundRobinConnections is true and connections
+    // are fetched from the pool each time (existing behavior, unchanged).
+    private readonly IKafkaConnection?[] _pinnedConnections;
+    private readonly int _connectionCount;
+    private readonly bool _usePartitionAffinity;
     private readonly bool _useRoundRobinConnections;
 
     /// <summary>
@@ -414,6 +412,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Only mute at send time when limited to 1 in-flight request.
         // Idempotent producers with maxInFlight > 1 rely on sequence numbers for ordering.
         _muteOnSend = _maxInFlight <= 1;
+
+        // Idempotent producers with multiple connections per broker use partition affinity:
+        // each partition is pinned to a specific connection (partition % connectionCount).
+        _usePartitionAffinity = options.EnableIdempotence && options.ConnectionsPerBroker > 1;
+        _connectionCount = _usePartitionAffinity ? options.ConnectionsPerBroker : 1;
+        _pinnedConnections = new IKafkaConnection?[_connectionCount];
 
         // Non-idempotent producers with multiple connections per broker use round-robin
         // connection selection to distribute load across TCP streams.
@@ -780,8 +784,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                                 sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                             }
                             sendTimeoutCts.CancelAfter(SendCoalescedTimeoutMs);
+                            // Use first batch's partition to determine connection.
+                            // Task 5 will add proper per-connection grouping.
+                            var sendConnection = await GetConnectionForPartitionAsync(
+                                batchesToSend[0].TopicPartition.Partition, sendTimeoutCts.Token)
+                                .ConfigureAwait(false);
                             await SendCoalescedAsync(batchesToSend, countToSend,
-                                    requestScratch, sendTimeoutCts.Token)
+                                    requestScratch, sendConnection, sendTimeoutCts.Token)
                                 .ConfigureAwait(false);
                         }
                         sentThisIteration = true;
@@ -1060,7 +1069,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var ex = task.Exception?.InnerException ?? new OperationCanceledException();
                 LogResponseFailed(ex, _brokerId);
-                _pinnedConnection = null; // No-op in round-robin mode — connection is fetched from pool each time
+                Array.Clear(_pinnedConnections); // No-op in round-robin mode — connection is fetched from pool each time
 
                 for (var j = 0; j < count; j++)
                 {
@@ -1239,7 +1248,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     /// removed from _pendingResponses BEFORE processing, so ProcessCompletedResponses
     /// cannot also process the same batches (eliminating the race condition).
     /// <para/>
-    /// The connection is also invalidated (_pinnedConnection = null) so the next send
+    /// The connections are also invalidated (Array.Clear(_pinnedConnections)) so the next send
     /// establishes a fresh connection. Response tasks from the old connection are orphaned —
     /// they may eventually complete, but nobody polls them since the entries were removed.
     /// </summary>
@@ -1270,7 +1279,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Must process ALL entries (not just the timed-out one) because they share the same
         // connection, which is now unreliable. This matches Java's behavior: when any request
         // times out, ALL in-flight requests for that node are failed.
-        _pinnedConnection = null; // No-op in round-robin mode — connection is fetched from pool each time
+        Array.Clear(_pinnedConnections); // No-op in round-robin mode — connection is fetched from pool each time
         LogRequestTimeoutDisconnection(_brokerId, _pendingResponses.Count);
 
         var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks;
@@ -1487,6 +1496,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         ReadyBatch[] batches,
         int count,
         ProduceRequestScratch scratch,
+        IKafkaConnection connection,
         CancellationToken cancellationToken)
     {
         try
@@ -1554,12 +1564,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
             }
 
-            var connection = await GetPinnedConnectionAsync(cancellationToken)
-                .ConfigureAwait(false);
-
             // Diagnostic: mark batches as having acquired a connection.
             // If orphan trace shows 'S' but no 'G' (Got connection), the hang is at
-            // GetPinnedConnectionAsync (connection creation or write lock contention).
+            // GetConnectionForPartitionAsync (connection creation or write lock contention).
             for (var i = 0; i < count; i++)
                 batches[i].AppendDiag('G');
 
@@ -1703,7 +1710,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         {
             // Send failed (connection error, timeout, etc.) — retry batches instead of permanently failing.
             // Aligned with Java Kafka's Sender: transient failures cause reenqueue for retry.
-            _pinnedConnection = null; // Invalidate broken connection; no-op in round-robin mode — connection is fetched from pool each time
+            Array.Clear(_pinnedConnections); // Invalidate broken connections; no-op in round-robin mode — connection is fetched from pool each time
             LogResponseFailed(ex, _brokerId);
 
             for (var i = 0; i < count; i++)
@@ -1931,46 +1938,45 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns a connection for this BrokerSender.
-    /// <para>
-    /// For idempotent producers (or non-idempotent with ConnectionsPerBroker = 1), the send loop
-    /// reuses a single pinned connection to ensure all produce requests are pipelined on the same
-    /// TCP stream. This prevents out-of-order sequence number errors (OOSN).
-    /// </para>
-    /// <para>
-    /// For non-idempotent producers with ConnectionsPerBroker &gt; 1, each call fetches a
-    /// connection from the pool's round-robin selection, distributing load across TCP streams
-    /// for higher throughput.
-    /// </para>
+    /// Returns a connection for the given partition using partition affinity.
+    /// Each partition is pinned to a specific connection: partition % _connectionCount.
+    /// For single-connection mode, all partitions use index 0.
+    /// For round-robin mode (non-idempotent), delegates to pool's round-robin selection.
     /// </summary>
-    private async ValueTask<IKafkaConnection> GetPinnedConnectionAsync(CancellationToken cancellationToken)
+    private async ValueTask<IKafkaConnection> GetConnectionForPartitionAsync(int partitionId, CancellationToken cancellationToken)
     {
-        // Pinned mode: reuse a single connection for sequence number ordering.
-        // Skip pool call if we already have a healthy pinned connection.
-        if (!_useRoundRobinConnections)
-        {
-            var conn = _pinnedConnection;
-            if (conn is not null && conn.IsConnected)
-                return conn;
-        }
+        if (_useRoundRobinConnections)
+            return await GetRoundRobinConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-        // Apply request timeout to prevent indefinite blocking during connection creation.
-        // If GetConnectionAsync hangs (e.g., broker unreachable, TCP SYN drops), the entire
-        // send loop stalls — preventing HandleTimedOutRequests from running on batches already
-        // in _pendingResponses. The request timeout bounds this wait so the send loop can
-        // progress and handle timeouts for other pending batches.
+        var connIdx = _usePartitionAffinity ? partitionId % _connectionCount : 0;
+
+        var conn = _pinnedConnections[connIdx];
+        if (conn is not null && conn.IsConnected)
+            return conn;
+
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(_options.RequestTimeoutMs));
 
-        var connection = await _connectionPool.GetConnectionAsync(_brokerId, timeoutCts.Token)
-            .ConfigureAwait(false);
+        var connection = _usePartitionAffinity
+            ? await _connectionPool.GetConnectionByIndexAsync(_brokerId, connIdx, timeoutCts.Token)
+                .ConfigureAwait(false)
+            : await _connectionPool.GetConnectionAsync(_brokerId, timeoutCts.Token)
+                .ConfigureAwait(false);
 
-        // In pinned mode, cache the connection for reuse. In round-robin mode,
-        // the pool handles connection selection — no caching needed.
-        if (!_useRoundRobinConnections)
-            _pinnedConnection = connection;
-
+        _pinnedConnections[connIdx] = connection;
         return connection;
+    }
+
+    /// <summary>
+    /// Round-robin connection selection for non-idempotent multi-connection mode (existing behavior).
+    /// </summary>
+    private async ValueTask<IKafkaConnection> GetRoundRobinConnectionAsync(CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(_options.RequestTimeoutMs));
+
+        return await _connectionPool.GetConnectionAsync(_brokerId, timeoutCts.Token)
+            .ConfigureAwait(false);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
