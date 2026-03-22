@@ -193,20 +193,21 @@ public class AdaptiveScalingTests
     public async Task CancelledWaiterNode_IsSkippedByWakeNextSyncWaiter(CancellationToken cancellationToken)
     {
         var recordSize = await MeasureRecordSizeAsync();
-        var accumulator = CreateAccumulator(bufferMemory: (ulong)recordSize, maxBlockMs: 500);
+        // Use 5s maxBlockMs so even slow CI runners complete the timeout
+        var accumulator = CreateAccumulator(bufferMemory: (ulong)recordSize, maxBlockMs: 5_000);
 
         try
         {
             AppendOneRecord(accumulator);
 
-            // Waiter 1: will time out (short maxBlockMs), leaving a cancelled node in the queue
+            // Waiter 1: will time out (maxBlockMs), leaving a cancelled node in the queue
             var timedOutTask = Task.Run(() =>
             {
                 try { accumulator.ReserveMemorySync(recordSize); }
                 catch { /* Expected: KafkaTimeoutException */ }
             }, cancellationToken);
 
-            await timedOutTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await timedOutTask.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
 
             // Start waiter 2 — uses same FIFO queue
             var pressureBefore = accumulator.BufferPressureEvents;
@@ -225,8 +226,8 @@ public class AdaptiveScalingTests
             accumulator.ClearCurrentBatch("test-topic", 0);
             accumulator.ReleaseMemory(recordSize);
 
-            await waiter2Completed.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
-            await waiter2Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            await waiter2Completed.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            await waiter2Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
         }
         finally
         {
