@@ -416,6 +416,8 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             });
         }
 
+        await producer.FlushAsync();
+
         // Act
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -427,18 +429,19 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         consumer.Subscribe(topic);
 
         var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            // Wait for at least 10 non-warmup messages. ProduceWithRetryAsync may
-            // produce duplicate warmup messages on retry, so we can't use a fixed count.
-            var dataCount = messages.Count(m => m.Key != "warmup");
-            if (dataCount >= 10) break;
+            // Wait until we have data messages from all 10 partitions.
+            // ProduceWithRetryAsync may produce duplicate warmup messages on retry.
+            var dataMessages = messages.Where(m => m.Key != "warmup").ToList();
+            var coveredPartitions = dataMessages.Select(m => m.Partition).Distinct().Count();
+            if (coveredPartitions >= 10) break;
         }
 
-        // Assert - should get all 10 messages from all partitions (filter out warmup)
+        // Assert - should get messages from all 10 partitions (filter out warmup)
         var actual = messages.Where(m => m.Key != "warmup").ToList();
         await Assert.That(actual).Count().IsGreaterThanOrEqualTo(10);
         var partitions = actual.Select(m => m.Partition).Distinct().OrderBy(p => p).ToList();
