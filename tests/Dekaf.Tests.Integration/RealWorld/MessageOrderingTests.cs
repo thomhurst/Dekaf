@@ -214,7 +214,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
             });
         }
 
-        await producer.FlushAsync();
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
 
         // Consume and verify order
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -434,7 +434,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
                 });
             }
 
-            await producer.FlushAsync();
+            { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
         }
 
         // Consume and verify the full sequence is intact
@@ -497,7 +497,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
             }
         }
 
-        await producer.FlushAsync();
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
 
         // Consume and verify
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -550,7 +550,7 @@ public sealed class MessageOrderingTests(KafkaTestContainer kafka) : KafkaIntegr
             });
         }
 
-        await producer.FlushAsync();
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
 
         // Consume all and verify strict ordering
         await using var consumer = await Kafka.CreateConsumer<string, string>()

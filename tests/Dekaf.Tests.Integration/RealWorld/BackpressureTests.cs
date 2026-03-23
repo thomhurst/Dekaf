@@ -168,7 +168,8 @@ public sealed class BackpressureTests(KafkaTestContainer kafka) : KafkaIntegrati
             producer.Produce(topic, $"key-{i}", $"value-{i}");
         }
 
-        await producer.FlushAsync().ConfigureAwait(false);
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await producer.FlushAsync(flushCts.Token).ConfigureAwait(false);
 
         // Act - consume with high throughput preset
         await using var consumer = await Kafka.CreateConsumer<string, string>()

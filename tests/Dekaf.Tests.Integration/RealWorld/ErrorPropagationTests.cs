@@ -74,7 +74,8 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         await producer.DisposeAsync().ConfigureAwait(false);
 
         // Act - FlushAsync on disposed producer is a graceful no-op (nothing to flush)
-        await producer.FlushAsync().ConfigureAwait(false);
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await producer.FlushAsync(flushCts.Token).ConfigureAwait(false);
 
         // Assert - completes without throwing
     }

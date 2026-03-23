@@ -190,7 +190,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 });
             }
 
-            await producer.FlushAsync();
+            { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
 
             await SetDefaultConsumerQuotaAsync(admin, brokerId, "1024");
 
@@ -276,7 +276,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 });
             }
 
-            await baselineProducer.FlushAsync();
+            { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await baselineProducer.FlushAsync(flushCts.Token); }
             baselineSw.Stop();
             var baselineMs = baselineSw.ElapsedMilliseconds;
 
@@ -309,7 +309,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 results.Add(result);
             }
 
-            await throttledProducer.FlushAsync();
+            { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await throttledProducer.FlushAsync(flushCts.Token); }
             throttledSw.Stop();
 
             // Assert - all messages delivered (throughput degraded but no errors)
@@ -381,7 +381,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
             results.Add(await task);
         }
 
-        await producer.FlushAsync();
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
         sw.Stop();
 
         // Assert - all messages delivered

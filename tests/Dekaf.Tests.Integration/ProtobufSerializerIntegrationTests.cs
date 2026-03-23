@@ -97,7 +97,8 @@ public sealed class ProtobufSerializerIntegrationTests(KafkaWithSchemaRegistryCo
             });
         }
 
-        await producer.FlushAsync();
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await producer.FlushAsync(flushCts.Token);
 
         await using var consumer = await Kafka.CreateConsumer<string, TestPerson>()
             .WithBootstrapServers(testInfra.BootstrapServers)

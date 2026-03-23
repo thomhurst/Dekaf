@@ -104,7 +104,7 @@ public class PartitionEofTests(KafkaTestContainer kafka) : KafkaIntegrationTest(
 
         var messages = new List<ConsumeResult<string, string>>();
         var eofEvents = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         try
         {

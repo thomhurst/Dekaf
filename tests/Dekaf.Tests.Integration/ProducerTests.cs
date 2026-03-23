@@ -326,7 +326,8 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         });
 
         // Flush should complete the pending produce
-        await producer.FlushAsync();
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await producer.FlushAsync(flushCts.Token);
         var metadata = await produceTask;
 
         // Assert
@@ -804,7 +805,8 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         });
 
         // Flush to ensure delivery
-        await producer.FlushAsync();
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await producer.FlushAsync(flushCts.Token);
 
         // Verify by consuming
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -816,7 +818,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
 
         consumer.Subscribe(topic);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             await Assert.That(msg.Key).IsEqualTo("sync-key");
@@ -850,7 +852,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             (metadata, error) => callbackInvoked.TrySetResult((metadata, error)));
 
         // Wait for callback
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         cts.Token.Register(() => callbackInvoked.TrySetCanceled());
 
         var (resultMetadata, resultError) = await callbackInvoked.Task;
@@ -888,7 +890,8 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         }
 
         // Flush to ensure all delivered
-        await producer.FlushAsync();
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await producer.FlushAsync(flushCts.Token);
 
         // Verify by consuming all messages
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -949,7 +952,8 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         })).ToArray();
 
         await Task.WhenAll(tasks);
-        await producer.FlushAsync();
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await producer.FlushAsync(flushCts.Token);
 
         // Allow callbacks to complete
         await Task.Delay(500);

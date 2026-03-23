@@ -99,7 +99,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         }
 
         // Flush to ensure all pending messages are sent
-        await producer.FlushAsync().ConfigureAwait(false);
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token).ConfigureAwait(false); }
 
         // Verify the message WAS delivered despite cancellation
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -188,7 +188,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         await Assert.That(succeeded).IsGreaterThanOrEqualTo(5);
 
         // Flush and verify all messages were delivered regardless of cancellation
-        await producer.FlushAsync().ConfigureAwait(false);
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token).ConfigureAwait(false); }
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -255,7 +255,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         }
 
         // Wait for background delivery to complete
-        await producer.FlushAsync().ConfigureAwait(false);
+        { using var flushCts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts2.Token).ConfigureAwait(false); }
 
         // Verify all messages were delivered despite flush cancellation
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -377,7 +377,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
             });
         }
 
-        await producer.FlushAsync().ConfigureAwait(false);
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token).ConfigureAwait(false); }
 
         // Verify all messages delivered
         await using var consumer = await Kafka.CreateConsumer<string, string>()

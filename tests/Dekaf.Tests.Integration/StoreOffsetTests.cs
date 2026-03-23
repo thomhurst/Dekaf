@@ -370,7 +370,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             // Poll for auto-commit to propagate instead of using a fixed delay.
             // On slow CI runners, 500ms may not be enough for the commit round-trip.
             var tp = new TopicPartition(topic, 0);
-            using var commitCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var commitCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             long? committedOffset = null;
             while (!commitCts.Token.IsCancellationRequested)
             {

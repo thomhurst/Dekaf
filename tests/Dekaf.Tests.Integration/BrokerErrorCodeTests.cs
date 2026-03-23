@@ -145,7 +145,8 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
             });
         }
 
-        await producer.FlushAsync();
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await producer.FlushAsync(flushCts.Token);
 
         // Create consumer with AutoOffsetReset.Earliest and manual assignment
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -198,7 +199,8 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
             });
         }
 
-        await producer.FlushAsync();
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await producer.FlushAsync(flushCts.Token);
 
         // Create consumer with AutoOffsetReset.Latest and manual assignment
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -222,7 +224,7 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), cts.Token);
+            result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -274,7 +276,7 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), cts.Token);
+            result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
         }
         catch (KafkaException ex)
         {

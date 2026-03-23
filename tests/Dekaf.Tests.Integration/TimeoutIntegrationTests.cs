@@ -316,7 +316,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
 
         // Act - Flush without sending any messages
         var startTime = Environment.TickCount64;
-        await producer.FlushAsync().ConfigureAwait(false);
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token).ConfigureAwait(false); }
         var elapsed = Environment.TickCount64 - startTime;
 
         // Assert - Should complete quickly (< 1 second)
@@ -408,7 +408,8 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         }
 
         // Act - Flush and produce concurrently
-        var flushTask = producer.FlushAsync().AsTask();
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var flushTask = producer.FlushAsync(flushCts.Token).AsTask();
         var produceTask = producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
@@ -741,7 +742,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
         await Assert.That(metadata.Offset).IsGreaterThanOrEqualTo(0);
 
         // Flush to ensure all fire-and-forget messages are also delivered
-        await producer.FlushAsync().ConfigureAwait(false);
+        { using var flushCts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts2.Token).ConfigureAwait(false); }
     }
 
     #endregion
@@ -915,7 +916,7 @@ public class TimeoutIntegrationTests(KafkaTestContainer kafka) : KafkaIntegratio
 
         // Assert - Flush completes successfully (all messages were sent)
         // Send() doesn't expose cancellation, so messages always get queued
-        await producer.FlushAsync().ConfigureAwait(false);
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token).ConfigureAwait(false); }
     }
 
     #endregion

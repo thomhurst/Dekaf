@@ -64,7 +64,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
             Value = "fast-value"
         });
 
-        await producer.FlushAsync();
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
 
         // Message should still be there (single broker, no failure)
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -102,7 +102,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
         }
 
         // Flush should wait for all in-flight messages
-        await producer.FlushAsync();
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
 
         // Verify all messages were delivered
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -147,7 +147,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
 
         // Give time for messages to send, then flush fully
         await Task.Delay(500);
-        await producer.FlushAsync();
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
 
         // All messages should be delivered
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -196,7 +196,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
             });
         }
 
-        await producer.FlushAsync();
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
 
         // Wait a bit for callbacks to complete
         var timeout = TimeSpan.FromSeconds(10);
@@ -237,7 +237,7 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
             });
         }
 
-        await producer.FlushAsync();
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
 
         // Batch 2
         for (var i = 0; i < 10; i++)
@@ -250,10 +250,10 @@ public sealed class ProducerDeliveryGuaranteeTests(KafkaTestContainer kafka) : K
             });
         }
 
-        await producer.FlushAsync();
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
 
         // Extra flush (should be no-op)
-        await producer.FlushAsync();
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
 
         // Should have exactly 20 messages
         await using var consumer = await Kafka.CreateConsumer<string, string>()

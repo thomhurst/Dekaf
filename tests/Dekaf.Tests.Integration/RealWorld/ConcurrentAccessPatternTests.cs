@@ -97,7 +97,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
         });
 
         await Task.WhenAll(ffTask, awaitTask);
-        await producer.FlushAsync();
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
 
         await Assert.That(awaitedResults).Count().IsEqualTo(awaitedCount);
 
@@ -311,7 +311,7 @@ public sealed class ConcurrentAccessPatternTests(KafkaTestContainer kafka) : Kaf
                 });
         }
 
-        await producer.FlushAsync();
+        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
 
         // Wait for callbacks to complete
         await Task.Delay(1000);

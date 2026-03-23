@@ -115,7 +115,8 @@ public sealed class JsonSchemaRegistryIntegrationTests(KafkaWithSchemaRegistryCo
             });
         }
 
-        await producer.FlushAsync();
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await producer.FlushAsync(flushCts.Token);
 
         await using var consumer = await Kafka.CreateConsumer<string, TestOrder>()
             .WithBootstrapServers(testInfra.BootstrapServers)

@@ -136,7 +136,8 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
             producer.Produce(topic, $"k{i}", $"v{i}");
         }
 
-        await producer.FlushAsync().ConfigureAwait(false);
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await producer.FlushAsync(flushCts.Token).ConfigureAwait(false);
 
         // Consume all back
         await using var consumer = await Kafka.CreateConsumer<string, string>()
