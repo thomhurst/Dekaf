@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using Dekaf.Compression;
 using Dekaf.Errors;
 using Dekaf.Internal;
@@ -60,7 +61,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private volatile bool _initialized;
     private readonly SemaphoreSlim _initLock = new(1, 1);
 
-    private int _produceApiVersion = -1;
+    private volatile int _produceApiVersion = -1;
     internal volatile bool _disposed;
 
     // Idempotent / transaction state
@@ -75,6 +76,8 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     private int _transactionCoordinatorId = -1;
     internal volatile TransactionState _transactionState = TransactionState.Uninitialized;
     private readonly SemaphoreSlim _transactionLock = new(1, 1);
+    private readonly System.Threading.Lock _epochBumpLock = new();
+    internal readonly System.Threading.Lock _partitionsInTransactionLock = new();
     internal readonly HashSet<TopicPartition> _partitionsInTransaction = [];
 
     // In-flight batch tracker for coordinated retry with multiple in-flight batches per partition.
@@ -1445,7 +1448,10 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         }
 
         _transactionState = TransactionState.InTransaction;
-        _partitionsInTransaction.Clear();
+        lock (_partitionsInTransactionLock)
+        {
+            _partitionsInTransaction.Clear();
+        }
 
         return new Transaction<TKey, TValue>(this);
     }
@@ -2298,7 +2304,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         TopicPartition topicPartition, CancellationToken cancellationToken)
     {
         bool needsRegistration;
-        lock (_partitionsInTransaction)
+        lock (_partitionsInTransactionLock)
         {
             needsRegistration = _partitionsInTransaction.Add(topicPartition);
         }
@@ -2588,6 +2594,11 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
     internal (long ProducerId, short ProducerEpoch) BumpEpochLocally(
         short expectedEpoch, IReadOnlyCollection<TopicPartition> partitionsToReset)
     {
+        // Multiple BrokerSenders can call this concurrently when different brokers
+        // return OutOfOrderSequenceNumber simultaneously. Use lock to make the
+        // check-and-increment atomic and prevent double epoch bumps.
+        lock (_epochBumpLock)
+        {
         // Already bumped by another BrokerSender — return current state
         if (_producerEpoch != expectedEpoch)
         {
@@ -2597,9 +2608,6 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         if (_producerEpoch == short.MaxValue)
         {
-            // Epoch overflow — extremely rare (32767 bumps). Reset via InitProducerIdRequest
-            // would be needed here, but for simplicity just throw and let the batches fail.
-            // In practice, a producer that bumps epoch 32767 times has bigger problems.
             throw new KafkaException(ErrorCode.UnknownServerError,
                 "Producer epoch overflow — requires producer restart");
         }
@@ -2613,6 +2621,7 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
 
         LogProducerEpochBumped(_producerId, _producerEpoch);
         return (_producerId, _producerEpoch);
+        } // lock (_epochBumpLock)
     }
 
     /// <summary>
@@ -3206,7 +3215,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         }
         finally
         {
-            lock (_producer._partitionsInTransaction)
+            lock (_producer._partitionsInTransactionLock)
             {
                 _producer._partitionsInTransaction.Clear();
             }
@@ -3236,7 +3245,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
         }
         finally
         {
-            lock (_producer._partitionsInTransaction)
+            lock (_producer._partitionsInTransactionLock)
             {
                 _producer._partitionsInTransaction.Clear();
             }
@@ -3273,7 +3282,7 @@ internal sealed class Transaction<TKey, TValue> : ITransaction<TKey, TValue>
                 // Best-effort abort during disposal — if the broker rejects it
                 // (e.g. InvalidTxnState because no messages were produced),
                 // just clean up state and move on.
-                lock (_producer._partitionsInTransaction)
+                lock (_producer._partitionsInTransactionLock)
                 {
                     _producer._partitionsInTransaction.Clear();
                 }
