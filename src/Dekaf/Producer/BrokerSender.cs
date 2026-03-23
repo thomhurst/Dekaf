@@ -1098,6 +1098,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
                 _totalPendingResponseCount -= pendingList.Count;
                 pendingList.Clear();
+                // No TrimExcess — lists are unreachable after disposal
             }
 
             FailCarryOverBatches(carryOver);
@@ -1349,6 +1350,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 _totalPendingResponseCount -= pendingList.Count - writeIdx;
                 pendingList.RemoveRange(writeIdx, pendingList.Count - writeIdx);
+
+                // Prevent unbounded capacity ratcheting: when the list shrinks well below
+                // its internal array capacity, trim the excess. This is amortized — it only
+                // fires when count drops below 1/4 of capacity, which happens infrequently
+                // (e.g., after a burst of completions). TrimExcess() reallocates the internal
+                // array to match Count, reclaiming the wasted capacity.
+                // The > 16 guard avoids trimming tiny lists: with MaxInFlightRequestsPerConnection
+                // defaulting to 5, normal-operation lists stay within 8-16 capacity and the
+                // reallocation overhead would exceed the memory savings.
+                if (pendingList.Capacity > 16 && pendingList.Count < pendingList.Capacity / 4)
+                {
+                    pendingList.TrimExcess();
+                }
             }
         }
     }
@@ -1567,6 +1581,15 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // (via CTS timeout or connection disposal) but nobody polls them.
             _totalPendingResponseCount -= pendingList.Count;
             pendingList.Clear();
+
+            // After clearing all entries due to timeout, trim the internal array to
+            // prevent capacity from ratcheting up across repeated timeout/recovery cycles.
+            // The > 16 guard avoids trimming tiny lists: with MaxInFlightRequestsPerConnection
+            // defaulting to 5, normal-operation lists stay within 8-16 capacity.
+            if (pendingList.Capacity > 16)
+            {
+                pendingList.TrimExcess();
+            }
         }
     }
 
@@ -2470,6 +2493,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 _totalPendingResponseCount -= pendingList.Count;
                 pendingList.Clear();
+                // No TrimExcess — lists are unreachable after disposal
             }
         }
 
