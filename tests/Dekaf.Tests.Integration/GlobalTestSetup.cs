@@ -4,6 +4,7 @@ using Dekaf.Compression.Lz4;
 using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
 using Dekaf.Tests.Integration;
+using Microsoft.Extensions.Logging;
 using TUnit.Core;
 using TUnit.Core.Helpers;
 
@@ -28,6 +29,21 @@ internal sealed class GlobalTestSetup
         // starvation can delay CancellationTokenSource timers by hundreds of seconds,
         // causing tests to hang until the orphan sweep (360s) fires.
         ThreadPool.SetMinThreads(32, 32);
+
+        // Enable Dekaf's internal logging (metadata resolution, prefetch errors, send loop
+        // diagnostics) so CI failures include the relevant debug output. Without this,
+        // errors in the prefetch loop and metadata manager are silently discarded.
+        // Uses TUnit's logger so output appears alongside test results.
+        Kafka.DefaultLoggerFactory = LoggerFactory.Create(builder =>
+        {
+            builder.SetMinimumLevel(LogLevel.Warning);
+            builder.AddSimpleConsole(options =>
+            {
+                options.SingleLine = true;
+                options.TimestampFormat = "HH:mm:ss.fff ";
+            });
+        });
+
         CompressionCodecRegistry.Default.AddLz4();
         CompressionCodecRegistry.Default.AddSnappy();
         CompressionCodecRegistry.Default.AddZstd();
