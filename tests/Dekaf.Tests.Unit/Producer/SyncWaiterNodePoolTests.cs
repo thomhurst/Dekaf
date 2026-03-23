@@ -131,9 +131,6 @@ public class SyncWaiterNodePoolTests
 
             await Assert.That(accumulator.BufferPressureEvents).IsGreaterThan(pressureBefore);
 
-            // Let thread settle into Event.Wait after entering the queue
-            await Task.Delay(50);
-
             // Release all memory
             var buffered = accumulator.BufferedBytes;
             for (var p = 0; p < 10; p++)
@@ -190,8 +187,6 @@ public class SyncWaiterNodePoolTests
             {
                 await Task.Delay(5);
             }
-
-            await Task.Delay(50);
 
             // Release all memory
             var buffered = accumulator.BufferedBytes;
