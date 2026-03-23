@@ -1873,10 +1873,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // CleanupBatch still releases for error paths where TCP send wasn't reached.
             for (var i = 0; i < count; i++)
             {
-                if (!batches[i].MemoryReleased)
+                if (batches[i].TrySetMemoryReleased())
                 {
                     _accumulator.ReleaseMemory(batches[i].DataSize);
-                    batches[i].MemoryReleased = true;
                 }
             }
 
@@ -2357,10 +2356,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Release buffer memory at batch completion (matching Java's RecordAccumulator.deallocate()).
         // This is the primary release path: memory is held throughout the entire pipeline
         // (append → drain → send → response) to provide accurate end-to-end backpressure.
-        if (!batch.MemoryReleased)
+        if (batch.TrySetMemoryReleased())
         {
             _accumulator.ReleaseMemory(batch.DataSize);
-            batch.MemoryReleased = true;
         }
         // Remove from tracking and decrement in-flight counter. OnBatchExitsPipeline uses
         // TryRemove as an atomic guard — if another path already removed this batch

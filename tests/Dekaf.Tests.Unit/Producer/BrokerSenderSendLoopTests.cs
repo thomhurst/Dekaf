@@ -93,7 +93,7 @@ public sealed class BrokerSenderSendLoopTests
             dataSize: 100);
 
         // Skip accumulator memory tracking in tests
-        batch.MemoryReleased = true;
+        batch.TrySetMemoryReleased();
 
         return batch;
     }
