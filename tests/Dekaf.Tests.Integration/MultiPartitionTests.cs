@@ -17,8 +17,12 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     private static async Task WarmUpAllPartitions(
         IKafkaProducer<string, string> producer, string topic, int partitions)
     {
+        // Use bare ProduceAsync (not ProduceWithRetryAsync) to avoid phantom in-flight
+        // batches. ProduceWithRetryAsync catches timeouts and retries, but the timed-out
+        // batch remains in the pipeline — causing FlushAsync to hang until the 360s
+        // orphan sweep fires.
         for (var p = 0; p < partitions; p++)
-            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic, Key = "warmup", Value = "warmup", Partition = p
             });
