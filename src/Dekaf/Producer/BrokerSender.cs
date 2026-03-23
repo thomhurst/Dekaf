@@ -1349,6 +1349,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 _totalPendingResponseCount -= pendingList.Count - writeIdx;
                 pendingList.RemoveRange(writeIdx, pendingList.Count - writeIdx);
+
+                // Prevent unbounded capacity ratcheting: when the list shrinks well below
+                // its internal array capacity, trim the excess. This is amortized — it only
+                // fires when count drops below 1/4 of capacity, which happens infrequently
+                // (e.g., after a burst of completions). TrimExcess() reallocates the internal
+                // array to match Count, reclaiming the wasted capacity.
+                if (pendingList.Capacity > 16 && pendingList.Count < pendingList.Capacity / 4)
+                {
+                    pendingList.TrimExcess();
+                }
             }
         }
     }
@@ -1567,6 +1577,13 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // (via CTS timeout or connection disposal) but nobody polls them.
             _totalPendingResponseCount -= pendingList.Count;
             pendingList.Clear();
+
+            // After clearing all entries due to timeout, trim the internal array to
+            // prevent capacity from ratcheting up across repeated timeout/recovery cycles.
+            if (pendingList.Capacity > 16)
+            {
+                pendingList.TrimExcess();
+            }
         }
     }
 
