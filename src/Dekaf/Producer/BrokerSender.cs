@@ -405,6 +405,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private Task<IKafkaConnection?>? _pendingShrinkTask; // Background shrink, polled by send loop
     private IKafkaConnection? _drainingConnection; // Connection being drained before disposal
 
+    // Deferred scale-up for idempotent producers: when partition affinity is required,
+    // applying a scale-up immediately would remap partitions (P % N -> P % M) while
+    // in-flight batches are still on the old connection, causing OutOfOrderSequenceNumber
+    // errors. We defer updating _connectionCount until _totalPendingResponseCount == 0.
+    private int _deferredScaleUpCount; // 0 = no deferred scale-up pending
+
     // Scaling thresholds
     // Also the per-connection unit of pressure for step estimation (step = delta / threshold),
     // so changing this value affects both trigger sensitivity and per-step magnitude.
@@ -723,7 +729,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                 }
 
-                // ── 4b. Adaptive connection scaling (non-idempotent only) ──
+                // ── 4b. Adaptive connection scaling (all non-transactional producers) ──
                 if (_adaptiveScalingEnabled)
                 {
                     var scaledToCount = MaybeScaleConnections();
@@ -2624,6 +2630,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Phase 0: Poll draining connection for disposal
         MaybeDrainAndDisposeConnection();
 
+        // Phase 0b: Apply deferred scale-up once in-flight requests have drained
+        if (_deferredScaleUpCount > 0 && _totalPendingResponseCount == 0)
+        {
+            var count = _deferredScaleUpCount;
+            _deferredScaleUpCount = 0;
+            return ApplyScaleUp(count);
+        }
+
         // Phase 1a: Check if a pending background scale-up completed
         if (_pendingScaleTask is not null)
         {
@@ -2638,29 +2652,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var actualCount = task.Result;
                 if (actualCount > _connectionCount)
                 {
-                    var oldCount = _connectionCount;
-                    _connectionCount = actualCount;
-                    _totalMaxInFlight = _connectionCount * _maxInFlight;
-                    // Only reset on successful growth — intentional. If the pool returned fewer
-                    // connections than requested, stale pressure keeps accumulating so the next
-                    // cooldown window retries with the full delta rather than starting from zero.
-                    _lastPressureSnapshot = _accumulator.BufferPressureEvents;
+                    // Idempotent producers use partition affinity (partition % N). If we
+                    // update _connectionCount while in-flight batches exist, partitions
+                    // remap and new batches could arrive on a different connection than
+                    // the in-flight ones, causing OutOfOrderSequenceNumber errors.
+                    // Defer the update until all in-flight responses have drained.
+                    if (_requirePartitionAffinity && _totalPendingResponseCount > 0)
+                    {
+                        _deferredScaleUpCount = actualCount;
+                        return 0;
+                    }
 
-                    var newPinned = new IKafkaConnection?[actualCount];
-                    Array.Copy(_pinnedConnections, newPinned, oldCount);
-                    _pinnedConnections = newPinned;
-
-                    var newPending = new List<PendingResponse>[actualCount];
-                    Array.Copy(_pendingResponsesByConnection, newPending, oldCount);
-                    for (var i = oldCount; i < actualCount; i++)
-                        newPending[i] = new List<PendingResponse>();
-                    _pendingResponsesByConnection = newPending;
-
-                    // Reset low utilization tracking — we just scaled up
-                    _lowUtilizationStartTicks = 0;
-
-                    LogAdaptiveScaleUp(_brokerId, oldCount, actualCount);
-                    return actualCount;
+                    return ApplyScaleUp(actualCount);
                 }
             }
             else if (task.Exception is not null)
@@ -2695,6 +2698,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             return 0;
         }
+
+        // If a deferred scale-up is waiting for in-flight requests to drain,
+        // don't start new scale operations — the deferred one takes priority.
+        if (_deferredScaleUpCount > 0)
+            return 0;
 
         var now = Environment.TickCount64;
 
@@ -2768,6 +2776,37 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _brokerId, targetShrinkCount, _cts.Token).AsTask();
 
         return 0;
+    }
+
+    /// <summary>
+    /// Applies a scale-up by expanding send-loop arrays and updating the connection count.
+    /// Returns the new connection count.
+    /// </summary>
+    private int ApplyScaleUp(int actualCount)
+    {
+        var oldCount = _connectionCount;
+        _connectionCount = actualCount;
+        _totalMaxInFlight = _connectionCount * _maxInFlight;
+        // Only reset on successful growth — intentional. If the pool returned fewer
+        // connections than requested, stale pressure keeps accumulating so the next
+        // cooldown window retries with the full delta rather than starting from zero.
+        _lastPressureSnapshot = _accumulator.BufferPressureEvents;
+
+        var newPinned = new IKafkaConnection?[actualCount];
+        Array.Copy(_pinnedConnections, newPinned, oldCount);
+        _pinnedConnections = newPinned;
+
+        var newPending = new List<PendingResponse>[actualCount];
+        Array.Copy(_pendingResponsesByConnection, newPending, oldCount);
+        for (var i = oldCount; i < actualCount; i++)
+            newPending[i] = new List<PendingResponse>();
+        _pendingResponsesByConnection = newPending;
+
+        // Reset low utilization tracking — we just scaled up
+        _lowUtilizationStartTicks = 0;
+
+        LogAdaptiveScaleUp(_brokerId, oldCount, actualCount);
+        return actualCount;
     }
 
     /// <summary>

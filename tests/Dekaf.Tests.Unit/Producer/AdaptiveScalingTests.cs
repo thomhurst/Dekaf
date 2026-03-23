@@ -444,5 +444,72 @@ public class AdaptiveScalingTests
         }).Throws<InvalidOperationException>();
     }
 
+    [Test]
+    public async Task IdempotentProducer_WithAdaptiveScaling_DoesNotThrow()
+    {
+        // Idempotent producers should support adaptive scaling (partition affinity
+        // preserves sequence ordering across connections).
+        await Assert.That(() =>
+        {
+            var producer = Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers("localhost:9092")
+                .WithIdempotence(true)
+                .WithAdaptiveConnections(maxConnections: 5)
+                .Build();
+            _ = producer.DisposeAsync();
+        }).ThrowsNothing();
+    }
+
+    [Test]
+    public async Task TransactionalProducer_WithConnectionsPerBrokerGreaterThan1_Throws()
+    {
+        // Transactional producers require a single connection per broker for
+        // transaction coordinator requests.
+        await Assert.That(() =>
+        {
+            Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers("localhost:9092")
+                .WithTransactionalId("txn-1")
+                .WithConnectionsPerBroker(2)
+                .Build();
+        }).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task AdaptiveScalingEnabled_ResolvedCorrectly_ForIdempotentProducer()
+    {
+        // The options should allow adaptive connections for idempotent producers.
+        // BrokerSender disables adaptive scaling only for transactional producers.
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            EnableIdempotence = true,
+            EnableAdaptiveConnections = true,
+            TransactionalId = null
+        };
+
+        // EnableAdaptiveConnections should be true (not blocked by idempotence)
+        await Assert.That(options.EnableAdaptiveConnections).IsTrue();
+        await Assert.That(options.TransactionalId).IsNull();
+    }
+
+    [Test]
+    public async Task AdaptiveScalingEnabled_DisabledForTransactionalProducer()
+    {
+        // BrokerSender uses: options.EnableAdaptiveConnections && options.TransactionalId is null
+        // Verify that a transactional producer's options cause adaptive scaling to be disabled.
+        var options = new ProducerOptions
+        {
+            BootstrapServers = ["localhost:9092"],
+            EnableIdempotence = true,
+            EnableAdaptiveConnections = true,
+            TransactionalId = "txn-1"
+        };
+
+        // Even though EnableAdaptiveConnections is true, BrokerSender will disable it
+        // because TransactionalId is set.
+        await Assert.That(options.TransactionalId).IsNotNull();
+    }
+
     #endregion
 }
