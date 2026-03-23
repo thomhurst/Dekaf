@@ -14,6 +14,7 @@ public sealed partial class ConnectionPool : IConnectionPool
     private readonly ILoggerFactory? _loggerFactory;
     private readonly ILogger _logger;
     private readonly int _connectionsPerBroker;
+    private readonly ResponseBufferPool _responseBufferPool;
 
     // Default BufferMemory if not configured (256 MB)
     private const ulong DefaultBufferMemory = 268435456;
@@ -42,12 +43,23 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
         ConnectionOptions? connectionOptions = null,
         ILoggerFactory? loggerFactory = null,
         int connectionsPerBroker = 1)
+        : this(clientId, connectionOptions, loggerFactory, connectionsPerBroker, ResponseBufferPool.Default)
+    {
+    }
+
+    internal ConnectionPool(
+        string? clientId,
+        ConnectionOptions? connectionOptions,
+        ILoggerFactory? loggerFactory,
+        int connectionsPerBroker,
+        ResponseBufferPool responseBufferPool)
     {
         _clientId = clientId;
         _connectionOptions = connectionOptions ?? new ConnectionOptions();
         _loggerFactory = loggerFactory;
         _logger = loggerFactory?.CreateLogger<ConnectionPool>() ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<ConnectionPool>.Instance;
         _connectionsPerBroker = Math.Max(1, connectionsPerBroker);
+        _responseBufferPool = responseBufferPool;
     }
 
     public void RegisterBroker(int brokerId, string host, int port)
@@ -345,14 +357,11 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
     private async ValueTask<IKafkaConnection> CreateConnectionForGroupAsync(int brokerId, string host, int port, int index, CancellationToken cancellationToken)
     {
         var connection = new KafkaConnection(
-            brokerId,
-            host,
-            port,
-            _clientId,
-            _connectionOptions,
+            brokerId, host, port,
+            _clientId, _connectionOptions,
             _loggerFactory?.CreateLogger<KafkaConnection>(),
-            DefaultBufferMemory,
-            _connectionsPerBroker);
+            DefaultBufferMemory, _connectionsPerBroker,
+            _responseBufferPool);
 
         await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
@@ -465,17 +474,12 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
         }
 
         // Create new connection
-        // Pass BufferMemory info from producer options if available
-        // For now, use default values - will be wired up from producer later
         var connection = new KafkaConnection(
-            brokerId,
-            host,
-            port,
-            _clientId,
-            _connectionOptions,
+            brokerId, host, port,
+            _clientId, _connectionOptions,
             _loggerFactory?.CreateLogger<KafkaConnection>(),
-            DefaultBufferMemory,
-            _connectionsPerBroker);
+            DefaultBufferMemory, _connectionsPerBroker,
+            _responseBufferPool);
 
         await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);
 

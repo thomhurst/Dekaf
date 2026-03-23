@@ -116,6 +116,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     private readonly ConnectionOptions _options;
     private readonly ulong _bufferMemory;
     private readonly int _connectionsPerBroker;
+    private readonly ResponseBufferPool _responseBufferPool;
 
     private Socket? _socket;
     private Stream? _stream;
@@ -172,6 +173,19 @@ public sealed partial class KafkaConnection : IKafkaConnection
         ILogger<KafkaConnection>? logger = null,
         ulong bufferMemory = 33554432,
         int connectionsPerBroker = 1)
+        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, ResponseBufferPool.Default)
+    {
+    }
+
+    internal KafkaConnection(
+        string host,
+        int port,
+        string? clientId,
+        ConnectionOptions? options,
+        ILogger<KafkaConnection>? logger,
+        ulong bufferMemory,
+        int connectionsPerBroker,
+        ResponseBufferPool responseBufferPool)
     {
         _host = host;
         _port = port;
@@ -180,6 +194,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         _logger = logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<KafkaConnection>.Instance;
         _bufferMemory = bufferMemory;
         _connectionsPerBroker = connectionsPerBroker;
+        _responseBufferPool = responseBufferPool;
     }
 
     public KafkaConnection(
@@ -191,7 +206,22 @@ public sealed partial class KafkaConnection : IKafkaConnection
         ILogger<KafkaConnection>? logger = null,
         ulong bufferMemory = 33554432,
         int connectionsPerBroker = 1)
-        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker)
+        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, ResponseBufferPool.Default)
+    {
+        BrokerId = brokerId;
+    }
+
+    internal KafkaConnection(
+        int brokerId,
+        string host,
+        int port,
+        string? clientId,
+        ConnectionOptions? options,
+        ILogger<KafkaConnection>? logger,
+        ulong bufferMemory,
+        int connectionsPerBroker,
+        ResponseBufferPool responseBufferPool)
+        : this(host, port, clientId, options, logger, bufferMemory, connectionsPerBroker, responseBufferPool)
     {
         BrokerId = brokerId;
     }
@@ -898,9 +928,9 @@ public sealed partial class KafkaConnection : IKafkaConnection
         byte[] responseArray;
         bool isPooled;
 
-        if (size <= PooledResponseBuffer.MaxArrayLength)
+        if (size <= _responseBufferPool.MaxArrayLength)
         {
-            responseArray = PooledResponseBuffer.Pool.Rent(size);
+            responseArray = _responseBufferPool.Pool.Rent(size);
             isPooled = true;
         }
         else
@@ -910,7 +940,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
         }
 
         responseBuffer.CopyTo(responseArray);
-        responseData = new PooledResponseBuffer(responseArray, size, isPooled);
+        responseData = new PooledResponseBuffer(responseArray, size, isPooled, pool: _responseBufferPool);
 
         buffer = buffer.Slice(4 + size);
         return true;
@@ -1886,32 +1916,72 @@ public sealed class ConnectionOptions
 }
 
 /// <summary>
-/// Wrapper for response buffers that may be pooled or allocated.
-/// Ensures proper cleanup when the buffer is no longer needed.
+/// An adaptive pool for response buffers whose maximum array size derives from consumer
+/// configuration (e.g., <c>FetchMaxBytes</c>). This replaces the previous static
+/// <c>ArrayPool&lt;byte&gt;</c> so that large multi-partition fetch responses are pooled
+/// instead of falling through to unpooled LOH allocations.
 /// </summary>
-internal readonly struct PooledResponseBuffer : IDisposable
+internal sealed class ResponseBufferPool
 {
     /// <summary>
-    /// Maximum array size the pool can handle. Used both to configure the pool and as the
-    /// guard in TryReadResponse — single source of truth to prevent silent divergence.
-    /// Sized to accommodate multi-partition fetch responses (e.g., 6 partitions × 1 MB = ~6 MB)
-    /// without falling back to unpooled LOH allocations that trigger Gen2 GC.
+    /// Overhead bytes added to <c>FetchMaxBytes</c> to account for Kafka protocol framing
+    /// (message size prefix, response headers, tagged fields, per-partition overhead).
     /// </summary>
-    internal const int MaxArrayLength = 16 * 1024 * 1024;
+    internal const int ProtocolOverheadBytes = 1024 * 1024; // 1 MB
 
-    internal static readonly ArrayPool<byte> Pool = ArrayPool<byte>.Create(
-        maxArrayLength: MaxArrayLength,
-        maxArraysPerBucket: 32); // 32 arrays per bucket; worst-case retention across all buckets is ~1 GB
+    /// <summary>
+    /// Default maximum array length when no consumer configuration is available.
+    /// Matches the previous static pool size (16 MB).
+    /// </summary>
+    internal const int DefaultMaxArrayLength = 16 * 1024 * 1024;
 
+    /// <summary>
+    /// Default shared instance used by producers, admin clients, and connections
+    /// that don't have consumer-specific configuration.
+    /// </summary>
+    internal static readonly ResponseBufferPool Default = new(DefaultMaxArrayLength);
+
+    internal ArrayPool<byte> Pool { get; }
+    internal int MaxArrayLength { get; }
+
+    internal ResponseBufferPool(int maxArrayLength)
+    {
+        MaxArrayLength = maxArrayLength;
+        // Limit bucket count for large arrays to cap worst-case memory retention.
+        // Default pool: 32 × 16 MB = ~512 MB. Consumer pool: 8 × 51 MB = ~408 MB.
+        var maxArraysPerBucket = maxArrayLength > DefaultMaxArrayLength ? 8 : 32;
+        Pool = ArrayPool<byte>.Create(
+            maxArrayLength: maxArrayLength,
+            maxArraysPerBucket: maxArraysPerBucket);
+    }
+
+    /// <summary>
+    /// Creates a <see cref="ResponseBufferPool"/> sized for the given <c>FetchMaxBytes</c>
+    /// configuration. The pool's max array length is <c>max(fetchMaxBytes + ProtocolOverheadBytes, DefaultMaxArrayLength)</c>
+    /// so it always accommodates at least the default 16 MB.
+    /// </summary>
+    internal static ResponseBufferPool Create(int fetchMaxBytes)
+    {
+        // Use long arithmetic to avoid silent overflow when fetchMaxBytes is near int.MaxValue
+        var maxArrayLength = (int)Math.Min((long)fetchMaxBytes + ProtocolOverheadBytes, int.MaxValue);
+        maxArrayLength = Math.Max(maxArrayLength, DefaultMaxArrayLength);
+        return new ResponseBufferPool(maxArrayLength);
+    }
+}
+
+internal readonly struct PooledResponseBuffer : IDisposable
+{
     private readonly byte[] _buffer;
     private readonly int _offset;
+    private readonly ResponseBufferPool? _pool;
 
-    public PooledResponseBuffer(byte[] buffer, int length, bool isPooled, int offset = 0)
+    public PooledResponseBuffer(byte[] buffer, int length, bool isPooled, int offset = 0, ResponseBufferPool? pool = null)
     {
         _buffer = buffer;
         Length = length;
         IsPooled = isPooled;
         _offset = offset;
+        _pool = pool;
     }
 
     public byte[] Buffer => _buffer;
@@ -1926,7 +1996,7 @@ internal readonly struct PooledResponseBuffer : IDisposable
     /// </summary>
     public PooledResponseBuffer Slice(int additionalOffset)
     {
-        return new PooledResponseBuffer(_buffer, Length - additionalOffset, IsPooled, _offset + additionalOffset);
+        return new PooledResponseBuffer(_buffer, Length - additionalOffset, IsPooled, _offset + additionalOffset, _pool);
     }
 
     /// <summary>
@@ -1935,14 +2005,15 @@ internal readonly struct PooledResponseBuffer : IDisposable
     /// </summary>
     public PooledResponseMemory TransferOwnership()
     {
-        return new PooledResponseMemory(_buffer, Length, IsPooled, _offset);
+        return new PooledResponseMemory(_buffer, Length, IsPooled, _offset, _pool);
     }
 
     public void Dispose()
     {
         if (IsPooled && _buffer is not null)
         {
-            Pool.Return(_buffer);
+            Debug.Assert(_pool is not null, "Pooled buffer must have a non-null pool reference");
+            _pool!.Pool.Return(_buffer);
         }
     }
 }
@@ -1958,13 +2029,15 @@ internal sealed class PooledResponseMemory : IPooledMemory
     private readonly int _length;
     private readonly bool _isPooled;
     private readonly int _offset;
+    private readonly ResponseBufferPool? _pool;
 
-    public PooledResponseMemory(byte[] buffer, int length, bool isPooled, int offset)
+    public PooledResponseMemory(byte[] buffer, int length, bool isPooled, int offset, ResponseBufferPool? pool = null)
     {
         _buffer = buffer;
         _length = length;
         _isPooled = isPooled;
         _offset = offset;
+        _pool = pool;
     }
 
     public ReadOnlyMemory<byte> Memory => _buffer is not null
@@ -1976,7 +2049,8 @@ internal sealed class PooledResponseMemory : IPooledMemory
         var buffer = Interlocked.Exchange(ref _buffer, null);
         if (_isPooled && buffer is not null)
         {
-            PooledResponseBuffer.Pool.Return(buffer);
+            Debug.Assert(_pool is not null, "Pooled buffer must have a non-null pool reference");
+            _pool!.Pool.Return(buffer);
         }
     }
 }
