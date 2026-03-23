@@ -162,8 +162,8 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
         consumer.Seek(new TopicPartitionOffset(topic, 0, 999999));
 
         // Act - consume should auto-reset to earliest and return the first message
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(15), cts.Token);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
 
         // Assert - should have recovered and consumed from the beginning
         await Assert.That(result).IsNotNull();
@@ -223,7 +223,9 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
 
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            // CTS must be longer than ConsumeOneAsync timeout so the inner timeout
+            // fires first (returning null) rather than the CTS throwing.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
             result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -275,7 +277,9 @@ public sealed class BrokerErrorCodeTests(KafkaTestContainer kafka) : KafkaIntegr
 
         try
         {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            // CTS must be longer than ConsumeOneAsync timeout so the inner timeout
+            // fires first (returning null) rather than the CTS throwing.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
             result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), cts.Token);
         }
         catch (KafkaException ex)
