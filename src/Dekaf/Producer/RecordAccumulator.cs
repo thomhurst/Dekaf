@@ -2035,18 +2035,35 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             var current = Volatile.Read(ref _bufferedBytes);
             var newValue = current + recordSize;
 
-            // Check if adding this record would exceed buffer limit
             if ((ulong)newValue > _maxBufferMemory)
-            {
                 return false;
-            }
 
             if (Interlocked.CompareExchange(ref _bufferedBytes, newValue, current) == current)
-            {
                 return true;
-            }
-            // CAS failed, retry
+
+            // CAS failed due to contention — fall through to spin path
+            break;
         }
+
+        // Contention path: progressive backoff only when there's actual contention.
+        // Capped at the no-yield phase to stay lightweight — callers (ReserveMemoryAsync,
+        // ReserveMemorySync) already wrap this in their own retry loops with proper blocking.
+        var spinner = new SpinWait();
+        while (!spinner.NextSpinWillYield)
+        {
+            spinner.SpinOnce();
+
+            var current = Volatile.Read(ref _bufferedBytes);
+            var newValue = current + recordSize;
+
+            if ((ulong)newValue > _maxBufferMemory)
+                return false;
+
+            if (Interlocked.CompareExchange(ref _bufferedBytes, newValue, current) == current)
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
