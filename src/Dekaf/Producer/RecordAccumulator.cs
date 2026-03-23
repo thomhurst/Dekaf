@@ -2784,10 +2784,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
         try
         {
-            if (!batch.MemoryReleased)
+            if (batch.TrySetMemoryReleased())
             {
                 ReleaseMemory(batch.DataSize);
-                batch.MemoryReleased = true;
             }
         }
         catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }
@@ -3001,7 +3000,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                             Interlocked.Add(ref _pendingAwaitedProduceCount, -readyBatch.CompletionSourcesCount);
 
                         readyBatch.Fail(disposedException);
-                        ReleaseMemory(readyBatch.DataSize);
+                        if (readyBatch.TrySetMemoryReleased())
+                        {
+                            ReleaseMemory(readyBatch.DataSize);
+                        }
                     }
                     _batchPool.Return(current);
                     pd.CurrentBatch = null;
@@ -3013,10 +3015,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     var readyBatch = pd.PollFirst()!;
                     readyBatch.Fail(disposedException);
-                    if (!readyBatch.MemoryReleased)
+                    if (readyBatch.TrySetMemoryReleased())
                     {
                         ReleaseMemory(readyBatch.DataSize);
-                        readyBatch.MemoryReleased = true;
                     }
                     OnBatchExitsPipeline(readyBatch);
                 }
@@ -3053,10 +3054,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 {
                     var batch = pd.PollFirst()!;
                     batch.Fail(disposedException);
-                    if (!batch.MemoryReleased)
+                    if (batch.TrySetMemoryReleased())
                     {
                         ReleaseMemory(batch.DataSize);
-                        batch.MemoryReleased = true;
                     }
                     OnBatchExitsPipeline(batch); // Decrement counter
                 }
@@ -4031,8 +4031,24 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// Whether BufferMemory has already been released for this batch.
     /// Set to true when ReleaseMemory is called (at TCP send time or in error paths).
     /// Prevents double-release across send and cleanup paths.
+    /// Uses atomic operations because multiple threads may race to release:
+    /// BrokerSender send loop, orphan sweep, and forceful disposal.
+    /// For observation/diagnostics only — use <see cref="TrySetMemoryReleased"/> as the
+    /// atomic guard when releasing memory.
     /// </summary>
-    internal bool MemoryReleased { get; set; }
+    internal bool MemoryReleased => Volatile.Read(ref _memoryReleased) != 0;
+    private int _memoryReleased;
+
+    /// <summary>
+    /// Atomically marks memory as released. Returns true if this call was the first
+    /// to set the flag (caller should release memory). Returns false if another thread
+    /// already set it (caller should skip release to avoid double-release).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TrySetMemoryReleased()
+    {
+        return Interlocked.CompareExchange(ref _memoryReleased, 1, 0) == 0;
+    }
 
     /// <summary>
     /// When true, this batch is a same-broker retry. The send loop unmutes the partition
@@ -4110,10 +4126,13 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // Reset lifecycle flags at the START of a new lifecycle (not in Reset()).
         // This ensures stale references from a previous lifecycle see _cleanedUp=1
         // and return early from CompleteSend/Fail, preventing pool corruption.
+        // _memoryReleased follows the same pattern: stale references seeing 1 (released)
+        // will skip the release, which is the safe/defensive behavior.
         Interlocked.Exchange(ref _cleanedUp, 0);
         Interlocked.Exchange(ref _completed, 0);
         Interlocked.Exchange(ref _sendCompleted, 0);
         Interlocked.Exchange(ref _returnedToPool, 0);
+        Interlocked.Exchange(ref _memoryReleased, 0);
 
         _topicPartition = topicPartition;
         _recordBatch = recordBatch;
@@ -4173,7 +4192,9 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _callbackCount = 0;
         _arrayReuseQueue = null;
         InflightEntry = null;
-        MemoryReleased = false;
+        // NOTE: _memoryReleased is NOT reset here — it stays armed (=1) while in pool,
+        // so stale references calling TrySetMemoryReleased() return false (safe no-op).
+        // Cleared in Initialize() at the start of the next lifecycle.
         IsRetry = false;
         RetryNotBefore = 0;
         _diagTraceLen = 0;

@@ -2180,10 +2180,9 @@ public sealed partial class KafkaProducer<TKey, TValue> : IKafkaProducer<TKey, T
         catch (Exception failEx) { LogBatchCleanupStepFailed(failEx); }
         try
         {
-            if (!batch.MemoryReleased)
+            if (batch.TrySetMemoryReleased())
             {
                 _accumulator.ReleaseMemory(batch.DataSize);
-                batch.MemoryReleased = true;
             }
         }
         catch (Exception memEx) { LogBatchCleanupStepFailed(memEx); }

@@ -79,7 +79,7 @@ public sealed class BrokerSenderMuteOrderingTests
             pooledHeaderArraysCount: 0,
             dataSize: 100);
 
-        batch.MemoryReleased = true;
+        batch.TrySetMemoryReleased();
         return batch;
     }
 
