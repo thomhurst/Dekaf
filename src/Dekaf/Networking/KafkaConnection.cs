@@ -619,7 +619,7 @@ public sealed partial class KafkaConnection : IKafkaConnection
     /// The ArrayPool rent/return is per-batch (amortized over ~1000 messages), so the overhead
     /// is negligible compared to the lock contention savings.
     /// </remarks>
-    private (byte[] Array, int Length) PreSerializeRequest<TRequest, TResponse>(
+    private (byte[] Buffer, int Length) PreSerializeRequest<TRequest, TResponse>(
         TRequest request,
         int correlationId,
         short apiVersion,
