@@ -38,9 +38,12 @@ public interface IConnectionPool : IAsyncDisposable
     ValueTask<int> ScaleConnectionGroupAsync(int brokerId, int newCount, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Shrinks the connection group for a broker to the specified count.
+    /// Shrinks the connection group for a broker by removing one connection (the last in the group)
+    /// and returning it to the caller for draining. Unlike <see cref="ScaleConnectionGroupAsync"/>,
+    /// which creates connections and manages their lifecycle internally, this method transfers
+    /// ownership of the removed connection to the caller, who is responsible for waiting until
+    /// in-flight requests complete before disposing it.
     /// If the broker already has at most <paramref name="newCount"/> connections, this is a no-op.
-    /// The removed connection (always the last in the group) is returned for draining by the caller.
     /// </summary>
     /// <param name="brokerId">The broker to shrink connections for.</param>
     /// <param name="newCount">The desired number of connections (must be >= 1).</param>

@@ -711,6 +711,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         var newBucketCts = new CancellationTokenSource[scaledToCount];
                         if (bucketTimeoutCts.Length > 0)
                             Array.Copy(bucketTimeoutCts, newBucketCts, Math.Min(bucketTimeoutCts.Length, scaledToCount));
+                        // Dispose trailing CTS entries on scale-down to release linked token registrations
+                        for (var i = scaledToCount; i < bucketTimeoutCts.Length; i++)
+                            bucketTimeoutCts[i].Dispose();
                         for (var i = bucketTimeoutCts.Length; i < scaledToCount; i++)
                             newBucketCts[i] = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                         bucketTimeoutCts = newBucketCts;
@@ -2637,14 +2640,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Array.Copy(_pendingResponsesByConnection, newPending, newCount);
         _pendingResponsesByConnection = newPending;
 
-        // Schedule the removed connection for background draining and disposal.
-        // Even though we checked in-flight == 0, the connection may have TCP-level
-        // state that needs graceful close.
+        // Hand off to MaybeDrainAndDisposeConnection on the next send-loop iteration.
+        // Safe to set without checking the previous value: _pendingShrinkTask serializes
+        // scale-down attempts, so ApplyScaleDown is never called while a prior drain is
+        // in progress.
         _drainingConnection = removedConnection;
-
-        // Re-enable adaptive scaling if we were at max before
-        if (!_adaptiveScalingEnabled && newCount < _maxConnectionsPerBroker)
-            _adaptiveScalingEnabled = true;
 
         LogAdaptiveScaleDown(_brokerId, oldCount, newCount);
         return newCount;
