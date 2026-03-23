@@ -1947,9 +1947,12 @@ internal sealed class ResponseBufferPool
     internal ResponseBufferPool(int maxArrayLength)
     {
         MaxArrayLength = maxArrayLength;
+        // Limit bucket count for large arrays to cap worst-case memory retention.
+        // Default pool: 32 × 16 MB = ~512 MB. Consumer pool: 8 × 51 MB = ~408 MB.
+        var maxArraysPerBucket = maxArrayLength > DefaultMaxArrayLength ? 8 : 32;
         Pool = ArrayPool<byte>.Create(
             maxArrayLength: maxArrayLength,
-            maxArraysPerBucket: 32);
+            maxArraysPerBucket: maxArraysPerBucket);
     }
 
     /// <summary>
@@ -1959,7 +1962,9 @@ internal sealed class ResponseBufferPool
     /// </summary>
     internal static ResponseBufferPool Create(int fetchMaxBytes)
     {
-        var maxArrayLength = Math.Max(fetchMaxBytes + ProtocolOverheadBytes, DefaultMaxArrayLength);
+        // Use long arithmetic to avoid silent overflow when fetchMaxBytes is near int.MaxValue
+        var maxArrayLength = (int)Math.Min((long)fetchMaxBytes + ProtocolOverheadBytes, int.MaxValue);
+        maxArrayLength = Math.Max(maxArrayLength, DefaultMaxArrayLength);
         return new ResponseBufferPool(maxArrayLength);
     }
 }
@@ -2007,7 +2012,8 @@ internal readonly struct PooledResponseBuffer : IDisposable
     {
         if (IsPooled && _buffer is not null)
         {
-            (_pool ?? ResponseBufferPool.Default).Pool.Return(_buffer);
+            Debug.Assert(_pool is not null, "Pooled buffer must have a non-null pool reference");
+            _pool!.Pool.Return(_buffer);
         }
     }
 }
@@ -2043,7 +2049,8 @@ internal sealed class PooledResponseMemory : IPooledMemory
         var buffer = Interlocked.Exchange(ref _buffer, null);
         if (_isPooled && buffer is not null)
         {
-            (_pool ?? ResponseBufferPool.Default).Pool.Return(buffer);
+            Debug.Assert(_pool is not null, "Pooled buffer must have a non-null pool reference");
+            _pool!.Pool.Return(buffer);
         }
     }
 }
