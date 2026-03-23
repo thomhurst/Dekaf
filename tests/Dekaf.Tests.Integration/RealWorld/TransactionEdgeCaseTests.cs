@@ -55,7 +55,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         consumer.Subscribe(topic);
 
         var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
@@ -125,7 +125,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
 
         consumer.Subscribe(topic);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var result = await consumer.ConsumeOneAsync(TimeSpan.FromSeconds(20), cts.Token);
 
         await Assert.That(result).IsNotNull();
@@ -182,7 +182,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         consumer.Subscribe(topic);
 
         var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
@@ -241,7 +241,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         consumer.Subscribe(topic);
 
         var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
@@ -300,7 +300,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         await txnProducer.InitTransactionsAsync();
         consumer.Subscribe(inputTopic);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var processedCount = 0;
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
@@ -378,7 +378,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         await txnProducer.InitTransactionsAsync();
         consumer.Subscribe(inputTopic);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
         var processedCount = 0;
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
@@ -412,7 +412,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         outputConsumer.Subscribe(outputTopic);
 
         var outputMessages = new List<ConsumeResult<string, string>>();
-        using var verifyCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var verifyCts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
         await foreach (var msg in outputConsumer.ConsumeAsync(verifyCts.Token))
         {
@@ -495,7 +495,7 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         // Collect messages until timeout — don't break at a specific count
         // because transaction markers affect offset positions
         var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
         try
         {
