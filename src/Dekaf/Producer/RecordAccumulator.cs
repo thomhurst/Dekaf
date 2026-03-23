@@ -1042,6 +1042,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         MetadataManager metadataManager, HashSet<int> readyNodes)
     {
         var unknownLeadersExist = false;
+        var nowTimestamp = Stopwatch.GetTimestamp();
 
         // Snapshot the current queue length to avoid infinite loop: partitions that need
         // re-enqueue (backoff, unknown leader) are added back during the loop, but we only
@@ -1077,7 +1078,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             // Check retry backoff
             if (head.IsRetry && head.RetryNotBefore > 0)
             {
-                var backoffRemaining = head.RetryNotBefore - Stopwatch.GetTimestamp();
+                var backoffRemaining = head.RetryNotBefore - nowTimestamp;
                 if (backoffRemaining > 0)
                 {
                     var backoffMs = (int)(backoffRemaining * 1000 / Stopwatch.Frequency);
