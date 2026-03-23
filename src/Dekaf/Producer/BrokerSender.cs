@@ -1098,6 +1098,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
                 _totalPendingResponseCount -= pendingList.Count;
                 pendingList.Clear();
+                // No TrimExcess — lists are unreachable after disposal
             }
 
             FailCarryOverBatches(carryOver);
@@ -1583,6 +1584,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // After clearing all entries due to timeout, trim the internal array to
             // prevent capacity from ratcheting up across repeated timeout/recovery cycles.
+            // The > 16 guard avoids trimming tiny lists: with MaxInFlightRequestsPerConnection
+            // defaulting to 5, normal-operation lists stay within 8-16 capacity.
             if (pendingList.Capacity > 16)
             {
                 pendingList.TrimExcess();
@@ -2490,6 +2493,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 _totalPendingResponseCount -= pendingList.Count;
                 pendingList.Clear();
+                // No TrimExcess — lists are unreachable after disposal
             }
         }
 
