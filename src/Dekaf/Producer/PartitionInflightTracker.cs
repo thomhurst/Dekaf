@@ -198,8 +198,8 @@ internal sealed class PartitionInflightTracker
             state.Lock.Enter(ref lockTaken);
 
             // Guard against double-return when FailAll and Complete race.
-            // TryRemoveFromList is atomic (Interlocked.Exchange), so exactly one
-            // caller wins even if FailAll cleared InList before we acquired the lock.
+            // Both Complete and FailAll acquire the same SpinLock, so TryRemoveFromList
+            // is already serialised: exactly one caller will see InList == true.
             if (!entry.TryRemoveFromList())
             {
                 return;
