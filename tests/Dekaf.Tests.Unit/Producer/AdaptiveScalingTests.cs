@@ -193,8 +193,9 @@ public class AdaptiveScalingTests
     public async Task CancelledWaiterNode_IsSkippedByWakeNextSyncWaiter(CancellationToken cancellationToken)
     {
         var recordSize = await MeasureRecordSizeAsync();
-        // Use 5s maxBlockMs so even slow CI runners complete the timeout
-        var accumulator = CreateAccumulator(bufferMemory: (ulong)recordSize, maxBlockMs: 5_000);
+        // Use 2s maxBlockMs — shorter timeout reduces test duration on slow CI runners
+        // where thread pool starvation delays Task.Run scheduling significantly
+        var accumulator = CreateAccumulator(bufferMemory: (ulong)recordSize, maxBlockMs: 2_000);
 
         try
         {
