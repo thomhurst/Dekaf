@@ -30,6 +30,8 @@ public interface IConnectionPool : IAsyncDisposable
     /// Scales the connection group for a broker to the specified count.
     /// If the broker already has at least <paramref name="newCount"/> connections, this is a no-op.
     /// New connections are created in parallel and appended to the existing group.
+    /// To reduce the connection count with caller-managed draining before disposal,
+    /// use <see cref="ShrinkConnectionGroupAsync"/> instead.
     /// </summary>
     /// <param name="brokerId">The broker to scale connections for.</param>
     /// <param name="newCount">The desired number of connections.</param>
