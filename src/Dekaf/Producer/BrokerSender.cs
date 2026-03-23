@@ -1355,6 +1355,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // fires when count drops below 1/4 of capacity, which happens infrequently
                 // (e.g., after a burst of completions). TrimExcess() reallocates the internal
                 // array to match Count, reclaiming the wasted capacity.
+                // The > 16 guard avoids trimming tiny lists: with MaxInFlightRequestsPerConnection
+                // defaulting to 5, normal-operation lists stay within 8-16 capacity and the
+                // reallocation overhead would exceed the memory savings.
                 if (pendingList.Capacity > 16 && pendingList.Count < pendingList.Capacity / 4)
                 {
                     pendingList.TrimExcess();
