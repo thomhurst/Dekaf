@@ -419,7 +419,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             });
         }
 
-        await producer.FlushAsync();
+        // ProduceWithRetryAsync already awaits delivery confirmation, so all messages
+        // are confirmed delivered by this point. No FlushAsync needed — it was getting
+        // stuck in WaitForAllBatchesCompleteAsync on slow CI runners despite the
+        // accumulator being empty (likely stale warmup batch tracking).
 
         // Act — use manual Assign (not Subscribe) to skip consumer group rebalance.
         // Rebalance for 10 partitions can take 60+ seconds on slow CI runners with

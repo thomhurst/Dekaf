@@ -208,7 +208,10 @@ public class AdaptiveScalingTests
                 catch { /* Expected: KafkaTimeoutException */ }
             }, cancellationToken);
 
-            await timedOutTask.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            // Use generous inner timeouts — on CI runners with severe thread pool
+            // starvation, Task.Run scheduling alone can take 20+ seconds. The outer
+            // [Timeout(90_000)] attribute provides the safety net.
+            await timedOutTask.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
 
             // Start waiter 2 — uses same FIFO queue
             var pressureBefore = accumulator.BufferPressureEvents;
@@ -227,8 +230,8 @@ public class AdaptiveScalingTests
             accumulator.ClearCurrentBatch("test-topic", 0);
             accumulator.ReleaseMemory(recordSize);
 
-            await waiter2Completed.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
-            await waiter2Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            await waiter2Completed.Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
+            await waiter2Task.WaitAsync(TimeSpan.FromSeconds(60), cancellationToken);
         }
         finally
         {
