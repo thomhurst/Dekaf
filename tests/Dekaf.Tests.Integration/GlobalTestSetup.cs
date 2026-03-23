@@ -21,6 +21,8 @@ namespace Dekaf.Tests.Integration;
 /// </summary>
 internal sealed class GlobalTestSetup
 {
+    private static LoggerFactoryFixture? _loggerFactoryFixture;
+
     [Before(TestSession)]
     public static void RegisterCompressionCodecs()
     {
@@ -33,16 +35,7 @@ internal sealed class GlobalTestSetup
         // Enable Dekaf's internal logging (metadata resolution, prefetch errors, send loop
         // diagnostics) so CI failures include the relevant debug output. Without this,
         // errors in the prefetch loop and metadata manager are silently discarded.
-        // Uses TUnit's logger so output appears alongside test results.
-        Kafka.DefaultLoggerFactory = LoggerFactory.Create(builder =>
-        {
-            builder.SetMinimumLevel(LogLevel.Warning);
-            builder.AddSimpleConsole(options =>
-            {
-                options.SingleLine = true;
-                options.TimestampFormat = "HH:mm:ss.fff ";
-            });
-        });
+        _loggerFactoryFixture = new LoggerFactoryFixture();
 
         CompressionCodecRegistry.Default.AddLz4();
         CompressionCodecRegistry.Default.AddSnappy();
@@ -54,5 +47,15 @@ internal sealed class GlobalTestSetup
         if (!Trace.Listeners.OfType<ConsoleTraceListener>().Any())
             Trace.Listeners.Add(new ConsoleTraceListener());
 #endif
+    }
+
+    public static ILoggerFactory GetLoggerFactory() => _loggerFactoryFixture?.LoggerFactory
+        ?? throw new InvalidOperationException("Logger factory not initialized");
+
+    [After(TestSession)]
+    public static void CleanupLoggerFactory()
+    {
+        _loggerFactoryFixture?.Dispose();
+        _loggerFactoryFixture = null;
     }
 }

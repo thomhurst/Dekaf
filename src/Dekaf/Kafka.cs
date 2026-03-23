@@ -10,13 +10,6 @@ using Producer;
 public static class Kafka
 {
     /// <summary>
-    /// Default logger factory used by all builders when no explicit logger factory is set.
-    /// Useful for test harnesses and diagnostic scenarios where adding
-    /// <c>.WithLoggerFactory()</c> to every builder call is impractical.
-    /// </summary>
-    public static Microsoft.Extensions.Logging.ILoggerFactory? DefaultLoggerFactory { get; set; }
-
-    /// <summary>
     /// Creates a producer builder.
     /// </summary>
     public static ProducerBuilder<TKey, TValue> CreateProducer<TKey, TValue>()
