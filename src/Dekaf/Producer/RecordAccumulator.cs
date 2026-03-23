@@ -869,6 +869,7 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     // Bounded to avoid holding excess memory when backpressure subsides.
     private const int MaxPooledWaiterNodes = 64;
     private readonly ConcurrentQueue<SyncWaiterNode> _syncWaiterNodePool = new();
+    private int _pooledNodeCount;
     private readonly CancellationTokenSource _disposalCts = new();
     // Async signal for ReserveMemoryAsync — SemaphoreSlim(0,1) used as async auto-reset event.
     // ReleaseMemory signals this so async waiters wake instantly instead of polling with Task.Delay.
@@ -2001,6 +2002,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     public long BufferedBytes => Volatile.Read(ref _bufferedBytes);
 
     /// <summary>
+    /// Gets the current number of pooled <see cref="SyncWaiterNode"/> instances.
+    /// Exposed for testing only.
+    /// </summary>
+    internal int PooledWaiterNodeCount => Volatile.Read(ref _pooledNodeCount);
+
+    /// <summary>
     /// Gets the maximum buffer memory limit in bytes.
     /// </summary>
     public ulong MaxBufferMemory => _maxBufferMemory;
@@ -2352,6 +2359,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 waiter.Event.Set();
                 return;
             }
+
+            // Cancelled nodes were left in the queue by timed-out or early-exit threads.
+            // Now that we've dequeued them, no other thread references them — safe to pool.
+            ReturnWaiterNode(waiter);
         }
     }
 
@@ -2369,10 +2380,17 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Rents a <see cref="SyncWaiterNode"/> from the pool, or allocates a new one if the pool is empty.
     /// </summary>
+    /// <remarks>
+    /// Reset-on-return is safe here because nodes are only returned after being fully
+    /// dequeued from <c>_syncWaiterQueue</c> — no other thread holds a reference.
+    /// This differs from <c>PartitionBatch</c> which requires reset-on-rent because
+    /// multiple code paths may inspect a batch between return and next rental.
+    /// </remarks>
     private SyncWaiterNode RentWaiterNode()
     {
         if (_syncWaiterNodePool.TryDequeue(out var node))
         {
+            Interlocked.Decrement(ref _pooledNodeCount);
             return node;
         }
 
@@ -2388,13 +2406,20 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// </summary>
     private void ReturnWaiterNode(SyncWaiterNode node)
     {
-        // Bound the pool to avoid holding excess memory after backpressure subsides.
-        // ConcurrentQueue<T>.Count is O(1) so this check is cheap.
-        if (_syncWaiterNodePool.Count >= MaxPooledWaiterNodes)
+        // Skip pooling during disposal to avoid racing with the disposal drain
+        // in DisposeInner that calls Event.Dispose() on all pooled nodes.
+        if (_disposed)
+            return;
+
+        // Advisory bound: non-atomic check-then-enqueue means the pool can transiently
+        // hold up to (MaxPooledWaiterNodes + concurrency) nodes, which is acceptable.
+        // Uses Interlocked counter for O(1) check (ConcurrentQueue.Count traverses segments).
+        if (Volatile.Read(ref _pooledNodeCount) >= MaxPooledWaiterNodes)
             return; // Let GC collect the excess node
 
         node.Reset();
         _syncWaiterNodePool.Enqueue(node);
+        Interlocked.Increment(ref _pooledNodeCount);
     }
 
     /// <summary>
