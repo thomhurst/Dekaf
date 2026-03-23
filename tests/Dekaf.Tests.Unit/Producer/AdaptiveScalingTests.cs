@@ -386,6 +386,27 @@ public class AdaptiveScalingTests
 
     #endregion
 
+    #region Scale-Down Computation Tests
+
+    [Test]
+    public async Task ComputeScaleTarget_ScaleUp_FromOneToTwo()
+    {
+        // Verify scale-up still works correctly alongside scale-down logic
+        var target = BrokerSender.ComputeScaleTarget(pressureDelta: 100, currentConnections: 1, maxConnections: 5);
+        await Assert.That(target).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ComputeScaleTarget_AtMinConnections_DoesNotGoBelow()
+    {
+        // ComputeScaleTarget is only for scale-up; scale-down uses different logic.
+        // Verify it does not produce targets below current.
+        var target = BrokerSender.ComputeScaleTarget(pressureDelta: 100, currentConnections: 1, maxConnections: 1);
+        await Assert.That(target).IsEqualTo(1);
+    }
+
+    #endregion
+
     #region Builder Validation Tests
 
     [Test]
