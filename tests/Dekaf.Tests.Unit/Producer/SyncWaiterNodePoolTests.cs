@@ -52,6 +52,14 @@ public class SyncWaiterNodePoolTests
         }
     }
 
+    private static async Task<bool> WaitForCondition(Func<bool> condition, int timeoutMs = 2000)
+    {
+        var deadline = Environment.TickCount64 + timeoutMs;
+        while (!condition() && Environment.TickCount64 < deadline)
+            await Task.Delay(5);
+        return condition();
+    }
+
     [Test]
     public async Task SyncWaiterNode_Reset_ClearsState()
     {
@@ -140,8 +148,10 @@ public class SyncWaiterNodePoolTests
             var completed = await Task.WhenAny(reserveTask, Task.Delay(5000)) == reserveTask;
             await Assert.That(completed).IsTrue();
 
-            // The signaled node should have been returned to the pool
-            await Assert.That(accumulator.PooledWaiterNodeCount).IsGreaterThanOrEqualTo(1);
+            // Poll for the pool to grow — the signaled path may return the node
+            // slightly after reserveTask completes (non-deterministic scheduling).
+            var poolGrew = await WaitForCondition(() => accumulator.PooledWaiterNodeCount >= 1);
+            await Assert.That(poolGrew).IsTrue();
         }
         finally
         {
@@ -197,8 +207,9 @@ public class SyncWaiterNodePoolTests
             // Wait for all tasks
             await Task.WhenAny(Task.WhenAll(tasks), Task.Delay(5000));
 
-            // Pool should have nodes from both signaled and cancelled waiters
-            await Assert.That(accumulator.PooledWaiterNodeCount).IsGreaterThanOrEqualTo(1);
+            // Poll for pool growth — nodes may be returned slightly after tasks complete
+            var poolGrew = await WaitForCondition(() => accumulator.PooledWaiterNodeCount >= 1);
+            await Assert.That(poolGrew).IsTrue();
         }
         finally
         {

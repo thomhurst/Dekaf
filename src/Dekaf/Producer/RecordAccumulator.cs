@@ -2380,10 +2380,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     /// <summary>
     /// Rents a <see cref="SyncWaiterNode"/> from the pool, or allocates a new one if the pool is empty.
     /// </summary>
+    /// <remarks>
     /// Reset-on-return is safe here because nodes are only returned after being fully
     /// dequeued from <c>_syncWaiterQueue</c> — no other thread holds a reference.
     /// This differs from <c>PartitionBatch</c> which requires reset-on-rent because
     /// multiple code paths may inspect a batch between return and next rental.
+    /// </remarks>
     private SyncWaiterNode RentWaiterNode()
     {
         if (_syncWaiterNodePool.TryDequeue(out var node))
@@ -2409,8 +2411,9 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
         if (_disposed)
             return;
 
-        // Bound the pool to avoid holding excess memory after backpressure subsides.
-        // Use Interlocked counter for O(1) check (ConcurrentQueue.Count traverses segments).
+        // Advisory bound: non-atomic check-then-enqueue means the pool can transiently
+        // hold up to (MaxPooledWaiterNodes + concurrency) nodes, which is acceptable.
+        // Uses Interlocked counter for O(1) check (ConcurrentQueue.Count traverses segments).
         if (Volatile.Read(ref _pooledNodeCount) >= MaxPooledWaiterNodes)
             return; // Let GC collect the excess node
 
