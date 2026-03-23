@@ -23,46 +23,44 @@ public class SyncWaiterNodePoolTests
     }
 
     /// <summary>
-    /// Fills the buffer by appending messages until no more fit. Returns the number appended.
-    /// Uses a short MaxBlockMs so it throws quickly once full.
+    /// Fills the accumulator buffer until BufferedBytes is within <paramref name="headroom"/> of the limit.
     /// </summary>
-    private static int FillBuffer(RecordAccumulator accumulator)
+    private static void FillBufferToCapacity(RecordAccumulator accumulator, ulong bufferMemory, ulong headroom = 200)
     {
         var pooledKey = new PooledMemory(null, 0, isNull: true);
         var pooledValue = new PooledMemory(null, 0, isNull: true);
 
-        var count = 0;
-        try
+        while ((ulong)accumulator.BufferedBytes + headroom < bufferMemory)
         {
-            // Keep appending until the buffer is full (timeout exception)
-            for (var i = 0; i < 1000; i++)
-            {
-                accumulator.Append(
-                    "test-topic", i % 10, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, null, null);
-                count++;
-            }
+            accumulator.Append(
+                "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                pooledKey, pooledValue, null, 0, null, null);
         }
-        catch
-        {
-            // Expected: KafkaTimeoutException when buffer is full
-        }
+    }
 
-        return count;
+    /// <summary>
+    /// Waits for <see cref="RecordAccumulator.BufferPressureEvents"/> to exceed <paramref name="threshold"/>,
+    /// indicating that at least one thread has entered the kernel-wait slow path.
+    /// </summary>
+    private static async Task WaitForPressureEvents(RecordAccumulator accumulator, long threshold, int timeoutMs = 5000)
+    {
+        var deadline = Environment.TickCount64 + timeoutMs;
+        while (accumulator.BufferPressureEvents <= threshold
+               && Environment.TickCount64 < deadline)
+        {
+            await Task.Delay(5);
+        }
     }
 
     [Test]
     public async Task SyncWaiterNode_Reset_ClearsState()
     {
-        // Arrange
         var node = new SyncWaiterNode();
         node.Cancelled = true;
         node.Event.Set();
 
-        // Act
         node.Reset();
 
-        // Assert: both fields are back to initial state
         await Assert.That(node.Cancelled).IsFalse();
         await Assert.That(node.Event.IsSet).IsFalse();
     }
@@ -70,7 +68,6 @@ public class SyncWaiterNodePoolTests
     [Test]
     public async Task SyncWaiterNode_Reset_CanBeWaitedOnAgain()
     {
-        // Verify a reset node can be used for another wait/signal cycle.
         var node = new SyncWaiterNode();
 
         // First cycle
@@ -108,80 +105,41 @@ public class SyncWaiterNodePoolTests
     [Test]
     public async Task Pool_GrowsAfterSignaledBackpressureCycle()
     {
-        // Fill the buffer completely, then block a thread in ReserveMemorySync.
-        // After releasing memory to unblock it, the signaled node should be returned to the pool.
+        // Fill the buffer, block a thread in ReserveMemorySync, then release memory.
+        // The signaled node should be returned to the pool.
 
-        // Use 1000 bytes buffer with short timeout for filling, but long timeout for the reserve thread
-        var options = CreateTestOptions(bufferMemory: 1000, maxBlockMs: 100);
+        const ulong bufferMemory = 1000;
+        var options = CreateTestOptions(bufferMemory: bufferMemory, maxBlockMs: 10000);
         var accumulator = new RecordAccumulator(options);
 
         try
         {
-            // Fill the buffer completely (appends until timeout)
-            FillBuffer(accumulator);
-
-            var buffered = accumulator.BufferedBytes;
-            await Assert.That(buffered).IsGreaterThan(0);
-
-            // Now create a new accumulator with longer timeout for the blocking test
-            await accumulator.DisposeAsync();
-
-            var options2 = CreateTestOptions(bufferMemory: 1000, maxBlockMs: 10000);
-            accumulator = new RecordAccumulator(options2);
-            FillBuffer(accumulator); // Will fill and timeout, but that's from the short timeout...
-
-            // Actually, let me just use a single accumulator with longer timeout
-            await accumulator.DisposeAsync();
-
-            options = CreateTestOptions(bufferMemory: 1000, maxBlockMs: 10000);
-            accumulator = new RecordAccumulator(options);
-
-            // Fill by appending until BufferedBytes is close to limit
-            var pooledKey = new PooledMemory(null, 0, isNull: true);
-            var pooledValue = new PooledMemory(null, 0, isNull: true);
-
-            while ((ulong)accumulator.BufferedBytes + 200 < options.BufferMemory)
-            {
-                accumulator.Append(
-                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, null, null);
-            }
+            FillBufferToCapacity(accumulator, bufferMemory);
 
             var pressureBefore = accumulator.BufferPressureEvents;
 
-            // This thread will block because adding another batch header's worth will exceed the limit
+            // This thread will block because reserving the full buffer size exceeds remaining space
             var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var reserveTask = Task.Run(() =>
             {
                 started.SetResult();
-                // Reserve a large chunk that exceeds remaining space
-                accumulator.ReserveMemorySync((int)options.BufferMemory);
+                accumulator.ReserveMemorySync((int)bufferMemory);
             });
 
             await started.Task;
+            await WaitForPressureEvents(accumulator, pressureBefore);
 
-            // Wait for the thread to enter the slow path
-            var deadline = Environment.TickCount64 + 5000;
-            while (accumulator.BufferPressureEvents <= pressureBefore
-                   && Environment.TickCount64 < deadline)
-            {
-                await Task.Delay(5);
-            }
-
-            // Ensure thread entered slow path
             await Assert.That(accumulator.BufferPressureEvents).IsGreaterThan(pressureBefore);
 
-            // Let thread settle into Event.Wait
+            // Let thread settle into Event.Wait after entering the queue
             await Task.Delay(50);
 
             // Release all memory
-            buffered = accumulator.BufferedBytes;
-            // Clear all partition batches
+            var buffered = accumulator.BufferedBytes;
             for (var p = 0; p < 10; p++)
                 accumulator.ClearCurrentBatch("test-topic", p);
             accumulator.ReleaseMemory((int)buffered);
 
-            // Wait for the reserve to complete
             var completed = await Task.WhenAny(reserveTask, Task.Delay(5000)) == reserveTask;
             await Assert.That(completed).IsTrue();
 
@@ -199,21 +157,13 @@ public class SyncWaiterNodePoolTests
     {
         // When WakeNextSyncWaiter dequeues cancelled nodes, they should be returned to the pool.
 
-        var options = CreateTestOptions(bufferMemory: 1000, maxBlockMs: 10000);
+        const ulong bufferMemory = 1000;
+        var options = CreateTestOptions(bufferMemory: bufferMemory, maxBlockMs: 10000);
         var accumulator = new RecordAccumulator(options);
 
         try
         {
-            var pooledKey = new PooledMemory(null, 0, isNull: true);
-            var pooledValue = new PooledMemory(null, 0, isNull: true);
-
-            // Fill the buffer
-            while ((ulong)accumulator.BufferedBytes + 200 < options.BufferMemory)
-            {
-                accumulator.Append(
-                    "test-topic", 0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                    pooledKey, pooledValue, null, 0, null, null);
-            }
+            FillBufferToCapacity(accumulator, bufferMemory);
 
             var pressureBefore = accumulator.BufferPressureEvents;
 
@@ -227,7 +177,7 @@ public class SyncWaiterNodePoolTests
                 tasks[i] = Task.Run(() =>
                 {
                     signal.SetResult();
-                    accumulator.ReserveMemorySync((int)options.BufferMemory);
+                    accumulator.ReserveMemorySync((int)bufferMemory);
                 });
             }
 
