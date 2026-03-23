@@ -1023,7 +1023,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 // ── 7. Compute timeout and wait ──
                 var waitPendingCount = _totalPendingResponseCount;
-                if (carryOver.Count == 0 && waitPendingCount == 0)
+                if (carryOver.Count == 0 && waitPendingCount == 0 && _sendFailedRetries.Count == 0)
                 {
                     // Fully idle — wait for any event (new batch, response, unmute).
                     if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
@@ -1053,9 +1053,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         await Task.Delay(Math.Min(wakeupMs, 100), cancellationToken).ConfigureAwait(false);
                     }
                 }
-                else if (!eventReader.TryPeek(out _))
+                else if (_sendFailedRetries.Count == 0 && !eventReader.TryPeek(out _))
                 {
-                    // No carry-over, no pending responses, no events — wait for new batch.
+                    // No carry-over, no pending responses, no retries, no events — wait for new batch.
                     if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
                         break;
                 }
