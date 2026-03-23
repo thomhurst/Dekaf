@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
@@ -312,9 +313,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private List<PendingResponse>[] _pendingResponsesByConnection;
 
     // Batches that failed during SendCoalescedAsync (connection error, etc.) and need retry.
-    // Set by the catch block, consumed by the send loop at the top of each iteration.
-    // Single-threaded: only accessed by the send loop.
-    private readonly List<ReadyBatch> _sendFailedRetries = new();
+    // Must be thread-safe: with multi-connection sends, multiple Z handlers (catch blocks)
+    // can Enqueue simultaneously from different thread-pool threads. ConcurrentQueue provides
+    // FIFO ordering (matching the old List iteration order) and is optimized for the
+    // cross-thread producer-consumer pattern used here.
+    private readonly ConcurrentQueue<ReadyBatch> _sendFailedRetries = new();
 
     // Non-blocking in-flight request limiter. The send loop uses _totalPendingResponseCount
     // (which it exclusively owns) as the in-flight measure. No cross-thread signaling needed.
@@ -339,8 +342,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // Muted partitions: partitions with a retry in progress or limited to 1 in-flight
     // batch (when _muteOnSend). Prevents newer batches from being sent, maintaining
     // per-partition ordering. Aligned with Java Kafka producer's mute mechanism.
-    // Exclusively owned by the single-threaded send loop — no concurrent access.
-    private readonly HashSet<TopicPartition> _mutedPartitions = new();
+    // Uses ConcurrentDictionary as a concurrent set (byte value unused): with multi-connection
+    // sends, concurrent Z handlers (catch blocks in SendCoalescedAsync) can write from
+    // different threads. HashSet<T> is not thread-safe for concurrent writes.
+    private readonly ConcurrentDictionary<TopicPartition, byte> _mutedPartitions = new();
 
     // Epoch bump recovery flag (Java Kafka Sender pattern): set by response handlers
     // when OutOfOrderSequenceNumber is received. The single-threaded send loop checks
@@ -649,12 +654,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 // ── 2. Pick up send-failed retries ──
                 // Use AddFirst: retries are older batches that must go before any newer
                 // carry-over batches for the same partition (Java's Deque.addFirst).
-                if (_sendFailedRetries.Count > 0)
-                {
-                    for (var i = 0; i < _sendFailedRetries.Count; i++)
-                        carryOver.AddFirst(_sendFailedRetries[i]);
-                    _sendFailedRetries.Clear();
-                }
+                while (_sendFailedRetries.TryDequeue(out var retryBatch))
+                    carryOver.AddFirst(retryBatch);
 
                 // ── 3. Handle timed-out requests (Java handleTimedOutRequests pattern) ──
                 HandleTimedOutRequests(carryOver, cancellationToken);
@@ -853,7 +854,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         for (var src = 0; src < coalescedCount; src++)
                         {
                             if (!coalescedBatches[src].IsRetry
-                                && _mutedPartitions.Contains(coalescedBatches[src].TopicPartition))
+                                && _mutedPartitions.ContainsKey(coalescedBatches[src].TopicPartition))
                             {
                                 // Normal batch whose partition was muted during the in-flight
                                 // wait (a different batch for this partition triggered a retry).
@@ -1023,7 +1024,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                 // ── 7. Compute timeout and wait ──
                 var waitPendingCount = _totalPendingResponseCount;
-                if (carryOver.Count == 0 && waitPendingCount == 0 && _sendFailedRetries.Count == 0)
+                if (carryOver.Count == 0 && waitPendingCount == 0 && _sendFailedRetries.IsEmpty)
                 {
                     // Fully idle — wait for any event (new batch, response, unmute).
                     if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
@@ -1053,7 +1054,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         await Task.Delay(Math.Min(wakeupMs, 100), cancellationToken).ConfigureAwait(false);
                     }
                 }
-                else if (_sendFailedRetries.Count == 0 && !eventReader.TryPeek(out _))
+                else if (_sendFailedRetries.IsEmpty && !eventReader.TryPeek(out _))
                 {
                     // No carry-over, no pending responses, no retries, no events — wait for new batch.
                     if (!await eventReader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
@@ -1073,12 +1074,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             var disposedException = new ObjectDisposedException(nameof(BrokerSender));
 
-            for (var i = 0; i < _sendFailedRetries.Count; i++)
+            while (_sendFailedRetries.TryDequeue(out var retryBatch))
             {
-                try { FailAndCleanupBatch(_sendFailedRetries[i], disposedException); }
+                try { FailAndCleanupBatch(retryBatch, disposedException); }
                 catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
             }
-            _sendFailedRetries.Clear();
 
             for (var connIdx = 0; connIdx < _pendingResponsesByConnection.Length; connIdx++)
             {
@@ -1126,7 +1126,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // preventing Ready()/Drain() from ever picking up queued batches for those
             // partitions. This causes orphaned batch timeouts on slow CI runners where
             // transient connection errors kill the send loop while retries are pending.
-            foreach (var tp in _mutedPartitions)
+            foreach (var (tp, _) in _mutedPartitions)
                 _accumulator.UnmutePartition(tp);
             _mutedPartitions.Clear();
         }
@@ -1216,7 +1216,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         }
 
         // Normal batch: skip muted partitions (retry in progress)
-        if (_mutedPartitions.Contains(batch.TopicPartition))
+        if (_mutedPartitions.ContainsKey(batch.TopicPartition))
         {
             LogPartitionMuted(_brokerId, batch.TopicPartition.Topic, batch.TopicPartition.Partition);
             batch.AppendDiag('O');
@@ -1252,7 +1252,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (batch.IsRetry)
             {
                 batch.IsRetry = false;
-                _mutedPartitions.Remove(batch.TopicPartition);
+                _mutedPartitions.TryRemove(batch.TopicPartition, out _);
                 _accumulator.UnmutePartition(batch.TopicPartition);
             }
         }
@@ -1670,7 +1670,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Mute partition so no newer batches overtake the retry (ordering guarantee).
         // Also mute in accumulator so Ready/Drain skips this partition — prevents the
         // sender loop from draining newer batches that would jump the retry queue.
-        _mutedPartitions.Add(batch.TopicPartition);
+        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
         _accumulator.MutePartition(batch.TopicPartition);
 
         var isEpochBumpError = errorCode is ErrorCode.OutOfOrderSequenceNumber
@@ -1955,7 +1955,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 for (var i = 0; i < count; i++)
                 {
-                    _mutedPartitions.Add(batches[i].TopicPartition);
+                    _mutedPartitions.TryAdd(batches[i].TopicPartition, 0);
                     _accumulator.MutePartition(batches[i].TopicPartition);
                 }
             }
@@ -2009,12 +2009,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     else
                     {
                         // Mute partition (ordering guarantee) and queue for retry.
-                        _mutedPartitions.Add(batch.TopicPartition);
+                        _mutedPartitions.TryAdd(batch.TopicPartition, 0);
                         _accumulator.MutePartition(batch.TopicPartition);
                         batch.IsRetry = true;
                         batch.RetryNotBefore = Stopwatch.GetTimestamp() +
                             _options.RetryBackoffTicks;
-                        _sendFailedRetries.Add(batch);
+                        _sendFailedRetries.Enqueue(batch);
                     }
                 }
                 catch (Exception batchEx)
@@ -2321,7 +2321,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void UnmutePartition(TopicPartition tp)
     {
-        _mutedPartitions.Remove(tp);
+        _mutedPartitions.TryRemove(tp, out _);
         _accumulator.UnmutePartition(tp); // Also unmute in accumulator so Ready/Drain can pick up new batches
         _eventChannel.Writer.TryWrite(SendLoopEvent.Unmute());
     }
