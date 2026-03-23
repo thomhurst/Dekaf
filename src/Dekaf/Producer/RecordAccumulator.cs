@@ -2732,11 +2732,14 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
             return 0;
 
         var now = Stopwatch.GetTimestamp();
-        // Use 3x delivery timeout for the sweep. BrokerSender.ProcessCompletedResponses
-        // handles normal delivery timeout (1x) for batches still tracked in _pendingResponses.
-        // The sweep only catches truly orphaned batches — those not in any data structure.
-        var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks * 3;
-        var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs * 3);
+        // Use 1.5x delivery timeout for the sweep to give BrokerSender's own timeout
+        // handling (HandleTimedOutRequests at RequestTimeoutMs, SweepExpiredCarryOver at
+        // DeliveryTimeoutMs) time to process batches through normal paths first.
+        // The sweep only catches truly orphaned batches — those lost from all BrokerSender
+        // data structures. Previously 3x, reduced because the extra 2x delay caused
+        // FlushAsync to hang for minutes waiting for orphaned batches to be swept.
+        var deliveryTimeoutTicks = _options.DeliveryTimeoutTicks + _options.DeliveryTimeoutTicks / 2;
+        var configured = TimeSpan.FromMilliseconds(_options.DeliveryTimeoutMs + _options.DeliveryTimeoutMs / 2);
         var expiredCount = 0;
 
         foreach (var (batch, _) in _inFlightBatches)
