@@ -804,6 +804,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     private async Task PrefetchLoopAsync(CancellationToken cancellationToken)
     {
+        var consecutiveErrors = 0;
         try
         {
             while (!cancellationToken.IsCancellationRequested)
@@ -831,6 +832,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                     // Fetch records into prefetch channel
                     await PrefetchRecordsAsync(cancellationToken).ConfigureAwait(false);
+                    consecutiveErrors = 0; // Reset on success
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -838,7 +840,21 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                 }
                 catch (Exception ex)
                 {
+                    consecutiveErrors++;
                     LogPrefetchLoopError(ex);
+
+                    // After persistent failures, surface the error to the consumer instead of
+                    // looping silently forever. Without this, ConsumeAsync hangs indefinitely
+                    // when the prefetch loop can never produce data (e.g., broker unreachable,
+                    // metadata never resolves, persistent connection errors).
+                    if (consecutiveErrors >= 50) // ~5 seconds of continuous failures (50 * 100ms)
+                    {
+                        _prefetchChannel.Writer.TryComplete(
+                            new KafkaException(ErrorCode.UnknownServerError,
+                                $"Prefetch loop failed {consecutiveErrors} consecutive times, last error: {ex.Message}", ex));
+                        return;
+                    }
+
                     await Task.Delay(100, cancellationToken).ConfigureAwait(false);
                 }
             }
