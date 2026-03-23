@@ -325,10 +325,11 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private CancellationTokenSource? _prefetchCts;
     private Task? _prefetchTask;
     private long _prefetchedBytes;
-    private readonly SemaphoreSlim _prefetchMemoryAvailable = new(0, 1);
+    private readonly SemaphoreSlim _prefetchMemoryAvailable = new(0, int.MaxValue);
 
-    // Reusable list for collecting pending items during prefetch (avoids per-cycle allocation)
-    private List<PendingFetchData>? _prefetchPendingItems;
+    // Per-broker reusable lists for collecting pending items during prefetch (avoids per-cycle allocation)
+    // Keyed by brokerId since PrefetchFromBrokerAsync runs concurrently for multiple brokers
+    private readonly ConcurrentDictionary<int, List<PendingFetchData>> _prefetchPendingItemsByBroker = new();
 
     // Lock ordering (always acquire in this order to prevent deadlocks):
     //   1. _initLock          — guards one-time initialization; never held while acquiring other locks
@@ -729,7 +730,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     pending.TrackConsumed(offset, messageBytes);
 
                     // Record consumer metrics (~3ns no-op when no listener)
-                    // Cache TagList per topic to avoid per-message struct creation and string boxing
+                    // Cache TagList per topic to avoid per-message struct creation and string boxing.
+                    // The dictionary lookup runs unconditionally (~5ns) — cheaper than checking
+                    // Instrument.Enabled which requires capturing the Instrument reference.
                     if (!_metricTagsCache.TryGetValue(pending.Topic, out var metricTags))
                     {
                         metricTags = new System.Diagnostics.TagList
@@ -814,10 +817,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
                     // Check memory limit
                     var maxBytes = (long)_options.QueuedMaxMessagesKbytes * 1024;
-                    if (Interlocked.Read(ref _prefetchedBytes) >= maxBytes)
+                    var currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
+                    if (currentPrefetchedBytes >= maxBytes)
                     {
                         // Wait for consumer to signal memory is available instead of polling
-                        var currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
                         LogPrefetchMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
                         await _prefetchMemoryAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
                         continue;
@@ -973,8 +976,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         // Collect pending fetch data items - we need to assign memory owner to the last one
         // since FIFO processing means the last one will be disposed last
-        // Reuse list across prefetch cycles to avoid per-cycle allocation
-        var pendingItems = _prefetchPendingItems ??= [];
+        // Reuse list per broker across prefetch cycles to avoid per-cycle allocation
+        // Each broker gets its own list since PrefetchFromBrokerAsync runs concurrently
+        var pendingItems = _prefetchPendingItemsByBroker.GetOrAdd(brokerId, static _ => []);
         pendingItems.Clear();
 
         // Write to prefetch channel
@@ -1114,8 +1118,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         {
             Interlocked.Add(ref _prefetchedBytes, -bytes);
             // Signal prefetch loop that memory is now available
-            // Release is best-effort: if semaphore is already signaled, no-op is fine
-            try { _prefetchMemoryAvailable.Release(); } catch (SemaphoreFullException) { }
+            _prefetchMemoryAvailable.Release();
         }
         else
         {
