@@ -325,7 +325,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private CancellationTokenSource? _prefetchCts;
     private Task? _prefetchTask;
     private long _prefetchedBytes;
-    private readonly SemaphoreSlim _prefetchMemoryAvailable = new(0, int.MaxValue);
+    // Initial count 1: at startup, memory IS available (_prefetchedBytes = 0). Starting at 0
+    // causes a deadlock if the prefetch loop fills memory before the consumer reads anything —
+    // the loop waits for a Release() that never comes because the consumer has no data yet.
+    private readonly SemaphoreSlim _prefetchMemoryAvailable = new(1, int.MaxValue);
 
     // Per-broker reusable lists for collecting pending items during prefetch (avoids per-cycle allocation)
     // Keyed by brokerId since PrefetchFromBrokerAsync runs concurrently for multiple brokers
