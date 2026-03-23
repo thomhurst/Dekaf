@@ -386,8 +386,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Partition-affined connections: each partition pins to _pinnedConnections[partition % _connectionCount].
     // For single-connection mode (_connectionCount == 1), degenerates to the original pinned behavior.
-    // Idempotent producers require partition affinity for sequence ordering; non-idempotent
-    // producers use round-robin for better distribution with skewed partition traffic.
+    // Idempotent producers use partition affinity for per-partition sequence ordering across
+    // multiple connections; non-idempotent producers use round-robin for better distribution.
     private IKafkaConnection?[] _pinnedConnections;
     private int _connectionCount;
     private readonly bool _requirePartitionAffinity;
@@ -506,16 +506,19 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         // Idempotent producers with maxInFlight > 1 rely on sequence numbers for ordering.
         _muteOnSend = _maxInFlight <= 1;
 
-        // Idempotent producers require partition affinity (partition % connectionCount) to
-        // preserve per-partition sequence ordering. Non-idempotent producers use round-robin
-        // for better utilization when partition distribution is skewed.
+        // Idempotent producers use partition affinity (partition % connectionCount) to
+        // preserve per-partition sequence ordering across connections. Non-idempotent
+        // producers use round-robin for better utilization with skewed partition traffic.
         _connectionCount = options.ConnectionsPerBroker;
         _requirePartitionAffinity = options.EnableIdempotence;
         _pinnedConnections = new IKafkaConnection?[_connectionCount];
         _totalMaxInFlight = _connectionCount * _maxInFlight;
 
-        // Adaptive scaling: only for non-idempotent producers (idempotent requires fixed partition affinity)
-        _adaptiveScalingEnabled = options.EnableAdaptiveConnections && !options.EnableIdempotence;
+        // Adaptive scaling: available for all non-transactional producers.
+        // Idempotent producers use partition affinity (partition % N) which preserves
+        // per-partition sequence ordering across multiple connections. Transactions
+        // are excluded because coordinator requests require a single connection.
+        _adaptiveScalingEnabled = options.EnableAdaptiveConnections && options.TransactionalId is null;
         _minConnectionCount = options.ConnectionsPerBroker;
         _maxConnectionsPerBroker = options.MaxConnectionsPerBroker;
 

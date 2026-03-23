@@ -91,15 +91,18 @@ public sealed class ProducerOptions
 
     /// <summary>
     /// Number of connections to maintain per broker for parallel request handling.
-    /// When set greater than 1 for non-idempotent producers, connections are selected via round-robin
-    /// to distribute load across TCP streams, improving throughput by enabling parallel sends.
+    /// When set greater than 1, connections are selected based on the producer mode:
+    /// idempotent producers use partition affinity (partition % connectionCount) to preserve
+    /// per-partition sequence ordering, while non-idempotent producers use round-robin
+    /// to distribute load across TCP streams.
     /// <para>
-    /// For idempotent producers (<see cref="EnableIdempotence"/> = true), this must be 1
-    /// because sequence number ordering requires all produce requests to be pipelined on
-    /// the same TCP connection. Setting this greater than 1 with idempotence enabled will
-    /// throw an <see cref="InvalidOperationException"/> at build time.
+    /// For transactional producers (<see cref="TransactionalId"/> is set), this must be 1
+    /// because transaction coordinator requests require a single connection per broker.
+    /// Setting this greater than 1 with a transactional ID will throw an
+    /// <see cref="InvalidOperationException"/> at build time.
     /// </para>
-    /// Default is 1.
+    /// Default is 1. Use adaptive scaling (<see cref="EnableAdaptiveConnections"/>) for
+    /// automatic connection scaling based on buffer pressure.
     /// </summary>
     public int ConnectionsPerBroker { get; init; } = 1;
 
@@ -339,9 +342,13 @@ public sealed class ProducerOptions
     /// When enabled, the producer will automatically increase connections per broker
     /// when sustained buffer backpressure is detected, improving drain throughput.
     /// <para>
-    /// Only applies to non-idempotent producers (<see cref="EnableIdempotence"/> = false).
-    /// Idempotent producers require partition affinity on a fixed connection count for
-    /// sequence number ordering, so adaptive scaling is automatically disabled.
+    /// Applies to both idempotent and non-idempotent producers. Idempotent producers
+    /// use partition affinity (partition % connectionCount) to preserve per-partition
+    /// sequence ordering across multiple connections, so adaptive scaling is safe.
+    /// </para>
+    /// <para>
+    /// Only automatically disabled for transactional producers (<see cref="TransactionalId"/> is set),
+    /// because transaction coordinator requests require a single connection per broker.
     /// </para>
     /// Default: true.
     /// </summary>
