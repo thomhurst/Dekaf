@@ -395,7 +395,6 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     {
         // Arrange
         var topic = await KafkaContainer.CreateTestTopicAsync(partitions: 10);
-        var groupId = $"test-group-{Guid.NewGuid():N}";
 
         // Let broker stabilize partition leaders before producing.
         // On slow CI runners, leader election for 10 partitions can take several seconds.
@@ -422,15 +421,17 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
 
         await producer.FlushAsync();
 
-        // Act
+        // Act — use manual Assign (not Subscribe) to skip consumer group rebalance.
+        // Rebalance for 10 partitions can take 60+ seconds on slow CI runners with
+        // thread pool starvation, causing flaky timeouts. Manual assignment is instant.
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .BuildAsync();
 
-        consumer.Subscribe(topic);
+        consumer.Assign(Enumerable.Range(0, 10)
+            .Select(p => new TopicPartition(topic, p)).ToArray());
 
         var messages = new List<ConsumeResult<string, string>>();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -438,9 +439,6 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            // Break once we have enough non-warmup messages. Don't wait for full
-            // partition coverage — if a partition is missing, the assertion below
-            // will catch it with a clear error instead of hanging for 60s.
             var dataCount = messages.Count(m => m.Key != "warmup");
             if (dataCount >= 10) break;
         }

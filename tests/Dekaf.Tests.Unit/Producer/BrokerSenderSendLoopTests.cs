@@ -757,11 +757,14 @@ public sealed class BrokerSenderSendLoopTests
         var accumulator = new RecordAccumulator(options);
         var vtPool = new ValueTaskSourcePool<RecordMetadata>();
 
+        var batch1Failed = new TaskCompletionSource();
         var acknowledged = new TaskCompletionSource<long>();
 
         var sender = CreateSender(pool, options, accumulator, (_, offset, _, _, ex) =>
         {
-            if (ex is null)
+            if (ex is not null)
+                batch1Failed.TrySetResult();
+            else
                 acknowledged.TrySetResult(offset);
         });
 
@@ -772,10 +775,10 @@ public sealed class BrokerSenderSendLoopTests
             await sender.EnqueueAsync(batch1, CancellationToken.None);
             await sendSignals[0].Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
 
-            // Wait for request timeout to fire (1s + margin).
-            // HandleTimedOutRequests processes batch1 directly (delivery timeout exceeded
-            // → permanently fails it) and clears _pendingResponses, freeing the slot.
-            await Task.Delay(2_000, cancellationToken);
+            // Wait for HandleTimedOutRequests to process batch1 (request timeout 1s +
+            // delivery timeout 1s exceeded → permanently failed). Uses deterministic
+            // signal instead of Task.Delay to avoid flakiness on slow CI runners.
+            await batch1Failed.Task.WaitAsync(TimeSpan.FromSeconds(15), cancellationToken);
 
             // Send second batch on different partition — should not hang
             // (HandleTimedOutRequests cleared _pendingResponses, freeing the capacity slot)
