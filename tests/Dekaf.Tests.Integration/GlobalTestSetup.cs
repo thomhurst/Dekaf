@@ -3,10 +3,12 @@ using Dekaf.Compression;
 using Dekaf.Compression.Lz4;
 using Dekaf.Compression.Snappy;
 using Dekaf.Compression.Zstd;
+using Dekaf.Tests.Integration;
 using TUnit.Core;
 using TUnit.Core.Helpers;
 
 [assembly: Timeout(300_000)] // 5 minutes per test — prevents indefinite hangs
+[assembly: ParallelLimiter<IntegrationTestParallelLimit>]
 
 namespace Dekaf.Tests.Integration;
 
