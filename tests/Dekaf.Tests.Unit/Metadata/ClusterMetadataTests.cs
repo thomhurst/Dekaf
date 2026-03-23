@@ -401,6 +401,153 @@ public sealed class ClusterMetadataTests
 
     #endregion
 
+    #region Merge Update
+
+    [Test]
+    public async Task MergeUpdate_PreservesExistingTopics()
+    {
+        var metadata = new ClusterMetadata();
+
+        // Initial full update with topic-a and topic-b
+        metadata.Update(CreateMetadataResponseMultipleTopics());
+        await Assert.That(metadata.GetTopics()).Count().IsEqualTo(2);
+        await Assert.That(metadata.GetTopic("topic-a")).IsNotNull();
+        await Assert.That(metadata.GetTopic("topic-b")).IsNotNull();
+
+        // Merge update with only topic-c — topic-a and topic-b should be preserved
+        metadata.Update(new MetadataResponse
+        {
+            ClusterId = "test-cluster",
+            ControllerId = 1,
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "broker1", Port = 9092 }],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = "topic-c",
+                    Partitions =
+                    [
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] }
+                    ]
+                }
+            ]
+        }, mergeTopics: true);
+
+        await Assert.That(metadata.GetTopics()).Count().IsEqualTo(3);
+        await Assert.That(metadata.GetTopic("topic-a")).IsNotNull();
+        await Assert.That(metadata.GetTopic("topic-b")).IsNotNull();
+        await Assert.That(metadata.GetTopic("topic-c")).IsNotNull();
+    }
+
+    [Test]
+    public async Task MergeUpdate_OverwritesUpdatedTopic()
+    {
+        var metadata = new ClusterMetadata();
+
+        // Initial update with topic-a (3 partitions)
+        metadata.Update(CreateMetadataResponse());
+        var topic = metadata.GetTopic("test-topic");
+        await Assert.That(topic).IsNotNull();
+        await Assert.That(topic!.PartitionCount).IsEqualTo(3);
+
+        // Merge update with test-topic having 1 partition — should overwrite
+        metadata.Update(new MetadataResponse
+        {
+            ClusterId = "test-cluster",
+            ControllerId = 1,
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "broker1", Port = 9092 }],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = "test-topic",
+                    Partitions =
+                    [
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] }
+                    ]
+                }
+            ]
+        }, mergeTopics: true);
+
+        topic = metadata.GetTopic("test-topic");
+        await Assert.That(topic).IsNotNull();
+        await Assert.That(topic!.PartitionCount).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task FullUpdate_ReplacesAllTopics()
+    {
+        var metadata = new ClusterMetadata();
+
+        // Initial update with topic-a and topic-b
+        metadata.Update(CreateMetadataResponseMultipleTopics());
+        await Assert.That(metadata.GetTopics()).Count().IsEqualTo(2);
+
+        // Full update (mergeTopics: false) with only topic-c — previous topics should be gone
+        metadata.Update(new MetadataResponse
+        {
+            ClusterId = "test-cluster",
+            ControllerId = 1,
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "broker1", Port = 9092 }],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = "topic-c",
+                    Partitions =
+                    [
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] }
+                    ]
+                }
+            ]
+        }, mergeTopics: false);
+
+        await Assert.That(metadata.GetTopics()).Count().IsEqualTo(1);
+        await Assert.That(metadata.GetTopic("topic-a")).IsNull();
+        await Assert.That(metadata.GetTopic("topic-b")).IsNull();
+        await Assert.That(metadata.GetTopic("topic-c")).IsNotNull();
+    }
+
+    [Test]
+    public async Task MergeUpdate_UpdatesPartitionsByBrokerIndex()
+    {
+        var metadata = new ClusterMetadata();
+
+        // Initial update: broker 1 leads test-topic partition 0
+        metadata.Update(CreateMetadataResponse());
+        var partitions = metadata.GetPartitionsForBroker(1);
+        await Assert.That(partitions).Count().IsEqualTo(1); // test-topic p0
+
+        // Merge in topic-new also led by broker 1
+        metadata.Update(new MetadataResponse
+        {
+            ClusterId = "test-cluster",
+            ControllerId = 1,
+            Brokers = [new BrokerMetadata { NodeId = 1, Host = "broker1", Port = 9092 }],
+            Topics =
+            [
+                new TopicMetadata
+                {
+                    ErrorCode = ErrorCode.None,
+                    Name = "topic-new",
+                    Partitions =
+                    [
+                        new PartitionMetadata { ErrorCode = ErrorCode.None, PartitionIndex = 0, LeaderId = 1, ReplicaNodes = [1], IsrNodes = [1] }
+                    ]
+                }
+            ]
+        }, mergeTopics: true);
+
+        // Broker 1 should now lead partitions from both topics
+        partitions = metadata.GetPartitionsForBroker(1);
+        await Assert.That(partitions).Count().IsEqualTo(2);
+    }
+
+    #endregion
+
     #region Helpers
 
     private static MetadataResponse CreateMetadataResponse(
