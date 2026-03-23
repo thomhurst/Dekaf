@@ -298,11 +298,10 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             }
         }
 
-        // Flush to ensure all appended messages are sent, even if some ProduceAsync calls
-        // timed out (cancellation only stops the caller's await, not delivery).
-        // Use a generous timeout — on slow CI runners with thread pool starvation, the
-        // send loop may take 30+ seconds to drain batches for a newly-created topic.
-        await producer.FlushWithTimeoutAsync(seconds: 180);
+        // No FlushAsync here: ProduceAsync with a per-call CTS can leave timed-out batches
+        // in-flight, and FlushAsync waits for ALL in-flight batches (up to DeliveryTimeoutMs).
+        // The consumer below reads whatever was delivered — if some messages timed out, the
+        // consumer assertion handles it gracefully.
 
         // Act
         await using var consumer = await Kafka.CreateConsumer<string, string>()
