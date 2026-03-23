@@ -189,10 +189,12 @@ public class MemoryReleasedAtomicityTests
         await Assert.That(batch.TrySetMemoryReleased()).IsTrue();
         await Assert.That(batch.TrySetMemoryReleased()).IsFalse();
 
-        // Simulate pool return
+        // Simulate pool return — flag stays armed while in pool
         batch.Reset();
+        await Assert.That(batch.MemoryReleased).IsTrue();
+        await Assert.That(batch.TrySetMemoryReleased()).IsFalse();
 
-        // Re-initialize for new lifecycle
+        // Re-initialize for new lifecycle — flag cleared here, not in Reset()
         batch.Initialize(
             new TopicPartition("topic", 0),
             new RecordBatch { Records = Array.Empty<Record>() },

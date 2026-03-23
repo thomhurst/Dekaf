@@ -4124,10 +4124,13 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         // Reset lifecycle flags at the START of a new lifecycle (not in Reset()).
         // This ensures stale references from a previous lifecycle see _cleanedUp=1
         // and return early from CompleteSend/Fail, preventing pool corruption.
+        // _memoryReleased follows the same pattern: stale references seeing 1 (released)
+        // will skip the release, which is the safe/defensive behavior.
         Interlocked.Exchange(ref _cleanedUp, 0);
         Interlocked.Exchange(ref _completed, 0);
         Interlocked.Exchange(ref _sendCompleted, 0);
         Interlocked.Exchange(ref _returnedToPool, 0);
+        Interlocked.Exchange(ref _memoryReleased, 0);
 
         _topicPartition = topicPartition;
         _recordBatch = recordBatch;
@@ -4187,7 +4190,9 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
         _callbackCount = 0;
         _arrayReuseQueue = null;
         InflightEntry = null;
-        _memoryReleased = 0;
+        // NOTE: _memoryReleased is NOT reset here — it stays armed (=1) while in pool,
+        // so stale references calling TrySetMemoryReleased() return false (safe no-op).
+        // Cleared in Initialize() at the start of the next lifecycle.
         IsRetry = false;
         RetryNotBefore = 0;
         _diagTraceLen = 0;
