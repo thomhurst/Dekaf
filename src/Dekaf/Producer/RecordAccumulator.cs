@@ -2001,6 +2001,12 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     public long BufferedBytes => Volatile.Read(ref _bufferedBytes);
 
     /// <summary>
+    /// Gets the current number of pooled <see cref="SyncWaiterNode"/> instances.
+    /// Exposed for testing only.
+    /// </summary>
+    internal int PooledWaiterNodeCount => _syncWaiterNodePool.Count;
+
+    /// <summary>
     /// Gets the maximum buffer memory limit in bytes.
     /// </summary>
     public ulong MaxBufferMemory => _maxBufferMemory;
@@ -2352,6 +2358,10 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
                 waiter.Event.Set();
                 return;
             }
+
+            // Cancelled nodes were left in the queue by timed-out or early-exit threads.
+            // Now that we've dequeued them, no other thread references them — safe to pool.
+            ReturnWaiterNode(waiter);
         }
     }
 
