@@ -361,44 +361,49 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         }
 
         // Act - consume-transform-produce with SendOffsetsToTransaction
-        await using var consumer = await Kafka.CreateConsumer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithGroupId(groupId)
-            .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
-
-        await using var txnProducer = await Kafka.CreateProducer<string, string>()
-            .WithBootstrapServers(KafkaContainer.BootstrapServers)
-            .WithTransactionalId(txnId)
-            .WithAcks(Acks.All)
-            .BuildAsync();
-
-        await txnProducer.InitTransactionsAsync();
-        consumer.Subscribe(inputTopic);
-
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
-        var processedCount = 0;
-
-        await foreach (var msg in consumer.ConsumeAsync(cts.Token))
+        // Use a block scope so consumer is disposed before the resume consumer joins the same group.
+        // Without this, the resume consumer triggers a rebalance with the still-active first consumer,
+        // which can timeout on slow CI runners.
         {
-            await using var txn = txnProducer.BeginTransaction();
+            await using var consumer = await Kafka.CreateConsumer<string, string>()
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithGroupId(groupId)
+                .WithAutoOffsetReset(AutoOffsetReset.Earliest)
+                .WithOffsetCommitMode(OffsetCommitMode.Manual)
+                .WithIsolationLevel(IsolationLevel.ReadCommitted)
+                .BuildAsync();
 
-            await txn.ProduceAsync(new ProducerMessage<string, string>
+            await using var txnProducer = await Kafka.CreateProducer<string, string>()
+                .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithTransactionalId(txnId)
+                .WithAcks(Acks.All)
+                .BuildAsync();
+
+            await txnProducer.InitTransactionsAsync();
+            consumer.Subscribe(inputTopic);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            var processedCount = 0;
+
+            await foreach (var msg in consumer.ConsumeAsync(cts.Token))
             {
-                Topic = outputTopic,
-                Key = msg.Key,
-                Value = $"processed-{msg.Value}"
-            });
+                await using var txn = txnProducer.BeginTransaction();
 
-            // Atomically commit offsets as part of the transaction
-            var offsets = new[] { new TopicPartitionOffset(msg.Topic, msg.Partition, msg.Offset + 1) };
-            await txn.SendOffsetsToTransactionAsync(offsets, groupId);
-            await txn.CommitAsync();
+                await txn.ProduceAsync(new ProducerMessage<string, string>
+                {
+                    Topic = outputTopic,
+                    Key = msg.Key,
+                    Value = $"processed-{msg.Value}"
+                });
 
-            processedCount++;
-            if (processedCount >= 5) break;
+                // Atomically commit offsets as part of the transaction
+                var offsets = new[] { new TopicPartitionOffset(msg.Topic, msg.Partition, msg.Offset + 1) };
+                await txn.SendOffsetsToTransactionAsync(offsets, groupId);
+                await txn.CommitAsync();
+
+                processedCount++;
+                if (processedCount >= 5) break;
+            }
         }
 
         // Assert - output has all 5 transformed messages
@@ -428,7 +433,9 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             await Assert.That(msg.Value).IsEqualTo($"processed-value-{i}");
         }
 
-        // Verify committed offset - new consumer with same group should start from offset 5
+        // Verify committed offset - new consumer with same group should start from offset 5.
+        // The first consumer was disposed above, so this consumer joins a clean group without
+        // triggering a rebalance with an existing member.
         await using var resumeConsumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
@@ -438,8 +445,9 @@ public sealed class TransactionEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
 
         resumeConsumer.Subscribe(inputTopic);
 
-        using var resumeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var resumeResult = await resumeConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(5), resumeCts.Token);
+        // Use generous timeouts for CI runners where group coordination can be slow
+        using var resumeCts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        var resumeResult = await resumeConsumer.ConsumeOneAsync(TimeSpan.FromSeconds(30), resumeCts.Token);
 
         // Should be null — all messages already consumed and committed
         await Assert.That(resumeResult).IsNull();
