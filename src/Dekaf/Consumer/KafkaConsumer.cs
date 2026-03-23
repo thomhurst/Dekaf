@@ -1117,8 +1117,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         if (release)
         {
             Interlocked.Add(ref _prefetchedBytes, -bytes);
-            // Signal prefetch loop that memory is now available
-            _prefetchMemoryAvailable.Release();
+            // Signal prefetch loop that memory is now available (skip for empty responses to avoid spurious wakeups)
+            if (bytes > 0)
+                _prefetchMemoryAvailable.Release();
         }
         else
         {
