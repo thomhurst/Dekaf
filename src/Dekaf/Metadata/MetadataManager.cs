@@ -305,7 +305,10 @@ public sealed partial class MetadataManager : IAsyncDisposable
         }
 
         LogMetadataCacheMiss(topicName, partition);
-        await RefreshMetadataAsync([topicName], cancellationToken: cancellationToken).ConfigureAwait(false);
+        // Force refresh: the topic may be cached but with LeaderId=-1 for this partition
+        // (leader election in progress). Without forceRefresh, AllTopicsCached returns true
+        // and the stale metadata persists — the partition is permanently unreachable.
+        await RefreshMetadataAsync([topicName], forceRefresh: true, cancellationToken: cancellationToken).ConfigureAwait(false);
         return _metadata.GetPartitionLeader(topicName, partition);
     }
 
