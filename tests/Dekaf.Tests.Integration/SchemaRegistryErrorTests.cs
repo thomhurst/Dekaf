@@ -49,6 +49,7 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("error-test-producer")
             .WithValueSerializer(serializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act & Assert - producing with a bad registry URL should throw an exception
@@ -163,6 +164,7 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
             .WithBootstrapServers(testInfra.BootstrapServers)
             .WithClientId("evolution-producer")
             .WithValueSerializer(serializer)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, GenericRecord>
@@ -202,7 +204,7 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
             .WithGroupId($"evolution-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(deserializer)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

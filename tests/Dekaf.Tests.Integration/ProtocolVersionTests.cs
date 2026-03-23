@@ -220,6 +220,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-version")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - producing should negotiate version automatically
@@ -245,6 +246,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -260,7 +262,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             .WithClientId("test-consumer-version")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -283,6 +285,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-flexible")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce with headers (uses flexible protocol features)
@@ -305,7 +308,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             .WithClientId("test-consumer-flexible")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -329,6 +332,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-batch")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce multiple messages (will be batched)
@@ -349,7 +353,7 @@ public class ProtocolVersionTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             .WithClientId("test-consumer-batch")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

@@ -18,6 +18,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
 
         await using var producer = await Kafka.CreateProducer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<int, string>
@@ -31,7 +32,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"int-key-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -52,6 +53,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
 
         await using var producer = await Kafka.CreateProducer<long, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<long, string>
@@ -65,7 +67,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"long-key-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -86,6 +88,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
 
         await using var producer = await Kafka.CreateProducer<Guid, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<Guid, string>
@@ -99,7 +102,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"guid-key-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -120,6 +123,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
 
         await using var producer = await Kafka.CreateProducer<string, byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, byte[]>
@@ -133,7 +137,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"bytes-value-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -155,6 +159,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
 
         await using var producer = await Kafka.CreateProducer<byte[], byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<byte[], byte[]>
@@ -168,7 +173,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"binary-binary-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -188,6 +193,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
 
         await using var producer = await Kafka.CreateProducer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Same key should always go to the same partition
@@ -216,6 +222,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
 
         await using var producer = await Kafka.CreateProducer<Guid, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var results = new List<RecordMetadata>();
@@ -245,6 +252,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
 
         await using var producer = await Kafka.CreateProducer<string, ReadOnlyMemory<byte>>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, ReadOnlyMemory<byte>>
@@ -281,16 +289,19 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
         // Int-keyed producer
         await using var intProducer = await Kafka.CreateProducer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Guid-keyed producer
         await using var guidProducer = await Kafka.CreateProducer<Guid, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Bytes producer
         await using var bytesProducer = await Kafka.CreateProducer<string, byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce to all topics concurrently
@@ -317,7 +328,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"int-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         intConsumer.Subscribe(intTopic);
 
@@ -330,7 +341,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"guid-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         guidConsumer.Subscribe(guidTopic);
 
@@ -342,7 +353,7 @@ public sealed class SerializerVarietyTests(KafkaTestContainer kafka) : KafkaInte
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"bytes-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         bytesConsumer.Subscribe(bytesTopic);
 

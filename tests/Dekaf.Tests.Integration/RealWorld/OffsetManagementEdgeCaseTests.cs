@@ -22,6 +22,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-offset-order")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 10; i++)
@@ -42,7 +43,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -70,7 +71,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -93,6 +94,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-commit-ahead")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 10; i++)
@@ -113,7 +115,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -133,7 +135,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -155,6 +157,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-reset-none")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -169,7 +172,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-reset-none")
             .WithAutoOffsetReset(AutoOffsetReset.None)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -201,7 +204,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -226,6 +229,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-commit-get")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -245,7 +249,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -277,6 +281,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-position")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -293,7 +298,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-position")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -322,6 +327,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-seek-replay")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -338,7 +344,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-seek-replay")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -383,6 +389,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-seek-end")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce initial messages that should NOT be seen by a Latest consumer
@@ -402,7 +409,7 @@ public sealed class OffsetManagementEdgeCaseTests(KafkaTestContainer kafka) : Ka
             .WithClientId("test-consumer-seek-end")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Latest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

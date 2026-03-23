@@ -22,6 +22,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
 
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         await admin.CreateTopicsAsync([
@@ -57,6 +58,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
 
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         await admin.CreateTopicsAsync([
@@ -91,6 +93,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce many messages with duplicate keys to encourage compaction.
@@ -111,7 +114,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
 
@@ -148,6 +151,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages with duplicate keys
@@ -167,7 +171,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -226,6 +230,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages
@@ -242,7 +247,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
 
@@ -292,6 +297,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Phase 1: Produce initial messages with duplicate keys
@@ -309,7 +315,7 @@ public sealed class ConsumerLagCompactionTests(KafkaTestContainer kafka) : Kafka
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
 

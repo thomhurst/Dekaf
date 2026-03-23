@@ -24,6 +24,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
 
         await using var seedProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -43,12 +44,13 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         await using var txnProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await txnProducer.InitTransactionsAsync();
@@ -84,7 +86,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
             .WithGroupId($"eos-atomic-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         outputConsumer.Subscribe(outputTopic);
 
@@ -113,7 +115,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
             .WithGroupId(consumerGroupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         resumeConsumer.Subscribe(inputTopic);
 
@@ -137,6 +139,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.InitTransactionsAsync();
@@ -195,7 +198,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
             .WithGroupId($"eos-consistent-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -239,12 +242,14 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId1)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await using var producer2 = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId2)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer1.InitTransactionsAsync();
@@ -306,7 +311,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
             .WithGroupId($"eos-iso-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -351,6 +356,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithTransactionalId(sharedTxnId)
                 .WithAcks(Acks.All)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             await producer1.InitTransactionsAsync();
@@ -378,6 +384,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(sharedTxnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer2.InitTransactionsAsync();
@@ -400,6 +407,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(sharedTxnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer3.InitTransactionsAsync();
@@ -421,7 +429,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
             .WithGroupId($"eos-fence-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -460,6 +468,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
         // Produce input messages with unique identifiers
         await using var seedProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -479,12 +488,13 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         await using var txnProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await txnProducer.InitTransactionsAsync();
@@ -522,7 +532,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
             .WithGroupId($"eos-ctp-nodup-verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         outputConsumer.Subscribe(outputTopic);
 
@@ -558,7 +568,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
             .WithGroupId(consumerGroupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         rereadConsumer.Subscribe(inputTopic);
 

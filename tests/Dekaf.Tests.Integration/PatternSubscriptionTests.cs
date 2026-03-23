@@ -23,6 +23,7 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
         // Produce a message to each matching topic
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -46,7 +47,7 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"pattern-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic => topic.StartsWith(prefix, StringComparison.Ordinal));
 
@@ -77,6 +78,7 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -99,7 +101,7 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"pattern-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic => topic.StartsWith(prefix, StringComparison.Ordinal));
 
@@ -117,6 +119,7 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -132,7 +135,7 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"pattern-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         // Start with pattern subscription
         consumer.Subscribe(t => t.Contains("nonexistent-pattern"));
@@ -158,7 +161,7 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"pattern-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(t => t == topic);
 

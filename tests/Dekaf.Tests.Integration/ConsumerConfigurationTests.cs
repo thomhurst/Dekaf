@@ -21,6 +21,7 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-max-poll")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 50; i++)
@@ -40,7 +41,7 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithMaxPollRecords(5)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -68,6 +69,7 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-no-prefetch")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 20; i++)
@@ -87,7 +89,7 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithQueuedMinMessages(1) // Minimal prefetching
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -114,6 +116,7 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-subscribe-to")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -130,7 +133,7 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .SubscribeTo(topic)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         // No explicit Subscribe() call needed
 
@@ -152,6 +155,7 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-manual-assign")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce to partition 2 specifically
@@ -168,7 +172,7 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-manual-assign")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         // Assign specific partition without joining a consumer group
         consumer.Assign(new TopicPartition(topic, 2));
@@ -194,6 +198,7 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-low-latency")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 10; i++)
@@ -213,7 +218,7 @@ public sealed class ConsumerConfigurationTests(KafkaTestContainer kafka) : Kafka
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .ForLowLatency()
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

@@ -18,6 +18,7 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var adminClient = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         await adminClient.CreateTopicsAsync([
@@ -53,6 +54,7 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Warm up to ensure broker has initialized partition state
@@ -79,7 +81,7 @@ public sealed class LogCompactionTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"duplicate-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

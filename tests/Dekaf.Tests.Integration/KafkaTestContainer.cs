@@ -58,6 +58,7 @@ public abstract class KafkaTestContainer : IAsyncInitializer, IAsyncDisposable
     {
         return Kafka.CreateAdminClient()
             .WithBootstrapServers(BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
     }
 

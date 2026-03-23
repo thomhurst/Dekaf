@@ -23,6 +23,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-50-headers")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var headers = new Headers();
@@ -46,7 +47,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithClientId("test-consumer-50-headers")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -78,6 +79,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-large-header")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var headers = new Headers
@@ -100,7 +102,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithClientId("test-consumer-large-header")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -128,6 +130,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .WithLinger(TimeSpan.FromMilliseconds(10))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce 10K small messages using fire-and-forget for speed
@@ -144,7 +147,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithClientId("test-consumer-10k")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -171,6 +174,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-20-partitions")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce to each partition explicitly
@@ -191,7 +195,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithClientId("test-consumer-20-partitions")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -224,6 +228,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-unicode")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var headers = new Headers
@@ -246,7 +251,7 @@ public sealed class LargeMessageTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithClientId("test-consumer-unicode")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

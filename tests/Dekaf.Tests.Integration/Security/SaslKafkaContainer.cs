@@ -70,6 +70,7 @@ public class SaslKafkaContainer : KafkaTestContainer
         return Kafka.CreateAdminClient()
             .WithBootstrapServers(BootstrapServers)
             .WithSaslPlain(SaslUsername, SaslPassword)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
     }
 

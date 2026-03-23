@@ -200,6 +200,7 @@ public class KafkaWithSchemaRegistryContainer : IAsyncInitializer, IAsyncDisposa
         {
             await using var adminClient = Kafka.CreateAdminClient()
                 .WithBootstrapServers(_bootstrapServers)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .Build();
 
             await adminClient.CreateTopicsAsync([

@@ -60,6 +60,7 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
         // Produce a message first
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Warm up to ensure broker has initialized partition state

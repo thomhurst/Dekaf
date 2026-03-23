@@ -35,6 +35,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithClientId("test-tls-producer")
             .UseTls(tlsKafka.DefaultTlsConfig)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -62,6 +63,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-producer-multi")
             .UseTls(tlsKafka.DefaultTlsConfig)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -108,6 +110,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-consumer-producer")
             .UseTls(tlsKafka.DefaultTlsConfig)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -124,7 +127,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseTls(tlsKafka.DefaultTlsConfig)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -153,6 +156,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-admin")
             .UseTls(tlsKafka.DefaultTlsConfig)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         // Act - create topic
@@ -197,6 +201,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-untrusted")
             .UseTls(tlsConfig)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act & Assert - should fail due to certificate validation
@@ -225,6 +230,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-tls-no-ca")
             .UseTls(tlsConfig)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act & Assert - should fail because server cert is signed by our test CA,
@@ -267,6 +273,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithClientId("test-tls-self-signed-trust")
             .UseTls(tlsConfig)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -300,6 +307,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithClientId("test-tls-ca-path")
             .UseTls(tlsConfig)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -331,6 +339,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithClientId("test-tls-no-validation")
             .UseTls(tlsConfig)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -369,6 +378,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithClientId("test-mtls-producer-inmemory")
             .UseTls(tlsConfig)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -404,6 +414,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithClientId("test-mtls-producer-files")
             .UseTls(tlsConfig)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -433,6 +444,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
                 tlsKafka.ClientCertPemPath,
                 tlsKafka.ClientKeyPemPath)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -468,6 +480,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithBootstrapServers(tlsKafka.BootstrapServers)
             .WithClientId("test-mtls-consumer-producer")
             .UseTls(tlsConfig)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -484,7 +497,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseTls(tlsConfig)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -521,6 +534,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithClientId("test-tls12-producer")
             .UseTls(tlsConfig)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -555,6 +569,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithClientId("test-tls13-producer")
             .UseTls(tlsConfig)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -589,6 +604,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithClientId("test-tls-roundtrip-producer")
             .UseTls(tlsKafka.DefaultTlsConfig)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var produceResult = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -605,7 +621,7 @@ public class TlsEncryptionTests(TlsKafkaContainer tlsKafka)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .UseTls(tlsKafka.DefaultTlsConfig)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

@@ -23,6 +23,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -38,7 +39,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -59,6 +60,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var p = 0; p < 3; p++)
@@ -78,7 +80,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -106,6 +108,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -124,7 +127,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -150,6 +153,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -172,7 +176,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithSessionTimeout(TimeSpan.FromMilliseconds(6000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -200,7 +204,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -223,6 +227,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -245,7 +250,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic1, topic2);
 
@@ -272,6 +277,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 3; i++)
@@ -291,7 +297,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(15000))
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -318,7 +324,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
         await Assert.That(consumer.Subscription).Count().IsEqualTo(1);
@@ -337,6 +343,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var p = 0; p < 3; p++)
@@ -357,7 +364,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithGroupRemoteAssignor("uniform")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -385,6 +392,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -404,7 +412,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -433,6 +441,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -452,7 +461,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -479,6 +488,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -498,7 +508,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -532,6 +542,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -550,7 +561,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -579,7 +590,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -600,6 +611,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -618,7 +630,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -649,6 +661,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var headers = new Headers
@@ -671,7 +684,7 @@ public class NewConsumerProtocolTests(KafkaTestContainer kafka) : KafkaIntegrati
             .WithGroupId(groupId)
             .WithGroupProtocol(GroupProtocol.Consumer)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

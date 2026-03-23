@@ -20,6 +20,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         // Step 1: Create topic
@@ -39,6 +40,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
         // Step 3: Produce some data
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -56,7 +58,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"lifecycle-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topicName);
 
@@ -84,6 +86,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
     {
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         var cluster = await admin.DescribeClusterAsync();
@@ -101,6 +104,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         await admin.CreateTopicsAsync(
@@ -132,6 +136,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         var configs = await admin.DescribeConfigsAsync(
@@ -176,7 +181,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .BuildAsync())
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
             {
                 consumer.Subscribe(topic);
 
@@ -225,6 +230,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             // Produce a message so the consumer has something to fetch
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -239,7 +245,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .BuildAsync();
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
             consumer.Subscribe(topic);
 
@@ -286,7 +292,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .BuildAsync())
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
             {
                 consumer.Subscribe(topic);
 
@@ -356,6 +362,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         // Create topic with 1 partition
@@ -397,11 +404,13 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         // Produce 5 messages
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -460,6 +469,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             // Produce messages
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             for (var i = 0; i < 5; i++)
@@ -478,7 +488,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual)
-                .BuildAsync())
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
             {
                 consumer.Subscribe(topic);
 
@@ -576,7 +586,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .BuildAsync())
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
             {
                 consumer.Subscribe(topic);
 
@@ -649,6 +659,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             // Produce a message so consumer joins and gets partition assignment
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -663,7 +674,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .BuildAsync();
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
             consumer.Subscribe(topic);
 
@@ -720,6 +731,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             // Create two separate consumer groups
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             for (var i = 0; i < 2; i++)
@@ -737,7 +749,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId1)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .BuildAsync();
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
             consumer1.Subscribe(topic);
             using var cts1 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -748,7 +760,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId2)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .BuildAsync();
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
             consumer2.Subscribe(topic);
             using var cts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -784,6 +796,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         // Create topic with 3 partitions
@@ -816,11 +829,13 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         // Produce messages to specific partitions
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce to partition 0
@@ -886,6 +901,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             // Produce 5 messages
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             for (var i = 0; i < 5; i++)
@@ -904,7 +920,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual)
-                .BuildAsync())
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
             {
                 consumer.Subscribe(topic);
 
@@ -953,7 +969,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .BuildAsync())
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
             {
                 consumer2.Subscribe(topic);
 
@@ -997,6 +1013,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             // Step 1: Produce messages
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             for (var i = 0; i < 3; i++)
@@ -1015,7 +1032,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
                 .WithGroupId(groupId)
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual)
-                .BuildAsync())
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
             {
                 consumer.Subscribe(topic);
 
@@ -1133,6 +1150,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         // Create two topics with 1 partition each
@@ -1168,11 +1186,13 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var admin = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         // Produce some messages
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 3; i++)

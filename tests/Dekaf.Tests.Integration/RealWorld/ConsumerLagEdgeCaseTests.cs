@@ -18,6 +18,7 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce initial messages
@@ -34,7 +35,7 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -100,6 +101,7 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce initial batch
@@ -116,7 +118,7 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -160,6 +162,7 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 20; i++)
@@ -177,7 +180,7 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -222,7 +225,7 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -243,6 +246,7 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce uneven amounts: p0=20, p1=5, p2=10
@@ -271,7 +275,7 @@ public sealed class ConsumerLagEdgeCaseTests(KafkaTestContainer kafka) : KafkaIn
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         // Assign and consume partially from each
         consumer.Assign(

@@ -18,6 +18,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
         return new AdminClientBuilder()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-admin-quota")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
     }
 
@@ -111,6 +112,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 .WithLinger(TimeSpan.FromMilliseconds(5))
                 .WithIdempotence(false)
                 .WithAcks(Acks.Leader)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             // Act - produce messages that exceed the quota
@@ -175,6 +177,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
             await using var producer = await Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-producer-for-consumer-throttle")
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             const int messageCount = 30;
@@ -203,7 +206,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 .WithClientId("test-consumer-throttle")
                 .WithGroupId($"test-group-throttle-{Guid.NewGuid():N}")
                 .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .BuildAsync();
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
             consumer.Subscribe(topic);
 
@@ -263,6 +266,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 .WithLinger(TimeSpan.FromMilliseconds(5))
                 .WithIdempotence(false)
                 .WithAcks(Acks.Leader)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             var baselineSw = Stopwatch.StartNew();
@@ -294,6 +298,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
                 .WithLinger(TimeSpan.FromMilliseconds(5))
                 .WithIdempotence(false)
                 .WithAcks(Acks.Leader)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             var throttledSw = Stopwatch.StartNew();
@@ -357,6 +362,7 @@ public sealed class QuotaAndRateLimitingTests(KafkaTestContainer kafka) : KafkaI
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithIdempotence(false)
             .WithAcks(Acks.Leader)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce a burst of messages

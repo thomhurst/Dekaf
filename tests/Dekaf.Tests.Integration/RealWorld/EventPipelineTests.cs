@@ -24,6 +24,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
         await using var sourceProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("order-service")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce source events
@@ -43,11 +44,12 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithGroupId($"enrichment-service-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         await using var pipelineProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("enrichment-service")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         pipelineConsumer.Subscribe(inputTopic);
@@ -82,7 +84,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"analytics-service-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         outputConsumer.Subscribe(outputTopic);
 
@@ -116,6 +118,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce mix of valid and "invalid" messages
@@ -138,10 +141,11 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithGroupId($"processor-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         await using var dlqProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         consumer.Subscribe(inputTopic);
@@ -189,7 +193,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"dlq-reader-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         dlqConsumer.Subscribe(dlqTopic);
 
@@ -223,6 +227,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Stage 1: Original event with correlation ID
@@ -243,7 +248,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"stage2-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         stage1Consumer.Subscribe(stage1Topic);
 
@@ -269,7 +274,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"stage3-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         stage2Consumer.Subscribe(stage2Topic);
 
@@ -294,7 +299,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"verify-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         finalConsumer.Subscribe(stage3Topic);
 
@@ -319,6 +324,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce events to different source topics
@@ -348,7 +354,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"aggregator-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         aggregator.Subscribe(orderTopic, paymentTopic, shipmentTopic);
 
@@ -379,6 +385,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce mixed-priority events
@@ -392,10 +399,11 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"router-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         await using var routerProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         router.Subscribe(inputTopic);
@@ -416,7 +424,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"high-reader-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         highConsumer.Subscribe(highPriorityTopic);
 
@@ -440,7 +448,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"low-reader-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         lowConsumer.Subscribe(lowPriorityTopic);
 
@@ -469,6 +477,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce individual metric events
@@ -487,7 +496,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"aggregator-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(inputTopic);
 
@@ -521,7 +530,7 @@ public sealed class EventPipelineTests(KafkaTestContainer kafka) : KafkaIntegrat
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"summary-reader-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         summaryConsumer.Subscribe(summaryTopic);
 

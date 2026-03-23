@@ -32,6 +32,7 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.InitTransactionsAsync();
@@ -54,7 +55,7 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             .WithGroupId($"txn-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -75,6 +76,7 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.InitTransactionsAsync();
@@ -110,7 +112,7 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             .WithGroupId($"txn-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -131,6 +133,7 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.InitTransactionsAsync();
@@ -156,7 +159,7 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             .WithGroupId($"txn-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -183,6 +186,7 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithTransactionalId(txnId)
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.InitTransactionsAsync();
@@ -217,7 +221,7 @@ public class TransactionTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
             .WithGroupId($"txn-consumer-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(Consumer.AutoOffsetReset.Earliest)
             .WithIsolationLevel(IsolationLevel.ReadCommitted)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

@@ -26,6 +26,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
             .WithLinger(TimeSpan.FromMilliseconds(5))
             .WithIdempotence(false)
             .WithAcks(Acks.Leader)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce more data than the buffer can hold
@@ -71,6 +72,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
             .WithLinger(TimeSpan.FromMilliseconds(10))
             .WithIdempotence(false)
             .WithAcks(Acks.Leader)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var messageValue = new string('x', 500);
@@ -102,7 +104,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
             .WithClientId("test-consumer-no-loss")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -130,6 +132,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
             .WithClientId("test-producer-concurrent")
             .WithBufferMemory(262144) // 256KB
             .WithLinger(TimeSpan.FromMilliseconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         const int tasksCount = 5;
@@ -177,6 +180,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
             .WithClientId("test-producer-ff-backpressure")
             .WithBufferMemory(1_048_576) // 1MB
             .WithLinger(TimeSpan.FromMilliseconds(10))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var messageValue = new string('x', 500);
@@ -201,7 +205,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
             .WithClientId("test-consumer-ff-backpressure")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -230,6 +234,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
             .WithLinger(TimeSpan.FromMilliseconds(1))
             .WithIdempotence(false)
             .WithAcks(Acks.Leader)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var messageValue = new string('x', 200);

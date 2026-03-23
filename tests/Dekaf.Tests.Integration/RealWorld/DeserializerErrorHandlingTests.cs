@@ -21,6 +21,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-raw-bytes")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -35,7 +36,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-raw-bytes")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -58,6 +59,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
         await using var producer = await Kafka.CreateProducer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-tombstone")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string?>
@@ -75,7 +77,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
             .WithClientId("test-consumer-tombstone")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(nullSerde)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -100,6 +102,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-null-key")
             .WithKeySerializer(nullSerde)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string?, string>
@@ -115,7 +118,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
             .WithClientId("test-consumer-null-key")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithKeyDeserializer(nullSerde)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -138,6 +141,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-string-to-bytes")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -152,7 +156,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-string-to-bytes")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -175,6 +179,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
         await using var producer = await Kafka.CreateProducer<string, int>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-int-to-bytes")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, int>
@@ -189,7 +194,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-int-to-bytes")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -213,6 +218,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
         await using var producer = await Kafka.CreateProducer<string, byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-empty-bytes")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, byte[]>
@@ -227,7 +233,7 @@ public sealed class DeserializerErrorHandlingTests(KafkaTestContainer kafka) : K
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer-empty-bytes")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 

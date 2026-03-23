@@ -22,6 +22,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-before-metadata")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - cancel immediately before any work happens
@@ -43,7 +44,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-verify-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -63,6 +64,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-after-append")
             .WithLinger(TimeSpan.FromMilliseconds(5000))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Warm up metadata cache
@@ -106,7 +108,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-verify-delivery")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -134,6 +136,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-mixed-batch")
             .WithLinger(TimeSpan.FromMilliseconds(5000))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Warm up
@@ -194,7 +197,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-cancel-mixed-verify")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -230,6 +233,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-flush-cancel-continues")
             .WithLinger(TimeSpan.FromMilliseconds(2000))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Send messages via fire-and-forget
@@ -262,7 +266,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-flush-cancel-verify")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -287,6 +291,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consume-cancel-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -303,7 +308,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consume-cancel-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -342,7 +347,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consume-timeout-null")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -363,6 +368,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-send-no-cancel")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - fire-and-forget messages
@@ -384,7 +390,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-send-no-cancel-verify")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 

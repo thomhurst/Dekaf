@@ -78,6 +78,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             .WithSaslPlain(AclKafkaContainer.TestUsername, AclKafkaContainer.TestPassword)
             .WithClientId("acl-test-producer-denied")
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act & Assert: producing without WRITE permission should fail
@@ -134,6 +135,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             .WithClientId("acl-test-producer-allowed")
             .WithAcks(Acks.All)
             .WithIdempotence(false)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -196,7 +198,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             .WithClientId("acl-test-consumer-topic-denied")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -271,7 +273,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             .WithClientId("acl-test-consumer-group-denied")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -369,7 +371,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
             .WithClientId("acl-test-consumer-allowed")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -471,6 +473,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 .WithSaslPlain(AclKafkaContainer.TestUsername, AclKafkaContainer.TestPassword)
                 .WithClientId("acl-lifecycle-denied-1")
                 .WithAcks(Acks.All)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             var denied = false;
@@ -518,6 +521,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 .WithClientId("acl-lifecycle-allowed")
                 .WithAcks(Acks.All)
                 .WithIdempotence(false)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -549,6 +553,7 @@ public class AclEnforcementTests(AclKafkaContainer kafka)
                 .WithSaslPlain(AclKafkaContainer.TestUsername, AclKafkaContainer.TestPassword)
                 .WithClientId("acl-lifecycle-denied-2")
                 .WithAcks(Acks.All)
+                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             var deniedAgain = false;

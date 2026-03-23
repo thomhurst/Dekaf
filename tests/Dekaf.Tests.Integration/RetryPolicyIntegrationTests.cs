@@ -45,7 +45,7 @@ public sealed class RetryPolicyIntegrationTests(KafkaTestContainer kafka) : Kafk
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"test-group-retry-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -67,6 +67,7 @@ public sealed class RetryPolicyIntegrationTests(KafkaTestContainer kafka) : Kafk
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithRetryPolicy(NoRetryPolicy.Instance)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -117,6 +118,7 @@ public sealed class RetryPolicyIntegrationTests(KafkaTestContainer kafka) : Kafk
 
         await using var adminClient = Kafka.CreateAdminClient()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         await adminClient.CreateTopicsAsync([
@@ -146,6 +148,7 @@ public sealed class RetryPolicyIntegrationTests(KafkaTestContainer kafka) : Kafk
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
             .WithRetryPolicy(trackingPolicy)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var oversizedValue = new string('X', 4096);

@@ -20,6 +20,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -40,7 +41,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -75,6 +76,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -95,7 +97,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -130,6 +132,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -150,7 +153,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -175,7 +178,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -199,6 +202,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -219,7 +223,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -243,7 +247,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 
@@ -266,6 +270,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -285,7 +290,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -333,6 +338,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 3; i++)
@@ -354,7 +360,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithAutoCommitInterval(TimeSpan.FromMilliseconds(100)) // Fast auto-commit for testing
             .WithOffsetCommitMode(OffsetCommitMode.Auto)
-            .BuildAsync())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync())
         {
             consumer1.Subscribe(topic);
 
@@ -405,7 +411,7 @@ public class OffsetCommitModeTests(KafkaTestContainer kafka) : KafkaIntegrationT
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithSessionTimeout(TimeSpan.FromMilliseconds(10000))
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer2.Subscribe(topic);
 

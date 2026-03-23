@@ -13,6 +13,7 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var messages = Enumerable.Range(0, 10).Select(i => new ProducerMessage<string, string>
@@ -41,6 +42,7 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var messages = Enumerable.Range(0, 5)
@@ -63,6 +65,7 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
     {
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var results = await producer.ProduceAllAsync(Array.Empty<ProducerMessage<string, string>>());
@@ -78,6 +81,7 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
 
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var messages = Enumerable.Range(0, 5).Select(i => new ProducerMessage<string, string>
@@ -94,7 +98,7 @@ public class ProduceAllAsyncTests(KafkaTestContainer kafka) : KafkaIntegrationTe
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

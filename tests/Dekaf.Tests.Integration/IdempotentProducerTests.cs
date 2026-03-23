@@ -21,6 +21,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .WithClientId("test-idempotent-basic")
             .WithAcks(Acks.All)
 
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -50,6 +51,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .WithClientId("test-idempotent-concurrent")
             .WithAcks(Acks.All)
 
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var allResults = new System.Collections.Concurrent.ConcurrentBag<RecordMetadata>();
@@ -102,6 +104,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .WithClientId("test-idempotent-ordering")
             .WithAcks(Acks.All)
 
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce messages concurrently and verify ordering
@@ -142,6 +145,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-reliability-preset")
             .ForReliability()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -162,7 +166,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .WithClientId("test-reliability-consumer")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -187,6 +191,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .WithAcks(Acks.All)
 
             .WithLinger(TimeSpan.FromMilliseconds(5))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - produce 1000 messages
@@ -212,7 +217,7 @@ public sealed class IdempotentProducerTests(KafkaTestContainer kafka) : KafkaInt
             .WithClientId("test-idempotent-volume-consumer")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

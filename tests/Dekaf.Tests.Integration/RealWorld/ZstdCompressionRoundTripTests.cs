@@ -20,6 +20,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseZstdCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -33,7 +34,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"zstd-test-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -55,6 +56,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseZstdCompression()
             .WithLinger(TimeSpan.FromMilliseconds(10))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var pendingTasks = new List<ValueTask<RecordMetadata>>();
@@ -77,7 +79,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"zstd-batch-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -110,6 +112,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseZstdCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -123,7 +126,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"zstd-large-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -143,6 +146,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseZstdCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var headers = new Headers
@@ -164,7 +168,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"zstd-headers-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -188,6 +192,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseZstdCompression()
             .WithLinger(TimeSpan.FromMilliseconds(50))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var expectedMessages = new Dictionary<string, string>
@@ -219,7 +224,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"zstd-mixed-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -249,6 +254,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseZstdCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -262,7 +268,7 @@ public sealed class ZstdCompressionRoundTripTests(KafkaTestContainer kafka) : Ka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"zstd-null-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

@@ -87,6 +87,7 @@ public class AclKafkaContainer : KafkaTestContainer
             .WithBootstrapServers(BootstrapServers)
             .WithSaslPlain(AdminUsername, AdminPassword)
             .WithClientId("acl-test-admin")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
     }
 }

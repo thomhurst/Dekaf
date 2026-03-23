@@ -22,6 +22,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-null-value")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -44,7 +45,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(nullSerde)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -65,6 +66,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-empty")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -85,7 +87,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             .WithClientId("test-consumer-empty")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -107,6 +109,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-large-1mb")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act
@@ -127,7 +130,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             .WithClientId("test-consumer-large-1mb")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -147,6 +150,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
         var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-disposed")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.DisposeAsync().ConfigureAwait(false);
@@ -175,6 +179,7 @@ public sealed class ProducerErrorHandlingTests(KafkaTestContainer kafka) : Kafka
             .WithClientId("test-producer-callback")
             .WithIdempotence(false)
             .WithAcks(Acks.Leader)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - send with delivery callback

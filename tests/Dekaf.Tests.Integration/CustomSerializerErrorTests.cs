@@ -66,6 +66,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-throwing-serializer")
             .WithValueSerializer(new ThrowingValueSerializer())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act & Assert - ProduceAsync should propagate the serializer exception
@@ -91,6 +92,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-serializer-recovery")
             .WithValueSerializer(new ThrowingValueSerializer())
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - first message triggers serializer exception
@@ -126,7 +128,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
             .WithClientId("test-consumer-serializer-recovery")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -147,6 +149,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-for-deser-error")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -163,7 +166,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(new ThrowingValueDeserializer())
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -189,6 +192,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer-for-deser-recovery")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Message 1: will trigger deserializer error
@@ -213,7 +217,7 @@ public class CustomSerializerErrorTests(KafkaTestContainer kafka) : KafkaIntegra
             .WithClientId("test-consumer-deser-recovery")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(new ThrowingValueDeserializer())
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);

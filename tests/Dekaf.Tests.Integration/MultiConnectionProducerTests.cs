@@ -22,6 +22,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             .WithClientId("test-multi-conn-correctness")
             .WithAcks(Acks.All)
             .WithConnectionsPerBroker(3)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Use ProduceAsync to ensure all messages are acknowledged
@@ -34,7 +35,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         // Assign all partitions explicitly
         consumer.Assign(Enumerable.Range(0, 6)
@@ -69,6 +70,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             .WithClientId("test-multi-conn-ordering")
             .WithAcks(Acks.All)
             .WithConnectionsPerBroker(2)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Warmup all partitions
@@ -97,7 +99,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         for (var p = 0; p < partitionCount; p++)
         {
@@ -133,6 +135,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             .WithClientId("test-multi-conn-flush")
             .WithAcks(Acks.All)
             .WithConnectionsPerBroker(3)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -145,7 +148,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         // Assign all partitions explicitly
         consumer.Assign(Enumerable.Range(0, 4)
@@ -174,6 +177,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
             .WithConnectionsPerBroker(3)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -184,7 +188,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
         var count = 0;
@@ -211,6 +215,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             .WithAcks(Acks.All)
             .WithConnectionsPerBroker(2)
             .WithBufferMemory(2UL * 1024 * 1024) // 2MB
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
@@ -231,7 +236,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(Enumerable.Range(0, 4)
             .Select(p => new TopicPartition(topic, p))
@@ -258,6 +263,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAcks(Acks.All)
             .WithConnectionsPerBroker(2)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 1_000; i++)
@@ -281,6 +287,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             .WithIdempotence(false)
             .WithAcks(Acks.Leader)
             .WithConnectionsPerBroker(3)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -291,7 +298,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(Enumerable.Range(0, 4)
             .Select(p => new TopicPartition(topic, p))

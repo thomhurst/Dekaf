@@ -22,12 +22,14 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
         await using var gzipProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce messages with Zstd compression
         await using var zstdProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseZstdCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Send messages with Gzip
@@ -62,7 +64,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"mixed-compression-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -100,12 +102,14 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
         // Producer without compression
         await using var plainProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Producer with Gzip compression
         await using var gzipProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Send uncompressed messages
@@ -139,7 +143,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"mixed-plain-compressed-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -180,15 +184,18 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
         await using var gzipProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseGzipCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await using var zstdProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseZstdCompression()
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await using var plainProducer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce with each codec/mode
@@ -221,7 +228,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"all-codecs-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 
@@ -252,6 +259,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .UseZstdCompression()
             .WithLinger(TimeSpan.FromMilliseconds(50)) // Encourage batching
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce many messages to create large compressed batches
@@ -277,7 +285,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithGroupId($"large-batch-{Guid.NewGuid():N}")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

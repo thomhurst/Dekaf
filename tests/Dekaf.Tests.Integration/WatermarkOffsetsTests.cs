@@ -18,7 +18,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -40,6 +40,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 5; i++)
@@ -57,7 +58,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -86,6 +87,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < 10; i++)
@@ -102,7 +104,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         var watermarks = await consumer.QueryWatermarkOffsetsAsync(tp);
@@ -121,7 +123,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
 
@@ -142,6 +144,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce 3 messages
@@ -158,7 +161,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
 
@@ -197,6 +200,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string>
@@ -209,7 +213,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
 
@@ -236,6 +240,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce different amounts to different partitions
@@ -261,7 +266,7 @@ public class WatermarkOffsetsTests(KafkaTestContainer kafka) : KafkaIntegrationT
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-consumer")
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp0 = new TopicPartition(topic, 0);
         var tp1 = new TopicPartition(topic, 1);

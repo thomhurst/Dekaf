@@ -20,6 +20,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithValueSerializer(Serializers.NullableString)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, string?>
@@ -33,7 +34,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(Serializers.NullableString)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -54,6 +55,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string?, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithKeySerializer(Serializers.NullableString)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string?, string>
@@ -67,7 +69,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithKeyDeserializer(Serializers.NullableString)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -88,6 +90,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithValueSerializer(Serializers.NullableString)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Produce a mix of normal values and tombstones
@@ -126,7 +129,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(Serializers.NullableString)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -158,6 +161,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithValueSerializer(Serializers.NullableString)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         var headers = new Headers
@@ -178,7 +182,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(Serializers.NullableString)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -205,6 +209,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
         await using var producer = await Kafka.CreateProducer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithValueSerializer(Serializers.NullableString)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Set the value
@@ -227,7 +232,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
             .WithValueDeserializer(Serializers.NullableString)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);
@@ -256,6 +261,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
         // Produce a normal byte[] message
         await using var producer = await Kafka.CreateProducer<string, byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.ProduceAsync(new ProducerMessage<string, byte[]>
@@ -269,6 +275,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
         await using var nullProducer = await Kafka.CreateProducer<string, string?>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithValueSerializer(Serializers.NullableString)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await nullProducer.ProduceAsync(new ProducerMessage<string, string?>
@@ -281,7 +288,7 @@ public sealed class TombstoneAndNullValueTests(KafkaTestContainer kafka) : Kafka
         await using var consumer = await Kafka.CreateConsumer<string, byte[]>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var tp = new TopicPartition(topic, 0);
         consumer.Assign(tp);

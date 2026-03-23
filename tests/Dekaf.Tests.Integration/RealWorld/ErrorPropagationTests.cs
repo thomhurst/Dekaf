@@ -20,6 +20,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-disposed-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.DisposeAsync().ConfigureAwait(false);
@@ -45,6 +46,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-disposed-producer-send")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.DisposeAsync().ConfigureAwait(false);
@@ -69,6 +71,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-disposed-producer-flush")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         await producer.DisposeAsync().ConfigureAwait(false);
@@ -89,7 +92,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-disposed-consumer")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
         await consumer.DisposeAsync().ConfigureAwait(false);
@@ -115,7 +118,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
             .WithClientId("test-disposed-consumer-commit")
             .WithGroupId($"test-group-{Guid.NewGuid():N}")
             .WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
         await consumer.DisposeAsync().ConfigureAwait(false);
@@ -133,6 +136,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         var producer = Kafka.CreateProducer<string, string>()
             .WithBootstrapServers("invalid-host-that-does-not-exist:9092")
             .WithClientId("test-invalid-bootstrap")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .Build();
 
         try
@@ -161,6 +165,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-dispose-producer")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Act - dispose multiple times
@@ -178,7 +183,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-multi-dispose-consumer")
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         // Act - dispose multiple times
         await consumer.DisposeAsync().ConfigureAwait(false);
@@ -198,6 +203,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-disposal-flushes")
             .WithLinger(TimeSpan.FromMilliseconds(5000)) // Long linger
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Send fire-and-forget messages
@@ -219,7 +225,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-disposal-verify")
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -252,6 +258,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
         var producer = await Kafka.CreateProducer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-concurrent-dispose-produce")
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Warm up
@@ -314,7 +321,7 @@ public sealed class ErrorPropagationTests(KafkaTestContainer kafka) : KafkaInteg
             .WithClientId("test-close-then-dispose")
             .WithGroupId(groupId)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Subscribe(topic);
 

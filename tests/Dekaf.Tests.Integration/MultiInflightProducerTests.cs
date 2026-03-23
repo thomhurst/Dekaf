@@ -24,6 +24,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
             .WithBatchSize(512) // Small batch size to force many batches
             .WithLinger(TimeSpan.FromMilliseconds(1))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -41,7 +42,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -81,6 +82,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithAcks(Acks.All)
 
             .WithLinger(TimeSpan.FromMilliseconds(2))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Warm up all partitions to ensure the broker has fully initialized partition state.
@@ -111,7 +113,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         await using var consumer = await Kafka.CreateConsumer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var totalExpected = partitionCount * messagesPerPartition + partitionCount; // +warmup
         var partitions = Enumerable.Range(0, partitionCount)
@@ -165,6 +167,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithAcks(Acks.All)
 
             .WithLinger(TimeSpan.FromMilliseconds(2))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Multiple threads producing concurrently to the same partition
@@ -187,7 +190,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -223,6 +226,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
 
             .WithBatchSize(256) // Very small to force many batch rotations
             .WithLinger(TimeSpan.FromMilliseconds(1))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -240,7 +244,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -275,6 +279,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithAcks(Acks.All)
 
             .WithLinger(TimeSpan.FromMilliseconds(2))
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -292,7 +297,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -323,6 +328,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithClientId("test-non-idempotent-single-inflight")
             .WithAcks(Acks.All)
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         for (var i = 0; i < messageCount; i++)
@@ -338,7 +344,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         consumer.Assign(new TopicPartition(topic, 0));
 
@@ -372,6 +378,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             .WithAcks(Acks.All)
 
             .WithLinger(TimeSpan.FromMilliseconds(5)) // Higher linger to trigger coalescing
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
             .BuildAsync();
 
         // Warm up all partitions to ensure the broker has fully initialized partition
@@ -404,7 +411,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
         await using var consumer = await Kafka.CreateConsumer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest)
-            .BuildAsync();
+            .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory()).BuildAsync();
 
         var partitions = Enumerable.Range(0, partitionCount)
             .Select(p => new TopicPartition(topic, p))
