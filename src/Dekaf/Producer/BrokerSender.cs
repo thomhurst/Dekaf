@@ -2415,6 +2415,26 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             LogBatchCleanupStepFailed(ex, _brokerId);
         }
 
+        // Observe any in-flight shrink task and dispose the draining connection.
+        // After the send loop exits, these won't be polled by MaybeScaleConnections.
+        if (_pendingShrinkTask is { IsCompletedSuccessfully: true } shrinkTask)
+        {
+            var removedConn = shrinkTask.Result;
+            if (removedConn is not null)
+            {
+                try { await removedConn.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception ex) { LogBatchCleanupStepFailed(ex, _brokerId); }
+            }
+        }
+        _pendingShrinkTask = null;
+
+        if (_drainingConnection is not null)
+        {
+            try { await _drainingConnection.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception ex) { LogBatchCleanupStepFailed(ex, _brokerId); }
+            _drainingConnection = null;
+        }
+
         var totalPending = _totalPendingResponseCount;
         if (totalPending > 0)
         {
