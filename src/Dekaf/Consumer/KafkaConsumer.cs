@@ -325,6 +325,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     private CancellationTokenSource? _prefetchCts;
     private Task? _prefetchTask;
     private long _prefetchedBytes;
+    private readonly SemaphoreSlim _prefetchMemoryAvailable = new(0, 1);
+
+    // Reusable list for collecting pending items during prefetch (avoids per-cycle allocation)
+    private List<PendingFetchData>? _prefetchPendingItems;
 
     // Lock ordering (always acquire in this order to prevent deadlocks):
     //   1. _initLock          — guards one-time initialization; never held while acquiring other locks
@@ -355,6 +359,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
     // CancellationTokenSource pool to avoid allocations in hot paths
     private readonly CancellationTokenSourcePool _ctsPool = new();
+
+    // Cached metric tags per topic to avoid per-message TagList allocation
+    // Plain Dictionary is safe: only accessed from the single ConsumeAsync loop thread
+    private readonly Dictionary<string, System.Diagnostics.TagList> _metricTagsCache = [];
 
     // Interceptors - stored as typed array for zero-allocation iteration
     private readonly IConsumerInterceptor<TKey, TValue>[]? _interceptors;
@@ -686,54 +694,17 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                         ? TimestampType.LogAppendTime
                         : TimestampType.CreateTime;
 
-                    // Start consumer tracing activity (~2ns no-op when no listener)
-                    // Use span links (not parent-child) per OTel messaging semantic conventions:
-                    // the consumer span gets its own trace root, linked to the producer span.
-                    // We temporarily null out Activity.Current to prevent StartActivity from
-                    // inheriting an ambient parent, which would defeat the "new trace root" intent
-                    // of passing parentContext: default(ActivityContext).
-                    var producerContext = Diagnostics.TraceContextPropagator.ExtractTraceContext(headers);
-                    System.Diagnostics.Activity? activity;
-                    var savedActivity = System.Diagnostics.Activity.Current;
-                    System.Diagnostics.Activity.Current = null;
-                    try
-                    {
-                        if (producerContext.HasValue && Diagnostics.DekafDiagnostics.Source.HasListeners())
-                        {
-                            activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
-                                pending.ActivityName,
-                                System.Diagnostics.ActivityKind.Consumer,
-                                parentContext: default(System.Diagnostics.ActivityContext),
-                                tags: null,
-                                links: [new System.Diagnostics.ActivityLink(producerContext.Value)]);
-                        }
-                        else
-                        {
-                            activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
-                                pending.ActivityName,
-                                System.Diagnostics.ActivityKind.Consumer);
-                        }
-                    }
-                    finally
-                    {
-                        System.Diagnostics.Activity.Current = savedActivity;
-                    }
                     var messageBytes = (record.IsKeyNull ? 0 : record.Key.Length) +
                                        (record.IsValueNull ? 0 : record.Value.Length);
 
-                    if (activity is not null)
+                    // Start consumer tracing activity — skip all tracing work when no listener
+                    // (~2ns HasListeners() check vs ~200ns Activity creation + tag boxing per message)
+                    System.Diagnostics.Activity? activity = null;
+                    if (Diagnostics.DekafDiagnostics.Source.HasListeners())
                     {
-                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
-                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic);
-                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "receive");
-                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, pending.PartitionIndex);
-                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageOffset, offset);
-                        activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageBodySize, messageBytes);
-                        if (_options.ClientId is not null)
-                            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
-                        if (_options.GroupId is not null)
-                            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingConsumerGroupName, _options.GroupId);
-                        previousActivity = activity;
+                        activity = StartConsumeActivity(pending, headers, offset, messageBytes);
+                        if (activity is not null)
+                            previousActivity = activity;
                     }
 
                     // Create result - deserialization happens eagerly in the constructor
@@ -758,8 +729,13 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     pending.TrackConsumed(offset, messageBytes);
 
                     // Record consumer metrics (~3ns no-op when no listener)
-                    var metricTags = new System.Diagnostics.TagList
-                        { { Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic } };
+                    // Cache TagList per topic to avoid per-message struct creation and string boxing
+                    if (!_metricTagsCache.TryGetValue(pending.Topic, out var metricTags))
+                    {
+                        metricTags = new System.Diagnostics.TagList
+                            { { Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic } };
+                        _metricTagsCache[pending.Topic] = metricTags;
+                    }
                     Diagnostics.DekafMetrics.MessagesReceived.Add(1, metricTags);
                     Diagnostics.DekafMetrics.BytesReceived.Add(messageBytes, metricTags);
 
@@ -840,10 +816,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     var maxBytes = (long)_options.QueuedMaxMessagesKbytes * 1024;
                     if (Interlocked.Read(ref _prefetchedBytes) >= maxBytes)
                     {
-                        // Wait for consumer to catch up
+                        // Wait for consumer to signal memory is available instead of polling
                         var currentPrefetchedBytes = Interlocked.Read(ref _prefetchedBytes);
                         LogPrefetchMemoryLimitPaused(currentPrefetchedBytes, maxBytes);
-                        await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+                        await _prefetchMemoryAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
                         continue;
                     }
 
@@ -997,7 +973,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         // Collect pending fetch data items - we need to assign memory owner to the last one
         // since FIFO processing means the last one will be disposed last
-        List<PendingFetchData>? pendingItems = null;
+        // Reuse list across prefetch cycles to avoid per-cycle allocation
+        var pendingItems = _prefetchPendingItems ??= [];
+        pendingItems.Clear();
 
         // Write to prefetch channel
         foreach (var topicResponse in response.Responses)
@@ -1068,7 +1046,6 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     UpdateFetchPositionsFromPrefetch(pending);
 
                     // Collect for later - we'll assign memory owner to the last one
-                    pendingItems ??= [];
                     pendingItems.Add(pending);
                 }
                 else if (_options.EnablePartitionEof)
@@ -1091,7 +1068,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         }
 
         // Write all pending items to the channel, with memory owner attached to the last one
-        if (pendingItems is not null)
+        if (pendingItems.Count > 0)
         {
             // Assign memory owner to the LAST item (will be disposed last due to FIFO)
             if (memoryOwner is not null)
@@ -1136,6 +1113,9 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         if (release)
         {
             Interlocked.Add(ref _prefetchedBytes, -bytes);
+            // Signal prefetch loop that memory is now available
+            // Release is best-effort: if semaphore is already signaled, no-op is fine
+            try { _prefetchMemoryAvailable.Release(); } catch (SemaphoreFullException) { }
         }
         else
         {
@@ -2272,6 +2252,63 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
     }
 
     /// <summary>
+    /// Creates and configures a tracing Activity for consume operations.
+    /// Separated from the hot path to avoid inlining overhead when no listeners are active.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private System.Diagnostics.Activity? StartConsumeActivity(
+        PendingFetchData pending,
+        IReadOnlyList<Header>? headers,
+        long offset,
+        int messageBytes)
+    {
+        // Use span links (not parent-child) per OTel messaging semantic conventions:
+        // the consumer span gets its own trace root, linked to the producer span.
+        var producerContext = Diagnostics.TraceContextPropagator.ExtractTraceContext(headers);
+        System.Diagnostics.Activity? activity;
+        var savedActivity = System.Diagnostics.Activity.Current;
+        System.Diagnostics.Activity.Current = null;
+        try
+        {
+            if (producerContext.HasValue)
+            {
+                activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
+                    pending.ActivityName,
+                    System.Diagnostics.ActivityKind.Consumer,
+                    parentContext: default(System.Diagnostics.ActivityContext),
+                    tags: null,
+                    links: [new System.Diagnostics.ActivityLink(producerContext.Value)]);
+            }
+            else
+            {
+                activity = Diagnostics.DekafDiagnostics.Source.StartActivity(
+                    pending.ActivityName,
+                    System.Diagnostics.ActivityKind.Consumer);
+            }
+        }
+        finally
+        {
+            System.Diagnostics.Activity.Current = savedActivity;
+        }
+
+        if (activity is not null)
+        {
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingSystem, Diagnostics.DekafDiagnostics.MessagingSystemValue);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingOperationType, "receive");
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingDestinationPartitionId, pending.PartitionIndex);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageOffset, offset);
+            activity.SetTag(Diagnostics.DekafDiagnostics.MessagingMessageBodySize, messageBytes);
+            if (_options.ClientId is not null)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingClientId, _options.ClientId);
+            if (_options.GroupId is not null)
+                activity.SetTag(Diagnostics.DekafDiagnostics.MessagingConsumerGroupName, _options.GroupId);
+        }
+
+        return activity;
+    }
+
+    /// <summary>
     /// Applies OnConsume interceptors to a consume result before yielding to the user.
     /// Interceptor exceptions are caught and logged - the original result is used on failure.
     /// </summary>
@@ -2844,6 +2881,7 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
 
         _assignmentLock.Dispose();
         _initLock.Dispose();
+        _prefetchMemoryAvailable.Dispose();
 
         if (_coordinator is not null)
             await _coordinator.DisposeAsync().ConfigureAwait(false);
