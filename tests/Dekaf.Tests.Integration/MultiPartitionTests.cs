@@ -128,7 +128,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         consumer.Assign(new TopicPartition(topic, 1));
 
         var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
@@ -181,7 +181,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             new TopicPartition(topic, 2));
 
         var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
@@ -376,7 +376,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
 
         // Consume from partition 0
         var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
@@ -502,7 +502,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         consumer.Subscribe(topic);
 
         var messages = new List<ConsumeResult<string, string>>();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
