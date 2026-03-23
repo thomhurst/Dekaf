@@ -363,10 +363,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Adaptive connection scaling state (send-loop owned, single-threaded)
     private bool _adaptiveScalingEnabled;
+    private readonly int _minConnectionCount; // Initial ConnectionsPerBroker — never scale below this
     private readonly int _maxConnectionsPerBroker;
     private long _lastPressureSnapshot;
     private long _lastScaleTimeTicks;
     private Task<int>? _pendingScaleTask; // Background connection creation, polled by send loop
+
+    // Scale-down state (send-loop owned, single-threaded)
+    private long _lowUtilizationStartTicks; // When low utilization was first detected (0 = not tracking)
+    private Task<IKafkaConnection?>? _pendingShrinkTask; // Background shrink, polled by send loop
+    private IKafkaConnection? _drainingConnection; // Connection being drained before disposal
 
     // Scaling thresholds
     // Also the per-connection unit of pressure for step estimation (step = delta / threshold),
@@ -376,6 +382,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     private const double ScaleUtilizationThreshold = 0.7;
 
     private const int MaxScaleStep = 3; // Cap per scale-up to avoid over-provisioning from a brief spike
+
+    // Scale-down thresholds
+    private const double ScaleDownUtilizationThreshold = 0.3; // Buffer utilization below which scale-down is considered
+    private const long ScaleDownSustainedMs = 120_000; // 2 minutes of sustained low utilization required
 
     // Maintained counter for O(1) hot-path access. Incremented in SendCoalescedAsync
     // when a PendingResponse is added, decremented in ProcessCompletedResponses and
@@ -472,6 +482,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         // Adaptive scaling: only for non-idempotent producers (idempotent requires fixed partition affinity)
         _adaptiveScalingEnabled = options.EnableAdaptiveConnections && !options.EnableIdempotence;
+        _minConnectionCount = options.ConnectionsPerBroker;
         _maxConnectionsPerBroker = options.MaxConnectionsPerBroker;
 
         _pendingResponsesByConnection = new List<PendingResponse>[_connectionCount];
@@ -2446,14 +2457,18 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     }
 
     /// <summary>
-    /// Non-blocking adaptive scaling check. Connection creation runs in the background
-    /// so the send loop is never blocked by TCP handshakes. Field mutations happen on the
-    /// send loop thread when the background task completes (polled each iteration).
+    /// Non-blocking adaptive scaling check. Connection creation/removal runs in the background
+    /// so the send loop is never blocked by TCP handshakes or connection draining.
+    /// Field mutations happen on the send loop thread when the background task completes
+    /// (polled each iteration).
     /// Returns the new connection count if scaling completed this iteration, or 0 otherwise.
     /// </summary>
     private int MaybeScaleConnections()
     {
-        // Phase 1: Check if a pending background scale-up completed
+        // Phase 0: Poll draining connection for disposal
+        MaybeDrainAndDisposeConnection();
+
+        // Phase 1a: Check if a pending background scale-up completed
         if (_pendingScaleTask is not null)
         {
             if (!_pendingScaleTask.IsCompleted)
@@ -2485,6 +2500,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                         newPending[i] = new List<PendingResponse>();
                     _pendingResponsesByConnection = newPending;
 
+                    // Reset low utilization tracking — we just scaled up
+                    _lowUtilizationStartTicks = 0;
+
                     LogAdaptiveScaleUp(_brokerId, oldCount, actualCount);
                     return actualCount;
                 }
@@ -2497,34 +2515,161 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return 0;
         }
 
-        // Phase 2: Check if we should start a new scale-up
-        if (_connectionCount >= _maxConnectionsPerBroker)
+        // Phase 1b: Check if a pending background shrink completed
+        if (_pendingShrinkTask is not null)
         {
-            _adaptiveScalingEnabled = false;
+            if (!_pendingShrinkTask.IsCompleted)
+                return 0; // Still shrinking — send loop continues unblocked
+
+            var task = _pendingShrinkTask;
+            _pendingShrinkTask = null;
+
+            if (task.IsCompletedSuccessfully)
+            {
+                var removedConnection = task.Result;
+                if (removedConnection is not null)
+                {
+                    return ApplyScaleDown(removedConnection);
+                }
+            }
+            else if (task.Exception is not null)
+            {
+                LogAdaptiveScaleDownFailed(task.Exception.InnerException ?? task.Exception, _brokerId, _connectionCount);
+            }
+
             return 0;
         }
 
-        var currentPressure = _accumulator.BufferPressureEvents;
-        var pressureDelta = currentPressure - _lastPressureSnapshot;
-
-        if (pressureDelta < ScalePressureDeltaThreshold)
-            return 0;
-
         var now = Environment.TickCount64;
+
+        // Cooldown applies to both scale-up and scale-down
         if (now - _lastScaleTimeTicks < ScaleCooldownMs)
             return 0;
 
-        if (_accumulator.BufferUtilization < ScaleUtilizationThreshold)
+        var utilization = _accumulator.BufferUtilization;
+
+        // Phase 2: Check if we should start a new scale-up
+        if (utilization >= ScaleUtilizationThreshold)
+        {
+            // High utilization — reset low-utilization tracking
+            _lowUtilizationStartTicks = 0;
+
+            if (_connectionCount >= _maxConnectionsPerBroker)
+                return 0; // At ceiling — cannot scale up, but scale-down remains active
+
+            var currentPressure = _accumulator.BufferPressureEvents;
+            var pressureDelta = currentPressure - _lastPressureSnapshot;
+
+            if (pressureDelta < ScalePressureDeltaThreshold)
+                return 0;
+
+            var targetCount = ComputeScaleTarget(pressureDelta, _connectionCount, _maxConnectionsPerBroker);
+
+            // Launch connection creation in the background — send loop continues immediately
+            _lastScaleTimeTicks = now;
+            _pendingScaleTask = _connectionPool.ScaleConnectionGroupAsync(
+                _brokerId, targetCount, _cts.Token).AsTask();
+
             return 0;
+        }
 
-        var targetCount = ComputeScaleTarget(pressureDelta, _connectionCount, _maxConnectionsPerBroker);
+        // Phase 3: Check if we should start a scale-down
+        if (_connectionCount <= _minConnectionCount)
+        {
+            _lowUtilizationStartTicks = 0; // At minimum — nothing to scale down
+            return 0;
+        }
 
-        // Launch connection creation in the background — send loop continues immediately
+        if (utilization >= ScaleDownUtilizationThreshold)
+        {
+            // Above scale-down threshold — reset tracking
+            _lowUtilizationStartTicks = 0;
+            return 0;
+        }
+
+        // Utilization is below the scale-down threshold
+        if (_lowUtilizationStartTicks == 0)
+        {
+            // Start tracking sustained low utilization
+            _lowUtilizationStartTicks = now;
+            return 0;
+        }
+
+        if (now - _lowUtilizationStartTicks < ScaleDownSustainedMs)
+            return 0; // Not sustained long enough
+
+        // Check that the last connection has no in-flight requests before shrinking
+        var lastConnIdx = _connectionCount - 1;
+        if (_pendingResponsesByConnection[lastConnIdx].Count > 0)
+            return 0; // Still has in-flight requests — wait for them to complete
+
+        // Sustained low utilization with no in-flight on last connection — initiate scale-down
+        var targetShrinkCount = _connectionCount - 1;
+
         _lastScaleTimeTicks = now;
-        _pendingScaleTask = _connectionPool.ScaleConnectionGroupAsync(
-            _brokerId, targetCount, _cts.Token).AsTask();
+        _lowUtilizationStartTicks = 0; // Reset for the next scale-down cycle
+        _pendingShrinkTask = _connectionPool.ShrinkConnectionGroupAsync(
+            _brokerId, targetShrinkCount, _cts.Token).AsTask();
 
         return 0;
+    }
+
+    /// <summary>
+    /// Applies the scale-down by shrinking send-loop arrays and scheduling the removed
+    /// connection for draining. Returns the new connection count.
+    /// </summary>
+    private int ApplyScaleDown(IKafkaConnection removedConnection)
+    {
+        var oldCount = _connectionCount;
+        var newCount = oldCount - 1;
+
+        _connectionCount = newCount;
+        _totalMaxInFlight = newCount * _maxInFlight;
+
+        // Shrink _pinnedConnections — remove the last slot
+        var newPinned = new IKafkaConnection?[newCount];
+        Array.Copy(_pinnedConnections, newPinned, newCount);
+        _pinnedConnections = newPinned;
+
+        // Shrink _pendingResponsesByConnection — the last list should be empty
+        // (we checked in-flight count before initiating shrink)
+        var newPending = new List<PendingResponse>[newCount];
+        Array.Copy(_pendingResponsesByConnection, newPending, newCount);
+        _pendingResponsesByConnection = newPending;
+
+        // Schedule the removed connection for background draining and disposal.
+        // Even though we checked in-flight == 0, the connection may have TCP-level
+        // state that needs graceful close.
+        _drainingConnection = removedConnection;
+
+        // Re-enable adaptive scaling if we were at max before
+        if (!_adaptiveScalingEnabled && newCount < _maxConnectionsPerBroker)
+            _adaptiveScalingEnabled = true;
+
+        LogAdaptiveScaleDown(_brokerId, oldCount, newCount);
+        return newCount;
+    }
+
+    /// <summary>
+    /// Polls the draining connection and disposes it when ready.
+    /// Non-blocking: the connection is disposed on a background task if not yet complete.
+    /// </summary>
+    private void MaybeDrainAndDisposeConnection()
+    {
+        if (_drainingConnection is null)
+            return;
+
+        var connection = _drainingConnection;
+        _drainingConnection = null;
+
+        // Fire-and-forget disposal with exception observation to prevent UnobservedTaskException.
+        // The connection has no in-flight requests (verified before shrink was initiated).
+        _ = connection.DisposeAsync().AsTask().ContinueWith(
+            static (t, _) => { /* Observe exception — best-effort disposal */ },
+            null,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     /// <summary>
@@ -2617,6 +2762,12 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] adaptive scale-up failed (current: {CurrentCount} connections)")]
     private partial void LogAdaptiveScaleFailed(Exception exception, int brokerId, int currentCount);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "BrokerSender[{BrokerId}] adaptive scale-down: {OldCount} -> {NewCount} connections")]
+    private partial void LogAdaptiveScaleDown(int brokerId, int oldCount, int newCount);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "BrokerSender[{BrokerId}] adaptive scale-down failed (current: {CurrentCount} connections)")]
+    private partial void LogAdaptiveScaleDownFailed(Exception exception, int brokerId, int currentCount);
 
     #endregion
 }

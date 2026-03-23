@@ -309,6 +309,47 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
         }
     }
 
+    public async ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int brokerId, int newCount, CancellationToken cancellationToken = default)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(ConnectionPool));
+
+        ArgumentOutOfRangeException.ThrowIfLessThan(newCount, 1);
+
+        // Check current group size without locking
+        if (!_connectionGroupsById.TryGetValue(brokerId, out var currentGroup) || currentGroup.Length <= newCount)
+            return null;
+
+        // Serialize scaling operations per pool
+        await _scaleLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Re-check after acquiring lock
+            if (!_connectionGroupsById.TryGetValue(brokerId, out currentGroup) || currentGroup.Length <= newCount)
+                return null;
+
+            // Remove the last connection from the group
+            var removedConnection = currentGroup[^1];
+            var shrunkGroup = new IKafkaConnection[currentGroup.Length - 1];
+            Array.Copy(currentGroup, shrunkGroup, shrunkGroup.Length);
+
+            // Atomically swap the connection group
+            _connectionGroupsById[brokerId] = shrunkGroup;
+
+            // Clean up creation task slot for the removed index
+            _connectionGroupCreationTasks.TryRemove((brokerId, currentGroup.Length - 1), out _);
+
+            LogShrunkConnectionGroup(currentGroup.Length, shrunkGroup.Length, brokerId);
+
+            // Return the removed connection for caller-managed draining and disposal
+            return removedConnection;
+        }
+        finally
+        {
+            _scaleLock.Release();
+        }
+    }
+
     private async ValueTask<IKafkaConnection> ReplaceConnectionInGroupAsync(int brokerId, BrokerInfo brokerInfo, int index, CancellationToken cancellationToken)
     {
         // Use GetOrAdd pattern to ensure only one replacement happens
@@ -646,6 +687,9 @@ private readonly ConcurrentDictionary<(int BrokerId, int Index), Lazy<ValueTask<
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Scaled connection group from {OldCount} to {NewCount} connections for broker {BrokerId}")]
     private partial void LogScaledConnectionGroup(int oldCount, int newCount, int brokerId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Shrunk connection group from {OldCount} to {NewCount} connections for broker {BrokerId}")]
+    private partial void LogShrunkConnectionGroup(int oldCount, int newCount, int brokerId);
 
     #endregion
 

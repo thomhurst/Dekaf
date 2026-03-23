@@ -207,4 +207,49 @@ public sealed class ConnectionPoolTests
         // All concurrent disposals should complete without throwing
         await Task.WhenAll(tasks);
     }
+
+    [Test]
+    public async Task ShrinkConnectionGroupAsync_DisposedPool_ThrowsObjectDisposedException()
+    {
+        var pool = new ConnectionPool("test-client");
+        await pool.DisposeAsync();
+
+        Func<Task> act = () => pool.ShrinkConnectionGroupAsync(1, 1).AsTask();
+
+        await Assert.That(act).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
+    public async Task ShrinkConnectionGroupAsync_NewCountLessThanOne_ThrowsArgumentOutOfRange()
+    {
+        await using var pool = new ConnectionPool("test-client");
+
+        Func<Task> act = () => pool.ShrinkConnectionGroupAsync(1, 0).AsTask();
+
+        await Assert.That(act).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    public async Task ShrinkConnectionGroupAsync_NoConnectionGroup_ReturnsNull()
+    {
+        await using var pool = new ConnectionPool("test-client");
+        pool.RegisterBroker(1, "localhost", 9092);
+
+        // No connection group exists yet — shrink should be a no-op
+        var result = await pool.ShrinkConnectionGroupAsync(1, 1);
+
+        await Assert.That(result).IsNull();
+    }
+
+    [Test]
+    public async Task ShrinkConnectionGroupAsync_AlreadyAtOrBelowTarget_ReturnsNull()
+    {
+        await using var pool = new ConnectionPool("test-client", connectionsPerBroker: 2);
+        pool.RegisterBroker(1, "localhost", 9092);
+
+        // No group created — shrink to 3 (above any possible group size) is a no-op
+        var result = await pool.ShrinkConnectionGroupAsync(1, 3);
+
+        await Assert.That(result).IsNull();
+    }
 }

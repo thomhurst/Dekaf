@@ -38,6 +38,17 @@ public interface IConnectionPool : IAsyncDisposable
     ValueTask<int> ScaleConnectionGroupAsync(int brokerId, int newCount, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Shrinks the connection group for a broker to the specified count.
+    /// If the broker already has at most <paramref name="newCount"/> connections, this is a no-op.
+    /// The removed connection (always the last in the group) is returned for draining by the caller.
+    /// </summary>
+    /// <param name="brokerId">The broker to shrink connections for.</param>
+    /// <param name="newCount">The desired number of connections (must be >= 1).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The removed connection for draining, or null if no shrink was needed.</returns>
+    ValueTask<IKafkaConnection?> ShrinkConnectionGroupAsync(int brokerId, int newCount, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Removes a connection from the pool.
     /// </summary>
     ValueTask RemoveConnectionAsync(int brokerId);
