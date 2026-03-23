@@ -764,10 +764,8 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
                     {
                         var metricTags = new System.Diagnostics.TagList
                             { { Diagnostics.DekafDiagnostics.MessagingDestinationName, pending.Topic } };
-                        if (Diagnostics.DekafMetrics.MessagesReceived.Enabled)
-                            Diagnostics.DekafMetrics.MessagesReceived.Add(1, metricTags);
-                        if (Diagnostics.DekafMetrics.BytesReceived.Enabled)
-                            Diagnostics.DekafMetrics.BytesReceived.Add(messageBytes, metricTags);
+                        Diagnostics.DekafMetrics.MessagesReceived.Add(1, metricTags);
+                        Diagnostics.DekafMetrics.BytesReceived.Add(messageBytes, metricTags);
                     }
 
                     // Apply OnConsume interceptors before yielding to user
