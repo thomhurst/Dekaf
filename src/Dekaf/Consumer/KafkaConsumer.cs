@@ -1177,6 +1177,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
             {
                 // Timeout expired with no messages - return null instead of throwing
             }
+            catch (ChannelClosedException)
+            {
+                // Prefetch channel closed during timeout - treat as no messages available
+            }
             return null;
         }
 
@@ -1193,6 +1197,10 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             // Our timeout expired (not user cancellation) with no messages - return null
+        }
+        catch (ChannelClosedException)
+        {
+            // Prefetch channel closed during timeout - treat as no messages available
         }
 
         return null;
