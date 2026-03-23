@@ -17,27 +17,22 @@ internal sealed class InflightEntry
     internal InflightEntry? Next { get; set; }
 
     // Guard against double-return to pool when FailAll and Complete race.
-    // Uses Interlocked.Exchange for atomic check-and-clear without requiring the partition lock.
-    private volatile int _inList;
-
-    internal bool InList
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => _inList != 0;
-    }
+    // Protected by the per-partition SpinLock — both Complete and FailAll acquire
+    // the same lock before checking/clearing this flag, so plain bool is sufficient.
+    internal bool InList;
 
     /// <summary>
-    /// Atomically marks the entry as removed from the list.
+    /// Checks and clears the InList flag under the partition lock.
     /// Returns true if this call performed the removal (was in list), false if already removed.
+    /// Must be called while holding the partition SpinLock.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal bool TryRemoveFromList() => Interlocked.Exchange(ref _inList, 0) != 0;
-
-    /// <summary>
-    /// Marks the entry as in the list. Called under the partition SpinLock during Register.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void MarkInList() => _inList = 1;
+    internal bool TryRemoveFromList()
+    {
+        if (!InList) return false;
+        InList = false;
+        return true;
+    }
 
     private TaskCompletionSource? _completionSignal;
 
@@ -91,7 +86,7 @@ internal sealed class InflightEntry
         RecordCount = 0;
         Previous = null;
         Next = null;
-        _inList = 0;
+        InList = false;
         _completionSignal = null;
     }
 }
@@ -108,7 +103,8 @@ internal sealed class PartitionState
     // Critical sections are ~5-10 instructions (pointer manipulation only), so spinning is
     // significantly cheaper than blocking. trackThreadOwnership=false avoids Thread.CurrentThread
     // overhead on every Enter/Exit.
-    public SpinLock Lock = new(enableThreadOwnerTracking: false);
+    // Do not copy this field — SpinLock is a mutable struct. Always access via the PartitionState reference.
+    internal SpinLock Lock = new(enableThreadOwnerTracking: false);
     public InflightEntry? Head;
     public InflightEntry? Tail;
     public int Count;
@@ -160,7 +156,7 @@ internal sealed class PartitionInflightTracker
         {
             state.Lock.Enter(ref lockTaken);
 
-            entry.MarkInList();
+            entry.InList = true;
 
             if (state.Tail is null)
             {
@@ -180,7 +176,7 @@ internal sealed class PartitionInflightTracker
         }
         finally
         {
-            if (lockTaken) state.Lock.Exit(useMemoryBarrier: false);
+            if (lockTaken) state.Lock.Exit();
         }
 
         return entry;
@@ -234,7 +230,7 @@ internal sealed class PartitionInflightTracker
         }
         finally
         {
-            if (lockTaken) state.Lock.Exit(useMemoryBarrier: false);
+            if (lockTaken) state.Lock.Exit();
         }
 
         // Signal completion outside lock to avoid holding lock during continuations
@@ -281,7 +277,7 @@ internal sealed class PartitionInflightTracker
         }
         finally
         {
-            if (lockTaken) state.Lock.Exit(useMemoryBarrier: false);
+            if (lockTaken) state.Lock.Exit();
         }
 
         // Await outside lock with ConfigureAwait(false)
@@ -328,7 +324,7 @@ internal sealed class PartitionInflightTracker
         }
         finally
         {
-            if (lockTaken) state.Lock.Exit(useMemoryBarrier: false);
+            if (lockTaken) state.Lock.Exit();
         }
 
         // Signal and return outside lock
@@ -359,7 +355,7 @@ internal sealed class PartitionInflightTracker
         }
         finally
         {
-            if (lockTaken) state.Lock.Exit(useMemoryBarrier: false);
+            if (lockTaken) state.Lock.Exit();
         }
     }
 
@@ -381,7 +377,7 @@ internal sealed class PartitionInflightTracker
         }
         finally
         {
-            if (lockTaken) state.Lock.Exit(useMemoryBarrier: false);
+            if (lockTaken) state.Lock.Exit();
         }
     }
 }
