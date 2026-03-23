@@ -394,7 +394,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
     // Maintained counter for O(1) hot-path access. Incremented in SendCoalescedAsync
     // when a PendingResponse is added, decremented in ProcessCompletedResponses and
-    // HandleTimedOutRequests when entries are removed. Single-threaded send loop only.
+    // HandleTimedOutRequests when entries are removed. Must use Interlocked: with
+    // multi-connection sends, concurrent SendCoalescedAsync calls increment from
+    // different threads. Non-atomic ++ silently loses increments, causing the send
+    // loop to undercount pending responses and enter idle wait prematurely.
     private int _totalPendingResponseCount;
 
     // Tracks distinct partitions this broker has seen, used to skip MicroLinger when all
@@ -1023,7 +1026,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 }
 
                 // ── 7. Compute timeout and wait ──
-                var waitPendingCount = _totalPendingResponseCount;
+                var waitPendingCount = Volatile.Read(ref _totalPendingResponseCount);
                 if (carryOver.Count == 0 && waitPendingCount == 0 && _sendFailedRetries.IsEmpty)
                 {
                     // Fully idle — wait for any event (new batch, response, unmute).
@@ -1096,7 +1099,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     }
                     pr.ReturnBatchesArray();
                 }
-                _totalPendingResponseCount -= pendingList.Count;
+                Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
                 pendingList.Clear();
                 // No TrimExcess — lists are unreachable after disposal
             }
@@ -1348,7 +1351,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             // Compact: remove processed entries from the end
             if (writeIdx < pendingList.Count)
             {
-                _totalPendingResponseCount -= pendingList.Count - writeIdx;
+                Interlocked.Add(ref _totalPendingResponseCount, -(pendingList.Count - writeIdx));
                 pendingList.RemoveRange(writeIdx, pendingList.Count - writeIdx);
 
                 // Prevent unbounded capacity ratcheting: when the list shrinks well below
@@ -1579,7 +1582,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             // Remove all entries. Response tasks are orphaned — they'll eventually complete
             // (via CTS timeout or connection disposal) but nobody polls them.
-            _totalPendingResponseCount -= pendingList.Count;
+            Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
             pendingList.Clear();
 
             // After clearing all entries due to timeout, trim the internal array to
@@ -1918,7 +1921,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
             var pendingResponse = new PendingResponse(responseTask, batches, count, requestStartTime);
             _pendingResponsesByConnection[connectionIndex].Add(pendingResponse);
-            _totalPendingResponseCount++;
+            Interlocked.Increment(ref _totalPendingResponseCount);
 
             // Diagnostic: mark batches as successfully pipelined to _pendingResponsesByConnection.
             // If an orphan trace shows 'S' but no 'W' (Wire), the batch never reached here.
@@ -2491,7 +2494,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     pr.ReturnBatchesArray();
                 }
 
-                _totalPendingResponseCount -= pendingList.Count;
+                Interlocked.Add(ref _totalPendingResponseCount, -pendingList.Count);
                 pendingList.Clear();
                 // No TrimExcess — lists are unreachable after disposal
             }
