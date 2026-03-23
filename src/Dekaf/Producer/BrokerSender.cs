@@ -2640,10 +2640,16 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         Array.Copy(_pendingResponsesByConnection, newPending, newCount);
         _pendingResponsesByConnection = newPending;
 
+        // Reset the sustained-low-utilization timer so the next scale-down cycle
+        // must observe 2 full minutes of low utilization from this point forward.
+        _lowUtilizationStartTicks = 0;
+
         // Hand off to MaybeDrainAndDisposeConnection on the next send-loop iteration.
         // Safe to set without checking the previous value: _pendingShrinkTask serializes
         // scale-down attempts, so ApplyScaleDown is never called while a prior drain is
-        // in progress.
+        // in progress. The in-flight-count pre-check in the scale-down trigger (Phase 3)
+        // ensures no requests are assigned to the removed connection index, so
+        // MaybeDrainAndDisposeConnection can safely dispose it immediately.
         _drainingConnection = removedConnection;
 
         LogAdaptiveScaleDown(_brokerId, oldCount, newCount);
