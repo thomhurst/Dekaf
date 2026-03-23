@@ -4033,6 +4033,8 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     /// Prevents double-release across send and cleanup paths.
     /// Uses atomic operations because multiple threads may race to release:
     /// BrokerSender send loop, orphan sweep, and forceful disposal.
+    /// For observation/diagnostics only — use <see cref="TrySetMemoryReleased"/> as the
+    /// atomic guard when releasing memory.
     /// </summary>
     internal bool MemoryReleased => Volatile.Read(ref _memoryReleased) != 0;
     private int _memoryReleased;

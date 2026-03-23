@@ -228,26 +228,9 @@ public class MemoryReleasedAtomicityTests
         return batch;
     }
 
-    /// <summary>
-    /// Clears CurrentBatch on all partition deques via reflection.
-    /// Prevents DisposeAsync from attempting to release memory for batches
-    /// we already manually released in the test.
-    /// </summary>
     private static void ClearCurrentBatches(RecordAccumulator accumulator)
     {
-        var dequesField = typeof(RecordAccumulator).GetField("_partitionDeques",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        var deques = dequesField!.GetValue(accumulator)!;
-
         for (var p = 0; p < 10; p++)
-        {
-            var tryGetMethod = deques.GetType().GetMethod("TryGetValue");
-            var parms = new object[] { new TopicPartition("test-topic", p), null! };
-            if ((bool)tryGetMethod!.Invoke(deques, parms)!)
-            {
-                var pd = parms[1]!;
-                pd.GetType().GetField("CurrentBatch")!.SetValue(pd, null);
-            }
-        }
+            accumulator.ClearCurrentBatch("test-topic", p);
     }
 }
