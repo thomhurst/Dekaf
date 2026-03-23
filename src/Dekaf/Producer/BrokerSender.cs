@@ -2578,6 +2578,17 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             _drainingConnection = null;
         }
 
+        // Dispose deferred scale-down connection if present. This connection was removed from
+        // _pinnedConnections by the shrink task but hasn't been applied via ApplyScaleDown yet
+        // (waiting for in-flight requests to drain). It's not tracked anywhere else, so we must
+        // dispose it explicitly here to avoid a resource leak.
+        if (_deferredScaleDownConnection is not null)
+        {
+            try { await _deferredScaleDownConnection.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception ex) { LogBatchCleanupStepFailed(ex, _brokerId); }
+            _deferredScaleDownConnection = null;
+        }
+
         var totalPending = _totalPendingResponseCount;
         if (totalPending > 0)
         {
