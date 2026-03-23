@@ -411,6 +411,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
     // errors. We defer updating _connectionCount until _totalPendingResponseCount == 0.
     private int _deferredScaleUpCount; // 0 = no deferred scale-up pending
 
+    // Deferred scale-down for idempotent producers: same partition affinity issue as
+    // scale-up. Shrinking from N to N-1 remaps partitions (P % N -> P % (N-1)), so we
+    // must wait for all in-flight requests to drain before applying the connection count change.
+    private IKafkaConnection? _deferredScaleDownConnection; // null = no deferred scale-down pending
+
     // Scaling thresholds
     // Also the per-connection unit of pressure for step estimation (step = delta / threshold),
     // so changing this value affects both trigger sensitivity and per-step magnitude.
@@ -2638,6 +2643,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return ApplyScaleUp(count);
         }
 
+        // Phase 0c: Apply deferred scale-down once in-flight requests have drained
+        if (_deferredScaleDownConnection is not null && _totalPendingResponseCount == 0)
+        {
+            var conn = _deferredScaleDownConnection;
+            _deferredScaleDownConnection = null;
+            return ApplyScaleDown(conn);
+        }
+
         // Phase 1a: Check if a pending background scale-up completed
         if (_pendingScaleTask is not null)
         {
@@ -2688,6 +2701,14 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var removedConnection = task.Result;
                 if (removedConnection is not null)
                 {
+                    // Same affinity concern as scale-up: shrinking from N to N-1 remaps
+                    // partitions (P % N -> P % (N-1)). Defer until all in-flight drained.
+                    if (_requirePartitionAffinity && _totalPendingResponseCount > 0)
+                    {
+                        _deferredScaleDownConnection = removedConnection;
+                        return 0;
+                    }
+
                     return ApplyScaleDown(removedConnection);
                 }
             }
@@ -2699,9 +2720,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             return 0;
         }
 
-        // If a deferred scale-up is waiting for in-flight requests to drain,
+        // If a deferred scale operation is waiting for in-flight requests to drain,
         // don't start new scale operations — the deferred one takes priority.
-        if (_deferredScaleUpCount > 0)
+        if (_deferredScaleUpCount > 0 || _deferredScaleDownConnection is not null)
             return 0;
 
         var now = Environment.TickCount64;
@@ -2762,10 +2783,21 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         if (now - _lowUtilizationStartTicks < ScaleDownSustainedMs)
             return 0; // Not sustained long enough
 
-        // Check that the last connection has no in-flight requests before shrinking
-        var lastConnIdx = _connectionCount - 1;
-        if (_pendingResponsesByConnection[lastConnIdx].Count > 0)
-            return 0; // Still has in-flight requests — wait for them to complete
+        // When partition affinity is required, ALL connections must be drained before
+        // shrinking — not just the last one — because partitions remap (P % N -> P % (N-1))
+        // and in-flight batches on any connection could conflict with new batches post-remap.
+        // Without affinity, only the last connection needs to be idle.
+        if (_requirePartitionAffinity)
+        {
+            if (_totalPendingResponseCount > 0)
+                return 0; // Still has in-flight requests across connections — wait for drain
+        }
+        else
+        {
+            var lastConnIdx = _connectionCount - 1;
+            if (_pendingResponsesByConnection[lastConnIdx].Count > 0)
+                return 0; // Still has in-flight requests on last connection — wait
+        }
 
         // Sustained low utilization with no in-flight on last connection — initiate scale-down
         var targetShrinkCount = _connectionCount - 1;
