@@ -193,8 +193,7 @@ public sealed class BackpressureIntegrationTests(KafkaTestContainer kafka) : Kaf
             });
         }
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token).ConfigureAwait(false);
+        await producer.FlushWithTimeoutAsync();
 
         // Verify delivery
         await using var consumer = await Kafka.CreateConsumer<string, string>()

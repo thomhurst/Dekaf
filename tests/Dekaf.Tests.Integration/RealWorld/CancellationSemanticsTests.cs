@@ -99,7 +99,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         }
 
         // Flush to ensure all pending messages are sent
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token).ConfigureAwait(false); }
+        await producer.FlushWithTimeoutAsync();
 
         // Verify the message WAS delivered despite cancellation
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -188,7 +188,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         await Assert.That(succeeded).IsGreaterThanOrEqualTo(5);
 
         // Flush and verify all messages were delivered regardless of cancellation
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token).ConfigureAwait(false); }
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -255,7 +255,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
         }
 
         // Wait for background delivery to complete
-        { using var flushCts2 = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts2.Token).ConfigureAwait(false); }
+        await producer.FlushWithTimeoutAsync();
 
         // Verify all messages were delivered despite flush cancellation
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -377,7 +377,7 @@ public sealed class CancellationSemanticsTests(KafkaTestContainer kafka) : Kafka
             });
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token).ConfigureAwait(false); }
+        await producer.FlushWithTimeoutAsync();
 
         // Verify all messages delivered
         await using var consumer = await Kafka.CreateConsumer<string, string>()

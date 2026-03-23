@@ -414,7 +414,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             }).ConfigureAwait(false);
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token).ConfigureAwait(false); }
+        await producer.FlushWithTimeoutAsync();
 
         // Verify latest offset is 5
         var latestOffsets = await admin.ListOffsetsAsync(
@@ -847,7 +847,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             }).ConfigureAwait(false);
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token).ConfigureAwait(false); }
+        await producer.FlushWithTimeoutAsync();
 
         // Delete records: partition 0 up to offset 2, partition 1 up to offset 4
         var tp0 = new TopicPartition(topic, 0);
@@ -1185,7 +1185,7 @@ public sealed class AdminWorkflowTests(KafkaTestContainer kafka) : KafkaIntegrat
             }).ConfigureAwait(false);
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token).ConfigureAwait(false); }
+        await producer.FlushWithTimeoutAsync();
 
         var tp = new TopicPartition(topic, 0);
 

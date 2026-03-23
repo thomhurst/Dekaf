@@ -655,8 +655,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
 
                 // ── 2. Pick up send-failed retries ──
-                // Use AddFirst: retries are older batches that must go before any newer
-                // carry-over batches for the same partition (Java's Deque.addFirst).
+                // FIFO dequeue + AddFirst reverses the enqueue order, but this is intentional:
+                // each retry batch goes before all existing carry-over for its partition,
+                // matching Java's Deque.addFirst semantics for retry priority.
                 while (_sendFailedRetries.TryDequeue(out var retryBatch))
                     carryOver.AddFirst(retryBatch);
 
@@ -792,7 +793,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 if (coalescedCount > 0 && coalescedCount <= MicroLingerBatchThreshold
                     && coalescedPartitions.Count < _knownPartitions.Count
                     && carryOver.Count == 0
-                    && _totalPendingResponseCount < _totalMaxInFlight)
+                    && Volatile.Read(ref _totalPendingResponseCount) < _totalMaxInFlight)
                 {
                     var spinWait = new SpinWait();
                     for (var spin = 0; spin < MicroLingerMaxSpins; spin++)
@@ -817,7 +818,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 var sentThisIteration = false;
                 if (coalescedCount > 0)
                 {
-                    var pendingCount = _totalPendingResponseCount;
+                    var pendingCount = Volatile.Read(ref _totalPendingResponseCount);
                     if (pendingCount >= _totalMaxInFlight)
                         LogWaitingForInFlightCapacity(_brokerId, pendingCount, _totalMaxInFlight);
 
@@ -825,7 +826,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     {
                         // Poll for completed responses to free in-flight slots.
                         ProcessCompletedResponses(carryOver, cancellationToken, responseLookup);
-                        pendingCount = _totalPendingResponseCount;
+                        pendingCount = Volatile.Read(ref _totalPendingResponseCount);
 
                         if (pendingCount >= _totalMaxInFlight)
                         {
@@ -833,7 +834,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // Without this, the send loop blocks forever when a response task
                             // never completes.
                             HandleTimedOutRequests(carryOver, cancellationToken);
-                            pendingCount = _totalPendingResponseCount;
+                            pendingCount = Volatile.Read(ref _totalPendingResponseCount);
                             if (pendingCount < _totalMaxInFlight)
                                 break;
 
@@ -843,7 +844,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                             // return, creating a spin loop that starves the thread pool and
                             // prevents I/O completion callbacks from running.
                             await WaitForAnyResponseAsync(cancellationToken).ConfigureAwait(false);
-                            pendingCount = _totalPendingResponseCount;
+                            pendingCount = Volatile.Read(ref _totalPendingResponseCount);
                         }
                     }
 
