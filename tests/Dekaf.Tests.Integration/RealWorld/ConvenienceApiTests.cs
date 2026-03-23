@@ -142,8 +142,7 @@ public sealed class ConvenienceApiTests(KafkaTestContainer kafka) : KafkaIntegra
 
         // Fire-and-forget through topic producer
         topicProducer.Produce("fire-key", "fire-value");
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await topicProducer.FlushAsync(flushCts.Token);
+        await topicProducer.FlushWithTimeoutAsync();
 
         // Verify by consuming
         await using var consumer = await Kafka.CreateConsumer<string, string>()

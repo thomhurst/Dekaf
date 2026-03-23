@@ -172,8 +172,7 @@ public sealed class SchemaRegistryErrorTests(KafkaWithSchemaRegistryContainer te
             Value = v2Record
         });
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         // Consume with v1 reader schema (no email field)
         // The Avro reader should still be able to read the message,

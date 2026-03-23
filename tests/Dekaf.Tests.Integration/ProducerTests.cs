@@ -326,8 +326,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         });
 
         // Flush should complete the pending produce
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
         var metadata = await produceTask;
 
         // Assert
@@ -805,8 +804,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         });
 
         // Flush to ensure delivery
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         // Verify by consuming
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -890,8 +888,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         }
 
         // Flush to ensure all delivered
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         // Verify by consuming all messages
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -952,8 +949,7 @@ public class ProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
         })).ToArray();
 
         await Task.WhenAll(tasks);
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         // Allow callbacks to complete
         await Task.Delay(500);

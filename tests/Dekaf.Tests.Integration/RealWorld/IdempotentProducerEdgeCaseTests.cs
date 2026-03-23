@@ -143,8 +143,7 @@ public sealed class IdempotentProducerEdgeCaseTests(KafkaTestContainer kafka) : 
             });
         }
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         // Consume and verify no duplicates
         await using var consumer = await Kafka.CreateConsumer<string, string>()

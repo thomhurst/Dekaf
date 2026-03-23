@@ -115,7 +115,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             });
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         // Consume and verify ordering
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -174,7 +174,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             });
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         // Consume all and verify strict ordering
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -236,7 +236,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             }
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         // Consume from all partitions using Assign (no consumer group = no rebalance duplicates)
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -315,7 +315,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
                 allMetadata.Add((producerId, i, metadata));
             }
 
-            { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+            await producer.FlushWithTimeoutAsync();
         }).ToArray();
 
         await Task.WhenAll(tasks);
@@ -400,7 +400,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             }
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         // Consume from all partitions using Assign (no consumer group = no rebalance duplicates)
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -476,7 +476,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             });
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         // Consume and verify strict ordering
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -540,7 +540,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
                 });
             }
 
-            { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+            await producer.FlushWithTimeoutAsync();
         }
 
         // Consume and verify per-partition ordering using Assign (no consumer group = no rebalance duplicates)
@@ -620,7 +620,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         }
 
         // Flush must wait for all deferred chains to complete
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         // Consume and verify ordering using Assign (no consumer group = no rebalance duplicates)
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -701,7 +701,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             });
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         // Consume and verify per-partition ordering using Assign (no consumer group = no rebalance duplicates)
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -773,7 +773,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             }
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -842,7 +842,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             });
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         // Consume and verify strict ordering
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -914,7 +914,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
         }
 
         // Flush to ensure all messages are delivered
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         // Consume and verify using Assign (no consumer group = no rebalance duplicates)
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -1009,7 +1009,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
                 await Task.Delay(5);
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -1093,7 +1093,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
             await Task.Delay(3);
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -1169,7 +1169,7 @@ public sealed class ProducerOrderingTests(KafkaTestContainer kafka) : KafkaInteg
                 await Task.Delay(3);
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

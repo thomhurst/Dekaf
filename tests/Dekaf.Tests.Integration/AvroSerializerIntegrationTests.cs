@@ -141,8 +141,7 @@ public class AvroSerializerIntegrationTests(KafkaWithSchemaRegistryContainer tes
             });
         }
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         // Act - Consume all messages
         await using var consumer = await Kafka.CreateConsumer<string, GenericRecord>()

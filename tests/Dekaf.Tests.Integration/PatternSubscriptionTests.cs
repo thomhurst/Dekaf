@@ -39,8 +39,7 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
             Value = "value2"
         });
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         // Subscribe with a filter matching the prefix
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -94,8 +93,7 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
             Value = "excluded"
         });
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -128,8 +126,7 @@ public class PatternSubscriptionTests(KafkaTestContainer kafka) : KafkaIntegrati
             Value = "explicit-value"
         });
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

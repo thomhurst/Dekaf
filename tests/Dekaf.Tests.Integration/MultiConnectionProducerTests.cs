@@ -140,8 +140,7 @@ public sealed class MultiConnectionProducerTests(KafkaTestContainer kafka) : Kaf
             producer.Produce(topic, $"key-{i % 50}", $"flush-msg-{i}");
         }
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

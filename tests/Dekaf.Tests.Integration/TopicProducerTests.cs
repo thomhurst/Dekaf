@@ -101,8 +101,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 
         // Act - fire-and-forget
         producer.Produce("key1", "value1");
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         // Verify by consuming
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -135,8 +134,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
 
         // Act
         producer.Produce("key1", "value1", headers);
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         // Verify by consuming
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -371,8 +369,7 @@ public class TopicProducerTests(KafkaTestContainer kafka) : KafkaIntegrationTest
         }
 
         // Flush should complete delivery
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         // Verify by consuming
         await using var consumer = await Kafka.CreateConsumer<string, string>()

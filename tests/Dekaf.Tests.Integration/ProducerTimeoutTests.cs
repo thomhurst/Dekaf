@@ -169,7 +169,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
         }
 
         // Act - Flush should block until all pending messages are delivered
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         // Assert - All messages should be consumable after flush returns
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -246,7 +246,7 @@ public sealed class ProducerTimeoutTests(KafkaTestContainer kafka) : KafkaIntegr
 
         // Whether flush was cancelled or completed, messages should eventually be delivered.
         // Flush again without cancellation to ensure all messages are delivered before consuming.
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

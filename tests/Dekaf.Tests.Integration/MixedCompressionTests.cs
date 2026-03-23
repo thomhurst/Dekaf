@@ -42,7 +42,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
         }
 
         // Flush Gzip producer to ensure batches are sent before Zstd messages
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await gzipProducer.FlushAsync(flushCts.Token); }
+        await gzipProducer.FlushWithTimeoutAsync();
 
         // Send messages with Zstd
         for (var i = 0; i < 5; i++)
@@ -55,7 +55,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
             });
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await zstdProducer.FlushAsync(flushCts.Token); }
+        await zstdProducer.FlushWithTimeoutAsync();
 
         // Consumer should handle both compression types transparently
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -119,7 +119,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
             });
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await plainProducer.FlushAsync(flushCts.Token); }
+        await plainProducer.FlushWithTimeoutAsync();
 
         // Send compressed messages
         for (var i = 0; i < 5; i++)
@@ -132,7 +132,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
             });
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await gzipProducer.FlushAsync(flushCts.Token); }
+        await gzipProducer.FlushWithTimeoutAsync();
 
         // Consumer should handle both compressed and uncompressed batches
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -198,7 +198,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
             Key = "codec-gzip",
             Value = "value-from-gzip"
         });
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await gzipProducer.FlushAsync(flushCts.Token); }
+        await gzipProducer.FlushWithTimeoutAsync();
 
         await zstdProducer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -206,7 +206,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
             Key = "codec-zstd",
             Value = "value-from-zstd"
         });
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await zstdProducer.FlushAsync(flushCts.Token); }
+        await zstdProducer.FlushWithTimeoutAsync();
 
         await plainProducer.ProduceAsync(new ProducerMessage<string, string>
         {
@@ -214,7 +214,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
             Key = "codec-none",
             Value = "value-from-none"
         });
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await plainProducer.FlushAsync(flushCts.Token); }
+        await plainProducer.FlushWithTimeoutAsync();
 
         // A single consumer with all codecs registered should read all messages
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -271,7 +271,7 @@ public sealed class MixedCompressionTests(KafkaTestContainer kafka) : KafkaInteg
             await task;
         }
 
-        { using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); await producer.FlushAsync(flushCts.Token); }
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)

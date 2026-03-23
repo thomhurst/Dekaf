@@ -981,8 +981,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             }
         }
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         // Act - consume with prefetching enabled (default)
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -1036,8 +1035,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             producer.Produce(topic, $"key-{i}", $"value-{i}");
         }
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         // Act - consume with prefetching (default QueuedMinMessages = 100000)
         await using var consumer = await Kafka.CreateConsumer<string, string>()
@@ -1257,8 +1255,7 @@ public class ConsumerTests(KafkaTestContainer kafka) : KafkaIntegrationTest(kafk
             }
         }
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         // Act - manually assign all 4 partitions
         await using var consumer = await Kafka.CreateConsumer<string, string>()

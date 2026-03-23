@@ -211,8 +211,7 @@ public sealed class TransactionTimeoutTests(KafkaTestContainer kafka) : KafkaInt
             });
 
             // Flush to ensure the message is written to the broker
-            using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            await producer.FlushAsync(flushCts.Token);
+            await producer.FlushWithTimeoutAsync();
 
             // Act - ReadUncommitted consumer should see the uncommitted message
             await using var consumer = await Kafka.CreateConsumer<string, string>()

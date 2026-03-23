@@ -36,8 +36,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             });
         }
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -106,8 +105,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             }
         }
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         // Consume each partition and verify ordering
         await using var consumer = await Kafka.CreateConsumer<int, string>()
@@ -237,8 +235,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             });
         }
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -290,8 +287,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             });
         }
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<string, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
@@ -403,8 +399,7 @@ public sealed class MultiInflightProducerTests(KafkaTestContainer kafka) : Kafka
             }
         }
 
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await producer.FlushAsync(flushCts.Token);
+        await producer.FlushWithTimeoutAsync();
 
         await using var consumer = await Kafka.CreateConsumer<int, string>()
             .WithBootstrapServers(KafkaContainer.BootstrapServers)
