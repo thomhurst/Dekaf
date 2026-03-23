@@ -1165,7 +1165,18 @@ public sealed partial class RecordAccumulator : IAsyncDisposable
     {
         var partitions = metadataManager.GetPartitionsForNode(nodeId);
         if (partitions.Count == 0)
+        {
+            // Leader migrated between Ready() and Drain(): the notification was consumed but
+            // the partition now belongs to a different node. Without re-enqueue, the batch is
+            // stranded in the deque until the 3x delivery timeout orphan sweep.
+            foreach (var (tp, pd) in _partitionDeques)
+            {
+                if (pd.Count > 0)
+                    _readyPartitions.Enqueue(tp);
+            }
+
             return;
+        }
 
         if (!_drainIndex.TryGetValue(nodeId, out var startIndex))
             startIndex = 0;
