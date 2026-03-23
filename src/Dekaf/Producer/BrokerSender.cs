@@ -2733,6 +2733,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
         // If a deferred scale operation is waiting for in-flight requests to drain,
         // don't start new scale operations — the deferred one takes priority.
+        // This guard also prevents a second _pendingScaleTask from being launched while
+        // a deferred value is pending, ensuring Phase 1a never observes a stale task
+        // completion that could overwrite the deferred count.
         if (_deferredScaleUpCount > 0 || _deferredScaleDownConnection is not null)
             return 0;
 

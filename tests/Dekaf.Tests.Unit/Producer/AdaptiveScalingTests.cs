@@ -449,14 +449,13 @@ public class AdaptiveScalingTests
     {
         // Idempotent producers should support adaptive scaling (partition affinity
         // preserves sequence ordering across connections).
-        await Assert.That(() =>
+        await Assert.That(async () =>
         {
-            var producer = Kafka.CreateProducer<string, string>()
+            await using var producer = Kafka.CreateProducer<string, string>()
                 .WithBootstrapServers("localhost:9092")
                 .WithIdempotence(true)
                 .WithAdaptiveConnections(maxConnections: 5)
                 .Build();
-            _ = producer.DisposeAsync();
         }).ThrowsNothing();
     }
 
