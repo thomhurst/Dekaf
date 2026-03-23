@@ -298,7 +298,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // timed out (cancellation only stops the caller's await, not delivery).
         // Use a generous timeout — on slow CI runners with thread pool starvation, the
         // send loop may take 30+ seconds to drain batches for a newly-created topic.
-        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         await producer.FlushAsync(flushCts.Token);
 
         // Act
