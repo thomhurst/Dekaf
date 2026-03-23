@@ -419,7 +419,8 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
             });
         }
 
-        await producer.FlushAsync();
+        using var highPartFlushCts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        await producer.FlushAsync(highPartFlushCts.Token);
 
         // Act — use manual Assign (not Subscribe) to skip consumer group rebalance.
         // Rebalance for 10 partitions can take 60+ seconds on slow CI runners with
