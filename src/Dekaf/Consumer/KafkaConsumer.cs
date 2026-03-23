@@ -2118,11 +2118,15 @@ public sealed partial class KafkaConsumer<TKey, TValue> : IKafkaConsumer<TKey, T
         // Return pooled array after extracting results
         ArrayPool<Task<(TopicPartition Partition, BrokerNode? Leader)>>.Shared.Return(leaderTasks, clearArray: true);
 
-        // Cache the result - will be reused until assignment/paused changes
-        // Check version to ensure assignment didn't change while we were building
+        // Cache the result - will be reused until assignment/paused changes.
+        // Don't cache empty results: an empty dictionary means partition leaders
+        // couldn't be resolved (metadata not yet available). Caching it would prevent
+        // recovery when metadata becomes available, causing the prefetch loop to spin
+        // forever producing nothing.
         lock (_partitionCacheLock)
         {
-            if (_cachedPartitionsByBroker is null && Volatile.Read(ref _assignmentVersion) == capturedVersion)
+            if (result.Count > 0 && _cachedPartitionsByBroker is null
+                && Volatile.Read(ref _assignmentVersion) == capturedVersion)
             {
                 _cachedPartitionsByBroker = result;
             }
