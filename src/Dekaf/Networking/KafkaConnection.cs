@@ -345,16 +345,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
             // Write phase
             LogSendingRequest(TRequest.ApiKey, correlationId, apiVersion, _host, _port);
 
-            await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                await SerializeAndFlushAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            finally
-            {
-                _writeLock.Release();
-            }
+            await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken)
+                .ConfigureAwait(false);
 
             LogRequestSentWaitingForResponse(correlationId);
 
@@ -424,16 +416,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         LogSendingFireAndForgetRequest(TRequest.ApiKey, correlationId, apiVersion, _host, _port);
 
-        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            await SerializeAndFlushAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
-                .ConfigureAwait(false);
-        }
-        finally
-        {
-            _writeLock.Release();
-        }
+        await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
+            .ConfigureAwait(false);
 
         LogFireAndForgetRequestSent(correlationId);
     }
@@ -492,16 +476,8 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         try
         {
-            await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                await SerializeAndFlushAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
-                    .ConfigureAwait(false);
-            }
-            finally
-            {
-                _writeLock.Release();
-            }
+            await PreSerializeAndWriteAsync<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion, cancellationToken, callerOwnsTimeout)
+                .ConfigureAwait(false);
 
             // Response phase: await response with timeout, then parse
             return await AwaitAndParseResponseAsync<TRequest, TResponse>(
@@ -632,33 +608,36 @@ public sealed partial class KafkaConnection : IKafkaConnection
     }
 
     /// <summary>
-    /// Serializes a request (size prefix + header + body) into the thread-local buffer
-    /// and writes it to the PipeWriter in a single copy. Must be called under the write lock
-    /// (which guarantees no async yield can let another task overwrite the thread-local buffer).
+    /// Serializes a request (size prefix + header + body) into a pooled buffer, outside the write lock.
+    /// Returns the rented array and the number of valid bytes. The caller must return the array
+    /// to <see cref="ArrayPool{T}.Shared"/> after use.
     /// </summary>
-    private static void SerializeRequestToPipeWriter<TRequest, TResponse>(
-        PipeWriter writer,
+    /// <remarks>
+    /// Serialization runs outside the write lock to reduce lock hold time. With multiple broker
+    /// connections, CPU-bound serialization under the lock was the dominant bottleneck — the lock
+    /// only needs to cover the fast memcpy into the PipeWriter and the async flush.
+    /// The ArrayPool rent/return is per-batch (amortized over ~1000 messages), so the overhead
+    /// is negligible compared to the lock contention savings.
+    /// </remarks>
+    private (byte[] Buffer, int Length) PreSerializeRequest<TRequest, TResponse>(
         TRequest request,
         int correlationId,
         short apiVersion,
-        short headerVersion,
-        string? clientId)
+        short headerVersion)
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
-        // Serialize into the thread-local buffer (no allocation, no async yield under the
-        // write lock so no risk of another task overwriting it on the same thread).
+        // Serialize into the thread-local buffer (no allocation). This is safe because
+        // no async yield happens between serialize and the copy to the rented array below.
         var buffer = GetRequestBuffer();
 
-        // Serialize header + body into the buffer (no size prefix reservation needed —
-        // we write the prefix directly into the PipeWriter below).
         var bodyWriter = new KafkaProtocolWriter(buffer);
         var header = new RequestHeader
         {
             ApiKey = TRequest.ApiKey,
             ApiVersion = apiVersion,
             CorrelationId = correlationId,
-            ClientId = clientId,
+            ClientId = _clientId,
             HeaderVersion = headerVersion
         };
 
@@ -667,26 +646,23 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         Debug.Assert(bodyWriter.BytesWritten == buffer.WrittenCount, "BytesWritten must equal buffer.WrittenCount");
 
-        // Write the 4-byte size prefix and the serialized payload as a single atomic
-        // operation via GetMemory/Advance. This ensures that a partial frame (size prefix
-        // without body) can never be committed to the PipeWriter if the body copy throws.
+        // Copy to a pooled array that is safe to hold across the async write lock acquisition.
+        // The thread-local buffer cannot be used across await boundaries because another task
+        // resuming on the same thread could overwrite it via a concurrent PreSerializeRequest call.
         var totalLength = 4 + bodyWriter.BytesWritten;
-        var memory = writer.GetMemory(totalLength);
-        BinaryPrimitives.WriteInt32BigEndian(memory.Span, bodyWriter.BytesWritten);
-        buffer.WrittenSpan.CopyTo(memory.Span.Slice(4));
-        writer.Advance(totalLength);
+        var rentedArray = ArrayPool<byte>.Shared.Rent(totalLength);
+        BinaryPrimitives.WriteInt32BigEndian(rentedArray, bodyWriter.BytesWritten);
+        buffer.WrittenSpan.CopyTo(rentedArray.AsSpan(4));
+
+        return (rentedArray, totalLength);
     }
 
     /// <summary>
-    /// Serializes a request into the PipeWriter and flushes.
-    /// Must be called under the write lock.
+    /// Pre-serializes a request outside the write lock, then acquires the lock to write
+    /// the pre-serialized bytes and flush. This minimizes lock hold time by keeping
+    /// CPU-bound serialization out of the critical section.
     /// </summary>
-    /// <remarks>
-    /// Serialization intentionally runs under the write lock. This increases lock hold time
-    /// slightly, but eliminates a buffer copy and the ArrayPool rent/return overhead that
-    /// would be needed to serialize outside the lock and then copy into the PipeWriter.
-    /// </remarks>
-    private async ValueTask SerializeAndFlushAsync<TRequest, TResponse>(
+    private async ValueTask PreSerializeAndWriteAsync<TRequest, TResponse>(
         TRequest request,
         int correlationId,
         short apiVersion,
@@ -696,6 +672,38 @@ public sealed partial class KafkaConnection : IKafkaConnection
         where TRequest : IKafkaRequest<TResponse>
         where TResponse : IKafkaResponse
     {
+        var (serializedArray, serializedLength) = PreSerializeRequest<TRequest, TResponse>(request, correlationId, apiVersion, headerVersion);
+        try
+        {
+            await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await WritePreSerializedAndFlushAsync(serializedArray, serializedLength, correlationId, cancellationToken, callerOwnsTimeout)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(serializedArray);
+        }
+    }
+
+    /// <summary>
+    /// Writes pre-serialized request data to the PipeWriter and flushes.
+    /// Must be called under the write lock. The lock now only covers the memory copy
+    /// and I/O flush, not the CPU-bound serialization.
+    /// </summary>
+    private async ValueTask WritePreSerializedAndFlushAsync(
+        byte[] serializedData,
+        int length,
+        int correlationId,
+        CancellationToken cancellationToken,
+        bool callerOwnsTimeout = false)
+    {
 #if DEBUG
         System.Diagnostics.Debug.Assert(!callerOwnsTimeout || cancellationToken.CanBeCanceled,
             "callerOwnsTimeout path requires a timeout-bearing token");
@@ -704,8 +712,11 @@ public sealed partial class KafkaConnection : IKafkaConnection
         if (_writer is null)
             throw new InvalidOperationException("Not connected");
 
-        // Serialize into the thread-local buffer and write to the PipeWriter (single copy)
-        SerializeRequestToPipeWriter<TRequest, TResponse>(_writer, request, correlationId, apiVersion, headerVersion, _clientId);
+        // Write pre-serialized data atomically: single GetMemory/Advance ensures no partial
+        // frame is committed if the copy throws.
+        var memory = _writer.GetMemory(length);
+        serializedData.AsSpan(0, length).CopyTo(memory.Span);
+        _writer.Advance(length);
 
         // Apply timeout to the flush operation.
         // When callerOwnsTimeout is true, the caller's cancellationToken already carries
