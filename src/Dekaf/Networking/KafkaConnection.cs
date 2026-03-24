@@ -831,6 +831,14 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 }
                 catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                 {
+                    // Only treat as a connection failure if there are requests waiting
+                    // for a response. An idle connection timing out is normal and should
+                    // not be killed — in single-broker setups, the bootstrap connection
+                    // (broker -1) shares the same KafkaConnection as broker 0. Killing
+                    // an idle bootstrap connection would also kill the produce connection.
+                    if (_pendingRequests.IsEmpty)
+                        continue;
+
                     LogReceiveTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
 
                     // Mark connection as failed to trigger reconnection
