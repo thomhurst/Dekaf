@@ -1095,9 +1095,10 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                     var pr = pendingList[i];
                     for (var j = 0; j < pr.Count; j++)
                     {
-                        if (pr.Batches[j] is not null && pr.Batches[j].TopicPartition.Topic is not null)
+                        var batch = pr.Batches[j];
+                        if (batch is not null && !batch.IsReturnedToPool)
                         {
-                            try { FailAndCleanupBatch(pr.Batches[j], disposedException); }
+                            try { FailAndCleanupBatch(batch, disposedException); }
                             catch (Exception cleanupEx) { LogBatchCleanupStepFailed(cleanupEx, _brokerId); }
                         }
                     }
@@ -1152,11 +1153,9 @@ internal sealed partial class BrokerSender : IAsyncDisposable
         HashSet<TopicPartition> coalescedPartitions,
         PartitionCarryOver carryOver)
     {
-        // Defensive: batch may have been returned to pool and Reset() by a racing
-        // ForceFailAllInFlightBatches call during disposal. Reset() sets TopicPartition
-        // to default (Topic=null) and RecordBatch to null. Skip silently — the batch
-        // has already been failed and its completion sources resolved.
-        if (batch.TopicPartition.Topic is null)
+        // Batch may have been returned to pool by a racing ForceFailAllInFlightBatches
+        // call during disposal — skip silently, it's already been failed.
+        if (batch.IsReturnedToPool)
             return;
 
         // Track distinct partitions this broker serves for MicroLinger skip optimization.
@@ -1316,7 +1315,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
 
                     for (var j = 0; j < count; j++)
                     {
-                        if (batches[j] is not null && batches[j].TopicPartition.Topic is not null)
+                        if (batches[j] is not null && !batches[j].IsReturnedToPool)
                         {
                             batches[j].AppendDiag('P'); // Faulted/cancelled response processed
                             try
@@ -1413,15 +1412,11 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             if (batch is null)
                 continue;
 
-            // Defensive: if the batch was returned to pool (Reset clears TopicPartition to
-            // default with Topic=null), skip it. The batch was already completed by whatever
-            // path returned it to the pool (e.g., HandleTimedOutRequests, ForceFailAllInFlightBatches,
-            // or the SendCoalescedAsync error handler). Retrying a pool-returned batch would hang
-            // the producer because matching always fails (null topic ≠ response topic).
-            if (batch.TopicPartition.Topic is null)
+            // Batch already completed by another path (timeout, disposal, error handler)
+            // and returned to pool — skip to avoid infinite retry on topic mismatch.
+            if (batch.IsReturnedToPool)
             {
                 LogBatchAlreadyReturnedToPool(_instanceId, responseTaskId, count, batch.DiagTrace);
-                batches[j] = null!;
                 continue;
             }
 
@@ -1589,7 +1584,7 @@ internal sealed partial class BrokerSender : IAsyncDisposable
                 for (var j = 0; j < pending.Count; j++)
                 {
                     var batch = pending.Batches[j];
-                    if (batch is null || batch.TopicPartition.Topic is null) continue;
+                    if (batch is null || batch.IsReturnedToPool) continue;
 
                     batch.AppendDiag('T'); // Timed-out request
 
@@ -2043,10 +2038,8 @@ internal sealed partial class BrokerSender : IAsyncDisposable
             {
                 var batch = batches[i];
 
-                // Defensive: batch may have been returned to pool and Reset() by a racing
-                // ForceFailAllInFlightBatches call during disposal. Reset() sets TopicPartition
-                // to default (Topic=null) and RecordBatch to null. Skip — already failed.
-                if (batch is null || batch.TopicPartition.Topic is null)
+                // Batch may have been returned to pool by a racing disposal — skip, already failed.
+                if (batch is null || batch.IsReturnedToPool)
                     continue;
 
                 batch.AppendDiag('Z'); // Diagnostic: send failed, entering retry/fail path

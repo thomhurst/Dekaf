@@ -4162,6 +4162,12 @@ internal sealed class ReadyBatch : IValueTaskSource<bool>
     internal int _returnedToPool; // 0 = not returned, 1 = returned (prevents double pool return)
 
     /// <summary>
+    /// True when this batch has been returned to the pool. The authoritative signal for
+    /// "batch is no longer live" — set atomically by ReturnReadyBatch before Reset() runs.
+    /// </summary>
+    internal bool IsReturnedToPool => Volatile.Read(ref _returnedToPool) != 0;
+
+    /// <summary>
     /// Creates an uninitialized ReadyBatch. Call Initialize() before use.
     /// </summary>
     public ReadyBatch()
