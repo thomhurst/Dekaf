@@ -21,8 +21,6 @@ namespace Dekaf.Tests.Integration;
 /// </summary>
 internal sealed class GlobalTestSetup
 {
-    private static LoggerFactoryFixture? _loggerFactoryFixture;
-
     [Before(TestSession)]
     public static void RegisterCompressionCodecs()
     {
@@ -31,11 +29,6 @@ internal sealed class GlobalTestSetup
         // starvation can delay CancellationTokenSource timers by hundreds of seconds,
         // causing tests to hang until the orphan sweep (360s) fires.
         ThreadPool.SetMinThreads(32, 32);
-
-        // Enable Dekaf's internal logging (metadata resolution, prefetch errors, send loop
-        // diagnostics) so CI failures include the relevant debug output. Without this,
-        // errors in the prefetch loop and metadata manager are silently discarded.
-        _loggerFactoryFixture = new LoggerFactoryFixture();
 
         CompressionCodecRegistry.Default.AddLz4();
         CompressionCodecRegistry.Default.AddSnappy();
@@ -49,13 +42,10 @@ internal sealed class GlobalTestSetup
 #endif
     }
 
-    public static ILoggerFactory GetLoggerFactory() => _loggerFactoryFixture?.LoggerFactory
-        ?? throw new InvalidOperationException("Logger factory not initialized");
-
-    [After(TestSession)]
-    public static void CleanupLoggerFactory()
-    {
-        _loggerFactoryFixture?.Dispose();
-        _loggerFactoryFixture = null;
-    }
+    /// <summary>
+    /// Creates a TUnit-backed logger factory for the current test. Each call creates a new
+    /// factory bound to <c>TestContext.Current</c>, so producer/consumer debug logs appear
+    /// in that test's output in CI reports.
+    /// </summary>
+    public static ILoggerFactory GetLoggerFactory() => LoggerFactoryFixture.Create();
 }

@@ -1,37 +1,19 @@
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using TUnit.Core;
+using TUnit.Logging.Microsoft;
 
 namespace Dekaf.Tests.Integration;
 
 /// <summary>
 /// Provides a configured ILoggerFactory for tests.
-/// Replaces the removed Kafka.DefaultLoggerFactory static property.
+/// Creates a TUnit-backed logger factory that routes output to the current test's output,
+/// making producer/consumer debug logs visible in CI test reports.
 /// </summary>
-internal sealed class LoggerFactoryFixture
+internal static class LoggerFactoryFixture
 {
-    private readonly ILoggerFactory _loggerFactory;
-
-    public LoggerFactoryFixture()
+    public static ILoggerFactory Create() => LoggerFactory.Create(builder =>
     {
-        var services = new ServiceCollection();
-        services.AddLogging(builder =>
-        {
-            builder.SetMinimumLevel(LogLevel.Debug);
-            builder.AddSimpleConsole(options =>
-            {
-                options.SingleLine = true;
-                options.TimestampFormat = "HH:mm:ss.fff ";
-            });
-        });
-        
-        var provider = services.BuildServiceProvider();
-        _loggerFactory = provider.GetRequiredService<ILoggerFactory>();
-    }
-
-    public ILoggerFactory LoggerFactory => _loggerFactory;
-
-    public void Dispose()
-    {
-        _loggerFactory?.Dispose();
-    }
+        builder.SetMinimumLevel(LogLevel.Debug);
+        builder.AddTUnit(TestContext.Current!);
+    });
 }
