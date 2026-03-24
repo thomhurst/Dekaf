@@ -782,15 +782,17 @@ public sealed partial class KafkaConnection : IKafkaConnection
 
         try
         {
-            // Rent a single pooled CTS for the entire loop lifetime and register the
-            // connection's cancellation token once. Each iteration reuses the same CTS
-            // via TryReset + CancelAfter, eliminating the per-iteration
-            // CancellationTokenRegistration allocation (see #507).
-            using var timeoutCts = _timeoutCtsPool.Rent();
-            using var reg = cancellationToken.CanBeCanceled
+            // Rent a pooled CTS and register the connection's cancellation token.
+            // Each iteration reuses the same CTS via TryReset + CancelAfter,
+            // eliminating per-iteration CancellationTokenRegistration allocations (#507).
+            // Not 'using var' because idle-timeout recovery replaces the CTS mid-loop.
+            var timeoutCts = _timeoutCtsPool.Rent();
+            var reg = cancellationToken.CanBeCanceled
                 ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
                 : default;
 
+            try
+            {
             while (!cancellationToken.IsCancellationRequested)
             {
                 ReadResult result;
@@ -831,6 +833,25 @@ public sealed partial class KafkaConnection : IKafkaConnection
                 }
                 catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                 {
+                    if (_pendingRequests.IsEmpty)
+                    {
+                        // Idle timeout — no pending requests, so this is benign.
+                        // Common in single-broker setups where the bootstrap connection
+                        // (broker -1) shares the same host:port as the real broker and
+                        // sits idle after the initial metadata fetch.
+                        //
+                        // CancelAfter leaves the CTS in a cancelled state that TryReset()
+                        // cannot clear, so we must replace it with a fresh one to avoid
+                        // a tight loop of immediate cancellations on the next iteration.
+                        reg.Dispose();
+                        timeoutCts.Dispose();
+                        timeoutCts = _timeoutCtsPool.Rent();
+                        reg = cancellationToken.CanBeCanceled
+                            ? cancellationToken.Register(static s => ((CancellationTokenSource)s!).Cancel(), timeoutCts)
+                            : default;
+                        continue;
+                    }
+
                     LogReceiveTimeout(_options.RequestTimeout.TotalMilliseconds, BrokerId);
 
                     // Mark connection as failed to trigger reconnection
@@ -889,6 +910,13 @@ public sealed partial class KafkaConnection : IKafkaConnection
             {
                 Volatile.Write(ref _disposed, 1);
                 FailAllPendingRequests(new OperationCanceledException("Connection closing", cancellationToken));
+            }
+
+            } // end inner try for CTS lifecycle
+            finally
+            {
+                reg.Dispose();
+                timeoutCts.Dispose();
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
