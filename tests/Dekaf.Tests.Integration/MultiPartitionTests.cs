@@ -200,13 +200,21 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            if (messages.Count(m => m.Key != "warmup") >= 2) break;
+            // Break when we have non-warmup messages from BOTH assigned partitions,
+            // not just any 2 messages (ProduceWithRetryAsync can create duplicates
+            // on a single partition via phantom batches on slow CI)
+            var coveredPartitions = messages
+                .Where(m => m.Key != "warmup")
+                .Select(m => m.Partition)
+                .Distinct()
+                .Count();
+            if (coveredPartitions >= 2) break;
         }
 
         // Assert - should only get messages from partitions 0 and 2 (filter out warmup)
         var actual = messages.Where(m => m.Key != "warmup").ToList();
         await Assert.That(actual).Count().IsGreaterThanOrEqualTo(2);
-        var partitions = actual.Select(m => m.Partition).OrderBy(p => p).ToList();
+        var partitions = actual.Select(m => m.Partition).Distinct().OrderBy(p => p).ToList();
         int[] expectedPartitions = [0, 2];
         await Assert.That(partitions).IsEquivalentTo(expectedPartitions);
     }
