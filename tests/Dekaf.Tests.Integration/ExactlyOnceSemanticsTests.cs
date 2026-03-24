@@ -29,7 +29,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
 
         for (var i = 0; i < messageCount; i++)
         {
-            await ProduceWithRetryAsync(seedProducer, new ProducerMessage<string, string>
+            await seedProducer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = inputTopic,
                 Key = $"atomic-key-{i}",
@@ -473,7 +473,7 @@ public sealed class ExactlyOnceSemanticsTests(KafkaTestContainer kafka) : KafkaI
 
         for (var i = 0; i < messageCount; i++)
         {
-            await ProduceWithRetryAsync(seedProducer, new ProducerMessage<string, string>
+            await seedProducer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = inputTopic,
                 Key = $"input-{i}",

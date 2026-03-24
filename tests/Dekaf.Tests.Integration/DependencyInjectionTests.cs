@@ -35,10 +35,10 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
         var producer = host.Services.GetRequiredService<IKafkaProducer<string, string>>();
 
         // Warm up to ensure broker has initialized partition state
-        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+        await producer.ProduceAsync(new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
-        var metadata = await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+        var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "di-key",
@@ -64,10 +64,10 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
             .BuildAsync();
 
         // Warm up to ensure broker has initialized partition state
-        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+        await producer.ProduceAsync(new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
-        await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+        await producer.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "di-key",
@@ -159,11 +159,11 @@ public sealed class DependencyInjectionTests(KafkaTestContainer kafka) : KafkaIn
         var consumer = host.Services.GetRequiredService<IKafkaConsumer<string, string>>();
 
         // Warm up to ensure broker has initialized partition state
-        await ProduceWithRetryAsync(producerFromDi, new ProducerMessage<string, string>
+        await producerFromDi.ProduceAsync(new ProducerMessage<string, string>
             { Topic = topic, Key = "warmup", Value = "warmup" });
 
         // Produce
-        await ProduceWithRetryAsync(producerFromDi, new ProducerMessage<string, string>
+        await producerFromDi.ProduceAsync(new ProducerMessage<string, string>
         {
             Topic = topic,
             Key = "roundtrip-key",

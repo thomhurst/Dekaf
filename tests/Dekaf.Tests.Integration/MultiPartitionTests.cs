@@ -27,10 +27,6 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
     private static async Task WarmUpAllPartitions(
         IKafkaProducer<string, string> producer, string topic, int partitions)
     {
-        // Use bare ProduceAsync (not ProduceWithRetryAsync) to avoid phantom in-flight
-        // batches. ProduceWithRetryAsync catches timeouts and retries, but the timed-out
-        // batch remains in the pipeline — causing FlushAsync to hang until the 360s
-        // orphan sweep fires.
         for (var p = 0; p < partitions; p++)
             await producer.ProduceAsync(new ProducerMessage<string, string>
             {
@@ -56,7 +52,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         var results = new List<RecordMetadata>();
         for (var i = 0; i < 10; i++)
         {
-            var metadata = await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "consistent-key",
@@ -91,7 +87,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         var results = new List<RecordMetadata>();
         for (var i = 0; i < 10; i++)
         {
-            var metadata = await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"different-key-{i}",
@@ -122,7 +118,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Produce to all partitions
         for (var p = 0; p < 3; p++)
         {
-            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{p}",
@@ -174,7 +170,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Produce to partitions 0, 1, and 2
         for (var p = 0; p < 3; p++)
         {
-            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{p}",
@@ -200,9 +196,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         await foreach (var msg in consumer.ConsumeAsync(cts.Token))
         {
             messages.Add(msg);
-            // Break when we have non-warmup messages from BOTH assigned partitions,
-            // not just any 2 messages (ProduceWithRetryAsync can create duplicates
-            // on a single partition via phantom batches on slow CI)
+            // Break when we have non-warmup messages from BOTH assigned partitions
             var coveredPartitions = messages
                 .Where(m => m.Key != "warmup")
                 .Select(m => m.Partition)
@@ -245,7 +239,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         {
             for (var p = 0; p < 3; p++)
             {
-                await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+                await producer.ProduceAsync(new ProducerMessage<string, string>
                 {
                     Topic = topic,
                     Key = $"key-{p}",
@@ -385,14 +379,14 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Produce to both partitions
         for (var i = 0; i < 5; i++)
         {
-            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-p0-{i}",
                 Value = $"p0-value-{i}",
                 Partition = 0
             });
-            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-p1-{i}",
@@ -461,7 +455,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         // Produce to all 10 partitions
         for (var p = 0; p < 10; p++)
         {
-            await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = $"key-{p}",
@@ -531,7 +525,7 @@ public class MultiPartitionTests(KafkaTestContainer kafka) : KafkaIntegrationTes
         var expectedPartition = -1;
         for (var i = 0; i < 5; i++)
         {
-            var metadata = await ProduceWithRetryAsync(producer, new ProducerMessage<string, string>
+            var metadata = await producer.ProduceAsync(new ProducerMessage<string, string>
             {
                 Topic = topic,
                 Key = "consistent-key",
