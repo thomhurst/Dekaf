@@ -379,7 +379,6 @@ public class AdminClientTests(KafkaTestContainer kafka) : KafkaIntegrationTest(k
                 .WithBootstrapServers(KafkaContainer.BootstrapServers)
                 .WithClientId("test-producer")
                 .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
-                .WithLoggerFactory(GlobalTestSetup.GetLoggerFactory())
                 .BuildAsync();
 
             await producer.ProduceAsync(new ProducerMessage<string, string>
