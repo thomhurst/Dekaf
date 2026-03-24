@@ -331,31 +331,52 @@ public class ConsumerConcurrencyTests
             }
         });
 
-        // Reader task (simulates consume loop)
+        // Reader task uses TryRead + ReadAsync matching the real consumer pattern
+        // (not ReadAllAsync, whose inner TryRead loop doesn't check cancellation)
         var readerTask = Task.Run(async () =>
         {
             try
             {
-                await foreach (var item in channel.Reader.ReadAllAsync(cts.Token))
+                while (!cts.Token.IsCancellationRequested)
                 {
-                    Interlocked.Increment(ref consumedCount);
-                    consumedAtLeastOne.TrySetResult();
+                    if (channel.Reader.TryRead(out _))
+                    {
+                        Interlocked.Increment(ref consumedCount);
+                        consumedAtLeastOne.TrySetResult();
+                    }
+                    else
+                    {
+                        await channel.Reader.ReadAsync(cts.Token);
+                        Interlocked.Increment(ref consumedCount);
+                        consumedAtLeastOne.TrySetResult();
+                    }
                 }
             }
             catch (OperationCanceledException)
             {
                 // Expected during disposal
             }
+            catch (ChannelClosedException)
+            {
+                // Expected when channel is completed during disposal
+            }
         });
 
-        // Wait for the consumer to process at least one message, then "dispose"
-        await consumedAtLeastOne.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        Volatile.Write(ref disposed, true);
-        cts.Cancel();
-        channel.Writer.TryComplete();
+        // Wait for the consumer to process at least one message, then "dispose".
+        // try/finally ensures cleanup always runs — without it, a WaitAsync timeout
+        // leaves zombie writer/reader tasks that leak thread pool threads.
+        try
+        {
+            await consumedAtLeastOne.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            Volatile.Write(ref disposed, true);
+            cts.Cancel();
+            channel.Writer.TryComplete();
+        }
 
         // Must complete within timeout (no deadlock)
-        // Use async wait to avoid thread pool starvation when running 25x in parallel
         await Task.WhenAll(writerTask, readerTask).WaitAsync(TimeSpan.FromSeconds(30));
         await Assert.That(consumedCount).IsGreaterThan(0);
     }
